@@ -1,0 +1,6122 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="color-scheme"
+        content="dark"
+    >
+
+    <title>NPSPEC BOOTPLATFORM 0001</title>
+
+    <style>
+        :root {
+            color-scheme: dark;
+
+            --background: #0c0c0c;
+            --background-secondary: #111111;
+            --surface: rgba(32, 32, 32, 0.82);
+            --surface-solid: #202020;
+            --surface-hover: rgba(255, 255, 255, 0.075);
+            --surface-active: rgba(255, 255, 255, 0.11);
+
+            --border: rgba(255, 255, 255, 0.085);
+            --border-strong: rgba(255, 255, 255, 0.15);
+
+            --text: #ffffff;
+            --text-secondary: #c8c8c8;
+            --text-muted: #8f8f8f;
+
+            --accent: #60cdff;
+            --accent-hover: #86d8ff;
+            --accent-muted: rgba(96, 205, 255, 0.15);
+
+            --success: #6ccb5f;
+            --warning: #fce100;
+            --danger: #ff99a4;
+
+            --code-background: #151515;
+            --inline-code-background: rgba(255, 255, 255, 0.08);
+
+            --sidebar-width: 320px;
+            --header-height: 64px;
+
+            --radius-small: 6px;
+            --radius-medium: 10px;
+            --radius-large: 14px;
+
+            --shadow:
+                0 16px 38px rgba(0, 0, 0, 0.40),
+                0 2px 8px rgba(0, 0, 0, 0.30);
+
+            --font:
+                "Segoe UI Variable",
+                "Segoe UI",
+                system-ui,
+                -apple-system,
+                BlinkMacSystemFont,
+                sans-serif;
+
+            --mono-font:
+                "Cascadia Code",
+                "Cascadia Mono",
+                "Consolas",
+                monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: calc(var(--header-height) + 24px);
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(
+                    circle at 15% 0%,
+                    rgba(96, 205, 255, 0.08),
+                    transparent 34rem
+                ),
+                radial-gradient(
+                    circle at 100% 40%,
+                    rgba(120, 90, 255, 0.055),
+                    transparent 30rem
+                ),
+                var(--background);
+
+            color: var(--text);
+            font-family: var(--font);
+            font-size: 15px;
+            line-height: 1.65;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            color: var(--accent-hover);
+            text-decoration: underline;
+        }
+
+        button,
+        input {
+            font: inherit;
+        }
+
+        .app-header {
+            position: fixed;
+            top: 0;
+            right: 0;
+            left: 0;
+            z-index: 1000;
+
+            height: var(--header-height);
+
+            display: flex;
+            align-items: center;
+            gap: 14px;
+
+            padding: 0 20px;
+
+            background: rgba(20, 20, 20, 0.78);
+            border-bottom: 1px solid var(--border);
+
+            backdrop-filter: blur(30px) saturate(150%);
+            -webkit-backdrop-filter: blur(30px) saturate(150%);
+        }
+
+        .menu-button,
+        .header-button,
+        .toc-close {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--text);
+
+            border-radius: var(--radius-small);
+            cursor: pointer;
+
+            transition:
+                background 120ms ease,
+                border-color 120ms ease,
+                transform 120ms ease;
+        }
+
+        .menu-button {
+            width: 38px;
+            height: 38px;
+            font-size: 20px;
+        }
+
+        .header-button {
+            min-height: 36px;
+            padding: 7px 13px;
+        }
+
+        .menu-button:hover,
+        .header-button:hover,
+        .toc-close:hover {
+            background: var(--surface-hover);
+            border-color: var(--border-strong);
+        }
+
+        .menu-button:active,
+        .header-button:active,
+        .toc-close:active {
+            background: var(--surface-active);
+            transform: scale(0.97);
+        }
+
+        .app-title-area {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .app-title {
+            overflow: hidden;
+            margin: 0;
+
+            color: var(--text);
+            font-size: 16px;
+            font-weight: 600;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .app-subtitle {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .toc {
+            position: fixed;
+            top: var(--header-height);
+            bottom: 0;
+            left: 0;
+            z-index: 900;
+
+            width: var(--sidebar-width);
+
+            background: rgba(24, 24, 24, 0.86);
+            border-right: 1px solid var(--border);
+
+            backdrop-filter: blur(35px) saturate(145%);
+            -webkit-backdrop-filter: blur(35px) saturate(145%);
+
+            transition: transform 180ms ease;
+        }
+
+        .toc-header {
+            height: 58px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            padding: 0 16px 0 20px;
+
+            border-bottom: 1px solid var(--border);
+        }
+
+        .toc-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .toc-close {
+            display: none;
+            width: 34px;
+            height: 34px;
+            font-size: 22px;
+        }
+
+        .toc-content {
+            height: calc(100% - 58px);
+            overflow-y: auto;
+            padding: 12px 10px 24px;
+        }
+
+        .toc-document {
+            margin-bottom: 5px;
+        }
+
+        .toc-document-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+
+            min-height: 38px;
+            padding: 8px 10px;
+
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 600;
+
+            border-radius: var(--radius-small);
+        }
+
+        .toc-document-link:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-document-icon {
+            color: var(--accent);
+        }
+
+        .toc-headings {
+            margin: 2px 0 8px 18px;
+            padding-left: 12px;
+            border-left: 1px solid var(--border);
+        }
+
+        .toc-heading {
+            display: block;
+
+            padding: 4px 8px;
+
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.4;
+
+            border-radius: 4px;
+        }
+
+        .toc-heading:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-level-1 {
+            font-weight: 600;
+        }
+
+        .toc-level-2 {
+            padding-left: 14px;
+        }
+
+        .toc-level-3 {
+            padding-left: 22px;
+        }
+
+        .toc-level-4,
+        .toc-level-5,
+        .toc-level-6 {
+            padding-left: 30px;
+        }
+
+        .app-main {
+            min-height: 100vh;
+
+            margin-left: var(--sidebar-width);
+            padding:
+                calc(var(--header-height) + 32px)
+                clamp(20px, 4vw, 64px)
+                80px;
+        }
+
+        .content-container {
+            width: min(100%, 1080px);
+            margin: 0 auto;
+        }
+
+        .hero {
+            margin-bottom: 32px;
+            padding: 28px 30px;
+
+            background:
+                linear-gradient(
+                    135deg,
+                    rgba(96, 205, 255, 0.12),
+                    rgba(255, 255, 255, 0.035)
+                ),
+                var(--surface);
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .hero-label {
+            margin-bottom: 7px;
+
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 600;
+
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .hero h1 {
+            margin: 0;
+
+            font-size: clamp(28px, 4vw, 44px);
+            font-weight: 650;
+            line-height: 1.12;
+            letter-spacing: -0.03em;
+        }
+
+        .hero-description {
+            margin: 14px 0 0;
+            color: var(--text-secondary);
+        }
+
+        .hero-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+
+            margin-top: 20px;
+        }
+
+        .meta-item {
+            padding: 6px 10px;
+
+            color: var(--text-secondary);
+            font-size: 12px;
+
+            background: rgba(0, 0, 0, 0.20);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+        }
+
+        .markdown-document {
+            margin-bottom: 32px;
+            overflow: hidden;
+
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+        }
+
+        .document-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+
+            padding: 20px 24px;
+
+            background: rgba(255, 255, 255, 0.025);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .document-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+            flex: 0 0 auto;
+
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 700;
+
+            background: var(--accent-muted);
+            border: 1px solid rgba(96, 205, 255, 0.20);
+            border-radius: 10px;
+        }
+
+        .document-title-area {
+            min-width: 0;
+        }
+
+        .document-title {
+            overflow: hidden;
+            margin: 0;
+
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.3;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .document-path {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .markdown-content {
+            padding: clamp(24px, 5vw, 52px);
+        }
+
+        .markdown-content > :first-child {
+            margin-top: 0;
+        }
+
+        .markdown-content > :last-child {
+            margin-bottom: 0;
+        }
+
+        .markdown-content h1,
+        .markdown-content h2,
+        .markdown-content h3,
+        .markdown-content h4,
+        .markdown-content h5,
+        .markdown-content h6 {
+            position: relative;
+
+            margin-top: 1.8em;
+            margin-bottom: 0.65em;
+
+            color: var(--text);
+            font-weight: 600;
+            line-height: 1.28;
+
+            letter-spacing: -0.015em;
+        }
+
+        .markdown-content h1 {
+            padding-bottom: 12px;
+            font-size: 30px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h2 {
+            padding-bottom: 9px;
+            font-size: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h3 {
+            font-size: 20px;
+        }
+
+        .markdown-content h4 {
+            font-size: 17px;
+        }
+
+        .markdown-content h5 {
+            font-size: 15px;
+        }
+
+        .markdown-content h6 {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .markdown-content p {
+            margin: 0.85em 0;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .markdown-content ul,
+        .markdown-content ol {
+            margin: 0.8em 0;
+            padding-left: 1.8em;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content li {
+            margin: 0.35em 0;
+        }
+
+        .markdown-content li::marker {
+            color: var(--accent);
+        }
+
+        .markdown-content blockquote {
+            margin: 1.2em 0;
+            padding: 14px 18px;
+
+            color: var(--text-secondary);
+
+            background: rgba(96, 205, 255, 0.07);
+            border: 1px solid rgba(96, 205, 255, 0.13);
+            border-left: 4px solid var(--accent);
+            border-radius: 0 var(--radius-medium) var(--radius-medium) 0;
+        }
+
+        .markdown-content blockquote p {
+            margin: 0.4em 0;
+        }
+
+        .markdown-content code {
+            padding: 0.15em 0.4em;
+
+            color: #f4f4f4;
+            font-family: var(--mono-font);
+            font-size: 0.9em;
+
+            background: var(--inline-code-background);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+        }
+
+        .markdown-content pre {
+            position: relative;
+
+            max-width: 100%;
+            overflow: auto;
+
+            margin: 1.2em 0;
+            padding: 18px;
+
+            background: var(--code-background);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.025),
+                0 8px 20px rgba(0, 0, 0, 0.18);
+        }
+
+        .markdown-content pre code {
+            display: block;
+            min-width: max-content;
+            padding: 0;
+
+            color: #e6e6e6;
+            font-size: 13px;
+            line-height: 1.55;
+
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+        }
+
+        /* Syntaxfarben für Pygments / Markdown codehilite */
+        .markdown-content .codehilite .hll { background: #3a3520; }
+        .markdown-content .codehilite .c,
+        .markdown-content .codehilite .ch,
+        .markdown-content .codehilite .cm,
+        .markdown-content .codehilite .c1,
+        .markdown-content .codehilite .cs { color: #6a9955; font-style: italic; }
+        .markdown-content .codehilite .k,
+        .markdown-content .codehilite .kc,
+        .markdown-content .codehilite .kd,
+        .markdown-content .codehilite .kn,
+        .markdown-content .codehilite .kp,
+        .markdown-content .codehilite .kr,
+        .markdown-content .codehilite .kt { color: #c586c0; }
+        .markdown-content .codehilite .n { color: #d4d4d4; }
+        .markdown-content .codehilite .na { color: #9cdcfe; }
+        .markdown-content .codehilite .nb,
+        .markdown-content .codehilite .bp { color: #4ec9b0; }
+        .markdown-content .codehilite .nc,
+        .markdown-content .codehilite .nd,
+        .markdown-content .codehilite .ne,
+        .markdown-content .codehilite .nf { color: #dcdcaa; }
+        .markdown-content .codehilite .nn { color: #4ec9b0; }
+        .markdown-content .codehilite .nv,
+        .markdown-content .codehilite .vc,
+        .markdown-content .codehilite .vg,
+        .markdown-content .codehilite .vi { color: #9cdcfe; }
+        .markdown-content .codehilite .o,
+        .markdown-content .codehilite .ow { color: #d4d4d4; }
+        .markdown-content .codehilite .m,
+        .markdown-content .codehilite .mb,
+        .markdown-content .codehilite .mf,
+        .markdown-content .codehilite .mh,
+        .markdown-content .codehilite .mi,
+        .markdown-content .codehilite .mo,
+        .markdown-content .codehilite .il { color: #b5cea8; }
+        .markdown-content .codehilite .s,
+        .markdown-content .codehilite .sa,
+        .markdown-content .codehilite .sb,
+        .markdown-content .codehilite .sc,
+        .markdown-content .codehilite .dl,
+        .markdown-content .codehilite .sd,
+        .markdown-content .codehilite .s1,
+        .markdown-content .codehilite .s2,
+        .markdown-content .codehilite .se,
+        .markdown-content .codehilite .sh,
+        .markdown-content .codehilite .si,
+        .markdown-content .codehilite .sx,
+        .markdown-content .codehilite .sr,
+        .markdown-content .codehilite .ss { color: #ce9178; }
+        .markdown-content .codehilite .p { color: #d4d4d4; }
+        .markdown-content .codehilite .gd { color: #f48771; }
+        .markdown-content .codehilite .gi { color: #89d185; }
+        .markdown-content .codehilite .gh,
+        .markdown-content .codehilite .gu { color: #569cd6; font-weight: 600; }
+        .markdown-content .codehilite .err { color: #f44747; }
+
+        .markdown-content hr {
+            margin: 2em 0;
+            border: 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .markdown-content img {
+            display: block;
+
+            max-width: 100%;
+            height: auto;
+            margin: 1.4em auto;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow: var(--shadow);
+        }
+
+        .markdown-content table {
+            width: 100%;
+            margin: 1.3em 0;
+
+            overflow: hidden;
+            border-collapse: separate;
+            border-spacing: 0;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+        }
+
+        .markdown-content th,
+        .markdown-content td {
+            padding: 11px 13px;
+            text-align: left;
+            vertical-align: top;
+
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content th {
+            color: var(--text);
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .markdown-content td {
+            color: var(--text-secondary);
+            background: rgba(0, 0, 0, 0.10);
+        }
+
+        .markdown-content tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .markdown-content th:last-child,
+        .markdown-content td:last-child {
+            border-right: 0;
+        }
+
+        .markdown-content input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin-right: 6px;
+            accent-color: var(--accent);
+            vertical-align: -2px;
+        }
+
+        .back-to-top {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 800;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+
+            color: var(--text);
+            font-size: 20px;
+
+            background: rgba(40, 40, 40, 0.86);
+            border: 1px solid var(--border);
+            border-radius: 50%;
+
+            box-shadow: var(--shadow);
+
+            opacity: 0;
+            pointer-events: none;
+
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+
+            transition:
+                opacity 150ms ease,
+                background 150ms ease,
+                transform 150ms ease;
+        }
+
+        .back-to-top.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .back-to-top:hover {
+            color: var(--text);
+            text-decoration: none;
+            background: var(--surface-active);
+            transform: translateY(-2px);
+        }
+
+        .overlay {
+            position: fixed;
+            inset: var(--header-height) 0 0 0;
+            z-index: 850;
+
+            display: none;
+
+            background: rgba(0, 0, 0, 0.48);
+            backdrop-filter: blur(3px);
+            -webkit-backdrop-filter: blur(3px);
+        }
+
+        ::selection {
+            color: #000000;
+            background: var(--accent);
+        }
+
+        ::-webkit-scrollbar {
+            width: 12px;
+            height: 12px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.16);
+            border: 3px solid transparent;
+            border-radius: 999px;
+            background-clip: padding-box;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+
+        @media print {
+            :root {
+                color-scheme: light;
+            }
+
+            body {
+                color: #111111;
+                background: #ffffff;
+            }
+
+            .app-header,
+            .toc,
+            .overlay,
+            .back-to-top {
+                display: none !important;
+            }
+
+            .app-main {
+                margin: 0;
+                padding: 0;
+            }
+
+            .hero,
+            .markdown-document {
+                color: #111111;
+                background: #ffffff;
+                border: 1px solid #dddddd;
+                box-shadow: none;
+            }
+
+            .markdown-content p,
+            .markdown-content li,
+            .markdown-content td {
+                color: #222222;
+            }
+
+            .markdown-content h1,
+            .markdown-content h2,
+            .markdown-content h3,
+            .markdown-content h4,
+            .markdown-content h5,
+            .markdown-content h6,
+            .markdown-content strong {
+                color: #111111;
+            }
+
+            .markdown-content pre {
+                white-space: pre-wrap;
+                background: #f5f5f5;
+                border-color: #dddddd;
+            }
+
+            .markdown-content pre code {
+                color: #111111;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .toc {
+                width: min(88vw, 340px);
+                transform: translateX(-105%);
+                box-shadow: var(--shadow);
+            }
+
+            .toc.open {
+                transform: translateX(0);
+            }
+
+            .toc-close {
+                display: inline-flex;
+            }
+
+            .overlay.visible {
+                display: block;
+            }
+
+            .app-main {
+                margin-left: 0;
+                padding-right: 18px;
+                padding-left: 18px;
+            }
+
+            .header-button-label {
+                display: none;
+            }
+
+            .markdown-content {
+                padding: 24px 20px;
+            }
+        }
+
+        @media (max-width: 540px) {
+            .app-header {
+                padding: 0 12px;
+            }
+
+            .app-subtitle {
+                display: none;
+            }
+
+            .hero {
+                padding: 23px 20px;
+            }
+
+            .document-header {
+                padding: 16px;
+            }
+
+            .document-number {
+                width: 38px;
+                height: 38px;
+            }
+
+            .markdown-content {
+                padding: 22px 16px;
+            }
+
+            .markdown-content h1 {
+                font-size: 25px;
+            }
+
+            .markdown-content h2 {
+                font-size: 21px;
+            }
+
+            .back-to-top {
+                right: 16px;
+                bottom: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="app-header">
+        <button
+            class="menu-button"
+            type="button"
+            onclick="toggleNavigation()"
+            aria-label="Navigation öffnen"
+            title="Navigation"
+        >
+            ☰
+        </button>
+
+        <div class="app-title-area">
+            <div class="app-title">
+                NPSPEC BOOTPLATFORM 0001
+            </div>
+
+            <div class="app-subtitle">
+                C:\recoverboot\nova-os\docs\NPSPEC\Bootloader
+            </div>
+        </div>
+
+        <div class="header-actions">
+            <button
+                class="header-button"
+                type="button"
+                onclick="window.print()"
+                title="Dokument drucken"
+            >
+                <span>⎙</span>
+                <span class="header-button-label">
+                    Drucken
+                </span>
+            </button>
+        </div>
+    </header>
+
+    <nav class="toc" id="toc">
+<div class="toc-header">
+<div class="toc-title">Inhaltsverzeichnis</div>
+<button class="toc-close" type="button" onclick="toggleNavigation()" aria-label="Navigation schließen">
+×
+</button>
+</div>
+<div class="toc-content">
+
+            <div class="toc-document">
+                <a class="toc-document-link" href="#document-npspec-bootplatform-0001-md">
+                    <span class="toc-document-icon">▤</span>
+                    <span>NPSPEC BOOTPLATFORM 0001</span>
+                </a>
+            
+<div class="toc-headings">
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#npspec-bootplatform-0001"
+                    >
+                        NPSPEC-BOOTPLATFORM-0001
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#nova-boot-platform-abstraction"
+                    >
+                        Nova Boot Platform Abstraction
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#1-zweck"
+                    >
+                        1. Zweck
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#2-ziele"
+                    >
+                        2. Ziele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#3-grundidee"
+                    >
+                        3. Grundidee
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#4-motivation"
+                    >
+                        4. Motivation
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#5-designprinzipien"
+                    >
+                        5. Designprinzipien
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#plattformneutralitat"
+                    >
+                        Plattformneutralität
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#einheitliche-api"
+                    >
+                        Einheitliche API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#erweiterbarkeit"
+                    >
+                        Erweiterbarkeit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#determinismus"
+                    >
+                        Determinismus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#modularitat"
+                    >
+                        Modularität
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#testbarkeit"
+                    >
+                        Testbarkeit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#wartbarkeit"
+                    >
+                        Wartbarkeit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#6-gesamtarchitektur"
+                    >
+                        6. Gesamtarchitektur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#7-schichtenmodell"
+                    >
+                        7. Schichtenmodell
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#8-plattformtypen"
+                    >
+                        8. Plattformtypen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#9-plattformobjekt"
+                    >
+                        9. Plattformobjekt
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#10-platform-manager"
+                    >
+                        10. Platform Manager
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#11-lebenszyklus"
+                    >
+                        11. Lebenszyklus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#12-plattforminitialisierung"
+                    >
+                        12. Plattforminitialisierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#13-anforderungen"
+                    >
+                        13. Anforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#14-should"
+                    >
+                        14. SHOULD
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#15-may"
+                    >
+                        15. MAY
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#16-verzeichnisstruktur"
+                    >
+                        16. Verzeichnisstruktur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#17-architekturziel"
+                    >
+                        17. Architekturziel
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#18-firmware-discovery"
+                    >
+                        18. Firmware Discovery
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#19-plattformerkennung"
+                    >
+                        19. Plattformerkennung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#20-platform-factory"
+                    >
+                        20. Platform Factory
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#21-platform-registry"
+                    >
+                        21. Platform Registry
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#22-bios-driver"
+                    >
+                        22. BIOS Driver
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#23-bios-driver-aufgaben"
+                    >
+                        23. BIOS Driver Aufgaben
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#24-bios-driver-api"
+                    >
+                        24. BIOS Driver API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#25-uefi-driver"
+                    >
+                        25. UEFI Driver
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#26-uefi-driver-aufgaben"
+                    >
+                        26. UEFI Driver Aufgaben
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#27-uefi-driver-api"
+                    >
+                        27. UEFI Driver API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#28-coreboot-driver"
+                    >
+                        28. Coreboot Driver
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#29-arm64-driver"
+                    >
+                        29. ARM64 Driver
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#30-opensbi-driver"
+                    >
+                        30. OpenSBI Driver
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#31-platform-driver-interface"
+                    >
+                        31. Platform Driver Interface
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#32-plattformfahigkeiten"
+                    >
+                        32. Plattformfähigkeiten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#33-platform-state"
+                    >
+                        33. Platform State
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#34-driver-lifecycle"
+                    >
+                        34. Driver Lifecycle
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#35-fehlerbehandlung"
+                    >
+                        35. Fehlerbehandlung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#36-plattforminformationen"
+                    >
+                        36. Plattforminformationen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#37-driver-registration"
+                    >
+                        37. Driver Registration
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#38-plattformauswahl"
+                    >
+                        38. Plattformauswahl
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#39-anforderungen"
+                    >
+                        39. Anforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#40-should"
+                    >
+                        40. SHOULD
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#41-may"
+                    >
+                        41. MAY
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#architekturentscheidung-adr"
+                    >
+                        Architekturentscheidung (ADR)
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#42-platform-services"
+                    >
+                        42. Platform Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#43-servicekategorien"
+                    >
+                        43. Servicekategorien
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#44-service-manager"
+                    >
+                        44. Service Manager
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#45-service-registry"
+                    >
+                        45. Service Registry
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#46-memory-services"
+                    >
+                        46. Memory Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#47-memory-service-api"
+                    >
+                        47. Memory Service API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#48-storage-services"
+                    >
+                        48. Storage Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#49-storage-api"
+                    >
+                        49. Storage API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#50-graphics-services"
+                    >
+                        50. Graphics Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#51-graphics-api"
+                    >
+                        51. Graphics API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#52-input-services"
+                    >
+                        52. Input Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#53-input-api"
+                    >
+                        53. Input API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#54-timer-services"
+                    >
+                        54. Timer Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#55-timer-api"
+                    >
+                        55. Timer API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#56-console-services"
+                    >
+                        56. Console Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#57-console-api"
+                    >
+                        57. Console API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#58-firmware-services"
+                    >
+                        58. Firmware Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#59-firmware-api"
+                    >
+                        59. Firmware API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#60-configuration-services"
+                    >
+                        60. Configuration Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#61-runtime-services"
+                    >
+                        61. Runtime Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#62-ressourcenverwaltung"
+                    >
+                        62. Ressourcenverwaltung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#63-synchronisation"
+                    >
+                        63. Synchronisation
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#64-fehlerbehandlung"
+                    >
+                        64. Fehlerbehandlung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#65-service-discovery"
+                    >
+                        65. Service Discovery
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#66-anforderungen"
+                    >
+                        66. Anforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#67-should"
+                    >
+                        67. SHOULD
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#68-may"
+                    >
+                        68. MAY
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#architekturentscheidung-adr_1"
+                    >
+                        Architekturentscheidung (ADR)
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#69-device-runtime"
+                    >
+                        69. Device Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#70-ziele"
+                    >
+                        70. Ziele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#71-geratearchitektur"
+                    >
+                        71. Gerätearchitektur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#72-device-manager"
+                    >
+                        72. Device Manager
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#73-gerateobjekt"
+                    >
+                        73. Geräteobjekt
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#74-geratetypen"
+                    >
+                        74. Gerätetypen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#75-device-registry"
+                    >
+                        75. Device Registry
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#76-keyboard-runtime"
+                    >
+                        76. Keyboard Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#77-keyboard-event"
+                    >
+                        77. Keyboard Event
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#78-key-codes"
+                    >
+                        78. Key Codes
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#79-mouse-runtime"
+                    >
+                        79. Mouse Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#80-mouse-event"
+                    >
+                        80. Mouse Event
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#81-cursor"
+                    >
+                        81. Cursor
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#82-touch-runtime"
+                    >
+                        82. Touch Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#83-gemeinsames-eventmodell"
+                    >
+                        83. Gemeinsames Eventmodell
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#84-event-queue"
+                    >
+                        84. Event Queue
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#85-eventstruktur"
+                    >
+                        85. Eventstruktur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#86-console-runtime"
+                    >
+                        86. Console Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#87-konsolentypen"
+                    >
+                        87. Konsolentypen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#88-console-api"
+                    >
+                        88. Console API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#89-device-discovery"
+                    >
+                        89. Device Discovery
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#90-device-capabilities"
+                    >
+                        90. Device Capabilities
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#91-geratezustande"
+                    >
+                        91. Gerätezustände
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#92-gerateinitialisierung"
+                    >
+                        92. Geräteinitialisierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#93-geratevalidierung"
+                    >
+                        93. Gerätevalidierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#94-gerateereignisse"
+                    >
+                        94. Geräteereignisse
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#95-hotplug"
+                    >
+                        95. Hotplug
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#96-fehlerbehandlung"
+                    >
+                        96. Fehlerbehandlung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#97-anforderungen"
+                    >
+                        97. Anforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#98-should"
+                    >
+                        98. SHOULD
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#99-may"
+                    >
+                        99. MAY
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#architekturentscheidung-adr_2"
+                    >
+                        Architekturentscheidung (ADR)
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#100-firmware-information-runtime"
+                    >
+                        100. Firmware Information Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#101-ziele"
+                    >
+                        101. Ziele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#102-firmware-discovery"
+                    >
+                        102. Firmware Discovery
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#103-acpi-runtime"
+                    >
+                        103. ACPI Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#104-acpi-manager"
+                    >
+                        104. ACPI Manager
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#105-acpi-api"
+                    >
+                        105. ACPI API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#106-acpi-informationen"
+                    >
+                        106. ACPI Informationen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#107-smbios-runtime"
+                    >
+                        107. SMBIOS Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#108-smbios-api"
+                    >
+                        108. SMBIOS API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#109-datenschutz"
+                    >
+                        109. Datenschutz
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#110-pci-runtime"
+                    >
+                        110. PCI Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#111-pci-discovery"
+                    >
+                        111. PCI Discovery
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#112-pci-device"
+                    >
+                        112. PCI Device
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#113-pci-klassen"
+                    >
+                        113. PCI Klassen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#114-hpet-runtime"
+                    >
+                        114. HPET Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#115-apic-runtime"
+                    >
+                        115. APIC Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#116-numa-runtime"
+                    >
+                        116. NUMA Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#117-device-tree-runtime"
+                    >
+                        117. Device Tree Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#118-hardware-topology"
+                    >
+                        118. Hardware Topology
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#119-firmware-registry"
+                    >
+                        119. Firmware Registry
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#120-firmware-snapshot"
+                    >
+                        120. Firmware Snapshot
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#121-firmwarestruktur"
+                    >
+                        121. Firmwarestruktur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#122-validierung"
+                    >
+                        122. Validierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#123-ubergabe"
+                    >
+                        123. Übergabe
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#124-anforderungen"
+                    >
+                        124. Anforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#125-should"
+                    >
+                        125. SHOULD
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#126-may"
+                    >
+                        126. MAY
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#architekturentscheidung-adr_3"
+                    >
+                        Architekturentscheidung (ADR)
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#127-security-runtime"
+                    >
+                        127. Security Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#128-ziele"
+                    >
+                        128. Ziele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#129-architektur"
+                    >
+                        129. Architektur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#130-komponenten"
+                    >
+                        130. Komponenten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#131-secure-boot-manager"
+                    >
+                        131. Secure Boot Manager
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#132-secure-boot-api"
+                    >
+                        132. Secure Boot API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#133-tpm-runtime"
+                    >
+                        133. TPM Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#134-tpm-api"
+                    >
+                        134. TPM API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#135-hash-runtime"
+                    >
+                        135. Hash Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#136-signature-runtime"
+                    >
+                        136. Signature Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#137-nova-trust-store"
+                    >
+                        137. Nova Trust Store
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#138-policy-manager"
+                    >
+                        138. Policy Manager
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#139-security-policies"
+                    >
+                        139. Security Policies
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#140-measurement-runtime"
+                    >
+                        140. Measurement Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#141-pcr-mapping"
+                    >
+                        141. PCR Mapping
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#142-runtime-services"
+                    >
+                        142. Runtime Services
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#143-exitbootservices"
+                    >
+                        143. ExitBootServices()
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#144-bios-ubergang"
+                    >
+                        144. BIOS-Übergang
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#145-chain-of-trust"
+                    >
+                        145. Chain of Trust
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#146-sicherheitsstatus"
+                    >
+                        146. Sicherheitsstatus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#147-firmware-security-events"
+                    >
+                        147. Firmware Security Events
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#148-recovery-security"
+                    >
+                        148. Recovery Security
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#149-kryptographische-bibliothek"
+                    >
+                        149. Kryptographische Bibliothek
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#150-anforderungen"
+                    >
+                        150. Anforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#151-should"
+                    >
+                        151. SHOULD
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#152-may"
+                    >
+                        152. MAY
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#architekturentscheidung-adr_4"
+                    >
+                        Architekturentscheidung (ADR)
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#153-offentliche-platform-api"
+                    >
+                        153. Öffentliche Platform API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#154-api-designprinzipien"
+                    >
+                        154. API Designprinzipien
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#155-platform-runtime"
+                    >
+                        155. Platform Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#156-service-locator"
+                    >
+                        156. Service Locator
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#157-service-typen"
+                    >
+                        157. Service Typen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#158-platform-abi"
+                    >
+                        158. Platform ABI
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#159-abi-header"
+                    >
+                        159. ABI Header
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#160-versionsverwaltung"
+                    >
+                        160. Versionsverwaltung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#161-capability-system"
+                    >
+                        161. Capability System
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#162-feature-query"
+                    >
+                        162. Feature Query
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#163-plattformmerkmale"
+                    >
+                        163. Plattformmerkmale
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#164-fehlerbehandlung"
+                    >
+                        164. Fehlerbehandlung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#165-fehlerklassen"
+                    >
+                        165. Fehlerklassen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#166-fehlercodes"
+                    >
+                        166. Fehlercodes
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#167-platform-logger"
+                    >
+                        167. Platform Logger
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#168-diagnoseschnittstelle"
+                    >
+                        168. Diagnoseschnittstelle
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#169-plattformbericht"
+                    >
+                        169. Plattformbericht
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#170-referenzimplementierung"
+                    >
+                        170. Referenzimplementierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#171-unit-tests"
+                    >
+                        171. Unit Tests
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#172-integrationstests"
+                    >
+                        172. Integrationstests
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#173-regressionstests"
+                    >
+                        173. Regressionstests
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#174-performance"
+                    >
+                        174. Performance
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#175-dokumentationsstandard"
+                    >
+                        175. Dokumentationsstandard
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#176-kompatibilitat"
+                    >
+                        176. Kompatibilität
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#177-anforderungen"
+                    >
+                        177. Anforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#178-should"
+                    >
+                        178. SHOULD
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#179-may"
+                    >
+                        179. MAY
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#architekturentscheidung-adr_5"
+                    >
+                        Architekturentscheidung (ADR)
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#180-referenzimplementierung"
+                    >
+                        180. Referenzimplementierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#181-referenzprojektstruktur"
+                    >
+                        181. Referenzprojektstruktur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#182-initialisierungsablauf"
+                    >
+                        182. Initialisierungsablauf
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#183-plattformwechsel"
+                    >
+                        183. Plattformwechsel
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#184-kompatibilitatsmatrix"
+                    >
+                        184. Kompatibilitätsmatrix
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#185-unterstutzte-emulatoren"
+                    >
+                        185. Unterstützte Emulatoren
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#186-qualitatsanforderungen"
+                    >
+                        186. Qualitätsanforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#187-performanceziele"
+                    >
+                        187. Performanceziele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#188-fehlertoleranz"
+                    >
+                        188. Fehlertoleranz
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#189-erweiterbarkeit"
+                    >
+                        189. Erweiterbarkeit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#190-beziehungen-zu-anderen-npspecs"
+                    >
+                        190. Beziehungen zu anderen NPSPECs
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#191-implementierungsphasen"
+                    >
+                        191. Implementierungsphasen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#phase-1"
+                    >
+                        Phase 1
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#phase-2"
+                    >
+                        Phase 2
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#phase-3"
+                    >
+                        Phase 3
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#phase-4"
+                    >
+                        Phase 4
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#phase-5"
+                    >
+                        Phase 5
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#192-akzeptanzkriterien"
+                    >
+                        192. Akzeptanzkriterien
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#193-langfristige-roadmap"
+                    >
+                        193. Langfristige Roadmap
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#194-zusammenfassung"
+                    >
+                        194. Zusammenfassung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#195-langfristige-vision"
+                    >
+                        195. Langfristige Vision
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#196-architekturprinzipien"
+                    >
+                        196. Architekturprinzipien
+                    </a>
+                    
+</div>
+</div>
+</div>
+</nav>
+
+    <div
+        class="overlay"
+        id="overlay"
+        onclick="closeNavigation()"
+    ></div>
+
+    <main class="app-main" id="top">
+        <div class="content-container">
+            <section class="hero">
+                <div class="hero-label">
+                    Markdown-Dokumentation
+                </div>
+
+                <h1>
+                    NPSPEC BOOTPLATFORM 0001
+                </h1>
+
+                <p class="hero-description">
+                    Zusammengeführte HTML-Dokumentation aus
+                    1 Markdown-Dateien.
+                </p>
+
+                <div class="hero-meta">
+                    <span class="meta-item">
+                        1 Dokumente
+                    </span>
+
+                    <span class="meta-item">
+                        Fluent Dark
+                    </span>
+
+                    <span class="meta-item">
+                        Einzelne HTML-Datei
+                    </span>
+                </div>
+            </section>
+
+            
+            <article class="markdown-document" id="document-npspec-bootplatform-0001-md">
+                <header class="document-header">
+                    <div class="document-number">
+                        01
+                    </div>
+
+                    <div class="document-title-area">
+                        <h1 class="document-title">
+                            NPSPEC BOOTPLATFORM 0001
+                        </h1>
+
+                        <div class="document-path">
+                            NPSPEC-BOOTPLATFORM-0001.md
+                        </div>
+                    </div>
+                </header>
+
+                <div class="markdown-content">
+                    <h1 id="npspec-bootplatform-0001">NPSPEC-BOOTPLATFORM-0001</h1>
+<h1 id="nova-boot-platform-abstraction">Nova Boot Platform Abstraction</h1>
+<table>
+<thead>
+<tr>
+<th>Feld</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dokument</td>
+<td>NPSPEC-BOOTPLATFORM-0001</td>
+</tr>
+<tr>
+<td>Titel</td>
+<td>Nova Boot Platform Abstraction</td>
+</tr>
+<tr>
+<td>Version</td>
+<td>1.0.0 Draft</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Draft</td>
+</tr>
+<tr>
+<td>Kategorie</td>
+<td>Boot Platform</td>
+</tr>
+<tr>
+<td>Bereich</td>
+<td>Nova Boot Architecture</td>
+</tr>
+<tr>
+<td>Übergeordnet</td>
+<td>NPSPEC-BOOT-0001</td>
+</tr>
+<tr>
+<td>Baut auf</td>
+<td>NPSPEC-BOOTSTAGE1-0001, NPSPEC-BOOTSTAGE2-0001</td>
+</tr>
+<tr>
+<td>Letzte Änderung</td>
+<td>2026-07-14</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h1 id="1-zweck">1. Zweck</h1>
+<p>Die <strong>Nova Boot Platform Abstraction (BPA)</strong> bildet die Schnittstelle zwischen der Firmware und dem eigentlichen Nova Boot Core.</p>
+<p>Der Boot Core kennt niemals BIOS-, UEFI- oder plattformspezifischen Code.</p>
+<p>Alle Firmwarezugriffe erfolgen ausschließlich über diese Abstraktionsschicht.</p>
+<p>Damit wird Nova vollständig portierbar.</p>
+<hr>
+<h1 id="2-ziele">2. Ziele</h1>
+<p>Die Boot Platform soll</p>
+<ul>
+<li>BIOS vereinheitlichen</li>
+<li>UEFI vereinheitlichen</li>
+<li>Coreboot unterstützen</li>
+<li>ARM64 UEFI unterstützen</li>
+<li>OpenSBI unterstützen</li>
+<li>zukünftige Firmware unterstützen</li>
+</ul>
+<p>ohne den Boot Core verändern zu müssen.</p>
+<hr>
+<h1 id="3-grundidee">3. Grundidee</h1>
+<p>Der Bootloader besitzt zwei Ebenen.</p>
+<div class="codehilite"><pre><span></span><code>Nova Boot Core
+↓
+Nova Boot Platform
+↓
+Firmware Driver
+↓
+Firmware
+</code></pre></div>
+
+<p>Dadurch kennt der Boot Core keine Firmwaredetails.</p>
+<hr>
+<h1 id="4-motivation">4. Motivation</h1>
+<p>Ohne Plattformabstraktion müsste praktisch jede Bootkomponente unterscheiden zwischen</p>
+<div class="codehilite"><pre><span></span><code>if(BIOS)
+
+...
+
+else
+
+UEFI
+</code></pre></div>
+
+<p>Dies würde den gesamten Bootloader unnötig kompliziert machen.</p>
+<p>Die Boot Platform verhindert dies vollständig.</p>
+<hr>
+<h1 id="5-designprinzipien">5. Designprinzipien</h1>
+<p>Die Plattformabstraktion folgt sieben Grundprinzipien.</p>
+<h2 id="plattformneutralitat">Plattformneutralität</h2>
+<p>Keine Komponente oberhalb des Platform Layers darf BIOS- oder UEFI-Funktionen direkt aufrufen.</p>
+<hr>
+<h2 id="einheitliche-api">Einheitliche API</h2>
+<p>Jede Plattform implementiert dieselben Funktionen.</p>
+<p>Dadurch bleibt der Boot Core unverändert.</p>
+<hr>
+<h2 id="erweiterbarkeit">Erweiterbarkeit</h2>
+<p>Neue Plattformen benötigen ausschließlich einen neuen Treiber.</p>
+<p>Der Boot Core muss nicht angepasst werden.</p>
+<hr>
+<h2 id="determinismus">Determinismus</h2>
+<p>Alle Plattformtreiber liefern identische Ergebnisse.</p>
+<hr>
+<h2 id="modularitat">Modularität</h2>
+<p>Jeder Plattformtreiber befindet sich in einem eigenen Modul.</p>
+<hr>
+<h2 id="testbarkeit">Testbarkeit</h2>
+<p>Jede Plattform kann unabhängig getestet werden.</p>
+<hr>
+<h2 id="wartbarkeit">Wartbarkeit</h2>
+<p>Firmwareänderungen betreffen ausschließlich den jeweiligen Plattformtreiber.</p>
+<hr>
+<h1 id="6-gesamtarchitektur">6. Gesamtarchitektur</h1>
+<div class="codehilite"><pre><span></span><code>Nova Boot Core
+├── Memory
+├── Graphics
+├── Storage
+├── Filesystem
+├── Input
+├── Kernel Loader
+├── Security
+└── Recovery
+
+↓
+
+Boot Platform
+├── BIOS Driver
+├── UEFI Driver
+├── Coreboot Driver
+├── ARM64 Driver
+└── OpenSBI Driver
+
+↓
+
+Firmware
+</code></pre></div>
+
+<hr>
+<h1 id="7-schichtenmodell">7. Schichtenmodell</h1>
+<div class="codehilite"><pre><span></span><code>Layer 5
+Boot Core
+
+↓
+
+Layer 4
+Platform API
+
+↓
+
+Layer 3
+Platform Driver
+
+↓
+
+Layer 2
+Firmware Runtime
+
+↓
+
+Layer 1
+Firmware
+</code></pre></div>
+
+<p>Jede Schicht besitzt klar definierte Verantwortlichkeiten.</p>
+<hr>
+<h1 id="8-plattformtypen">8. Plattformtypen</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_PLATFORM_UNKNOWN</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_PLATFORM_BIOS</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_PLATFORM_UEFI</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_PLATFORM_COREBOOT</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_PLATFORM_ARM64_UEFI</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_PLATFORM_OPENSBI</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_PLATFORM_CUSTOM</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_type_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="9-plattformobjekt">9. Plattformobjekt</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_platform_type_t</span><span class="w"> </span><span class="n">type</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">char</span><span class="w"> </span><span class="n">firmware_name</span><span class="p">[</span><span class="mi">64</span><span class="p">];</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">major</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">minor</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">revision</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">secure_boot</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">runtime_services</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">graphics_supported</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">mouse_supported</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="10-platform-manager">10. Platform Manager</h1>
+<p>Der Platform Manager ist die einzige Instanz, welche Firmwaretreiber verwaltet.</p>
+<div class="codehilite"><pre><span></span><code>Platform Manager
+
+↓
+
+Platform Driver
+
+↓
+
+Firmware
+</code></pre></div>
+
+<p>Er entscheidet automatisch,</p>
+<p>welcher Treiber geladen wird.</p>
+<hr>
+<h1 id="11-lebenszyklus">11. Lebenszyklus</h1>
+<p>Jeder Plattformtreiber besitzt denselben Ablauf.</p>
+<div class="codehilite"><pre><span></span><code>Detect
+
+↓
+
+Create
+
+↓
+
+Initialize
+
+↓
+
+Running
+
+↓
+
+Shutdown
+</code></pre></div>
+
+<hr>
+<h1 id="12-plattforminitialisierung">12. Plattforminitialisierung</h1>
+<div class="codehilite"><pre><span></span><code>CPU
+
+↓
+
+Detect Firmware
+
+↓
+
+Create Driver
+
+↓
+
+Initialize Driver
+
+↓
+
+Boot Core
+</code></pre></div>
+
+<p>Danach arbeitet ausschließlich der Boot Core.</p>
+<hr>
+<h1 id="13-anforderungen">13. Anforderungen</h1>
+<p>Der Platform Layer MUSS</p>
+<ul>
+<li>automatisch BIOS erkennen</li>
+<li>automatisch UEFI erkennen</li>
+<li>Plattforminformationen bereitstellen</li>
+<li>Firmwarezugriffe abstrahieren</li>
+<li>identische APIs liefern</li>
+</ul>
+<hr>
+<h1 id="14-should">14. SHOULD</h1>
+<p>Der Platform Layer SOLLTE</p>
+<ul>
+<li>weitere Firmware unterstützen</li>
+<li>leicht portierbar sein</li>
+<li>modular aufgebaut sein</li>
+<li>reproduzierbar arbeiten</li>
+</ul>
+<hr>
+<h1 id="15-may">15. MAY</h1>
+<p>Der Platform Layer DARF</p>
+<ul>
+<li>Emulatoren speziell behandeln</li>
+<li>virtuelle Firmware optimieren</li>
+<li>Debugfunktionen bereitstellen</li>
+</ul>
+<hr>
+<h1 id="16-verzeichnisstruktur">16. Verzeichnisstruktur</h1>
+<div class="codehilite"><pre><span></span><code>boot/platform/
+├── platform.c
+├── platform.h
+├── manager.c
+├── manager.h
+├── bios/
+├── uefi/
+├── coreboot/
+├── arm64/
+└── opensbi/
+</code></pre></div>
+
+<hr>
+<h1 id="17-architekturziel">17. Architekturziel</h1>
+<p>Die gesamte Nova-Plattform soll so entworfen werden, dass zukünftige Firmwarearten ausschließlich durch neue Treiber ergänzt werden.</p>
+<p>Der Boot Core bleibt dabei unverändert.</p>
+<p>Dies ist eine der wichtigsten Designentscheidungen der gesamten Nova-Bootarchitektur.</p>
+<hr>
+<h1 id="18-firmware-discovery">18. Firmware Discovery</h1>
+<p>Nach dem Start von Stage 2 beginnt die automatische Erkennung der Firmware.</p>
+<p>Der Platform Manager erkennt selbstständig,</p>
+<ul>
+<li>BIOS</li>
+<li>UEFI</li>
+<li>Coreboot</li>
+<li>ARM64 UEFI</li>
+<li>OpenSBI</li>
+</ul>
+<p>ohne Konfigurationsdateien.</p>
+<p>Der Boot Core darf niemals selbst nach Firmware suchen.</p>
+<hr>
+<h1 id="19-plattformerkennung">19. Plattformerkennung</h1>
+<div class="codehilite"><pre><span></span><code>Stage 2
+
+↓
+
+Platform Manager
+
+↓
+
+Detect Firmware
+
+↓
+
+Create Platform Driver
+
+↓
+
+Initialize Driver
+
+↓
+
+Boot Core
+</code></pre></div>
+
+<p>Die Plattform wird genau einmal bestimmt.</p>
+<hr>
+<h1 id="20-platform-factory">20. Platform Factory</h1>
+<p>Alle Plattformtreiber werden über eine Factory erzeugt.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_platform_driver_t</span><span class="o">*</span>
+<span class="nf">nova_platform_create</span><span class="p">(</span><span class="kt">void</span><span class="p">);</span>
+</code></pre></div>
+
+<p>Die Factory entscheidet anhand der Firmware,</p>
+<p>welcher Treiber verwendet wird.</p>
+<hr>
+<h1 id="21-platform-registry">21. Platform Registry</h1>
+<p>Alle verfügbaren Plattformen registrieren sich beim Platform Manager.</p>
+<div class="codehilite"><pre><span></span><code>Platform Registry
+├── BIOS Driver
+├── UEFI Driver
+├── Coreboot Driver
+├── ARM64 Driver
+└── OpenSBI Driver
+</code></pre></div>
+
+<p>Neue Plattformen können registriert werden,</p>
+<p>ohne den Boot Core zu verändern.</p>
+<hr>
+<h1 id="22-bios-driver">22. BIOS Driver</h1>
+<p>Der BIOS Driver kapselt sämtliche BIOS-Funktionen.</p>
+<p>Unterstützt werden</p>
+<ul>
+<li>INT 10h</li>
+<li>INT 13h</li>
+<li>INT 15h</li>
+<li>INT 16h</li>
+<li>INT 19h</li>
+<li>E820</li>
+<li>VBE</li>
+</ul>
+<p>Der Boot Core kennt diese Interrupts nicht.</p>
+<hr>
+<h1 id="23-bios-driver-aufgaben">23. BIOS Driver Aufgaben</h1>
+<p>Der BIOS Driver übernimmt</p>
+<ul>
+<li>Datenträgerzugriffe</li>
+<li>Grafikinitialisierung</li>
+<li>Speicherkarte</li>
+<li>Tastatur</li>
+<li>Zeitinformationen</li>
+<li>Neustart</li>
+<li>Firmwareinformationen</li>
+</ul>
+<p>Alle Ergebnisse werden in Nova-Datenstrukturen übersetzt.</p>
+<hr>
+<h1 id="24-bios-driver-api">24. BIOS Driver API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">initialize</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">read_blocks</span><span class="p">)(</span>
+<span class="w">        </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">lba</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">count</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">buffer</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">memory_map</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_memory_map_t</span><span class="o">*</span><span class="w"> </span><span class="n">map</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">set_video</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_video_request_t</span><span class="o">*</span><span class="w"> </span><span class="n">request</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">keyboard_poll</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_keyboard_event_t</span><span class="o">*</span><span class="w"> </span><span class="n">event</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_bios_driver_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="25-uefi-driver">25. UEFI Driver</h1>
+<p>Der UEFI Driver kapselt sämtliche UEFI-Protokolle.</p>
+<p>Unterstützt</p>
+<ul>
+<li>Boot Services</li>
+<li>Runtime Services</li>
+<li>GOP</li>
+<li>Block IO</li>
+<li>Simple File System</li>
+<li>Loaded Image</li>
+<li>Memory Map</li>
+<li>ExitBootServices()</li>
+</ul>
+<hr>
+<h1 id="26-uefi-driver-aufgaben">26. UEFI Driver Aufgaben</h1>
+<p>Der UEFI Driver übernimmt</p>
+<ul>
+<li>Datenträger</li>
+<li>Grafik</li>
+<li>Speicherkarte</li>
+<li>Firmwareinformationen</li>
+<li>Maus</li>
+<li>Tastatur</li>
+<li>Timer</li>
+<li>Runtime Services</li>
+</ul>
+<p>Die UEFI-Protokolle werden vollständig verborgen.</p>
+<hr>
+<h1 id="27-uefi-driver-api">27. UEFI Driver API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">initialize</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">block_read</span><span class="p">)(</span>
+<span class="w">        </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">lba</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">count</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">buffer</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">graphics_initialize</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">memory_map</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_memory_map_t</span><span class="o">*</span><span class="w"> </span><span class="n">map</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">exit_boot_services</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_uefi_driver_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="28-coreboot-driver">28. Coreboot Driver</h1>
+<p>Langfristig unterstützt Nova auch Coreboot.</p>
+<p>Aufgaben</p>
+<ul>
+<li>CBMEM erkennen</li>
+<li>Coreboot Tables lesen</li>
+<li>Payload-Informationen übernehmen</li>
+<li>Speicherkarte bereitstellen</li>
+</ul>
+<p>Dadurch wird Nova unabhängig von proprietären Firmwarelösungen.</p>
+<hr>
+<h1 id="29-arm64-driver">29. ARM64 Driver</h1>
+<p>Für ARM64 übernimmt der Plattformtreiber</p>
+<ul>
+<li>UEFI</li>
+<li>Device Tree</li>
+<li>PSCI</li>
+<li>GIC</li>
+<li>MMU</li>
+<li>Framebuffer</li>
+</ul>
+<p>Der Boot Core bleibt unverändert.</p>
+<hr>
+<h1 id="30-opensbi-driver">30. OpenSBI Driver</h1>
+<p>Für RISC-V implementiert OpenSBI dieselbe Plattform-API.</p>
+<p>Unterstützt</p>
+<ul>
+<li>SBI Calls</li>
+<li>Device Tree</li>
+<li>Timer</li>
+<li>Console</li>
+<li>Hart Discovery</li>
+</ul>
+<hr>
+<h1 id="31-platform-driver-interface">31. Platform Driver Interface</h1>
+<p>Alle Plattformtreiber implementieren dieselbe Basisschnittstelle.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">initialize</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">shutdown</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">get_platform</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_platform_t</span><span class="o">*</span><span class="w"> </span><span class="n">platform</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_driver_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="32-plattformfahigkeiten">32. Plattformfähigkeiten</h1>
+<p>Jeder Treiber beschreibt seine Fähigkeiten.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">graphics</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">mouse</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">keyboard</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">storage</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">filesystem</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">runtime_services</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">secure_boot</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">tpm</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_capabilities_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Der Boot Core entscheidet anhand dieser Fähigkeiten,</p>
+<p>welche Funktionen genutzt werden können.</p>
+<hr>
+<h1 id="33-platform-state">33. Platform State</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_PLATFORM_CREATED</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_PLATFORM_INITIALIZED</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_PLATFORM_RUNNING</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_PLATFORM_SHUTDOWN</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_state_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Jeder Treiber durchläuft exakt diese Zustände.</p>
+<hr>
+<h1 id="34-driver-lifecycle">34. Driver Lifecycle</h1>
+<div class="codehilite"><pre><span></span><code>Detect
+
+↓
+
+Create
+
+↓
+
+Initialize
+
+↓
+
+Running
+
+↓
+
+Shutdown
+
+↓
+
+Destroy
+</code></pre></div>
+
+<p>Fehler führen unmittelbar in den Diagnosepfad.</p>
+<hr>
+<h1 id="35-fehlerbehandlung">35. Fehlerbehandlung</h1>
+<p>Kann kein passender Treiber gefunden werden,</p>
+<p>erfolgt</p>
+<div class="codehilite"><pre><span></span><code>Unknown Platform
+
+↓
+
+Recovery
+
+↓
+
+Fatal Error
+</code></pre></div>
+
+<p>Der Kernel wird in diesem Fall nicht gestartet.</p>
+<hr>
+<h1 id="36-plattforminformationen">36. Plattforminformationen</h1>
+<p>Der Platform Manager sammelt</p>
+<ul>
+<li>Firmwaretyp</li>
+<li>Firmwareversion</li>
+<li>Bootmodus</li>
+<li>Plattformname</li>
+<li>Hersteller</li>
+<li>unterstützte Funktionen</li>
+</ul>
+<p>Diese Informationen werden Bestandteil von <code>nova_boot_info_t</code>.</p>
+<hr>
+<h1 id="37-driver-registration">37. Driver Registration</h1>
+<p>Neue Plattformtreiber werden registriert.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span>
+<span class="nf">nova_platform_register</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_platform_driver_t</span><span class="o">*</span><span class="w"> </span><span class="n">driver</span><span class="p">);</span>
+</code></pre></div>
+
+<p>Der Boot Core kennt nur diese Registrierung.</p>
+<hr>
+<h1 id="38-plattformauswahl">38. Plattformauswahl</h1>
+<p>Die Auswahl erfolgt automatisch.</p>
+<div class="codehilite"><pre><span></span><code>Detect
+
+↓
+
+Match Driver
+
+↓
+
+Initialize
+
+↓
+
+Verify
+
+↓
+
+Running
+</code></pre></div>
+
+<p>Benutzerinteraktionen sind nicht erforderlich.</p>
+<hr>
+<h1 id="39-anforderungen">39. Anforderungen</h1>
+<p>Die Plattformabstraktion MUSS</p>
+<ul>
+<li>BIOS unterstützen</li>
+<li>UEFI unterstützen</li>
+<li>automatisch erkennen</li>
+<li>identische APIs bereitstellen</li>
+<li>den Boot Core vollständig von Firmwaredetails trennen</li>
+</ul>
+<hr>
+<h1 id="40-should">40. SHOULD</h1>
+<p>Die Plattformabstraktion SOLLTE</p>
+<ul>
+<li>Coreboot unterstützen</li>
+<li>ARM64 vorbereiten</li>
+<li>OpenSBI vorbereiten</li>
+<li>neue Plattformen dynamisch ergänzen können</li>
+</ul>
+<hr>
+<h1 id="41-may">41. MAY</h1>
+<p>Die Plattformabstraktion DARF</p>
+<ul>
+<li>Emulatoren speziell behandeln</li>
+<li>Testplattformen integrieren</li>
+<li>Simulationsumgebungen unterstützen</li>
+<li>Diagnose-Hooks bereitstellen</li>
+</ul>
+<hr>
+<h1 id="architekturentscheidung-adr">Architekturentscheidung (ADR)</h1>
+<p><strong>Wichtige Designentscheidung:</strong></p>
+<p>Der <strong>Nova Boot Core darf niemals BIOS- oder UEFI-spezifischen Code enthalten.</strong></p>
+<p>Alle Firmwareaufrufe müssen ausschließlich über den Platform Layer erfolgen.</p>
+<p>Dadurch bleibt Nova langfristig portierbar auf:</p>
+<ul>
+<li>x86 BIOS</li>
+<li>x86 UEFI</li>
+<li>ARM64 UEFI</li>
+<li>Coreboot</li>
+<li>RISC-V OpenSBI</li>
+<li>zukünftige Firmwareplattformen</li>
+</ul>
+<p>Diese Trennung ist eine der wichtigsten Architekturentscheidungen der gesamten Nova-Bootplattform.</p>
+<hr>
+<h1 id="42-platform-services">42. Platform Services</h1>
+<p>Der Platform Layer stellt dem Nova Boot Core eine vollständig standardisierte Laufzeitumgebung zur Verfügung.</p>
+<p>Alle Firmwarefunktionen werden über <strong>Platform Services</strong> bereitgestellt.</p>
+<div class="codehilite"><pre><span></span><code>Boot Core
+
+↓
+
+Platform Services
+
+↓
+
+Platform Driver
+
+↓
+
+Firmware
+</code></pre></div>
+
+<p>Dadurch arbeitet der Boot Core ausschließlich gegen definierte Schnittstellen.</p>
+<hr>
+<h1 id="43-servicekategorien">43. Servicekategorien</h1>
+<p>Die Platform Services werden in folgende Bereiche unterteilt.</p>
+<div class="codehilite"><pre><span></span><code>Platform Services
+├── Memory Services
+├── Storage Services
+├── Graphics Services
+├── Input Services
+├── Timer Services
+├── Console Services
+├── Firmware Services
+├── Configuration Services
+└── Runtime Services
+</code></pre></div>
+
+<p>Jede Kategorie besitzt eine eigene API.</p>
+<hr>
+<h1 id="44-service-manager">44. Service Manager</h1>
+<p>Alle Services werden durch den Platform Manager verwaltet.</p>
+<div class="codehilite"><pre><span></span><code>Platform Manager
+
+↓
+
+Service Manager
+
+↓
+
+Platform Driver
+
+↓
+
+Firmware
+</code></pre></div>
+
+<p>Der Boot Core erhält ausschließlich Referenzen auf Services.</p>
+<hr>
+<h1 id="45-service-registry">45. Service Registry</h1>
+<p>Jeder Plattformtreiber registriert seine Services.</p>
+<div class="codehilite"><pre><span></span><code>Service Registry
+
+↓
+
+Memory
+
+↓
+
+Storage
+
+↓
+
+Graphics
+
+↓
+
+Input
+
+↓
+
+Timer
+
+↓
+
+Console
+</code></pre></div>
+
+<p>Neue Services können ergänzt werden, ohne bestehende Komponenten zu verändern.</p>
+<hr>
+<h1 id="46-memory-services">46. Memory Services</h1>
+<p>Die Memory Services kapseln sämtliche firmwareabhängigen Speicherfunktionen.</p>
+<p>Unterstützt werden</p>
+<ul>
+<li>Speicherkarte</li>
+<li>Speicherreservierung</li>
+<li>Speicherattribute</li>
+<li>Seitenausrichtung</li>
+<li>Speicherprüfung</li>
+</ul>
+<hr>
+<h1 id="47-memory-service-api">47. Memory Service API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">get_memory_map</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_memory_map_t</span><span class="o">*</span><span class="w"> </span><span class="n">map</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">reserve_memory</span><span class="p">)(</span>
+<span class="w">        </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">address</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">size</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">allocate_pages</span><span class="p">)(</span>
+<span class="w">        </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">pages</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">void</span><span class="o">**</span><span class="w"> </span><span class="n">address</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_memory_service_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Die Implementierung unterscheidet sich je nach Plattform, die API bleibt identisch.</p>
+<hr>
+<h1 id="48-storage-services">48. Storage Services</h1>
+<p>Storage Services stellen den Zugriff auf Blockgeräte bereit.</p>
+<p>Unterstützt</p>
+<ul>
+<li>Datenträger öffnen</li>
+<li>Block lesen</li>
+<li>Geräte erkennen</li>
+<li>Geräteinformationen</li>
+</ul>
+<p>Der Boot Core kennt keine BIOS- oder UEFI-Datenträgerprotokolle.</p>
+<hr>
+<h1 id="49-storage-api">49. Storage API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">scan_devices</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">read_blocks</span><span class="p">)(</span>
+<span class="w">        </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">device</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">lba</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">count</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">buffer</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">device_info</span><span class="p">)(</span>
+<span class="w">        </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">device</span><span class="p">,</span>
+<span class="w">        </span><span class="n">nova_storage_info_t</span><span class="o">*</span><span class="w"> </span><span class="n">info</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_storage_service_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="50-graphics-services">50. Graphics Services</h1>
+<p>Die Graphics Services initialisieren den Grafikmodus.</p>
+<p>Unterstützt werden</p>
+<p>BIOS</p>
+<ul>
+<li>VBE</li>
+</ul>
+<p>UEFI</p>
+<ul>
+<li>GOP</li>
+</ul>
+<p>Später</p>
+<ul>
+<li>ARM Framebuffer</li>
+<li>RISC-V Framebuffer</li>
+</ul>
+<p>Alle Plattformen liefern dieselbe Framebufferstruktur.</p>
+<hr>
+<h1 id="51-graphics-api">51. Graphics API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">initialize</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_video_request_t</span><span class="o">*</span><span class="w"> </span><span class="n">request</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">framebuffer</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_framebuffer_info_t</span><span class="o">*</span><span class="w"> </span><span class="n">info</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">available_modes</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_video_mode_list_t</span><span class="o">*</span><span class="w"> </span><span class="n">list</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_graphics_service_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="52-input-services">52. Input Services</h1>
+<p>Die Input Services vereinheitlichen sämtliche Eingabegeräte.</p>
+<p>Unterstützt werden</p>
+<ul>
+<li>Tastatur</li>
+<li>Maus</li>
+<li>Touch</li>
+<li>Gamepad (optional)</li>
+</ul>
+<p>Alle Ereignisse werden in ein gemeinsames Eventmodell überführt.</p>
+<hr>
+<h1 id="53-input-api">53. Input API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">poll</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_boot_input_event_t</span><span class="o">*</span><span class="w"> </span><span class="n">event</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">flush</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_input_service_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="54-timer-services">54. Timer Services</h1>
+<p>Zeitinformationen werden unabhängig von der Plattform bereitgestellt.</p>
+<p>Unterstützte Quellen</p>
+<ul>
+<li>BIOS Tick Counter</li>
+<li>HPET</li>
+<li>PIT</li>
+<li>UEFI Timer</li>
+<li>ARM Generic Timer</li>
+<li>RISC-V Timer</li>
+</ul>
+<hr>
+<h1 id="55-timer-api">55. Timer API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">time_ns</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">ticks</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">delay_ms</span><span class="p">)(</span>
+<span class="w">        </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">ms</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_timer_service_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Alle Zeiten werden in Nanosekunden normiert.</p>
+<hr>
+<h1 id="56-console-services">56. Console Services</h1>
+<p>Die Console Services stellen Debugausgaben bereit.</p>
+<p>Unterstützt</p>
+<ul>
+<li>Textmodus</li>
+<li>VBE-Konsole</li>
+<li>GOP-Konsole</li>
+<li>Serielle Konsole</li>
+<li>Virtuelle Konsole</li>
+</ul>
+<p>Diese Services sind ausschließlich für Diagnosezwecke vorgesehen.</p>
+<hr>
+<h1 id="57-console-api">57. Console API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">write</span><span class="p">)(</span>
+<span class="w">        </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">text</span><span class="p">);</span>
+
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">clear</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">set_color</span><span class="p">)(</span>
+<span class="w">        </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">fg</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">bg</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_console_service_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="58-firmware-services">58. Firmware Services</h1>
+<p>Firmware Services kapseln allgemeine Firmwarefunktionen.</p>
+<p>Unterstützt</p>
+<ul>
+<li>Firmwareinformationen</li>
+<li>Neustart</li>
+<li>Ausschalten</li>
+<li>Runtimeinformationen</li>
+<li>Firmwarestatus</li>
+</ul>
+<hr>
+<h1 id="59-firmware-api">59. Firmware API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">firmware_info</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_platform_t</span><span class="o">*</span><span class="w"> </span><span class="n">platform</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">reboot</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">shutdown</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_firmware_service_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="60-configuration-services">60. Configuration Services</h1>
+<p>Konfigurationsdaten werden über einen gemeinsamen Dienst bereitgestellt.</p>
+<p>Unterstützt</p>
+<ul>
+<li>Bootkonfiguration</li>
+<li>Sprache</li>
+<li>Theme</li>
+<li>Standardkernel</li>
+<li>Timeout</li>
+</ul>
+<p>Alle Konfigurationen werden validiert.</p>
+<hr>
+<h1 id="61-runtime-services">61. Runtime Services</h1>
+<p>Runtime Services verwalten den Zustand des Platform Layers.</p>
+<p>Aufgaben</p>
+<ul>
+<li>Ressourcenverwaltung</li>
+<li>Dienstregistrierung</li>
+<li>Fehlerverwaltung</li>
+<li>Lebenszyklus</li>
+<li>Ereignisverteilung</li>
+</ul>
+<p>Sie bilden das Rückgrat der Plattformabstraktion.</p>
+<hr>
+<h1 id="62-ressourcenverwaltung">62. Ressourcenverwaltung</h1>
+<p>Alle Ressourcen werden zentral verwaltet.</p>
+<div class="codehilite"><pre><span></span><code>Allocate
+
+↓
+
+Use
+
+↓
+
+Transfer
+
+↓
+
+Release
+</code></pre></div>
+
+<p>Nach der Kernelübergabe werden nicht mehr benötigte Ressourcen freigegeben oder an den Kernel übergeben.</p>
+<hr>
+<h1 id="63-synchronisation">63. Synchronisation</h1>
+<p>Obwohl Stage 2 überwiegend sequentiell arbeitet, müssen Services reentrant ausgelegt sein.</p>
+<p>Ziele</p>
+<ul>
+<li>keine globalen Seiteneffekte</li>
+<li>klar definierte Zustände</li>
+<li>deterministisches Verhalten</li>
+</ul>
+<p>Dadurch wird eine spätere Parallelisierung erleichtert.</p>
+<hr>
+<h1 id="64-fehlerbehandlung">64. Fehlerbehandlung</h1>
+<p>Jeder Service liefert einen standardisierten Rückgabewert.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_OK</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_ERROR_NOT_SUPPORTED</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_ERROR_NOT_FOUND</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_ERROR_IO</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_ERROR_INVALID_PARAMETER</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_ERROR_OUT_OF_MEMORY</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_ERROR_PLATFORM</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_ERROR_FATAL</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_result_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Es werden keine firmwareabhängigen Fehlercodes nach außen weitergegeben.</p>
+<hr>
+<h1 id="65-service-discovery">65. Service Discovery</h1>
+<p>Der Boot Core kann verfügbare Dienste dynamisch abfragen.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span>
+<span class="nf">nova_platform_get_service</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_service_type_t</span><span class="w"> </span><span class="n">type</span><span class="p">,</span>
+<span class="w">    </span><span class="kt">void</span><span class="o">**</span><span class="w"> </span><span class="n">service</span><span class="p">);</span>
+</code></pre></div>
+
+<p>Dadurch müssen keine Plattformdetails bekannt sein.</p>
+<hr>
+<h1 id="66-anforderungen">66. Anforderungen</h1>
+<p>Die Platform Services MÜSSEN</p>
+<ul>
+<li>vollständig standardisiert sein</li>
+<li>plattformunabhängig arbeiten</li>
+<li>identische Datenstrukturen verwenden</li>
+<li>deterministisch arbeiten</li>
+<li>alle Firmwaredetails kapseln</li>
+</ul>
+<hr>
+<h1 id="67-should">67. SHOULD</h1>
+<p>Die Platform Services SOLLTEN</p>
+<ul>
+<li>leicht erweiterbar sein</li>
+<li>threadfähig vorbereitet sein</li>
+<li>klar dokumentiert sein</li>
+<li>vollständig testbar sein</li>
+</ul>
+<hr>
+<h1 id="68-may">68. MAY</h1>
+<p>Die Platform Services DÜRFEN</p>
+<ul>
+<li>Emulatoroptimierungen</li>
+<li>Performance-Counter</li>
+<li>Debug-Hooks</li>
+<li>zusätzliche Diagnoseinformationen</li>
+</ul>
+<p>bereitstellen, solange die öffentliche API unverändert bleibt.</p>
+<hr>
+<h1 id="architekturentscheidung-adr_1">Architekturentscheidung (ADR)</h1>
+<p>Die <strong>Platform Services</strong> bilden die einzige offizielle Schnittstelle zwischen Boot Core und Firmware.</p>
+<p>Es ist <strong>nicht zulässig</strong>, BIOS-Interrupts, UEFI-Protokolle oder andere firmwareabhängige Aufrufe außerhalb des Platform Layers zu verwenden.</p>
+<p>Diese strikte Trennung ermöglicht es, dieselbe Bootlogik künftig unverändert auf:</p>
+<ul>
+<li>x86 BIOS</li>
+<li>x86 UEFI</li>
+<li>ARM64 UEFI</li>
+<li>Coreboot</li>
+<li>RISC-V OpenSBI</li>
+</ul>
+<p>einzusetzen.</p>
+<hr>
+<h1 id="69-device-runtime">69. Device Runtime</h1>
+<p>Die Device Runtime verwaltet sämtliche während des Bootvorgangs verfügbaren Geräte.</p>
+<p>Sie stellt eine einheitliche Geräteabstraktion bereit.</p>
+<p>Der Boot Core arbeitet ausschließlich mit der Device Runtime.</p>
+<div class="codehilite"><pre><span></span><code>Boot Core
+
+↓
+
+Device Runtime
+
+↓
+
+Platform Driver
+
+↓
+
+Firmware
+</code></pre></div>
+
+<hr>
+<h1 id="70-ziele">70. Ziele</h1>
+<p>Die Device Runtime soll</p>
+<ul>
+<li>Geräte erkennen</li>
+<li>Geräte klassifizieren</li>
+<li>Geräte initialisieren</li>
+<li>Geräte verwalten</li>
+<li>Ereignisse bereitstellen</li>
+<li>Geräteinformationen sammeln</li>
+</ul>
+<p>ohne firmwareabhängigen Code.</p>
+<hr>
+<h1 id="71-geratearchitektur">71. Gerätearchitektur</h1>
+<div class="codehilite"><pre><span></span><code>Device Runtime
+├── Device Manager
+├── Keyboard Runtime
+├── Mouse Runtime
+├── Touch Runtime
+├── Console Runtime
+├── Event Queue
+└── Device Registry
+</code></pre></div>
+
+<hr>
+<h1 id="72-device-manager">72. Device Manager</h1>
+<p>Der Device Manager verwaltet sämtliche Geräte.</p>
+<p>Aufgaben</p>
+<ul>
+<li>Registrierung</li>
+<li>Initialisierung</li>
+<li>Status</li>
+<li>Aktivierung</li>
+<li>Deaktivierung</li>
+<li>Ereignisweiterleitung</li>
+</ul>
+<hr>
+<h1 id="73-gerateobjekt">73. Geräteobjekt</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_device</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">id</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_device_type_t</span><span class="w"> </span><span class="n">type</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">char</span><span class="w"> </span><span class="n">name</span><span class="p">[</span><span class="mi">64</span><span class="p">];</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">available</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">initialized</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">driver</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_device_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="74-geratetypen">74. Gerätetypen</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_DEVICE_UNKNOWN</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_KEYBOARD</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_MOUSE</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_TOUCH</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_DISPLAY</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_STORAGE</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_TIMER</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_CONSOLE</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_device_type_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="75-device-registry">75. Device Registry</h1>
+<p>Alle Geräte registrieren sich beim Device Manager.</p>
+<div class="codehilite"><pre><span></span><code>Registry
+
+↓
+
+Keyboard
+
+↓
+
+Mouse
+
+↓
+
+Display
+
+↓
+
+Storage
+
+↓
+
+Console
+</code></pre></div>
+
+<hr>
+<h1 id="76-keyboard-runtime">76. Keyboard Runtime</h1>
+<p>Die Keyboard Runtime vereinheitlicht sämtliche Tastatureingaben.</p>
+<p>Unterstützt</p>
+<p>BIOS</p>
+<ul>
+<li>INT 16h</li>
+</ul>
+<p>UEFI</p>
+<ul>
+<li>Simple Text Input</li>
+<li>Simple Text Input Ex</li>
+</ul>
+<p>Später</p>
+<ul>
+<li>USB HID</li>
+<li>Bluetooth</li>
+</ul>
+<hr>
+<h1 id="77-keyboard-event">77. Keyboard Event</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint16_t</span><span class="w"> </span><span class="n">scan_code</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">key_code</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">modifiers</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">pressed</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_keyboard_event_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="78-key-codes">78. Key Codes</h1>
+<p>Nova verwendet ein eigenes Keycode-System.</p>
+<p>Nicht direkt verwendet werden</p>
+<ul>
+<li>BIOS Scancodes</li>
+<li>UEFI Keycodes</li>
+</ul>
+<p>Diese werden intern übersetzt.</p>
+<hr>
+<h1 id="79-mouse-runtime">79. Mouse Runtime</h1>
+<p>Die Mouse Runtime unterstützt</p>
+<p>BIOS</p>
+<ul>
+<li>PS/2</li>
+</ul>
+<p>UEFI</p>
+<ul>
+<li>Simple Pointer Protocol</li>
+<li>Absolute Pointer Protocol</li>
+</ul>
+<p>Später</p>
+<ul>
+<li>USB HID</li>
+<li>Bluetooth</li>
+</ul>
+<hr>
+<h1 id="80-mouse-event">80. Mouse Event</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">int32_t</span><span class="w"> </span><span class="n">x</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">int32_t</span><span class="w"> </span><span class="n">y</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">int32_t</span><span class="w"> </span><span class="n">wheel</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">buttons</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_mouse_event_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="81-cursor">81. Cursor</h1>
+<p>Der Cursor wird vollständig durch die Graphics Runtime gezeichnet.</p>
+<p>Eigenschaften</p>
+<ul>
+<li>Software Cursor</li>
+<li>Alpha</li>
+<li>Skalierung</li>
+<li>HiDPI</li>
+<li>Animation</li>
+</ul>
+<hr>
+<h1 id="82-touch-runtime">82. Touch Runtime</h1>
+<p>Optional unterstützt Nova</p>
+<ul>
+<li>Single Touch</li>
+<li>Multi Touch</li>
+<li>Gestenerkennung</li>
+</ul>
+<p>Alle Touchereignisse werden in dasselbe Eventsystem integriert.</p>
+<hr>
+<h1 id="83-gemeinsames-eventmodell">83. Gemeinsames Eventmodell</h1>
+<p>Alle Eingaben besitzen dieselbe Struktur.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_EVENT_KEYBOARD</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_EVENT_MOUSE</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_EVENT_TOUCH</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_event_type_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="84-event-queue">84. Event Queue</h1>
+<p>Alle Ereignisse gelangen zunächst in eine zentrale Warteschlange.</p>
+<div class="codehilite"><pre><span></span><code>Device
+
+↓
+
+Event Queue
+
+↓
+
+UI
+
+↓
+
+Boot Core
+</code></pre></div>
+
+<p>Die Reihenfolge der Ereignisse bleibt erhalten.</p>
+<hr>
+<h1 id="85-eventstruktur">85. Eventstruktur</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">timestamp</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_event_type_t</span><span class="w"> </span><span class="n">type</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">union</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">        </span><span class="n">nova_keyboard_event_t</span><span class="w"> </span><span class="n">keyboard</span><span class="p">;</span>
+
+<span class="w">        </span><span class="n">nova_mouse_event_t</span><span class="w"> </span><span class="n">mouse</span><span class="p">;</span>
+
+<span class="w">        </span><span class="n">nova_touch_event_t</span><span class="w"> </span><span class="n">touch</span><span class="p">;</span>
+
+<span class="w">    </span><span class="p">};</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_boot_event_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="86-console-runtime">86. Console Runtime</h1>
+<p>Die Console Runtime dient ausschließlich</p>
+<ul>
+<li>Debug</li>
+<li>Diagnose</li>
+<li>Wartung</li>
+</ul>
+<p>Normale Benutzeroberflächen verwenden ausschließlich die Graphics Runtime.</p>
+<hr>
+<h1 id="87-konsolentypen">87. Konsolentypen</h1>
+<p>Unterstützt</p>
+<ul>
+<li>BIOS Text Mode</li>
+<li>GOP Console</li>
+<li>VBE Console</li>
+<li>Serial Console</li>
+<li>Recovery Console</li>
+</ul>
+<hr>
+<h1 id="88-console-api">88. Console API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">write</span><span class="p">)(</span>
+<span class="w">        </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">text</span><span class="p">);</span>
+
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">clear</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">set_color</span><span class="p">)(</span>
+<span class="w">        </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">foreground</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">background</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_console_runtime_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="89-device-discovery">89. Device Discovery</h1>
+<p>Nach der Plattforminitialisierung beginnt automatisch die Gerätesuche.</p>
+<div class="codehilite"><pre><span></span><code>Platform
+
+↓
+
+Graphics
+
+↓
+
+Keyboard
+
+↓
+
+Mouse
+
+↓
+
+Storage
+
+↓
+
+Console
+</code></pre></div>
+
+<p>Die Reihenfolge ist verbindlich.</p>
+<hr>
+<h1 id="90-device-capabilities">90. Device Capabilities</h1>
+<p>Jedes Gerät beschreibt seine Fähigkeiten.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">input</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">output</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">removable</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">boot_device</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">hotplug</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_device_capabilities_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="91-geratezustande">91. Gerätezustände</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_DEVICE_CREATED</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_DETECTED</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_INITIALIZED</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_ACTIVE</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_DEVICE_FAILED</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_device_state_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="92-gerateinitialisierung">92. Geräteinitialisierung</h1>
+<div class="codehilite"><pre><span></span><code>Detect
+
+↓
+
+Register
+
+↓
+
+Initialize
+
+↓
+
+Verify
+
+↓
+
+Activate
+</code></pre></div>
+
+<p>Schlägt ein Schritt fehl,</p>
+<p>erfolgt keine Aktivierung.</p>
+<hr>
+<h1 id="93-geratevalidierung">93. Gerätevalidierung</h1>
+<p>Vor der Aktivierung wird geprüft</p>
+<p>✔ Firmwareantwort gültig</p>
+<p>✔ Speicher gültig</p>
+<p>✔ Gerät verfügbar</p>
+<p>✔ Initialisierung erfolgreich</p>
+<p>✔ Ereignisse funktionsfähig</p>
+<hr>
+<h1 id="94-gerateereignisse">94. Geräteereignisse</h1>
+<p>Der Device Manager erzeugt</p>
+<ul>
+<li>Device Connected</li>
+<li>Device Ready</li>
+<li>Device Error</li>
+<li>Device Removed</li>
+<li>Device Failed</li>
+</ul>
+<p>Diese Ereignisse können vom Boot Core ausgewertet werden.</p>
+<hr>
+<h1 id="95-hotplug">95. Hotplug</h1>
+<p>Standardmäßig unterstützt Stage 2</p>
+<p>keinen vollständigen Hotplug.</p>
+<p>Ausnahmen</p>
+<ul>
+<li>
+<p>USB Recovery Stick</p>
+</li>
+<li>
+<p>externe Tastatur</p>
+</li>
+<li>
+<p>externe Maus</p>
+</li>
+</ul>
+<p>Alle anderen Geräte werden beim Start erkannt.</p>
+<hr>
+<h1 id="96-fehlerbehandlung">96. Fehlerbehandlung</h1>
+<p>Typische Fehler</p>
+<ul>
+<li>Tastatur fehlt</li>
+<li>Maus fehlt</li>
+<li>Grafik fehlt</li>
+<li>Konsole nicht verfügbar</li>
+<li>Gerät reagiert nicht</li>
+</ul>
+<p>Nicht alle Fehler verhindern den Bootvorgang.</p>
+<hr>
+<h1 id="97-anforderungen">97. Anforderungen</h1>
+<p>Die Device Runtime MUSS</p>
+<ul>
+<li>Tastatur unterstützen</li>
+<li>Maus unterstützen</li>
+<li>Event Queue besitzen</li>
+<li>Geräte registrieren</li>
+<li>Geräte validieren</li>
+<li>Console bereitstellen</li>
+</ul>
+<hr>
+<h1 id="98-should">98. SHOULD</h1>
+<p>Die Device Runtime SOLLTE</p>
+<ul>
+<li>Touch unterstützen</li>
+<li>HiDPI-Cursor besitzen</li>
+<li>USB-HID vorbereiten</li>
+<li>Emulatoren unterstützen</li>
+<li>vollständige Geräteinformationen sammeln</li>
+</ul>
+<hr>
+<h1 id="99-may">99. MAY</h1>
+<p>Die Device Runtime DARF</p>
+<ul>
+<li>Bluetooth</li>
+<li>Gamepads</li>
+<li>Grafiktabletts</li>
+<li>Fernbedienungen</li>
+<li>Spezialhardware</li>
+</ul>
+<p>unterstützen.</p>
+<hr>
+<h1 id="architekturentscheidung-adr_2">Architekturentscheidung (ADR)</h1>
+<p>Die Device Runtime bildet die <strong>Hardware Abstraction Layer (HAL)</strong> des Nova-Bootloaders.</p>
+<p>Der Boot Core arbeitet ausschließlich mit:</p>
+<ul>
+<li><code>nova_device_t</code></li>
+<li><code>nova_boot_event_t</code></li>
+<li><code>nova_device_capabilities_t</code></li>
+</ul>
+<p>und kennt keinerlei BIOS-, UEFI- oder hardwareabhängige Datenstrukturen.</p>
+<p>Dadurch bleibt die gesamte Geräteverwaltung vollständig portierbar und kann unverändert auf zukünftigen Plattformen wiederverwendet werden.</p>
+<hr>
+<h1 id="100-firmware-information-runtime">100. Firmware Information Runtime</h1>
+<p>Die Firmware Information Runtime stellt sämtliche Firmwaretabellen in einer einheitlichen Form bereit.</p>
+<p>Der Boot Core kennt weder ACPI noch SMBIOS oder Device Trees direkt.</p>
+<p>Alle Firmwaredaten werden über standardisierte Nova-Datenstrukturen bereitgestellt.</p>
+<div class="codehilite"><pre><span></span><code>Firmware
+
+↓
+
+Platform Driver
+
+↓
+
+Firmware Runtime
+
+↓
+
+Boot Core
+</code></pre></div>
+
+<hr>
+<h1 id="101-ziele">101. Ziele</h1>
+<p>Die Firmware Runtime soll</p>
+<ul>
+<li>ACPI erkennen</li>
+<li>SMBIOS erkennen</li>
+<li>PCI erkennen</li>
+<li>NUMA erkennen</li>
+<li>HPET erkennen</li>
+<li>APIC erkennen</li>
+<li>Device Trees erkennen</li>
+<li>Informationen vereinheitlichen</li>
+</ul>
+<hr>
+<h1 id="102-firmware-discovery">102. Firmware Discovery</h1>
+<p>Nach erfolgreicher Plattforminitialisierung beginnt automatisch die Suche nach Firmwaretabellen.</p>
+<div class="codehilite"><pre><span></span><code>Platform
+
+↓
+
+ACPI
+
+↓
+
+SMBIOS
+
+↓
+
+PCI
+
+↓
+
+NUMA
+
+↓
+
+HPET
+
+↓
+
+Device Tree
+
+↓
+
+Kernel
+</code></pre></div>
+
+<hr>
+<h1 id="103-acpi-runtime">103. ACPI Runtime</h1>
+<p>Die ACPI Runtime verwaltet sämtliche ACPI-Tabellen.</p>
+<p>Mindestens unterstützt</p>
+<ul>
+<li>RSDP</li>
+<li>RSDT</li>
+<li>XSDT</li>
+<li>MADT</li>
+<li>FADT</li>
+<li>HPET</li>
+<li>MCFG</li>
+<li>SRAT</li>
+<li>SLIT</li>
+<li>DSDT</li>
+<li>SSDT</li>
+</ul>
+<hr>
+<h1 id="104-acpi-manager">104. ACPI Manager</h1>
+<div class="codehilite"><pre><span></span><code>ACPI Runtime
+├── Table Scanner
+├── Parser
+├── Validator
+├── Registry
+└── Kernel Export
+</code></pre></div>
+
+<hr>
+<h1 id="105-acpi-api">105. ACPI API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">initialize</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">find_table</span><span class="p">)(</span>
+<span class="w">        </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">signature</span><span class="p">,</span>
+<span class="w">        </span><span class="kt">void</span><span class="o">**</span><span class="w"> </span><span class="n">table</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">validate</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_acpi_runtime_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="106-acpi-informationen">106. ACPI Informationen</h1>
+<p>Gesammelt werden</p>
+<ul>
+<li>Version</li>
+<li>OEM</li>
+<li>Revision</li>
+<li>Tabellen</li>
+<li>APIC</li>
+<li>HPET</li>
+<li>NUMA</li>
+<li>PCI-Konfiguration</li>
+</ul>
+<p>Diese Informationen werden später Bestandteil von <code>nova_boot_info_t</code>.</p>
+<hr>
+<h1 id="107-smbios-runtime">107. SMBIOS Runtime</h1>
+<p>Die SMBIOS Runtime liest sämtliche verfügbaren SMBIOS-Daten.</p>
+<p>Unterstützt</p>
+<ul>
+<li>BIOS</li>
+<li>Mainboard</li>
+<li>Hersteller</li>
+<li>Modell</li>
+<li>Prozessor</li>
+<li>Speicher</li>
+<li>Chassis</li>
+<li>Seriennummern (optional)</li>
+<li>UUID (optional)</li>
+</ul>
+<hr>
+<h1 id="108-smbios-api">108. SMBIOS API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">initialize</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">system</span><span class="p">)(</span>
+<span class="w">        </span><span class="n">nova_smbios_info_t</span><span class="o">*</span><span class="w"> </span><span class="n">info</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_smbios_runtime_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="109-datenschutz">109. Datenschutz</h1>
+<p>Personenbezogene Informationen dürfen nicht automatisch dauerhaft gespeichert werden.</p>
+<p>Seriennummern und UUIDs werden nur an den Kernel weitergegeben, wenn dies durch die Sicherheitsrichtlinien erlaubt ist.</p>
+<hr>
+<h1 id="110-pci-runtime">110. PCI Runtime</h1>
+<p>Die PCI Runtime erkennt sämtliche PCI-Geräte.</p>
+<p>Unterstützt</p>
+<ul>
+<li>PCI</li>
+<li>PCI-X</li>
+<li>PCI Express</li>
+</ul>
+<p>Es werden noch keine Gerätetreiber geladen.</p>
+<hr>
+<h1 id="111-pci-discovery">111. PCI Discovery</h1>
+<div class="codehilite"><pre><span></span><code>PCI Root
+
+↓
+
+Bus
+
+↓
+
+Device
+
+↓
+
+Function
+
+↓
+
+Device List
+</code></pre></div>
+
+<hr>
+<h1 id="112-pci-device">112. PCI Device</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint16_t</span><span class="w"> </span><span class="n">vendor</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint16_t</span><span class="w"> </span><span class="n">device</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">class_code</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">subclass</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">interface</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">revision</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_pci_device_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="113-pci-klassen">113. PCI Klassen</h1>
+<p>Mindestens</p>
+<ul>
+<li>Display Controller</li>
+<li>Storage Controller</li>
+<li>USB Controller</li>
+<li>Network Controller</li>
+<li>Audio Controller</li>
+<li>Bridge</li>
+<li>Memory Controller</li>
+<li>Multimedia</li>
+<li>Communication</li>
+<li>System Device</li>
+</ul>
+<hr>
+<h1 id="114-hpet-runtime">114. HPET Runtime</h1>
+<p>Falls vorhanden,</p>
+<p>wird der High Precision Event Timer erkannt.</p>
+<p>Ermittelt werden</p>
+<ul>
+<li>Basisadresse</li>
+<li>Frequenz</li>
+<li>Anzahl Timer</li>
+<li>Revision</li>
+</ul>
+<p>Der Kernel entscheidet später,</p>
+<p>ob HPET verwendet wird.</p>
+<hr>
+<h1 id="115-apic-runtime">115. APIC Runtime</h1>
+<p>Die APIC Runtime erkennt</p>
+<ul>
+<li>Local APIC</li>
+<li>IO APIC</li>
+<li>x2APIC</li>
+</ul>
+<p>Gesammelt werden</p>
+<ul>
+<li>APIC IDs</li>
+<li>Prozessoranzahl</li>
+<li>Interrupt Controller</li>
+</ul>
+<hr>
+<h1 id="116-numa-runtime">116. NUMA Runtime</h1>
+<p>Falls NUMA vorhanden ist,</p>
+<p>werden erkannt</p>
+<ul>
+<li>NUMA Nodes</li>
+<li>Speicherbereiche</li>
+<li>Prozessorzuordnung</li>
+<li>Distanzen</li>
+</ul>
+<p>Diese Informationen werden an den Kernel weitergegeben.</p>
+<hr>
+<h1 id="117-device-tree-runtime">117. Device Tree Runtime</h1>
+<p>Auf ARM64 und RISC-V unterstützt Nova zusätzlich Device Trees.</p>
+<p>Unterstützt</p>
+<ul>
+<li>Flattened Device Tree (FDT)</li>
+<li>Device Tree Blob (DTB)</li>
+</ul>
+<p>Der Boot Core verarbeitet Device Trees niemals direkt.</p>
+<hr>
+<h1 id="118-hardware-topology">118. Hardware Topology</h1>
+<p>Alle Hardwareinformationen werden in einer gemeinsamen Topologie zusammengeführt.</p>
+<div class="codehilite"><pre><span></span><code>System
+├── CPU
+├── Memory
+├── PCI
+├── Storage
+├── Graphics
+├── USB
+├── Firmware
+</code></pre></div>
+
+<hr>
+<h1 id="119-firmware-registry">119. Firmware Registry</h1>
+<p>Alle Firmwareinformationen werden registriert.</p>
+<div class="codehilite"><pre><span></span><code>Registry
+
+↓
+
+ACPI
+
+↓
+
+SMBIOS
+
+↓
+
+PCI
+
+↓
+
+NUMA
+
+↓
+
+HPET
+
+↓
+
+Device Tree
+</code></pre></div>
+
+<hr>
+<h1 id="120-firmware-snapshot">120. Firmware Snapshot</h1>
+<p>Vor dem Kernelstart erzeugt Stage 2 einen vollständigen Snapshot der Firmwareinformationen.</p>
+<p>Dieser Snapshot ist unveränderlich und wird Bestandteil von <code>nova_boot_info_t</code>.</p>
+<hr>
+<h1 id="121-firmwarestruktur">121. Firmwarestruktur</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_acpi_info_t</span><span class="w"> </span><span class="n">acpi</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_smbios_info_t</span><span class="w"> </span><span class="n">smbios</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_pci_list_t</span><span class="w"> </span><span class="n">pci</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_numa_info_t</span><span class="w"> </span><span class="n">numa</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_hpet_info_t</span><span class="w"> </span><span class="n">hpet</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_device_tree_t</span><span class="w"> </span><span class="n">device_tree</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_firmware_info_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="122-validierung">122. Validierung</h1>
+<p>Vor der Kernelübergabe werden geprüft</p>
+<p>✔ ACPI vollständig</p>
+<p>✔ SMBIOS gültig</p>
+<p>✔ PCI erfolgreich erkannt</p>
+<p>✔ HPET gültig</p>
+<p>✔ Firmwaretabellen konsistent</p>
+<p>Ungültige Tabellen werden markiert, jedoch nicht verändert.</p>
+<hr>
+<h1 id="123-ubergabe">123. Übergabe</h1>
+<p>Alle Firmwareinformationen werden ausschließlich innerhalb von</p>
+<div class="codehilite"><pre><span></span><code>nova_boot_info_t
+</code></pre></div>
+
+<p>an den Kernel übergeben.</p>
+<p>Es existieren keine plattformspezifischen Übergabemechanismen.</p>
+<hr>
+<h1 id="124-anforderungen">124. Anforderungen</h1>
+<p>Die Firmware Runtime MUSS</p>
+<ul>
+<li>ACPI unterstützen</li>
+<li>SMBIOS unterstützen</li>
+<li>PCI unterstützen</li>
+<li>Firmwaretabellen validieren</li>
+<li>alle Informationen vereinheitlichen</li>
+</ul>
+<hr>
+<h1 id="125-should">125. SHOULD</h1>
+<p>Die Firmware Runtime SOLLTE</p>
+<ul>
+<li>NUMA unterstützen</li>
+<li>HPET erkennen</li>
+<li>Device Trees unterstützen</li>
+<li>Topologieinformationen erzeugen</li>
+<li>zukünftige Firmwaretabellen leicht integrieren können</li>
+</ul>
+<hr>
+<h1 id="126-may">126. MAY</h1>
+<p>Die Firmware Runtime DARF</p>
+<ul>
+<li>CXL-Topologien</li>
+<li>ACPI 7.x</li>
+<li>zukünftige PCIe-Erweiterungen</li>
+<li>herstellerspezifische Firmwaretabellen</li>
+</ul>
+<p>unterstützen, sofern diese über standardisierte Nova-Datenstrukturen bereitgestellt werden.</p>
+<hr>
+<h1 id="architekturentscheidung-adr_3">Architekturentscheidung (ADR)</h1>
+<p>Firmwaretabellen werden im Nova-Bootloader <strong>nicht</strong> von einzelnen Komponenten ausgewertet.</p>
+<p>Stattdessen erfolgt:</p>
+<div class="codehilite"><pre><span></span><code>Firmware
+
+↓
+
+Platform Runtime
+
+↓
+
+Nova Firmware Objects
+
+↓
+
+Boot Core
+
+↓
+
+Kernel
+</code></pre></div>
+
+<p>Dadurch bleibt der Boot Core vollständig unabhängig von ACPI-, SMBIOS- oder Device-Tree-Implementierungen.</p>
+<hr>
+<h1 id="127-security-runtime">127. Security Runtime</h1>
+<p>Die <strong>Nova Platform Security Runtime</strong> bildet die Sicherheitsabstraktion zwischen Firmware und Boot Core.</p>
+<p>Sie vereinheitlicht sämtliche sicherheitsrelevanten Firmwarefunktionen.</p>
+<p>Der Boot Core arbeitet niemals direkt mit</p>
+<ul>
+<li>Secure Boot</li>
+<li>TPM</li>
+<li>PCR</li>
+<li>UEFI Security Protocols</li>
+<li>BIOS-spezifischen Sicherheitsfunktionen</li>
+</ul>
+<hr>
+<h1 id="128-ziele">128. Ziele</h1>
+<p>Die Security Runtime soll</p>
+<ul>
+<li>Secure Boot erkennen</li>
+<li>TPM erkennen</li>
+<li>Measured Boot unterstützen</li>
+<li>Signaturen prüfen</li>
+<li>Trust Store bereitstellen</li>
+<li>Sicherheitsrichtlinien anwenden</li>
+<li>Firmware Security abstrahieren</li>
+</ul>
+<hr>
+<h1 id="129-architektur">129. Architektur</h1>
+<div class="codehilite"><pre><span></span><code>Boot Core
+
+↓
+
+Security Runtime
+
+↓
+
+Platform Driver
+
+↓
+
+Firmware
+</code></pre></div>
+
+<hr>
+<h1 id="130-komponenten">130. Komponenten</h1>
+<div class="codehilite"><pre><span></span><code>Security Runtime
+├── Secure Boot Manager
+├── TPM Manager
+├── Trust Store
+├── Signature Manager
+├── Hash Manager
+├── Policy Manager
+├── Measurement Manager
+└── Runtime Security
+</code></pre></div>
+
+<hr>
+<h1 id="131-secure-boot-manager">131. Secure Boot Manager</h1>
+<p>Der Secure Boot Manager erkennt automatisch</p>
+<ul>
+<li>aktiviert</li>
+<li>deaktiviert</li>
+<li>benutzerdefiniert</li>
+<li>Audit Mode</li>
+</ul>
+<p>Er verändert niemals den Firmwarestatus.</p>
+<hr>
+<h1 id="132-secure-boot-api">132. Secure Boot API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">enabled</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">audit_mode</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">custom_mode</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">user_mode</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_secure_boot_info_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="133-tpm-runtime">133. TPM Runtime</h1>
+<p>Die TPM Runtime unterstützt</p>
+<ul>
+<li>TPM 2.0</li>
+<li>PCR</li>
+<li>Random Generator</li>
+<li>NV Storage</li>
+<li>Measurements</li>
+<li>Attestation (optional)</li>
+</ul>
+<hr>
+<h1 id="134-tpm-api">134. TPM API</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">available</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint16_t</span><span class="w"> </span><span class="n">version</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">manufacturer</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">firmware</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">owned</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_tpm_info_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="135-hash-runtime">135. Hash Runtime</h1>
+<p>Alle kryptographischen Hashes werden zentral erzeugt.</p>
+<p>Unterstützt</p>
+<ul>
+<li>SHA-256</li>
+<li>SHA-384</li>
+<li>SHA-512</li>
+<li>BLAKE3</li>
+</ul>
+<p>CRC wird ausschließlich zur Fehlererkennung verwendet.</p>
+<hr>
+<h1 id="136-signature-runtime">136. Signature Runtime</h1>
+<p>Unterstützte Verfahren</p>
+<ul>
+<li>RSA-3072</li>
+<li>RSA-4096</li>
+<li>ECDSA P-256</li>
+<li>ECDSA P-384</li>
+<li>Ed25519 (zukünftig)</li>
+</ul>
+<p>Die verwendeten Algorithmen sind versionsabhängig konfigurierbar.</p>
+<hr>
+<h1 id="137-nova-trust-store">137. Nova Trust Store</h1>
+<p>Nova besitzt einen eigenen plattformunabhängigen Trust Store.</p>
+<div class="codehilite"><pre><span></span><code>Trust Store
+├── Root Keys
+├── Intermediate Keys
+├── Signing Keys
+├── Recovery Keys
+└── Test Keys
+</code></pre></div>
+
+<p>Der Trust Store ist unabhängig von UEFI Secure Boot.</p>
+<hr>
+<h1 id="138-policy-manager">138. Policy Manager</h1>
+<p>Alle Sicherheitsrichtlinien werden zentral verwaltet.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">[security]</span>
+
+<span class="na">verify_kernel</span><span class="o">=</span><span class="s">true</span>
+
+<span class="na">verify_modules</span><span class="o">=</span><span class="s">true</span>
+
+<span class="na">verify_manifest</span><span class="o">=</span><span class="s">true</span>
+
+<span class="na">allow_unsigned</span><span class="o">=</span><span class="s">false</span>
+
+<span class="na">allow_test_keys</span><span class="o">=</span><span class="s">false</span>
+
+<span class="na">allow_debug</span><span class="o">=</span><span class="s">false</span>
+</code></pre></div>
+
+<hr>
+<h1 id="139-security-policies">139. Security Policies</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">verify_kernel</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">verify_modules</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">verify_manifest</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">require_signature</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">debug_allowed</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_security_policy_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="140-measurement-runtime">140. Measurement Runtime</h1>
+<p>Measured Boot erzeugt Messwerte für</p>
+<ul>
+<li>Stage 2</li>
+<li>Kernel</li>
+<li>Module</li>
+<li>Initramfs</li>
+<li>Manifest</li>
+<li>Konfiguration</li>
+</ul>
+<p>Die Ergebnisse können in TPM-PCRs geschrieben werden.</p>
+<hr>
+<h1 id="141-pcr-mapping">141. PCR Mapping</h1>
+<p>Empfohlene Zuordnung</p>
+<div class="codehilite"><pre><span></span><code>PCR0 Firmware
+
+PCR1 Stage1
+
+PCR2 Stage2
+
+PCR3 Manifest
+
+PCR4 Kernel
+
+PCR5 Initramfs
+
+PCR6 Module
+
+PCR7 Configuration
+</code></pre></div>
+
+<p>Diese Zuordnung bleibt architekturunabhängig.</p>
+<hr>
+<h1 id="142-runtime-services">142. Runtime Services</h1>
+<p>Unter UEFI werden Runtime Services bis <code>ExitBootServices()</code> unterstützt.</p>
+<p>Unter BIOS existieren keine vergleichbaren Runtime Services.</p>
+<p>Der Platform Layer stellt beiden Plattformen dieselbe API bereit.</p>
+<hr>
+<h1 id="143-exitbootservices">143. ExitBootServices()</h1>
+<p>Vor der Übergabe an den Kernel muss unter UEFI zwingend</p>
+<div class="codehilite"><pre><span></span><code>ExitBootServices()
+</code></pre></div>
+
+<p>erfolgreich ausgeführt werden.</p>
+<p>Ablauf:</p>
+<div class="codehilite"><pre><span></span><code>GetMemoryMap()
+
+↓
+
+Synchronisation
+
+↓
+
+ExitBootServices()
+
+↓
+
+Firmware deaktiviert
+
+↓
+
+Kernel
+</code></pre></div>
+
+<p>Nach erfolgreichem Aufruf dürfen keine UEFI-Boot-Services mehr verwendet werden.</p>
+<hr>
+<h1 id="144-bios-ubergang">144. BIOS-Übergang</h1>
+<p>Unter BIOS endet der Plattformkontext mit dem letzten BIOS-Aufruf.</p>
+<p>Danach übernimmt ausschließlich der Nova Kernel.</p>
+<p>Es werden keine BIOS-Interrupts mehr verwendet.</p>
+<hr>
+<h1 id="145-chain-of-trust">145. Chain of Trust</h1>
+<div class="codehilite"><pre><span></span><code>Firmware
+
+↓
+
+Stage 1
+
+↓
+
+Stage 2
+
+↓
+
+Manifest
+
+↓
+
+Kernel
+
+↓
+
+Module
+
+↓
+
+Userspace
+</code></pre></div>
+
+<p>Jede Ebene validiert die Integrität der nachfolgenden Ebene.</p>
+<hr>
+<h1 id="146-sicherheitsstatus">146. Sicherheitsstatus</h1>
+<p>Vor dem Kernelstart wird ein gemeinsamer Sicherheitsstatus erzeugt.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">secure_boot</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">tpm</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">measured_boot</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">trusted_kernel</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">trusted_modules</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">trusted_manifest</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_security_state_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="147-firmware-security-events">147. Firmware Security Events</h1>
+<p>Alle sicherheitsrelevanten Ereignisse werden protokolliert.</p>
+<p>Beispiele</p>
+<ul>
+<li>Secure Boot deaktiviert</li>
+<li>TPM nicht verfügbar</li>
+<li>PCR erweitert</li>
+<li>Signatur ungültig</li>
+<li>Manifest beschädigt</li>
+<li>Testschlüssel verwendet</li>
+</ul>
+<hr>
+<h1 id="148-recovery-security">148. Recovery Security</h1>
+<p>Die Recovery-Umgebung besitzt eigene Sicherheitsregeln.</p>
+<p>Sie darf</p>
+<ul>
+<li>Kernel austauschen</li>
+<li>Konfiguration reparieren</li>
+<li>Bootloader aktualisieren</li>
+</ul>
+<p>jedoch ausschließlich nach erfolgreicher Authentifizierung.</p>
+<hr>
+<h1 id="149-kryptographische-bibliothek">149. Kryptographische Bibliothek</h1>
+<p>Die Security Runtime verwendet eine gemeinsame NovaCrypto-Bibliothek.</p>
+<p>Diese stellt bereit</p>
+<ul>
+<li>Hashes</li>
+<li>Signaturen</li>
+<li>Zufallszahlen</li>
+<li>Zertifikate</li>
+<li>Schlüsselspeicher</li>
+</ul>
+<p>Alle Plattformen verwenden dieselbe Implementierung.</p>
+<hr>
+<h1 id="150-anforderungen">150. Anforderungen</h1>
+<p>Die Security Runtime MUSS</p>
+<ul>
+<li>Secure Boot erkennen</li>
+<li>TPM erkennen</li>
+<li>Trust Store bereitstellen</li>
+<li>Signaturen prüfen</li>
+<li>Richtlinien anwenden</li>
+<li>Sicherheitsstatus erzeugen</li>
+</ul>
+<hr>
+<h1 id="151-should">151. SHOULD</h1>
+<p>Die Security Runtime SOLLTE</p>
+<ul>
+<li>Measured Boot unterstützen</li>
+<li>PCRs verwalten</li>
+<li>mehrere Signaturalgorithmen unterstützen</li>
+<li>Recovery absichern</li>
+<li>zukünftige Sicherheitsstandards integrieren können</li>
+</ul>
+<hr>
+<h1 id="152-may">152. MAY</h1>
+<p>Die Security Runtime DARF</p>
+<ul>
+<li>Remote Attestation</li>
+<li>HSM</li>
+<li>FIDO2</li>
+<li>Smartcards</li>
+<li>Netzwerkbasierte Vertrauensdienste</li>
+</ul>
+<p>unterstützen, sofern diese über dieselbe öffentliche API eingebunden werden.</p>
+<hr>
+<h1 id="architekturentscheidung-adr_4">Architekturentscheidung (ADR)</h1>
+<p>Die Nova Platform Security Runtime stellt eine <strong>plattformunabhängige Sicherheitsarchitektur</strong> bereit.</p>
+<p>Der Boot Core kennt weder</p>
+<ul>
+<li>Secure Boot,</li>
+<li>TPM-Befehle,</li>
+<li>UEFI-Sicherheitsprotokolle,</li>
+<li>BIOS-Erweiterungen</li>
+</ul>
+<p>noch andere firmwareabhängige Mechanismen.</p>
+<p>Alle Sicherheitsfunktionen werden ausschließlich über standardisierte Nova-Datenstrukturen und APIs bereitgestellt.</p>
+<p>Dadurch bleibt die Sicherheitsarchitektur konsistent auf:</p>
+<ul>
+<li>x86 BIOS</li>
+<li>x86 UEFI</li>
+<li>ARM64 UEFI</li>
+<li>Coreboot</li>
+<li>RISC-V OpenSBI</li>
+</ul>
+<p>und zukünftigen Plattformen.</p>
+<hr>
+<h1 id="153-offentliche-platform-api">153. Öffentliche Platform API</h1>
+<p>Der Platform Layer stellt dem Nova Boot Core eine vollständig standardisierte API bereit.</p>
+<p>Diese API ist die einzige zulässige Kommunikationsschnittstelle zwischen Boot Core und Plattformtreibern.</p>
+<div class="codehilite"><pre><span></span><code>Boot Core
+
+↓
+
+Platform API
+
+↓
+
+Platform Driver
+
+↓
+
+Firmware
+</code></pre></div>
+
+<p>Direkte Firmwarezugriffe außerhalb dieser API sind unzulässig.</p>
+<hr>
+<h1 id="154-api-designprinzipien">154. API Designprinzipien</h1>
+<p>Die Platform API folgt den Grundsätzen</p>
+<ul>
+<li>stabil</li>
+<li>deterministisch</li>
+<li>threadfähig vorbereitet</li>
+<li>modular</li>
+<li>versionsfähig</li>
+<li>rückwärtskompatibel</li>
+</ul>
+<p>Alle Änderungen erfolgen ausschließlich über neue API-Versionen.</p>
+<hr>
+<h1 id="155-platform-runtime">155. Platform Runtime</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_platform_t</span><span class="w"> </span><span class="n">platform</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_platform_capabilities_t</span><span class="w"> </span><span class="n">capabilities</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_platform_state_t</span><span class="w"> </span><span class="n">state</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">initialize</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="w">    </span><span class="n">nova_result_t</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">shutdown</span><span class="p">)(</span><span class="kt">void</span><span class="p">);</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_runtime_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="156-service-locator">156. Service Locator</h1>
+<p>Alle Dienste werden über einen Service Locator bereitgestellt.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span>
+<span class="nf">nova_platform_get_service</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_service_type_t</span><span class="w"> </span><span class="n">type</span><span class="p">,</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="o">**</span><span class="n">service</span><span class="p">);</span>
+</code></pre></div>
+
+<p>Dadurch muss keine Komponente konkrete Implementierungen kennen.</p>
+<hr>
+<h1 id="157-service-typen">157. Service Typen</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_SERVICE_MEMORY</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_SERVICE_STORAGE</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_SERVICE_GRAPHICS</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_SERVICE_INPUT</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_SERVICE_TIMER</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_SERVICE_CONSOLE</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_SERVICE_SECURITY</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_SERVICE_FIRMWARE</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_SERVICE_CONFIGURATION</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_service_type_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="158-platform-abi">158. Platform ABI</h1>
+<p>Die Platform ABI definiert sämtliche Datenstrukturen,</p>
+<p>welche zwischen</p>
+<ul>
+<li>Platform Layer</li>
+<li>Boot Core</li>
+<li>Kernel</li>
+</ul>
+<p>ausgetauscht werden.</p>
+<p>Alle ABI-Strukturen besitzen</p>
+<ul>
+<li>Magic</li>
+<li>Version</li>
+<li>Größe</li>
+</ul>
+<hr>
+<h1 id="159-abi-header">159. ABI Header</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">magic</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint16_t</span><span class="w"> </span><span class="n">major</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint16_t</span><span class="w"> </span><span class="n">minor</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">size</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_abi_header_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Alle exportierten Strukturen beginnen mit diesem Header.</p>
+<hr>
+<h1 id="160-versionsverwaltung">160. Versionsverwaltung</h1>
+<p>Die ABI folgt Semantic Versioning.</p>
+<div class="codehilite"><pre><span></span><code>Major
+
+↓
+
+Inkompatible Änderungen
+
+Minor
+
+↓
+
+Neue Funktionen
+
+Patch
+
+↓
+
+Fehlerkorrekturen
+</code></pre></div>
+
+<hr>
+<h1 id="161-capability-system">161. Capability System</h1>
+<p>Jede Plattform beschreibt ihre Fähigkeiten.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">graphics</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">storage</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">filesystem</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">keyboard</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">mouse</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">touch</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">secure_boot</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">tpm</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">runtime_services</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">acpi</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">smbios</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">bool</span><span class="w"> </span><span class="n">pci</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_capabilities_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="162-feature-query">162. Feature Query</h1>
+<div class="codehilite"><pre><span></span><code><span class="kt">bool</span>
+<span class="nf">nova_platform_has_feature</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_platform_feature_t</span><span class="w"> </span><span class="n">feature</span><span class="p">);</span>
+</code></pre></div>
+
+<p>Der Boot Core verwendet ausschließlich diese Funktion.</p>
+<hr>
+<h1 id="163-plattformmerkmale">163. Plattformmerkmale</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_FEATURE_VBE</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_FEATURE_GOP</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_FEATURE_ACPI</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_FEATURE_SMBIOS</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_FEATURE_TPM</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_FEATURE_SECUREBOOT</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_FEATURE_MOUSE</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_FEATURE_TOUCH</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_FEATURE_RUNTIME</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_feature_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="164-fehlerbehandlung">164. Fehlerbehandlung</h1>
+<p>Alle Plattformfehler besitzen denselben Aufbau.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">code</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">component</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">severity</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">char</span><span class="w"> </span><span class="n">description</span><span class="p">[</span><span class="mi">256</span><span class="p">];</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_error_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="165-fehlerklassen">165. Fehlerklassen</h1>
+<div class="codehilite"><pre><span></span><code>INFO
+
+↓
+
+WARNING
+
+↓
+
+RECOVERABLE
+
+↓
+
+FATAL
+</code></pre></div>
+
+<p>Nur RECOVERABLE-Fehler dürfen automatisch behandelt werden.</p>
+<hr>
+<h1 id="166-fehlercodes">166. Fehlercodes</h1>
+<p>Empfohlene Bereiche</p>
+<div class="codehilite"><pre><span></span><code>1000 Firmware
+
+2000 Platform
+
+3000 Memory
+
+4000 Storage
+
+5000 Graphics
+
+6000 Input
+
+7000 Security
+
+8000 Runtime
+
+9000 Unknown
+</code></pre></div>
+
+<hr>
+<h1 id="167-platform-logger">167. Platform Logger</h1>
+<p>Der Platform Layer besitzt einen eigenen Logger.</p>
+<p>Er protokolliert</p>
+<ul>
+<li>Firmware</li>
+<li>Plattform</li>
+<li>Services</li>
+<li>Initialisierung</li>
+<li>Fehler</li>
+<li>Warnungen</li>
+</ul>
+<p>Alle Einträge werden später in das zentrale Bootlog übernommen.</p>
+<hr>
+<h1 id="168-diagnoseschnittstelle">168. Diagnoseschnittstelle</h1>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span>
+<span class="nf">nova_platform_diagnostics</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_platform_report_t</span><span class="w"> </span><span class="o">*</span><span class="n">report</span><span class="p">);</span>
+</code></pre></div>
+
+<p>Der Bericht enthält sämtliche Plattforminformationen.</p>
+<hr>
+<h1 id="169-plattformbericht">169. Plattformbericht</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_platform_t</span><span class="w"> </span><span class="n">platform</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_platform_capabilities_t</span><span class="w"> </span><span class="n">capabilities</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_platform_security_state_t</span><span class="w"> </span><span class="n">security</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">boot_time</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_platform_report_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="170-referenzimplementierung">170. Referenzimplementierung</h1>
+<p>Empfohlene Struktur</p>
+<div class="codehilite"><pre><span></span><code>platform/
+├── api/
+├── manager/
+├── runtime/
+├── services/
+├── bios/
+├── uefi/
+├── coreboot/
+├── arm64/
+├── opensbi/
+└── tests/
+</code></pre></div>
+
+<hr>
+<h1 id="171-unit-tests">171. Unit Tests</h1>
+<p>Jeder Plattformtreiber muss Unit Tests besitzen.</p>
+<p>Mindestens</p>
+<ul>
+<li>Initialisierung</li>
+<li>Speicher</li>
+<li>Grafik</li>
+<li>Datenträger</li>
+<li>Fehlerfälle</li>
+<li>Recovery</li>
+<li>Security</li>
+</ul>
+<hr>
+<h1 id="172-integrationstests">172. Integrationstests</h1>
+<p>Jede Plattform wird getestet auf</p>
+<ul>
+<li>
+<p>QEMU</p>
+</li>
+<li>
+<p>Bochs</p>
+</li>
+<li>
+<p>VirtualBox</p>
+</li>
+<li>
+<p>VMware</p>
+</li>
+<li>
+<p>Hyper-V</p>
+</li>
+<li>
+<p>reale Hardware</p>
+</li>
+</ul>
+<hr>
+<h1 id="173-regressionstests">173. Regressionstests</h1>
+<p>Vor jedem Release werden geprüft</p>
+<p>✔ ABI</p>
+<p>✔ API</p>
+<p>✔ Plattformerkennung</p>
+<p>✔ Speicherkarte</p>
+<p>✔ Grafik</p>
+<p>✔ Datenträger</p>
+<p>✔ Firmwaretabellen</p>
+<p>✔ Sicherheitsstatus</p>
+<hr>
+<h1 id="174-performance">174. Performance</h1>
+<p>Der Platform Layer soll</p>
+<ul>
+<li>
+<p>möglichst wenige Firmwareaufrufe erzeugen</p>
+</li>
+<li>
+<p>Daten zwischenspeichern</p>
+</li>
+<li>
+<p>unnötige Initialisierungen vermeiden</p>
+</li>
+<li>
+<p>Ressourcen effizient verwalten</p>
+</li>
+</ul>
+<hr>
+<h1 id="175-dokumentationsstandard">175. Dokumentationsstandard</h1>
+<p>Jeder öffentliche API-Aufruf wird dokumentiert.</p>
+<p>Mindestens</p>
+<div class="codehilite"><pre><span></span><code><span class="cm">/*</span>
+<span class="cm"> Zweck</span>
+
+<span class="cm"> Parameter</span>
+
+<span class="cm"> Rückgabewert</span>
+
+<span class="cm"> Fehler</span>
+
+<span class="cm"> Seiteneffekte</span>
+
+<span class="cm"> Thread Safety</span>
+
+<span class="cm"> Bemerkungen</span>
+<span class="cm">*/</span>
+</code></pre></div>
+
+<hr>
+<h1 id="176-kompatibilitat">176. Kompatibilität</h1>
+<p>Die Platform API garantiert</p>
+<ul>
+<li>
+<p>ABI-Kompatibilität</p>
+</li>
+<li>
+<p>API-Kompatibilität</p>
+</li>
+<li>
+<p>Datenstrukturkompatibilität</p>
+</li>
+</ul>
+<p>zwischen allen Nova-Versionen derselben Hauptversion.</p>
+<hr>
+<h1 id="177-anforderungen">177. Anforderungen</h1>
+<p>Die Platform API MUSS</p>
+<ul>
+<li>
+<p>vollständig dokumentiert sein</p>
+</li>
+<li>
+<p>versioniert werden</p>
+</li>
+<li>
+<p>ABI-stabil sein</p>
+</li>
+<li>
+<p>testbar sein</p>
+</li>
+<li>
+<p>deterministisch arbeiten</p>
+</li>
+</ul>
+<hr>
+<h1 id="178-should">178. SHOULD</h1>
+<p>Die Platform API SOLLTE</p>
+<ul>
+<li>
+<p>zukünftige Plattformen unterstützen</p>
+</li>
+<li>
+<p>dynamisch erweitert werden können</p>
+</li>
+<li>
+<p>leicht portierbar bleiben</p>
+</li>
+</ul>
+<hr>
+<h1 id="179-may">179. MAY</h1>
+<p>Die Platform API DARF</p>
+<ul>
+<li>
+<p>experimentelle Erweiterungen</p>
+</li>
+<li>
+<p>Debug-Schnittstellen</p>
+</li>
+<li>
+<p>Emulatorfunktionen</p>
+</li>
+</ul>
+<p>bereitstellen.</p>
+<p>Diese dürfen jedoch niemals Bestandteil der stabilen ABI werden.</p>
+<hr>
+<h1 id="architekturentscheidung-adr_5">Architekturentscheidung (ADR)</h1>
+<p>Die Platform API ist eine der stabilsten Schnittstellen des gesamten Nova-Systems.</p>
+<p>Änderungen an dieser API wirken sich unmittelbar auf</p>
+<ul>
+<li>den Bootloader,</li>
+<li>den Kernel,</li>
+<li>Diagnosewerkzeuge,</li>
+<li>Recovery,</li>
+<li>Tests</li>
+</ul>
+<p>aus.</p>
+<p>Daher sind inkompatible Änderungen ausschließlich mit einer neuen Major-Version zulässig.</p>
+<hr>
+<h1 id="180-referenzimplementierung">180. Referenzimplementierung</h1>
+<p>Die Referenzimplementierung beschreibt den empfohlenen Aufbau der gesamten Plattformabstraktion.</p>
+<p>Jede unterstützte Plattform implementiert dieselben öffentlichen Schnittstellen.</p>
+<div class="codehilite"><pre><span></span><code>Nova Boot Core
+
+↓
+
+Platform API
+
+↓
+
+Platform Runtime
+
+↓
+
+Platform Driver
+
+↓
+
+Firmware
+</code></pre></div>
+
+<p>Dadurch bleibt der Boot Core unabhängig von der zugrunde liegenden Firmware.</p>
+<hr>
+<h1 id="181-referenzprojektstruktur">181. Referenzprojektstruktur</h1>
+<div class="codehilite"><pre><span></span><code>boot/
+└── platform/
+    ├── api/
+    │   ├── platform.h
+    │   ├── services.h
+    │   ├── security.h
+    │   ├── firmware.h
+    │   └── runtime.h
+    │
+    ├── core/
+    │   ├── manager.c
+    │   ├── registry.c
+    │   ├── runtime.c
+    │   ├── services.c
+    │   └── diagnostics.c
+    │
+    ├── bios/
+    │   ├── bios.c
+    │   ├── bios_disk.c
+    │   ├── bios_video.c
+    │   ├── bios_keyboard.c
+    │   └── bios_memory.c
+    │
+    ├── uefi/
+    │   ├── uefi.c
+    │   ├── gop.c
+    │   ├── blockio.c
+    │   ├── filesystem.c
+    │   └── runtime.c
+    │
+    ├── coreboot/
+    ├── arm64/
+    ├── opensbi/
+    │
+    ├── tests/
+    └── docs/
+</code></pre></div>
+
+<p>Diese Struktur dient als Referenz für alle Nova-Bootplattformen.</p>
+<hr>
+<h1 id="182-initialisierungsablauf">182. Initialisierungsablauf</h1>
+<p>Der Platform Manager folgt einem festen Ablauf.</p>
+<div class="codehilite"><pre><span></span><code>Boot Start
+
+↓
+
+Detect Firmware
+
+↓
+
+Create Driver
+
+↓
+
+Register Services
+
+↓
+
+Initialize Services
+
+↓
+
+Validate
+
+↓
+
+Ready
+
+↓
+
+Boot Core
+</code></pre></div>
+
+<p>Dieser Ablauf ist für alle Plattformen identisch.</p>
+<hr>
+<h1 id="183-plattformwechsel">183. Plattformwechsel</h1>
+<p>Der Boot Core darf niemals erkennen,</p>
+<p>welcher Plattformtreiber aktiv ist.</p>
+<p>Beispiel</p>
+<div class="codehilite"><pre><span></span><code>BIOS
+
+↓
+
+Platform API
+
+↓
+
+Boot Core
+</code></pre></div>
+
+<p>und</p>
+<div class="codehilite"><pre><span></span><code>UEFI
+
+↓
+
+Platform API
+
+↓
+
+Boot Core
+</code></pre></div>
+
+<p>führen exakt zum gleichen Verhalten.</p>
+<hr>
+<h1 id="184-kompatibilitatsmatrix">184. Kompatibilitätsmatrix</h1>
+<table>
+<thead>
+<tr>
+<th>Plattform</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BIOS Legacy</td>
+<td>Pflicht</td>
+</tr>
+<tr>
+<td>UEFI x64</td>
+<td>Pflicht</td>
+</tr>
+<tr>
+<td>UEFI IA32</td>
+<td>Optional</td>
+</tr>
+<tr>
+<td>ARM64 UEFI</td>
+<td>Geplant</td>
+</tr>
+<tr>
+<td>Coreboot</td>
+<td>Geplant</td>
+</tr>
+<tr>
+<td>OpenSBI</td>
+<td>Geplant</td>
+</tr>
+<tr>
+<td>Emulatoren</td>
+<td>Pflicht</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h1 id="185-unterstutzte-emulatoren">185. Unterstützte Emulatoren</h1>
+<p>Die Plattform muss mindestens getestet werden auf</p>
+<ul>
+<li>QEMU</li>
+<li>Bochs</li>
+<li>VirtualBox</li>
+<li>VMware</li>
+<li>Hyper-V</li>
+</ul>
+<p>Zusätzlich soll regelmäßig auf echter Hardware getestet werden.</p>
+<hr>
+<h1 id="186-qualitatsanforderungen">186. Qualitätsanforderungen</h1>
+<p>Der Platform Layer MUSS</p>
+<p>✔ deterministisch sein</p>
+<p>✔ vollständig dokumentiert sein</p>
+<p>✔ modular aufgebaut sein</p>
+<p>✔ reproduzierbare Builds erzeugen</p>
+<p>✔ ABI-stabil bleiben</p>
+<p>✔ plattformneutral arbeiten</p>
+<p>✔ keine Firmwaredetails nach außen geben</p>
+<hr>
+<h1 id="187-performanceziele">187. Performanceziele</h1>
+<p>Die Plattformabstraktion soll</p>
+<ul>
+<li>Initialisierung &lt; 50 ms</li>
+<li>minimale Firmwareaufrufe</li>
+<li>keine unnötigen Speicherkopien</li>
+<li>keine blockierenden Warteschleifen</li>
+<li>deterministische Antwortzeiten</li>
+</ul>
+<p>erreichen.</p>
+<hr>
+<h1 id="188-fehlertoleranz">188. Fehlertoleranz</h1>
+<p>Bei Fehlern gilt folgende Reihenfolge.</p>
+<div class="codehilite"><pre><span></span><code>Retry
+
+↓
+
+Fallback
+
+↓
+
+Recovery
+
+↓
+
+Fatal Error
+</code></pre></div>
+
+<p>Der Platform Layer darf niemals undefiniertes Verhalten erzeugen.</p>
+<hr>
+<h1 id="189-erweiterbarkeit">189. Erweiterbarkeit</h1>
+<p>Neue Plattformen werden ausschließlich durch neue Treiber ergänzt.</p>
+<p>Beispiel</p>
+<div class="codehilite"><pre><span></span><code>Platform Driver
+
+↓
+
+LoongArch
+
+↓
+
+Boot Core
+
+keine Änderung
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>Platform Driver
+
+↓
+
+PowerPC
+
+↓
+
+Boot Core
+
+keine Änderung
+</code></pre></div>
+
+<hr>
+<h1 id="190-beziehungen-zu-anderen-npspecs">190. Beziehungen zu anderen NPSPECs</h1>
+<p>Diese Spezifikation bildet die Grundlage für</p>
+<ul>
+<li>NPSPEC-BOOTSTAGE2-0001</li>
+<li>NPSPEC-BOOTMEMORY-0001</li>
+<li>NPSPEC-BOOTGRAPHICS-0001</li>
+<li>NPSPEC-BOOTINPUT-0001</li>
+<li>NPSPEC-BOOTFS-0001</li>
+<li>NPSPEC-KERNELLOADER-0001</li>
+<li>NPSPEC-BOOTHANDOFF-0001</li>
+<li>NPSPEC-BOOTSECURITY-0001</li>
+<li>NPSPEC-BOOTRECOVERY-0001</li>
+</ul>
+<p>Alle diese Dokumente verwenden ausschließlich die hier definierten Platform Services.</p>
+<hr>
+<h1 id="191-implementierungsphasen">191. Implementierungsphasen</h1>
+<h2 id="phase-1">Phase 1</h2>
+<ul>
+<li>BIOS Driver</li>
+<li>Platform Manager</li>
+<li>Memory Services</li>
+<li>Storage Services</li>
+</ul>
+<hr>
+<h2 id="phase-2">Phase 2</h2>
+<ul>
+<li>UEFI Driver</li>
+<li>GOP</li>
+<li>Runtime Services</li>
+<li>ExitBootServices()</li>
+</ul>
+<hr>
+<h2 id="phase-3">Phase 3</h2>
+<ul>
+<li>Security Runtime</li>
+<li>TPM</li>
+<li>Secure Boot</li>
+<li>Trust Store</li>
+</ul>
+<hr>
+<h2 id="phase-4">Phase 4</h2>
+<ul>
+<li>Coreboot</li>
+<li>ARM64</li>
+<li>OpenSBI</li>
+</ul>
+<hr>
+<h2 id="phase-5">Phase 5</h2>
+<ul>
+<li>Optimierungen</li>
+<li>Diagnose</li>
+<li>Performance</li>
+<li>Regressionstests</li>
+</ul>
+<hr>
+<h1 id="192-akzeptanzkriterien">192. Akzeptanzkriterien</h1>
+<p>Die Spezifikation gilt als umgesetzt, wenn</p>
+<ol>
+<li>BIOS automatisch erkannt wird.</li>
+<li>UEFI automatisch erkannt wird.</li>
+<li>Alle Platform Services verfügbar sind.</li>
+<li>Boot Core keine Firmwaredetails kennt.</li>
+<li>Sämtliche Firmwarezugriffe ausschließlich über den Platform Layer erfolgen.</li>
+<li>ACPI, SMBIOS und PCI erfolgreich erkannt werden.</li>
+<li>VBE und GOP über dieselbe API bereitgestellt werden.</li>
+<li>Einheitliche Fehlercodes verwendet werden.</li>
+<li>Die ABI versioniert ist.</li>
+<li>Die Plattform auf virtueller und realer Hardware erfolgreich getestet wurde.</li>
+</ol>
+<hr>
+<h1 id="193-langfristige-roadmap">193. Langfristige Roadmap</h1>
+<p>Version 1.x</p>
+<ul>
+<li>BIOS</li>
+<li>UEFI</li>
+<li>ACPI</li>
+<li>GOP</li>
+<li>TPM</li>
+</ul>
+<p>Version 2.x</p>
+<ul>
+<li>ARM64</li>
+<li>Coreboot</li>
+<li>Device Tree</li>
+<li>Erweiterte Sicherheitsfunktionen</li>
+</ul>
+<p>Version 3.x</p>
+<ul>
+<li>RISC-V</li>
+<li>OpenSBI</li>
+<li>Mehrplattform-Builds</li>
+<li>Verteilte Bootdiagnose</li>
+</ul>
+<p>Version 4.x</p>
+<ul>
+<li>Neue Firmwarestandards</li>
+<li>CXL-Unterstützung</li>
+<li>Erweiterte Hardwaretopologie</li>
+<li>Hotplug-Unterstützung im Bootloader</li>
+</ul>
+<hr>
+<h1 id="194-zusammenfassung">194. Zusammenfassung</h1>
+<p>Die <strong>Nova Boot Platform Abstraction</strong> trennt den Boot Core vollständig von der Firmware.</p>
+<p>Dadurch entstehen folgende Vorteile:</p>
+<ul>
+<li>Portierbarkeit</li>
+<li>Wartbarkeit</li>
+<li>Testbarkeit</li>
+<li>Erweiterbarkeit</li>
+<li>Wiederverwendbarkeit</li>
+<li>Plattformunabhängigkeit</li>
+</ul>
+<p>Alle zukünftigen Plattformen können durch die Implementierung eines neuen Platform Drivers integriert werden, ohne dass Änderungen am Boot Core erforderlich sind.</p>
+<hr>
+<h1 id="195-langfristige-vision">195. Langfristige Vision</h1>
+<p>Die Platform Abstraction ist nicht nur eine technische Hilfsschicht, sondern eine Kernkomponente der Nova-Architektur.</p>
+<p>Sie verfolgt das Ziel, dass Nova Boot Core, Kernel und darüberliegende Systemkomponenten unabhängig von der zugrunde liegenden Firmware oder Prozessorarchitektur arbeiten können.</p>
+<p>Langfristig soll dieselbe Plattform-API auf folgenden Architekturen verfügbar sein:</p>
+<ul>
+<li>x86 (BIOS und UEFI)</li>
+<li>ARM64</li>
+<li>RISC-V</li>
+<li>LoongArch</li>
+<li>PowerPC</li>
+<li>zukünftige Plattformen</li>
+</ul>
+<p>Dadurch entsteht eine stabile, langlebige Grundlage, auf der Nova OS über viele Hardwaregenerationen hinweg weiterentwickelt werden kann.</p>
+<hr>
+<h1 id="196-architekturprinzipien">196. Architekturprinzipien</h1>
+<p>Die Entwicklung der Platform Abstraction folgt dauerhaft diesen Grundsätzen:</p>
+<ul>
+<li><strong>API vor Implementierung</strong> – Alle Funktionen werden zuerst spezifiziert, anschließend implementiert.</li>
+<li><strong>Abstraktion statt Spezialfälle</strong> – Plattformabhängigkeiten werden gekapselt, nicht im Boot Core verteilt.</li>
+<li><strong>Determinismus</strong> – Identische Eingaben erzeugen identische Ergebnisse.</li>
+<li><strong>Stabile ABI</strong> – Änderungen erfolgen nur kontrolliert und versioniert.</li>
+<li><strong>Modularität</strong> – Neue Plattformen werden durch Erweiterung, nicht durch Umbau integriert.</li>
+<li><strong>Testbarkeit</strong> – Jede Plattformkomponente muss isoliert geprüft werden können.</li>
+</ul>
+<p>Diese Prinzipien gelten für alle zukünftigen Erweiterungen der Nova Boot Platform.</p>
+                </div>
+            </article>
+            
+        </div>
+    </main>
+
+    <a
+        class="back-to-top"
+        id="backToTop"
+        href="#top"
+        title="Nach oben"
+        aria-label="Nach oben"
+    >
+        ↑
+    </a>
+
+    <script>
+        const navigation = document.getElementById("toc");
+        const overlay = document.getElementById("overlay");
+        const backToTop = document.getElementById("backToTop");
+
+        function toggleNavigation() {
+            navigation.classList.toggle("open");
+            overlay.classList.toggle("visible");
+        }
+
+        function closeNavigation() {
+            navigation.classList.remove("open");
+            overlay.classList.remove("visible");
+        }
+
+        document.querySelectorAll(".toc a").forEach((link) => {
+            link.addEventListener("click", () => {
+                if (window.innerWidth <= 900) {
+                    closeNavigation();
+                }
+            });
+        });
+
+        window.addEventListener("scroll", () => {
+            if (window.scrollY > 500) {
+                backToTop.classList.add("visible");
+            } else {
+                backToTop.classList.remove("visible");
+            }
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                closeNavigation();
+            }
+        });
+    </script>
+</body>
+</html>

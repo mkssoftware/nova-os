@@ -1,0 +1,4385 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="color-scheme"
+        content="dark"
+    >
+
+    <title>NPSPEC BOOTSTAGE1 0001</title>
+
+    <style>
+        :root {
+            color-scheme: dark;
+
+            --background: #0c0c0c;
+            --background-secondary: #111111;
+            --surface: rgba(32, 32, 32, 0.82);
+            --surface-solid: #202020;
+            --surface-hover: rgba(255, 255, 255, 0.075);
+            --surface-active: rgba(255, 255, 255, 0.11);
+
+            --border: rgba(255, 255, 255, 0.085);
+            --border-strong: rgba(255, 255, 255, 0.15);
+
+            --text: #ffffff;
+            --text-secondary: #c8c8c8;
+            --text-muted: #8f8f8f;
+
+            --accent: #60cdff;
+            --accent-hover: #86d8ff;
+            --accent-muted: rgba(96, 205, 255, 0.15);
+
+            --success: #6ccb5f;
+            --warning: #fce100;
+            --danger: #ff99a4;
+
+            --code-background: #151515;
+            --inline-code-background: rgba(255, 255, 255, 0.08);
+
+            --sidebar-width: 320px;
+            --header-height: 64px;
+
+            --radius-small: 6px;
+            --radius-medium: 10px;
+            --radius-large: 14px;
+
+            --shadow:
+                0 16px 38px rgba(0, 0, 0, 0.40),
+                0 2px 8px rgba(0, 0, 0, 0.30);
+
+            --font:
+                "Segoe UI Variable",
+                "Segoe UI",
+                system-ui,
+                -apple-system,
+                BlinkMacSystemFont,
+                sans-serif;
+
+            --mono-font:
+                "Cascadia Code",
+                "Cascadia Mono",
+                "Consolas",
+                monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: calc(var(--header-height) + 24px);
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(
+                    circle at 15% 0%,
+                    rgba(96, 205, 255, 0.08),
+                    transparent 34rem
+                ),
+                radial-gradient(
+                    circle at 100% 40%,
+                    rgba(120, 90, 255, 0.055),
+                    transparent 30rem
+                ),
+                var(--background);
+
+            color: var(--text);
+            font-family: var(--font);
+            font-size: 15px;
+            line-height: 1.65;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            color: var(--accent-hover);
+            text-decoration: underline;
+        }
+
+        button,
+        input {
+            font: inherit;
+        }
+
+        .app-header {
+            position: fixed;
+            top: 0;
+            right: 0;
+            left: 0;
+            z-index: 1000;
+
+            height: var(--header-height);
+
+            display: flex;
+            align-items: center;
+            gap: 14px;
+
+            padding: 0 20px;
+
+            background: rgba(20, 20, 20, 0.78);
+            border-bottom: 1px solid var(--border);
+
+            backdrop-filter: blur(30px) saturate(150%);
+            -webkit-backdrop-filter: blur(30px) saturate(150%);
+        }
+
+        .menu-button,
+        .header-button,
+        .toc-close {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--text);
+
+            border-radius: var(--radius-small);
+            cursor: pointer;
+
+            transition:
+                background 120ms ease,
+                border-color 120ms ease,
+                transform 120ms ease;
+        }
+
+        .menu-button {
+            width: 38px;
+            height: 38px;
+            font-size: 20px;
+        }
+
+        .header-button {
+            min-height: 36px;
+            padding: 7px 13px;
+        }
+
+        .menu-button:hover,
+        .header-button:hover,
+        .toc-close:hover {
+            background: var(--surface-hover);
+            border-color: var(--border-strong);
+        }
+
+        .menu-button:active,
+        .header-button:active,
+        .toc-close:active {
+            background: var(--surface-active);
+            transform: scale(0.97);
+        }
+
+        .app-title-area {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .app-title {
+            overflow: hidden;
+            margin: 0;
+
+            color: var(--text);
+            font-size: 16px;
+            font-weight: 600;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .app-subtitle {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .toc {
+            position: fixed;
+            top: var(--header-height);
+            bottom: 0;
+            left: 0;
+            z-index: 900;
+
+            width: var(--sidebar-width);
+
+            background: rgba(24, 24, 24, 0.86);
+            border-right: 1px solid var(--border);
+
+            backdrop-filter: blur(35px) saturate(145%);
+            -webkit-backdrop-filter: blur(35px) saturate(145%);
+
+            transition: transform 180ms ease;
+        }
+
+        .toc-header {
+            height: 58px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            padding: 0 16px 0 20px;
+
+            border-bottom: 1px solid var(--border);
+        }
+
+        .toc-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .toc-close {
+            display: none;
+            width: 34px;
+            height: 34px;
+            font-size: 22px;
+        }
+
+        .toc-content {
+            height: calc(100% - 58px);
+            overflow-y: auto;
+            padding: 12px 10px 24px;
+        }
+
+        .toc-document {
+            margin-bottom: 5px;
+        }
+
+        .toc-document-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+
+            min-height: 38px;
+            padding: 8px 10px;
+
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 600;
+
+            border-radius: var(--radius-small);
+        }
+
+        .toc-document-link:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-document-icon {
+            color: var(--accent);
+        }
+
+        .toc-headings {
+            margin: 2px 0 8px 18px;
+            padding-left: 12px;
+            border-left: 1px solid var(--border);
+        }
+
+        .toc-heading {
+            display: block;
+
+            padding: 4px 8px;
+
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.4;
+
+            border-radius: 4px;
+        }
+
+        .toc-heading:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-level-1 {
+            font-weight: 600;
+        }
+
+        .toc-level-2 {
+            padding-left: 14px;
+        }
+
+        .toc-level-3 {
+            padding-left: 22px;
+        }
+
+        .toc-level-4,
+        .toc-level-5,
+        .toc-level-6 {
+            padding-left: 30px;
+        }
+
+        .app-main {
+            min-height: 100vh;
+
+            margin-left: var(--sidebar-width);
+            padding:
+                calc(var(--header-height) + 32px)
+                clamp(20px, 4vw, 64px)
+                80px;
+        }
+
+        .content-container {
+            width: min(100%, 1080px);
+            margin: 0 auto;
+        }
+
+        .hero {
+            margin-bottom: 32px;
+            padding: 28px 30px;
+
+            background:
+                linear-gradient(
+                    135deg,
+                    rgba(96, 205, 255, 0.12),
+                    rgba(255, 255, 255, 0.035)
+                ),
+                var(--surface);
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .hero-label {
+            margin-bottom: 7px;
+
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 600;
+
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .hero h1 {
+            margin: 0;
+
+            font-size: clamp(28px, 4vw, 44px);
+            font-weight: 650;
+            line-height: 1.12;
+            letter-spacing: -0.03em;
+        }
+
+        .hero-description {
+            margin: 14px 0 0;
+            color: var(--text-secondary);
+        }
+
+        .hero-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+
+            margin-top: 20px;
+        }
+
+        .meta-item {
+            padding: 6px 10px;
+
+            color: var(--text-secondary);
+            font-size: 12px;
+
+            background: rgba(0, 0, 0, 0.20);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+        }
+
+        .markdown-document {
+            margin-bottom: 32px;
+            overflow: hidden;
+
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+        }
+
+        .document-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+
+            padding: 20px 24px;
+
+            background: rgba(255, 255, 255, 0.025);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .document-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+            flex: 0 0 auto;
+
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 700;
+
+            background: var(--accent-muted);
+            border: 1px solid rgba(96, 205, 255, 0.20);
+            border-radius: 10px;
+        }
+
+        .document-title-area {
+            min-width: 0;
+        }
+
+        .document-title {
+            overflow: hidden;
+            margin: 0;
+
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.3;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .document-path {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .markdown-content {
+            padding: clamp(24px, 5vw, 52px);
+        }
+
+        .markdown-content > :first-child {
+            margin-top: 0;
+        }
+
+        .markdown-content > :last-child {
+            margin-bottom: 0;
+        }
+
+        .markdown-content h1,
+        .markdown-content h2,
+        .markdown-content h3,
+        .markdown-content h4,
+        .markdown-content h5,
+        .markdown-content h6 {
+            position: relative;
+
+            margin-top: 1.8em;
+            margin-bottom: 0.65em;
+
+            color: var(--text);
+            font-weight: 600;
+            line-height: 1.28;
+
+            letter-spacing: -0.015em;
+        }
+
+        .markdown-content h1 {
+            padding-bottom: 12px;
+            font-size: 30px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h2 {
+            padding-bottom: 9px;
+            font-size: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h3 {
+            font-size: 20px;
+        }
+
+        .markdown-content h4 {
+            font-size: 17px;
+        }
+
+        .markdown-content h5 {
+            font-size: 15px;
+        }
+
+        .markdown-content h6 {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .markdown-content p {
+            margin: 0.85em 0;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .markdown-content ul,
+        .markdown-content ol {
+            margin: 0.8em 0;
+            padding-left: 1.8em;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content li {
+            margin: 0.35em 0;
+        }
+
+        .markdown-content li::marker {
+            color: var(--accent);
+        }
+
+        .markdown-content blockquote {
+            margin: 1.2em 0;
+            padding: 14px 18px;
+
+            color: var(--text-secondary);
+
+            background: rgba(96, 205, 255, 0.07);
+            border: 1px solid rgba(96, 205, 255, 0.13);
+            border-left: 4px solid var(--accent);
+            border-radius: 0 var(--radius-medium) var(--radius-medium) 0;
+        }
+
+        .markdown-content blockquote p {
+            margin: 0.4em 0;
+        }
+
+        .markdown-content code {
+            padding: 0.15em 0.4em;
+
+            color: #f4f4f4;
+            font-family: var(--mono-font);
+            font-size: 0.9em;
+
+            background: var(--inline-code-background);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+        }
+
+        .markdown-content pre {
+            position: relative;
+
+            max-width: 100%;
+            overflow: auto;
+
+            margin: 1.2em 0;
+            padding: 18px;
+
+            background: var(--code-background);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.025),
+                0 8px 20px rgba(0, 0, 0, 0.18);
+        }
+
+        .markdown-content pre code {
+            display: block;
+            min-width: max-content;
+            padding: 0;
+
+            color: #e6e6e6;
+            font-size: 13px;
+            line-height: 1.55;
+
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+        }
+
+        /* Syntaxfarben für Pygments / Markdown codehilite */
+        .markdown-content .codehilite .hll { background: #3a3520; }
+        .markdown-content .codehilite .c,
+        .markdown-content .codehilite .ch,
+        .markdown-content .codehilite .cm,
+        .markdown-content .codehilite .c1,
+        .markdown-content .codehilite .cs { color: #6a9955; font-style: italic; }
+        .markdown-content .codehilite .k,
+        .markdown-content .codehilite .kc,
+        .markdown-content .codehilite .kd,
+        .markdown-content .codehilite .kn,
+        .markdown-content .codehilite .kp,
+        .markdown-content .codehilite .kr,
+        .markdown-content .codehilite .kt { color: #c586c0; }
+        .markdown-content .codehilite .n { color: #d4d4d4; }
+        .markdown-content .codehilite .na { color: #9cdcfe; }
+        .markdown-content .codehilite .nb,
+        .markdown-content .codehilite .bp { color: #4ec9b0; }
+        .markdown-content .codehilite .nc,
+        .markdown-content .codehilite .nd,
+        .markdown-content .codehilite .ne,
+        .markdown-content .codehilite .nf { color: #dcdcaa; }
+        .markdown-content .codehilite .nn { color: #4ec9b0; }
+        .markdown-content .codehilite .nv,
+        .markdown-content .codehilite .vc,
+        .markdown-content .codehilite .vg,
+        .markdown-content .codehilite .vi { color: #9cdcfe; }
+        .markdown-content .codehilite .o,
+        .markdown-content .codehilite .ow { color: #d4d4d4; }
+        .markdown-content .codehilite .m,
+        .markdown-content .codehilite .mb,
+        .markdown-content .codehilite .mf,
+        .markdown-content .codehilite .mh,
+        .markdown-content .codehilite .mi,
+        .markdown-content .codehilite .mo,
+        .markdown-content .codehilite .il { color: #b5cea8; }
+        .markdown-content .codehilite .s,
+        .markdown-content .codehilite .sa,
+        .markdown-content .codehilite .sb,
+        .markdown-content .codehilite .sc,
+        .markdown-content .codehilite .dl,
+        .markdown-content .codehilite .sd,
+        .markdown-content .codehilite .s1,
+        .markdown-content .codehilite .s2,
+        .markdown-content .codehilite .se,
+        .markdown-content .codehilite .sh,
+        .markdown-content .codehilite .si,
+        .markdown-content .codehilite .sx,
+        .markdown-content .codehilite .sr,
+        .markdown-content .codehilite .ss { color: #ce9178; }
+        .markdown-content .codehilite .p { color: #d4d4d4; }
+        .markdown-content .codehilite .gd { color: #f48771; }
+        .markdown-content .codehilite .gi { color: #89d185; }
+        .markdown-content .codehilite .gh,
+        .markdown-content .codehilite .gu { color: #569cd6; font-weight: 600; }
+        .markdown-content .codehilite .err { color: #f44747; }
+
+        .markdown-content hr {
+            margin: 2em 0;
+            border: 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .markdown-content img {
+            display: block;
+
+            max-width: 100%;
+            height: auto;
+            margin: 1.4em auto;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow: var(--shadow);
+        }
+
+        .markdown-content table {
+            width: 100%;
+            margin: 1.3em 0;
+
+            overflow: hidden;
+            border-collapse: separate;
+            border-spacing: 0;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+        }
+
+        .markdown-content th,
+        .markdown-content td {
+            padding: 11px 13px;
+            text-align: left;
+            vertical-align: top;
+
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content th {
+            color: var(--text);
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .markdown-content td {
+            color: var(--text-secondary);
+            background: rgba(0, 0, 0, 0.10);
+        }
+
+        .markdown-content tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .markdown-content th:last-child,
+        .markdown-content td:last-child {
+            border-right: 0;
+        }
+
+        .markdown-content input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin-right: 6px;
+            accent-color: var(--accent);
+            vertical-align: -2px;
+        }
+
+        .back-to-top {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 800;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+
+            color: var(--text);
+            font-size: 20px;
+
+            background: rgba(40, 40, 40, 0.86);
+            border: 1px solid var(--border);
+            border-radius: 50%;
+
+            box-shadow: var(--shadow);
+
+            opacity: 0;
+            pointer-events: none;
+
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+
+            transition:
+                opacity 150ms ease,
+                background 150ms ease,
+                transform 150ms ease;
+        }
+
+        .back-to-top.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .back-to-top:hover {
+            color: var(--text);
+            text-decoration: none;
+            background: var(--surface-active);
+            transform: translateY(-2px);
+        }
+
+        .overlay {
+            position: fixed;
+            inset: var(--header-height) 0 0 0;
+            z-index: 850;
+
+            display: none;
+
+            background: rgba(0, 0, 0, 0.48);
+            backdrop-filter: blur(3px);
+            -webkit-backdrop-filter: blur(3px);
+        }
+
+        ::selection {
+            color: #000000;
+            background: var(--accent);
+        }
+
+        ::-webkit-scrollbar {
+            width: 12px;
+            height: 12px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.16);
+            border: 3px solid transparent;
+            border-radius: 999px;
+            background-clip: padding-box;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+
+        @media print {
+            :root {
+                color-scheme: light;
+            }
+
+            body {
+                color: #111111;
+                background: #ffffff;
+            }
+
+            .app-header,
+            .toc,
+            .overlay,
+            .back-to-top {
+                display: none !important;
+            }
+
+            .app-main {
+                margin: 0;
+                padding: 0;
+            }
+
+            .hero,
+            .markdown-document {
+                color: #111111;
+                background: #ffffff;
+                border: 1px solid #dddddd;
+                box-shadow: none;
+            }
+
+            .markdown-content p,
+            .markdown-content li,
+            .markdown-content td {
+                color: #222222;
+            }
+
+            .markdown-content h1,
+            .markdown-content h2,
+            .markdown-content h3,
+            .markdown-content h4,
+            .markdown-content h5,
+            .markdown-content h6,
+            .markdown-content strong {
+                color: #111111;
+            }
+
+            .markdown-content pre {
+                white-space: pre-wrap;
+                background: #f5f5f5;
+                border-color: #dddddd;
+            }
+
+            .markdown-content pre code {
+                color: #111111;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .toc {
+                width: min(88vw, 340px);
+                transform: translateX(-105%);
+                box-shadow: var(--shadow);
+            }
+
+            .toc.open {
+                transform: translateX(0);
+            }
+
+            .toc-close {
+                display: inline-flex;
+            }
+
+            .overlay.visible {
+                display: block;
+            }
+
+            .app-main {
+                margin-left: 0;
+                padding-right: 18px;
+                padding-left: 18px;
+            }
+
+            .header-button-label {
+                display: none;
+            }
+
+            .markdown-content {
+                padding: 24px 20px;
+            }
+        }
+
+        @media (max-width: 540px) {
+            .app-header {
+                padding: 0 12px;
+            }
+
+            .app-subtitle {
+                display: none;
+            }
+
+            .hero {
+                padding: 23px 20px;
+            }
+
+            .document-header {
+                padding: 16px;
+            }
+
+            .document-number {
+                width: 38px;
+                height: 38px;
+            }
+
+            .markdown-content {
+                padding: 22px 16px;
+            }
+
+            .markdown-content h1 {
+                font-size: 25px;
+            }
+
+            .markdown-content h2 {
+                font-size: 21px;
+            }
+
+            .back-to-top {
+                right: 16px;
+                bottom: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="app-header">
+        <button
+            class="menu-button"
+            type="button"
+            onclick="toggleNavigation()"
+            aria-label="Navigation öffnen"
+            title="Navigation"
+        >
+            ☰
+        </button>
+
+        <div class="app-title-area">
+            <div class="app-title">
+                NPSPEC BOOTSTAGE1 0001
+            </div>
+
+            <div class="app-subtitle">
+                C:\recoverboot\nova-os\docs\NPSPEC\Bootloader
+            </div>
+        </div>
+
+        <div class="header-actions">
+            <button
+                class="header-button"
+                type="button"
+                onclick="window.print()"
+                title="Dokument drucken"
+            >
+                <span>⎙</span>
+                <span class="header-button-label">
+                    Drucken
+                </span>
+            </button>
+        </div>
+    </header>
+
+    <nav class="toc" id="toc">
+<div class="toc-header">
+<div class="toc-title">Inhaltsverzeichnis</div>
+<button class="toc-close" type="button" onclick="toggleNavigation()" aria-label="Navigation schließen">
+×
+</button>
+</div>
+<div class="toc-content">
+
+            <div class="toc-document">
+                <a class="toc-document-link" href="#document-npspec-bootstage1-0001-md">
+                    <span class="toc-document-icon">▤</span>
+                    <span>NPSPEC BOOTSTAGE1 0001</span>
+                </a>
+            
+<div class="toc-headings">
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#npspec-bootstage1-0001"
+                    >
+                        NPSPEC-BOOTSTAGE1-0001
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#nova-boot-stage-1-framework"
+                    >
+                        Nova Boot Stage 1 Framework
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#1-zweck"
+                    >
+                        1. Zweck
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#2-designphilosophie"
+                    >
+                        2. Designphilosophie
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#minimalismus"
+                    >
+                        Minimalismus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#determinismus"
+                    >
+                        Determinismus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#plattformtreue"
+                    >
+                        Plattformtreue
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#stabilitat"
+                    >
+                        Stabilität
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#wartbarkeit"
+                    >
+                        Wartbarkeit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#3-verantwortlichkeiten"
+                    >
+                        3. Verantwortlichkeiten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#4-nicht-aufgaben"
+                    >
+                        4. Nicht-Aufgaben
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#5-speichergrenzen"
+                    >
+                        5. Speichergrenzen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#6-architektur"
+                    >
+                        6. Architektur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#7-cpu-startzustand"
+                    >
+                        7. CPU-Startzustand
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#8-erwarteter-registerzustand"
+                    >
+                        8. Erwarteter Registerzustand
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#9-cpu-initialisierung"
+                    >
+                        9. CPU-Initialisierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#10-bootlaufwerk"
+                    >
+                        10. Bootlaufwerk
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#11-stack"
+                    >
+                        11. Stack
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#12-speicherlayout"
+                    >
+                        12. Speicherlayout
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#13-lebenszyklus"
+                    >
+                        13. Lebenszyklus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#14-zustandsdiagramm"
+                    >
+                        14. Zustandsdiagramm
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#15-anforderungen"
+                    >
+                        15. Anforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#16-should"
+                    >
+                        16. SHOULD
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#17-may"
+                    >
+                        17. MAY
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#18-sicherheitsmodell"
+                    >
+                        18. Sicherheitsmodell
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#19-performance"
+                    >
+                        19. Performance
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#20-erweiterbarkeit"
+                    >
+                        20. Erweiterbarkeit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#21-master-boot-record-mbr"
+                    >
+                        21. Master Boot Record (MBR)
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#22-mbr-aufbau"
+                    >
+                        22. MBR-Aufbau
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#23-bootsignatur"
+                    >
+                        23. Bootsignatur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#24-speicherposition"
+                    >
+                        24. Speicherposition
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#25-speicherbelegung"
+                    >
+                        25. Speicherbelegung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#26-bootsignaturprufung"
+                    >
+                        26. Bootsignaturprüfung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#27-bootlaufwerk"
+                    >
+                        27. Bootlaufwerk
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#28-registerkonvention"
+                    >
+                        28. Registerkonvention
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#29-bios-interrupts"
+                    >
+                        29. BIOS Interrupts
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#30-int-13h"
+                    >
+                        30. INT 13h
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#31-chs-unterstutzung"
+                    >
+                        31. CHS-Unterstützung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#32-lba-unterstutzung"
+                    >
+                        32. LBA-Unterstützung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#33-datentragerzugriff"
+                    >
+                        33. Datenträgerzugriff
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#34-fehlererkennung"
+                    >
+                        34. Fehlererkennung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#35-retry-strategie"
+                    >
+                        35. Retry-Strategie
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#36-bios-reset"
+                    >
+                        36. BIOS Reset
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#37-ladeadresse-von-stage-2"
+                    >
+                        37. Ladeadresse von Stage 2
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#38-groe-von-stage-2"
+                    >
+                        38. Größe von Stage 2
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#39-ubergabe"
+                    >
+                        39. Übergabe
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#40-cpu-zustand-beim-sprung"
+                    >
+                        40. CPU-Zustand beim Sprung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#41-datenubergabe"
+                    >
+                        41. Datenübergabe
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#42-debugmodus"
+                    >
+                        42. Debugmodus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#43-kompatibilitat"
+                    >
+                        43. Kompatibilität
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#44-anforderungen-an-boot1asm"
+                    >
+                        44. Anforderungen an boot1.asm
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#45-stage-2-loader"
+                    >
+                        45. Stage-2-Loader
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#46-ladealgorithmus"
+                    >
+                        46. Ladealgorithmus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#47-loader-zustandsautomat"
+                    >
+                        47. Loader-Zustandsautomat
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#48-stage-2-parameter"
+                    >
+                        48. Stage-2-Parameter
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#49-standardparameter"
+                    >
+                        49. Standardparameter
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#50-buildprozess"
+                    >
+                        50. Buildprozess
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#51-keine-dateisysteme"
+                    >
+                        51. Keine Dateisysteme
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#52-integritatsprufung"
+                    >
+                        52. Integritätsprüfung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#53-speicheruberschneidung"
+                    >
+                        53. Speicherüberschneidung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#54-speicherprufung"
+                    >
+                        54. Speicherprüfung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#55-fehlerklassen"
+                    >
+                        55. Fehlerklassen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#56-fehlercodes"
+                    >
+                        56. Fehlercodes
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#57-retrystrategie"
+                    >
+                        57. Retrystrategie
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#58-disk-reset"
+                    >
+                        58. Disk Reset
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#59-zeitverhalten"
+                    >
+                        59. Zeitverhalten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#60-sprung-zu-stage-2"
+                    >
+                        60. Sprung zu Stage 2
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#61-registerzustand"
+                    >
+                        61. Registerzustand
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#62-stage-1-kontext"
+                    >
+                        62. Stage-1-Kontext
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#63-bootprotokoll"
+                    >
+                        63. Bootprotokoll
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#64-referenzalgorithmus"
+                    >
+                        64. Referenzalgorithmus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#65-build-anforderungen"
+                    >
+                        65. Build-Anforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#66-optimierungen"
+                    >
+                        66. Optimierungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#67-kompatibilitatsanforderungen"
+                    >
+                        67. Kompatibilitätsanforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#68-portabilitat"
+                    >
+                        68. Portabilität
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#69-qualitatsanforderungen"
+                    >
+                        69. Qualitätsanforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#70-sicherheitsarchitektur"
+                    >
+                        70. Sicherheitsarchitektur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#71-sicherheitsziele"
+                    >
+                        71. Sicherheitsziele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#72-integritatsmodell"
+                    >
+                        72. Integritätsmodell
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#73-erweiterte-integritatsprufung"
+                    >
+                        73. Erweiterte Integritätsprüfung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#74-speicherintegritat"
+                    >
+                        74. Speicherintegrität
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#75-bios-kompatibilitat"
+                    >
+                        75. BIOS-Kompatibilität
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#76-fehlerklassen"
+                    >
+                        76. Fehlerklassen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#77-recoverystrategie"
+                    >
+                        77. Recoverystrategie
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#78-bios-fallback"
+                    >
+                        78. BIOS-Fallback
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#79-recovery-code"
+                    >
+                        79. Recovery-Code
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#80-bootdiagnose"
+                    >
+                        80. Bootdiagnose
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#81-logging"
+                    >
+                        81. Logging
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#82-fehlercodes"
+                    >
+                        82. Fehlercodes
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#83-panicstrategie"
+                    >
+                        83. Panicstrategie
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#84-debugmodus"
+                    >
+                        84. Debugmodus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#85-determinismus"
+                    >
+                        85. Determinismus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#86-erweiterbarkeit"
+                    >
+                        86. Erweiterbarkeit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#87-secure-boot"
+                    >
+                        87. Secure Boot
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#88-measured-boot"
+                    >
+                        88. Measured Boot
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#89-selbstheilung"
+                    >
+                        89. Selbstheilung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#90-wartbarkeit"
+                    >
+                        90. Wartbarkeit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#91-coding-standard"
+                    >
+                        91. Coding Standard
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#92-buildanforderungen"
+                    >
+                        92. Buildanforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#93-zukunft"
+                    >
+                        93. Zukunft
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#94-offentliche-abi"
+                    >
+                        94. Öffentliche ABI
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#x86-real-mode"
+                    >
+                        x86 Real Mode
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#95-stage-1-kontext"
+                    >
+                        95. Stage-1-Kontext
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#96-interne-daten"
+                    >
+                        96. Interne Daten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#97-referenzimplementierung"
+                    >
+                        97. Referenzimplementierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#98-zustandsautomat"
+                    >
+                        98. Zustandsautomat
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#99-buildprozess"
+                    >
+                        99. Buildprozess
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#100-buildregeln"
+                    >
+                        100. Buildregeln
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#101-qualitatsanforderungen"
+                    >
+                        101. Qualitätsanforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#102-teststrategie"
+                    >
+                        102. Teststrategie
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-3"
+                        href="#boottests"
+                    >
+                        Boottests
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-3"
+                        href="#fehlertests"
+                    >
+                        Fehlertests
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-3"
+                        href="#regressionstests"
+                    >
+                        Regressionstests
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-3"
+                        href="#hardwaretests"
+                    >
+                        Hardwaretests
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#103-leistungsanforderungen"
+                    >
+                        103. Leistungsanforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#104-dokumentation"
+                    >
+                        104. Dokumentation
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#105-referenzprojektstruktur"
+                    >
+                        105. Referenzprojektstruktur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#106-beziehungen-zu-anderen-npspecs"
+                    >
+                        106. Beziehungen zu anderen NPSPECs
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#107-implementierungsphasen"
+                    >
+                        107. Implementierungsphasen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#phase-1"
+                    >
+                        Phase 1
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#phase-2"
+                    >
+                        Phase 2
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#phase-3"
+                    >
+                        Phase 3
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#phase-4"
+                    >
+                        Phase 4
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#phase-5"
+                    >
+                        Phase 5
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#108-akzeptanzkriterien"
+                    >
+                        108. Akzeptanzkriterien
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#109-zusammenfassung"
+                    >
+                        109. Zusammenfassung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#110-langfristige-vision"
+                    >
+                        110. Langfristige Vision
+                    </a>
+                    
+</div>
+</div>
+</div>
+</nav>
+
+    <div
+        class="overlay"
+        id="overlay"
+        onclick="closeNavigation()"
+    ></div>
+
+    <main class="app-main" id="top">
+        <div class="content-container">
+            <section class="hero">
+                <div class="hero-label">
+                    Markdown-Dokumentation
+                </div>
+
+                <h1>
+                    NPSPEC BOOTSTAGE1 0001
+                </h1>
+
+                <p class="hero-description">
+                    Zusammengeführte HTML-Dokumentation aus
+                    1 Markdown-Dateien.
+                </p>
+
+                <div class="hero-meta">
+                    <span class="meta-item">
+                        1 Dokumente
+                    </span>
+
+                    <span class="meta-item">
+                        Fluent Dark
+                    </span>
+
+                    <span class="meta-item">
+                        Einzelne HTML-Datei
+                    </span>
+                </div>
+            </section>
+
+            
+            <article class="markdown-document" id="document-npspec-bootstage1-0001-md">
+                <header class="document-header">
+                    <div class="document-number">
+                        01
+                    </div>
+
+                    <div class="document-title-area">
+                        <h1 class="document-title">
+                            NPSPEC BOOTSTAGE1 0001
+                        </h1>
+
+                        <div class="document-path">
+                            NPSPEC-BOOTSTAGE1-0001.md
+                        </div>
+                    </div>
+                </header>
+
+                <div class="markdown-content">
+                    <h1 id="npspec-bootstage1-0001">NPSPEC-BOOTSTAGE1-0001</h1>
+<h1 id="nova-boot-stage-1-framework">Nova Boot Stage 1 Framework</h1>
+<table>
+<thead>
+<tr>
+<th>Feld</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dokument</td>
+<td>NPSPEC-BOOTSTAGE1-0001</td>
+</tr>
+<tr>
+<td>Titel</td>
+<td>Nova Boot Stage 1 Framework</td>
+</tr>
+<tr>
+<td>Version</td>
+<td>1.0.0 Draft</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Draft</td>
+</tr>
+<tr>
+<td>Kategorie</td>
+<td>Boot Specification</td>
+</tr>
+<tr>
+<td>Bereich</td>
+<td>Nova Boot Platform</td>
+</tr>
+<tr>
+<td>Übergeordnet</td>
+<td>NPSPEC-BOOT-0001</td>
+</tr>
+<tr>
+<td>Abhängigkeiten</td>
+<td>NPSPEC-BIOSBOOT-0001, NPSPEC-BOOTMEMORY-0001, NPSPEC-BOOTLOADER-0001</td>
+</tr>
+<tr>
+<td>Letzte Änderung</td>
+<td>2026-07-14</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h1 id="1-zweck">1. Zweck</h1>
+<p>Der <strong>Nova Stage-1-Bootloader</strong> bildet den ersten ausführbaren Code des Betriebssystems nach der Firmware.</p>
+<p>Er besitzt nur eine einzige Aufgabe:</p>
+<blockquote>
+<p>Die Kontrolle möglichst sicher, reproduzierbar und deterministisch von der Firmware auf den Nova Boot Core zu übertragen.</p>
+</blockquote>
+<p>Stage 1 besitzt absichtlich <strong>keine Betriebssystemlogik</strong>.</p>
+<p>Er enthält weder Dateisysteme noch grafische Oberflächen oder komplexe Hardwareinitialisierung.</p>
+<p>Seine Aufgabe besteht ausschließlich darin,</p>
+<ul>
+<li>den Prozessor zu stabilisieren</li>
+<li>den Bootdatenträger festzustellen</li>
+<li>Stage 2 zuverlässig zu laden</li>
+<li>bei Fehlern definierte Recoverypfade einzuleiten</li>
+</ul>
+<hr>
+<h1 id="2-designphilosophie">2. Designphilosophie</h1>
+<p>Stage 1 folgt fünf Grundprinzipien.</p>
+<h2 id="minimalismus">Minimalismus</h2>
+<p>Jede zusätzliche Funktion erhöht</p>
+<ul>
+<li>Fehlerwahrscheinlichkeit</li>
+<li>Wartungsaufwand</li>
+<li>Angriffsfläche</li>
+</ul>
+<p>Deshalb muss Stage 1 so klein wie möglich bleiben.</p>
+<hr>
+<h2 id="determinismus">Determinismus</h2>
+<p>Unter identischen Voraussetzungen muss Stage 1 immer exakt denselben Ablauf besitzen.</p>
+<p>Es dürfen keinerlei zufällige Entscheidungen getroffen werden.</p>
+<hr>
+<h2 id="plattformtreue">Plattformtreue</h2>
+<p>Stage 1 verwendet ausschließlich BIOS-Funktionen.</p>
+<p>Eigene Treiber existieren in dieser Phase nicht.</p>
+<hr>
+<h2 id="stabilitat">Stabilität</h2>
+<p>Stage 1 darf niemals versuchen,</p>
+<ul>
+<li>Speicher zu verwalten</li>
+<li>Hardware vollständig zu initialisieren</li>
+<li>Geräte zu konfigurieren</li>
+</ul>
+<hr>
+<h2 id="wartbarkeit">Wartbarkeit</h2>
+<p>Der gesamte Quellcode soll</p>
+<ul>
+<li>klar strukturiert</li>
+<li>stark kommentiert</li>
+<li>leicht überprüfbar</li>
+<li>leicht portierbar</li>
+</ul>
+<p>sein.</p>
+<hr>
+<h1 id="3-verantwortlichkeiten">3. Verantwortlichkeiten</h1>
+<p>Stage 1 ist ausschließlich verantwortlich für</p>
+<p>✔ CPU-Grundinitialisierung</p>
+<p>✔ Segmentregister</p>
+<p>✔ Stack</p>
+<p>✔ Bootlaufwerk sichern</p>
+<p>✔ Stage-2 laden</p>
+<p>✔ Fehler erkennen</p>
+<p>✔ BIOS-Reset bei Fehlern</p>
+<p>✔ Wiederholungsversuche</p>
+<p>✔ Übergabe an Stage 2</p>
+<p>Alles andere gehört <strong>nicht</strong> zu Stage 1.</p>
+<hr>
+<h1 id="4-nicht-aufgaben">4. Nicht-Aufgaben</h1>
+<p>Stage 1 darf NICHT</p>
+<ul>
+<li>FAT lesen</li>
+<li>GPT lesen</li>
+<li>ELF laden</li>
+<li>Kernel laden</li>
+<li>ACPI lesen</li>
+<li>PCI scannen</li>
+<li>Grafik initialisieren</li>
+<li>Maus initialisieren</li>
+<li>USB initialisieren</li>
+<li>Secure Boot durchführen</li>
+<li>TPM verwenden</li>
+<li>Netzwerk verwenden</li>
+</ul>
+<p>Diese Funktionen gehören ausschließlich Stage 2 oder späteren Komponenten.</p>
+<hr>
+<h1 id="5-speichergrenzen">5. Speichergrenzen</h1>
+<p>Da Stage 1 im MBR untergebracht ist gelten folgende Grenzen.</p>
+<table>
+<thead>
+<tr>
+<th>Eigenschaft</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Größe</td>
+<td>512 Byte</td>
+</tr>
+<tr>
+<td>Signatur</td>
+<td>0xAA55</td>
+</tr>
+<tr>
+<td>Code</td>
+<td>maximal verfügbarer Platz</td>
+</tr>
+<tr>
+<td>Daten</td>
+<td>minimal</td>
+</tr>
+<tr>
+<td>Stack</td>
+<td>extern</td>
+</tr>
+</tbody>
+</table>
+<p>Der Bootloader darf niemals voraussetzen, dass mehr Speicher vorhanden ist als durch das BIOS garantiert.</p>
+<hr>
+<h1 id="6-architektur">6. Architektur</h1>
+<div class="codehilite"><pre><span></span><code>BIOS
+
+↓
+
+MBR
+
+↓
+
+Nova Stage 1
+
+↓
+
+Stage 2
+
+↓
+
+Nova Boot Core
+</code></pre></div>
+
+<p>Stage 1 besitzt keinerlei Kenntnis über</p>
+<ul>
+<li>Kernel</li>
+<li>Recovery</li>
+<li>Benutzer</li>
+<li>Dateisysteme</li>
+</ul>
+<p>Er kennt ausschließlich Stage 2.</p>
+<hr>
+<h1 id="7-cpu-startzustand">7. CPU-Startzustand</h1>
+<p>Beim Eintritt in Stage 1 wird folgender Zustand angenommen.</p>
+<p>CPU Mode</p>
+<div class="codehilite"><pre><span></span><code>Real Mode
+</code></pre></div>
+
+<p>Adressierung</p>
+<div class="codehilite"><pre><span></span><code>20 Bit
+</code></pre></div>
+
+<p>Interrupts</p>
+<div class="codehilite"><pre><span></span><code>aktiv
+</code></pre></div>
+
+<p>Paging</p>
+<div class="codehilite"><pre><span></span><code>deaktiviert
+</code></pre></div>
+
+<p>Protected Mode</p>
+<div class="codehilite"><pre><span></span><code>nicht aktiv
+</code></pre></div>
+
+<p>Long Mode</p>
+<div class="codehilite"><pre><span></span><code>nicht aktiv
+</code></pre></div>
+
+<hr>
+<h1 id="8-erwarteter-registerzustand">8. Erwarteter Registerzustand</h1>
+<p>Das BIOS garantiert typischerweise</p>
+<div class="codehilite"><pre><span></span><code>DL = Bootlaufwerk
+</code></pre></div>
+
+<p>Weitere Register dürfen <strong>nicht</strong> vorausgesetzt werden.</p>
+<p>Stage 1 muss deshalb alle relevanten Register selbst initialisieren.</p>
+<hr>
+<h1 id="9-cpu-initialisierung">9. CPU-Initialisierung</h1>
+<p>Unmittelbar nach Eintritt müssen folgende Register gesetzt werden.</p>
+<div class="codehilite"><pre><span></span><code><span class="nf">cli</span>
+
+<span class="nf">xor</span><span class="w"> </span><span class="no">ax</span><span class="p">,</span><span class="w"> </span><span class="no">ax</span>
+
+<span class="nf">mov</span><span class="w"> </span><span class="no">ds</span><span class="p">,</span><span class="w"> </span><span class="no">ax</span>
+<span class="nf">mov</span><span class="w"> </span><span class="no">es</span><span class="p">,</span><span class="w"> </span><span class="no">ax</span>
+<span class="nf">mov</span><span class="w"> </span><span class="no">ss</span><span class="p">,</span><span class="w"> </span><span class="no">ax</span>
+
+<span class="nf">mov</span><span class="w"> </span><span class="no">sp</span><span class="p">,</span><span class="w"> </span><span class="mi">0x7C00</span>
+</code></pre></div>
+
+<p>Anschließend kann mit der eigentlichen Bootlogik begonnen werden.</p>
+<hr>
+<h1 id="10-bootlaufwerk">10. Bootlaufwerk</h1>
+<p>Das BIOS übergibt das Bootlaufwerk in</p>
+<div class="codehilite"><pre><span></span><code>DL
+</code></pre></div>
+
+<p>Dieses Register muss sofort gesichert werden.</p>
+<p>Beispiel</p>
+<div class="codehilite"><pre><span></span><code><span class="nf">mov</span><span class="w"> </span><span class="p">[</span><span class="no">BootDrive</span><span class="p">],</span><span class="w"> </span><span class="no">dl</span>
+</code></pre></div>
+
+<p>Spätere BIOS-Aufrufe dürfen niemals davon ausgehen, dass DL unverändert geblieben ist.</p>
+<hr>
+<h1 id="11-stack">11. Stack</h1>
+<p>Stage 1 verwendet einen einfachen Stack.</p>
+<p>Eigenschaften</p>
+<ul>
+<li>wächst nach unten</li>
+<li>keine dynamische Speicherverwaltung</li>
+<li>keine Rekursion</li>
+<li>keine tiefen Funktionsaufrufe</li>
+</ul>
+<p>Empfohlen</p>
+<div class="codehilite"><pre><span></span><code>SS = 0x0000
+
+SP = 0x7C00
+</code></pre></div>
+
+<hr>
+<h1 id="12-speicherlayout">12. Speicherlayout</h1>
+<p>Empfohlenes Layout</p>
+<div class="codehilite"><pre><span></span><code>00000 ------------------
+
+BIOS Data
+
+00400 ------------------
+
+IVT
+
+00500 ------------------
+
+frei
+
+07C00 ------------------
+
+Stage 1
+
+07E00 ------------------
+
+Stage 2
+
+08000 ------------------
+
+frei
+
+90000 ------------------
+
+spätere Kerneldaten
+
+A0000 ------------------
+
+Video RAM
+</code></pre></div>
+
+<p>Dieses Layout entspricht dem bisherigen Nova-Prototyp.</p>
+<hr>
+<h1 id="13-lebenszyklus">13. Lebenszyklus</h1>
+<p>Der Lebenszyklus besitzt genau fünf Zustände.</p>
+<div class="codehilite"><pre><span></span><code>Start
+
+↓
+
+CPU Setup
+
+↓
+
+Boot Device
+
+↓
+
+Load Stage 2
+
+↓
+
+Jump Stage 2
+</code></pre></div>
+
+<p>Fehler führen in einen separaten Fehlerzustand.</p>
+<hr>
+<h1 id="14-zustandsdiagramm">14. Zustandsdiagramm</h1>
+<div class="codehilite"><pre><span></span><code>Start
+
+↓
+
+Initialize
+
+↓
+
+Read Stage 2
+
+↓
+
+OK ?
+
+├── Nein
+
+│
+
+Retry
+
+│
+
+↓
+
+Fehler
+
+│
+
+↓
+
+Stop
+
+│
+
+└── Ja
+
+↓
+
+Jump Stage 2
+</code></pre></div>
+
+<hr>
+<h1 id="15-anforderungen">15. Anforderungen</h1>
+<p>Stage 1 MUSS</p>
+<ul>
+<li>DS initialisieren</li>
+<li>ES initialisieren</li>
+<li>SS initialisieren</li>
+<li>SP initialisieren</li>
+<li>DL sichern</li>
+<li>Stage 2 laden</li>
+<li>Fehler erkennen</li>
+<li>BIOS zurücksetzen</li>
+<li>Retry durchführen</li>
+<li>Sprung zu Stage 2 ausführen</li>
+</ul>
+<hr>
+<h1 id="16-should">16. SHOULD</h1>
+<p>Stage 1 SOLLTE</p>
+<ul>
+<li>möglichst klein bleiben</li>
+<li>keine globalen Seiteneffekte erzeugen</li>
+<li>Register dokumentieren</li>
+<li>Fehlercodes definieren</li>
+<li>Kommentare enthalten</li>
+<li>BIOS-Aufrufe kapseln</li>
+</ul>
+<hr>
+<h1 id="17-may">17. MAY</h1>
+<p>Stage 1 DARF</p>
+<ul>
+<li>Prüfsummen verwenden</li>
+<li>einfache Debugausgaben besitzen</li>
+<li>Bootzeiten messen</li>
+<li>Buildinformationen enthalten</li>
+</ul>
+<p>Diese Funktionen dürfen jedoch die Hauptaufgabe nicht gefährden.</p>
+<hr>
+<h1 id="18-sicherheitsmodell">18. Sicherheitsmodell</h1>
+<p>Stage 1 besitzt noch keine vollständige Sicherheitsarchitektur.</p>
+<p>Es soll jedoch</p>
+<ul>
+<li>keine undefinierten Speicherbereiche überschreiben</li>
+<li>keine BIOS-Strukturen zerstören</li>
+<li>keine unbekannten Interrupts verwenden</li>
+<li>keine Selbstmodifikation durchführen</li>
+</ul>
+<hr>
+<h1 id="19-performance">19. Performance</h1>
+<p>Die Ladezeit von Stage 1 soll möglichst gering bleiben.</p>
+<p>Zielwerte</p>
+<table>
+<thead>
+<tr>
+<th>Vorgang</th>
+<th>Ziel</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CPU Setup</td>
+<td>&lt; 1 ms</td>
+</tr>
+<tr>
+<td>Bootlaufwerk sichern</td>
+<td>&lt; 1 ms</td>
+</tr>
+<tr>
+<td>Laden Stage 2</td>
+<td>Firmwareabhängig</td>
+</tr>
+<tr>
+<td>Übergabe</td>
+<td>sofort</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h1 id="20-erweiterbarkeit">20. Erweiterbarkeit</h1>
+<p>Stage 1 soll bewusst klein bleiben.</p>
+<p>Neue Funktionen werden grundsätzlich in</p>
+<ul>
+<li>Stage 2</li>
+<li>Boot Core</li>
+</ul>
+<p>integriert.</p>
+<p>Stage 1 wird langfristig nur angepasst wenn</p>
+<ul>
+<li>neue Firmwareanforderungen entstehen</li>
+<li>Sicherheitslücken behoben werden</li>
+<li>neue Datenträgerformate zwingend erforderlich sind</li>
+</ul>
+<hr>
+<hr>
+<h1 id="21-master-boot-record-mbr">21. Master Boot Record (MBR)</h1>
+<p>Der Nova Stage-1-Bootloader wird als klassischer <strong>Master Boot Record (MBR)</strong> implementiert.</p>
+<p>Der MBR befindet sich immer im <strong>ersten logischen Sektor eines bootfähigen Datenträgers</strong>.</p>
+<p>Eigenschaften:</p>
+<table>
+<thead>
+<tr>
+<th>Eigenschaft</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Größe</td>
+<td>512 Byte</td>
+</tr>
+<tr>
+<td>LBA</td>
+<td>0</td>
+</tr>
+<tr>
+<td>CHS</td>
+<td>0/0/1</td>
+</tr>
+<tr>
+<td>Ausrichtung</td>
+<td>512 Byte</td>
+</tr>
+<tr>
+<td>Signatur</td>
+<td>0xAA55</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h1 id="22-mbr-aufbau">22. MBR-Aufbau</h1>
+<p>Der physikalische Aufbau ist fest definiert.</p>
+<div class="codehilite"><pre><span></span><code>+--------------------------------------------------+
+| Bootloader Code                     446 Byte     |
++--------------------------------------------------+
+| Partitionseintrag 1                  16 Byte     |
++--------------------------------------------------+
+| Partitionseintrag 2                  16 Byte     |
++--------------------------------------------------+
+| Partitionseintrag 3                  16 Byte     |
++--------------------------------------------------+
+| Partitionseintrag 4                  16 Byte     |
++--------------------------------------------------+
+| Boot Signature 0x55AA                 2 Byte     |
++--------------------------------------------------+
+</code></pre></div>
+
+<p>Nova verwendet diesen Standard vollständig.</p>
+<hr>
+<h1 id="23-bootsignatur">23. Bootsignatur</h1>
+<p>Jeder Nova-Bootsektor MUSS enden mit</p>
+<div class="codehilite"><pre><span></span><code>Offset 510
+
+55 AA
+</code></pre></div>
+
+<p>Fehlt diese Signatur,</p>
+<p>muss das BIOS den Datenträger als <strong>nicht bootfähig</strong> betrachten.</p>
+<hr>
+<h1 id="24-speicherposition">24. Speicherposition</h1>
+<p>Nach erfolgreichem BIOS-Boot befindet sich Stage 1 an</p>
+<div class="codehilite"><pre><span></span><code>0000:7C00
+</code></pre></div>
+
+<p>physikalisch</p>
+<div class="codehilite"><pre><span></span><code>0x00007C00
+</code></pre></div>
+
+<p>Von dort beginnt die Ausführung.</p>
+<hr>
+<h1 id="25-speicherbelegung">25. Speicherbelegung</h1>
+<p>Nach dem BIOS-Start ergibt sich typischerweise folgendes Layout.</p>
+<div class="codehilite"><pre><span></span><code>00000 ----------------
+
+Interrupt Vector Table
+
+00400 ----------------
+
+BIOS Data Area
+
+00500 ----------------
+
+frei
+
+07C00 ----------------
+
+Nova Stage 1
+
+07E00 ----------------
+
+Stage 2
+
+08000 ----------------
+
+temporär frei
+
+90000 ----------------
+
+später Kernel
+
+A0000 ----------------
+
+Grafikspeicher
+</code></pre></div>
+
+<p>Stage 1 darf ausschließlich die markierten Bereiche verändern.</p>
+<hr>
+<h1 id="26-bootsignaturprufung">26. Bootsignaturprüfung</h1>
+<p>Das BIOS übernimmt die Prüfung der Signatur.</p>
+<p>Stage 1 selbst muss diese Signatur nicht erneut prüfen.</p>
+<p>Stattdessen prüft Stage 1 später ausschließlich,</p>
+<p>ob Stage 2 erfolgreich geladen werden konnte.</p>
+<hr>
+<h1 id="27-bootlaufwerk">27. Bootlaufwerk</h1>
+<p>Der Datenträger wird ausschließlich über</p>
+<div class="codehilite"><pre><span></span><code>DL
+</code></pre></div>
+
+<p>identifiziert.</p>
+<p>Typische Werte</p>
+<div class="codehilite"><pre><span></span><code>00h
+
+Diskette A
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>80h
+
+erste Festplatte
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>81h
+
+zweite Festplatte
+</code></pre></div>
+
+<p>Nova speichert diesen Wert sofort.</p>
+<hr>
+<h1 id="28-registerkonvention">28. Registerkonvention</h1>
+<p>Vor dem ersten BIOS-Aufruf dürfen keinerlei Register vorausgesetzt werden.</p>
+<p>Stage 1 initialisiert daher immer</p>
+<div class="codehilite"><pre><span></span><code><span class="nf">DS</span>
+
+<span class="nf">ES</span>
+
+<span class="nf">SS</span>
+
+<span class="nf">SP</span>
+</code></pre></div>
+
+<p>anschließend werden Register nur lokal verwendet.</p>
+<hr>
+<h1 id="29-bios-interrupts">29. BIOS Interrupts</h1>
+<p>Stage 1 darf ausschließlich BIOS-Dienste verwenden.</p>
+<p>Zugelassene Interrupts</p>
+<table>
+<thead>
+<tr>
+<th>Interrupt</th>
+<th>Zweck</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>INT 10h</td>
+<td>Video (optional Debug)</td>
+</tr>
+<tr>
+<td>INT 13h</td>
+<td>Datenträger</td>
+</tr>
+<tr>
+<td>INT 16h</td>
+<td>Tastatur (optional Debug)</td>
+</tr>
+<tr>
+<td>INT 18h</td>
+<td>BIOS Boot Fallback</td>
+</tr>
+<tr>
+<td>INT 19h</td>
+<td>BIOS Neustart</td>
+</tr>
+</tbody>
+</table>
+<p>Alle anderen Interrupts gelten als optional.</p>
+<hr>
+<h1 id="30-int-13h">30. INT 13h</h1>
+<p>Der wichtigste BIOS-Dienst ist</p>
+<div class="codehilite"><pre><span></span><code>INT 13h
+</code></pre></div>
+
+<p>Nova verwendet ihn zum Lesen von Stage 2.</p>
+<p>Unterstützte Funktionen</p>
+<div class="codehilite"><pre><span></span><code>02h
+
+Read Sectors
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>00h
+
+Reset Disk
+</code></pre></div>
+
+<p>Später</p>
+<div class="codehilite"><pre><span></span><code>42h
+
+Extended Read (LBA)
+</code></pre></div>
+
+<hr>
+<h1 id="31-chs-unterstutzung">31. CHS-Unterstützung</h1>
+<p>Stage 1 MUSS mindestens CHS unterstützen.</p>
+<p>Parameter</p>
+<div class="codehilite"><pre><span></span><code>Cylinder
+
+Head
+
+Sector
+</code></pre></div>
+
+<p>Die Umrechnung erfolgt ausschließlich innerhalb des Stage-1-Codes.</p>
+<hr>
+<h1 id="32-lba-unterstutzung">32. LBA-Unterstützung</h1>
+<p>Falls vom BIOS verfügbar,</p>
+<p>SOLL Stage 1 die INT-13h-Erweiterungen verwenden.</p>
+<p>Dadurch werden</p>
+<ul>
+<li>große Festplatten</li>
+<li>SSDs</li>
+<li>NVMe-Controller mit BIOS-Unterstützung</li>
+</ul>
+<p>besser unterstützt.</p>
+<hr>
+<h1 id="33-datentragerzugriff">33. Datenträgerzugriff</h1>
+<p>Der Standardablauf lautet</p>
+<div class="codehilite"><pre><span></span><code>Boot Device
+
+↓
+
+Read Stage 2
+
+↓
+
+Carry Flag ?
+
+├── Ja
+
+↓
+
+Retry
+
+└── Nein
+
+↓
+
+Continue
+</code></pre></div>
+
+<hr>
+<h1 id="34-fehlererkennung">34. Fehlererkennung</h1>
+<p>Nach jedem BIOS-Aufruf muss</p>
+<div class="codehilite"><pre><span></span><code><span class="nf">JC</span>
+</code></pre></div>
+
+<p>ausgewertet werden.</p>
+<p>Carry Flag gesetzt</p>
+<p>↓</p>
+<p>Lesefehler</p>
+<p>Carry Flag gelöscht</p>
+<p>↓</p>
+<p>weiter</p>
+<hr>
+<h1 id="35-retry-strategie">35. Retry-Strategie</h1>
+<p>Nova verwendet standardmäßig</p>
+<div class="codehilite"><pre><span></span><code>3
+
+Versuche
+</code></pre></div>
+
+<p>Algorithmus</p>
+<div class="codehilite"><pre><span></span><code>Read
+
+↓
+
+Fehler
+
+↓
+
+Reset Disk
+
+↓
+
+Read erneut
+
+↓
+
+Fehler
+
+↓
+
+Reset
+
+↓
+
+Read erneut
+
+↓
+
+Fehler
+
+↓
+
+Fatal Error
+</code></pre></div>
+
+<hr>
+<h1 id="36-bios-reset">36. BIOS Reset</h1>
+<p>Vor jedem neuen Versuch wird</p>
+<div class="codehilite"><pre><span></span><code>INT 13h
+
+AH = 00h
+</code></pre></div>
+
+<p>aufgerufen.</p>
+<p>Dadurch wird der Controller zurückgesetzt.</p>
+<hr>
+<h1 id="37-ladeadresse-von-stage-2">37. Ladeadresse von Stage 2</h1>
+<p>Standardmäßig</p>
+<div class="codehilite"><pre><span></span><code>0000:7E00
+</code></pre></div>
+
+<p>physikalisch</p>
+<div class="codehilite"><pre><span></span><code>0x7E00
+</code></pre></div>
+
+<p>Diese Adresse darf in zukünftigen Versionen konfigurierbar werden.</p>
+<hr>
+<h1 id="38-groe-von-stage-2">38. Größe von Stage 2</h1>
+<p>Stage 1 besitzt keinerlei Wissen über interne Funktionen.</p>
+<p>Es kennt ausschließlich</p>
+<ul>
+<li>
+<p>Startsektor</p>
+</li>
+<li>
+<p>Anzahl Sektoren</p>
+</li>
+</ul>
+<p>Diese Informationen werden beim Build erzeugt.</p>
+<hr>
+<h1 id="39-ubergabe">39. Übergabe</h1>
+<p>Nach erfolgreichem Laden erfolgt</p>
+<div class="codehilite"><pre><span></span><code><span class="nf">jmp</span><span class="w"> </span><span class="mi">0x0000</span><span class="p">:</span><span class="mi">0x7E00</span>
+</code></pre></div>
+
+<p>Alternativ</p>
+<div class="codehilite"><pre><span></span><code><span class="nf">push</span><span class="w"> </span><span class="mi">0</span>
+
+<span class="nf">push</span><span class="w"> </span><span class="mi">0x7E00</span>
+
+<span class="nf">retf</span>
+</code></pre></div>
+
+<p>Die konkrete Implementierung wird in der Referenzimplementierung festgelegt.</p>
+<hr>
+<h1 id="40-cpu-zustand-beim-sprung">40. CPU-Zustand beim Sprung</h1>
+<p>Beim Sprung zu Stage 2 gilt</p>
+<div class="codehilite"><pre><span></span><code>Real Mode
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>Interrupts deaktiviert
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>Stack gültig
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>DS = ES = SS = 0
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>DL = Bootlaufwerk
+</code></pre></div>
+
+<p>Stage 2 darf sich auf diesen Zustand verlassen.</p>
+<hr>
+<h1 id="41-datenubergabe">41. Datenübergabe</h1>
+<p>Stage 1 übergibt zunächst nur</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">boot_drive</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_stage1_context_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Alle weiteren Informationen sammelt Stage 2.</p>
+<hr>
+<h1 id="42-debugmodus">42. Debugmodus</h1>
+<p>Ein optionaler Debug-Build darf</p>
+<p>über</p>
+<div class="codehilite"><pre><span></span><code>INT 10h
+</code></pre></div>
+
+<p>Statusmeldungen ausgeben.</p>
+<p>Beispiele</p>
+<div class="codehilite"><pre><span></span><code>Loading Stage 2...
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>Disk Error
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>Retry...
+</code></pre></div>
+
+<p>Im Release-Build bleiben diese Ausgaben deaktiviert.</p>
+<hr>
+<h1 id="43-kompatibilitat">43. Kompatibilität</h1>
+<p>Stage 1 muss funktionieren mit</p>
+<ul>
+<li>klassischen BIOS-Systemen</li>
+<li>IDE</li>
+<li>SATA</li>
+<li>BIOS-kompatiblen SSDs</li>
+<li>USB-Boot (BIOS)</li>
+<li>virtuellen Maschinen</li>
+</ul>
+<p>Unter anderem</p>
+<ul>
+<li>QEMU</li>
+<li>Bochs</li>
+<li>VirtualBox</li>
+<li>VMware</li>
+</ul>
+<hr>
+<h1 id="44-anforderungen-an-boot1asm">44. Anforderungen an boot1.asm</h1>
+<p>Die Referenzimplementierung MUSS</p>
+<p>✔ NASM-kompatibel sein</p>
+<p>✔ reproduzierbar bauen</p>
+<p>✔ keine selbstmodifizierenden Routinen enthalten</p>
+<p>✔ klar kommentiert sein</p>
+<p>✔ keine versteckten Konstanten besitzen</p>
+<p>✔ alle BIOS-Aufrufe dokumentieren</p>
+<hr>
+<h1 id="45-stage-2-loader">45. Stage-2-Loader</h1>
+<p>Der Stage-2-Loader ist die wichtigste Aufgabe von Stage 1.</p>
+<p>Er muss zuverlässig</p>
+<ul>
+<li>Stage 2 lokalisieren</li>
+<li>Stage 2 vollständig laden</li>
+<li>Stage 2 validieren</li>
+<li>Stage 2 starten</li>
+</ul>
+<p>Alle anderen Funktionen sind nachrangig.</p>
+<hr>
+<h1 id="46-ladealgorithmus">46. Ladealgorithmus</h1>
+<p>Der Standardablauf lautet</p>
+<div class="codehilite"><pre><span></span><code>Start
+
+↓
+
+Bootlaufwerk bestimmen
+
+↓
+
+Ladeparameter vorbereiten
+
+↓
+
+Sektoren lesen
+
+↓
+
+Lesefehler?
+
+├── Ja
+
+↓
+
+Retry
+
+│
+
+↓
+
+Fehler
+
+│
+
+└── Nein
+
+↓
+
+Integritätsprüfung
+
+↓
+
+OK?
+
+├── Nein
+
+↓
+
+Fatal Error
+
+└── Ja
+
+↓
+
+Jump Stage 2
+</code></pre></div>
+
+<hr>
+<h1 id="47-loader-zustandsautomat">47. Loader-Zustandsautomat</h1>
+<div class="codehilite"><pre><span></span><code>BOOT
+
+↓
+
+INITIALIZE
+
+↓
+
+LOAD_STAGE2
+
+↓
+
+VERIFY_STAGE2
+
+↓
+
+READY
+
+↓
+
+JUMP
+
+↓
+
+DONE
+</code></pre></div>
+
+<p>Fehler führen in</p>
+<div class="codehilite"><pre><span></span><code>ERROR
+</code></pre></div>
+
+<hr>
+<h1 id="48-stage-2-parameter">48. Stage-2-Parameter</h1>
+<p>Stage 1 kennt ausschließlich</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">start_sector</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">sector_count</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">load_address</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_stage2_descriptor_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Weitere Informationen gehören nicht in Stage 1.</p>
+<hr>
+<h1 id="49-standardparameter">49. Standardparameter</h1>
+<p>Nova verwendet standardmäßig</p>
+<div class="codehilite"><pre><span></span><code>Startsektor
+
+2
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>Ladeadresse
+
+0x7E00
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>Sektoranzahl
+
+Buildabhängig
+</code></pre></div>
+
+<p>Die Buildumgebung erzeugt diese Werte automatisch.</p>
+<hr>
+<h1 id="50-buildprozess">50. Buildprozess</h1>
+<p>Beim Erzeugen des Bootimages werden</p>
+<div class="codehilite"><pre><span></span><code>boot1.bin
+
+↓
+
+boot2.bin
+
+↓
+
+kernel
+
+↓
+
+disk.img
+</code></pre></div>
+
+<p>zusammengeführt.</p>
+<p>Der Buildprozess schreibt</p>
+<ul>
+<li>Startsektor</li>
+<li>Anzahl Sektoren</li>
+</ul>
+<p>direkt in Stage 1.</p>
+<p>Stage 1 muss diese Werte <strong>nicht berechnen</strong>.</p>
+<hr>
+<h1 id="51-keine-dateisysteme">51. Keine Dateisysteme</h1>
+<p>Stage 1 besitzt <strong>keine Dateisystemlogik</strong>.</p>
+<p>Es kennt</p>
+<p>NICHT</p>
+<ul>
+<li>
+<p>FAT12</p>
+</li>
+<li>
+<p>FAT16</p>
+</li>
+<li>
+<p>FAT32</p>
+</li>
+<li>
+<p>GPT</p>
+</li>
+<li>
+<p>MBR Partitionen</p>
+</li>
+<li>
+<p>Verzeichnisse</p>
+</li>
+<li>
+<p>Dateien</p>
+</li>
+</ul>
+<p>Es liest ausschließlich Rohsektoren.</p>
+<hr>
+<h1 id="52-integritatsprufung">52. Integritätsprüfung</h1>
+<p>Nach dem Laden SOLL Stage 1 prüfen,</p>
+<p>ob Stage 2 plausibel aussieht.</p>
+<p>Mindestens</p>
+<ul>
+<li>
+<p>Größe</p>
+</li>
+<li>
+<p>Startadresse</p>
+</li>
+<li>
+<p>Ladebereich</p>
+</li>
+</ul>
+<p>Optional</p>
+<ul>
+<li>
+<p>CRC32</p>
+</li>
+<li>
+<p>SHA-256</p>
+</li>
+<li>
+<p>digitale Signatur</p>
+</li>
+</ul>
+<p>Die vollständige Sicherheitsprüfung erfolgt später in Stage 2.</p>
+<hr>
+<h1 id="53-speicheruberschneidung">53. Speicherüberschneidung</h1>
+<p>Vor dem Sprung muss geprüft werden,</p>
+<p>ob</p>
+<div class="codehilite"><pre><span></span><code>Stage 2
+</code></pre></div>
+
+<p>nicht</p>
+<div class="codehilite"><pre><span></span><code>Stage 1
+</code></pre></div>
+
+<p>überschreibt.</p>
+<p>Ebenso dürfen</p>
+<p>BIOS-Bereiche</p>
+<p>nicht überschrieben werden.</p>
+<hr>
+<h1 id="54-speicherprufung">54. Speicherprüfung</h1>
+<p>Der zulässige Bereich lautet</p>
+<div class="codehilite"><pre><span></span><code>0x7E00
+
+↓
+
+0x9FFFF
+</code></pre></div>
+
+<p>Innerhalb dieses Bereiches darf Stage 2 geladen werden.</p>
+<p>Andere Bereiche sind verboten.</p>
+<hr>
+<h1 id="55-fehlerklassen">55. Fehlerklassen</h1>
+<p>Stage 1 unterscheidet</p>
+<div class="codehilite"><pre><span></span><code>INFO
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>WARNING
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>RECOVERABLE
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>FATAL
+</code></pre></div>
+
+<p>Ein fataler Fehler beendet den Bootvorgang.</p>
+<hr>
+<h1 id="56-fehlercodes">56. Fehlercodes</h1>
+<p>Empfohlene Fehlercodes</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Bedeutung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0x01</td>
+<td>Disk Read Error</td>
+</tr>
+<tr>
+<td>0x02</td>
+<td>Invalid Stage 2</td>
+</tr>
+<tr>
+<td>0x03</td>
+<td>Memory Overflow</td>
+</tr>
+<tr>
+<td>0x04</td>
+<td>Invalid Boot Device</td>
+</tr>
+<tr>
+<td>0x05</td>
+<td>Retry Failed</td>
+</tr>
+<tr>
+<td>0x06</td>
+<td>BIOS Failure</td>
+</tr>
+<tr>
+<td>0x07</td>
+<td>Unknown Error</td>
+</tr>
+</tbody>
+</table>
+<p>Diese Fehlercodes werden später in Stage 2 übernommen.</p>
+<hr>
+<h1 id="57-retrystrategie">57. Retrystrategie</h1>
+<p>Nova verwendet</p>
+<div class="codehilite"><pre><span></span><code>Retry
+
+↓
+
+Disk Reset
+
+↓
+
+Retry
+
+↓
+
+Disk Reset
+
+↓
+
+Retry
+
+↓
+
+Abort
+</code></pre></div>
+
+<p>Mehr als drei Wiederholungen sind standardmäßig nicht vorgesehen.</p>
+<hr>
+<h1 id="58-disk-reset">58. Disk Reset</h1>
+<p>Vor jedem erneuten Lesen wird</p>
+<div class="codehilite"><pre><span></span><code><span class="nf">mov</span><span class="w"> </span><span class="no">ah</span><span class="p">,</span><span class="mi">00</span><span class="no">h</span>
+
+<span class="nf">int</span><span class="w"> </span><span class="mi">13</span><span class="no">h</span>
+</code></pre></div>
+
+<p>aufgerufen.</p>
+<p>Dies verhindert,</p>
+<p>dass Controllerfehler dauerhaft bestehen bleiben.</p>
+<hr>
+<h1 id="59-zeitverhalten">59. Zeitverhalten</h1>
+<p>Stage 1 besitzt keine komplexe Zeitsteuerung.</p>
+<p>Optional kann</p>
+<p>zwischen zwei Retries</p>
+<p>eine kurze BIOS-Wartezeit erfolgen.</p>
+<hr>
+<h1 id="60-sprung-zu-stage-2">60. Sprung zu Stage 2</h1>
+<p>Nach erfolgreichem Laden erfolgt</p>
+<div class="codehilite"><pre><span></span><code><span class="nf">jmp</span><span class="w"> </span><span class="mi">0000</span><span class="p">:</span><span class="mi">7</span><span class="no">E00</span>
+</code></pre></div>
+
+<p>Der Sprung darf erst erfolgen,</p>
+<p>wenn</p>
+<ul>
+<li>
+<p>alle Register vorbereitet sind</p>
+</li>
+<li>
+<p>der Stack gültig ist</p>
+</li>
+<li>
+<p>DL korrekt gesetzt wurde</p>
+</li>
+</ul>
+<hr>
+<h1 id="61-registerzustand">61. Registerzustand</h1>
+<p>Beim Eintritt in Stage 2 gelten</p>
+<div class="codehilite"><pre><span></span><code>CS
+
+0000
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>IP
+
+7E00
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>DS
+
+0000
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>ES
+
+0000
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>SS
+
+0000
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>SP
+
+7C00
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>DL
+
+Boot Device
+</code></pre></div>
+
+<p>Dieser Zustand ist Bestandteil der ABI.</p>
+<hr>
+<h1 id="62-stage-1-kontext">62. Stage-1-Kontext</h1>
+<p>Der Kontext wird minimal gehalten.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">boot_drive</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">retry_count</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint16_t</span><span class="w"> </span><span class="n">reserved</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_stage1_context_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="63-bootprotokoll">63. Bootprotokoll</h1>
+<p>Stage 1 besitzt kein vollständiges Logging.</p>
+<p>Optional können Statuscodes in einem reservierten Speicherbereich abgelegt werden.</p>
+<p>Beispiel</p>
+<div class="codehilite"><pre><span></span><code>0x0500
+
+↓
+
+Boot Status
+</code></pre></div>
+
+<p>Dieser Bereich wird später von Stage 2 ausgewertet.</p>
+<hr>
+<h1 id="64-referenzalgorithmus">64. Referenzalgorithmus</h1>
+<div class="codehilite"><pre><span></span><code>CPU Setup
+
+↓
+
+Save Boot Drive
+
+↓
+
+Load Stage 2
+
+↓
+
+Verify
+
+↓
+
+Retry?
+
+↓
+
+Jump Stage 2
+</code></pre></div>
+
+<p>Der Algorithmus soll bewusst einfach bleiben.</p>
+<hr>
+<h1 id="65-build-anforderungen">65. Build-Anforderungen</h1>
+<p>Der Buildprozess MUSS</p>
+<ul>
+<li>boot1.bin erzeugen</li>
+<li>exakt 512 Byte groß sein</li>
+<li>Bootsignatur schreiben</li>
+<li>Ladeparameter eintragen</li>
+<li>reproduzierbar sein</li>
+</ul>
+<hr>
+<h1 id="66-optimierungen">66. Optimierungen</h1>
+<p>Stage 1 darf</p>
+<p>NICHT</p>
+<p>optimiert werden durch</p>
+<ul>
+<li>
+<p>Selbstmodifikation</p>
+</li>
+<li>
+<p>dynamische Speicherverwaltung</p>
+</li>
+<li>
+<p>Rekursion</p>
+</li>
+<li>
+<p>komplexe Algorithmen</p>
+</li>
+</ul>
+<p>Die höchste Priorität besitzt</p>
+<p><strong>Zuverlässigkeit</strong>.</p>
+<hr>
+<h1 id="67-kompatibilitatsanforderungen">67. Kompatibilitätsanforderungen</h1>
+<p>Stage 1 soll kompatibel sein mit</p>
+<ul>
+<li>klassischen BIOS-PCs</li>
+<li>QEMU</li>
+<li>Bochs</li>
+<li>VirtualBox</li>
+<li>VMware</li>
+<li>älteren Industrie-PCs</li>
+<li>Embedded x86-Systemen</li>
+</ul>
+<hr>
+<h1 id="68-portabilitat">68. Portabilität</h1>
+<p>Der Quellcode soll</p>
+<ul>
+<li>NASM-kompatibel</li>
+<li>leicht verständlich</li>
+<li>klar kommentiert</li>
+<li>architekturneutral dokumentiert</li>
+</ul>
+<p>sein.</p>
+<p>Eine spätere ARM- oder RISC-V-Implementierung erhält eine eigene Stage-1-Spezifikation.</p>
+<hr>
+<h1 id="69-qualitatsanforderungen">69. Qualitätsanforderungen</h1>
+<p>Die Referenzimplementierung muss</p>
+<p>✔ keine Compilerwarnungen erzeugen</p>
+<p>✔ deterministisch bauen</p>
+<p>✔ keine undefinierten BIOS-Aufrufe enthalten</p>
+<p>✔ keine Magic Numbers ohne Dokumentation enthalten</p>
+<p>✔ reproduzierbare Binärdateien erzeugen</p>
+<hr>
+<h1 id="70-sicherheitsarchitektur">70. Sicherheitsarchitektur</h1>
+<p>Obwohl Stage 1 möglichst klein gehalten wird, bildet er den Beginn der gesamten Vertrauenskette (Chain of Trust).</p>
+<div class="codehilite"><pre><span></span><code>Firmware
+
+↓
+
+Stage 1
+
+↓
+
+Stage 2
+
+↓
+
+Boot Core
+
+↓
+
+Kernel
+
+↓
+
+Nova OS
+</code></pre></div>
+
+<p>Jede nachfolgende Komponente baut auf der Integrität der vorherigen auf.</p>
+<hr>
+<h1 id="71-sicherheitsziele">71. Sicherheitsziele</h1>
+<p>Stage 1 soll</p>
+<ul>
+<li>ausschließlich erwarteten Code ausführen</li>
+<li>keine Speicherbereiche außerhalb seines Zuständigkeitsbereiches verändern</li>
+<li>Bootparameter unverändert weitergeben</li>
+<li>keine unkontrollierten BIOS-Aufrufe durchführen</li>
+<li>deterministisch arbeiten</li>
+<li>reproduzierbare Binärdateien erzeugen</li>
+</ul>
+<hr>
+<h1 id="72-integritatsmodell">72. Integritätsmodell</h1>
+<p>Stage 1 besitzt standardmäßig nur eine einfache Integritätsprüfung.</p>
+<div class="codehilite"><pre><span></span><code>Firmware
+
+↓
+
+Stage 1
+
+↓
+
+Stage 2 vorhanden?
+
+↓
+
+Ja
+
+↓
+
+Übergabe
+</code></pre></div>
+
+<p>Erweiterte Signaturprüfungen erfolgen später in Stage 2.</p>
+<hr>
+<h1 id="73-erweiterte-integritatsprufung">73. Erweiterte Integritätsprüfung</h1>
+<p>Spätere Versionen können zusätzlich prüfen</p>
+<ul>
+<li>CRC32</li>
+<li>SHA-256</li>
+<li>SHA-512</li>
+<li>Digitale Signaturen</li>
+<li>TPM Measurements</li>
+<li>Secure Boot Status</li>
+</ul>
+<p>Diese Funktionen dürfen Stage 1 jedoch nicht unnötig vergrößern.</p>
+<hr>
+<h1 id="74-speicherintegritat">74. Speicherintegrität</h1>
+<p>Vor jedem Schreibzugriff MUSS geprüft werden, ob</p>
+<ul>
+<li>Zieladresse gültig</li>
+<li>Speicherbereich vorhanden</li>
+<li>keine Überschneidung mit Stage 1</li>
+<li>keine BIOS-Daten überschrieben werden</li>
+</ul>
+<p>Speicher außerhalb des erlaubten Bereiches darf niemals beschrieben werden.</p>
+<hr>
+<h1 id="75-bios-kompatibilitat">75. BIOS-Kompatibilität</h1>
+<p>Stage 1 MUSS sich ausschließlich auf dokumentierte BIOS-Funktionen verlassen.</p>
+<p>Nicht zulässig sind</p>
+<ul>
+<li>BIOS-Erweiterungen unbekannter Hersteller</li>
+<li>nicht dokumentierte Register</li>
+<li>undefiniertes Verhalten</li>
+</ul>
+<hr>
+<h1 id="76-fehlerklassen">76. Fehlerklassen</h1>
+<p>Fehler werden in vier Klassen eingeteilt.</p>
+<div class="codehilite"><pre><span></span><code>INFO
+
+↓
+
+WARNING
+
+↓
+
+RECOVERABLE
+
+↓
+
+FATAL
+</code></pre></div>
+
+<p>Nur RECOVERABLE-Fehler dürfen automatisch behandelt werden.</p>
+<hr>
+<h1 id="77-recoverystrategie">77. Recoverystrategie</h1>
+<p>Bei einem behebbaren Fehler gilt</p>
+<div class="codehilite"><pre><span></span><code>Disk Error
+
+↓
+
+Reset Controller
+
+↓
+
+Retry
+
+↓
+
+Success
+
+↓
+
+Continue
+</code></pre></div>
+
+<p>Erst wenn alle Versuche scheitern,</p>
+<p>endet der Bootvorgang.</p>
+<hr>
+<h1 id="78-bios-fallback">78. BIOS-Fallback</h1>
+<p>Kann Stage 1 Stage 2 nicht laden,</p>
+<p>soll optional einer der folgenden Wege genutzt werden.</p>
+<div class="codehilite"><pre><span></span><code>Retry
+</code></pre></div>
+
+<p>↓</p>
+<div class="codehilite"><pre><span></span><code>BIOS Boot Retry
+</code></pre></div>
+
+<p>↓</p>
+<div class="codehilite"><pre><span></span><code>INT 18h
+</code></pre></div>
+
+<p>oder</p>
+<div class="codehilite"><pre><span></span><code>INT 19h
+</code></pre></div>
+
+<p>Welcher Pfad verwendet wird,</p>
+<p>legt NPSPEC-BIOSBOOT-0001 fest.</p>
+<hr>
+<h1 id="79-recovery-code">79. Recovery-Code</h1>
+<p>Stage 1 besitzt selbst keine Recoveryumgebung.</p>
+<p>Es kann lediglich</p>
+<ul>
+<li>Fehler melden</li>
+<li>Boot stoppen</li>
+<li>BIOS erneut starten</li>
+<li>Stage 2 erneut laden</li>
+</ul>
+<p>Alle eigentlichen Recoveryfunktionen gehören Stage 2.</p>
+<hr>
+<h1 id="80-bootdiagnose">80. Bootdiagnose</h1>
+<p>Optional darf ein Debugbuild Informationen ausgeben.</p>
+<p>Beispiele</p>
+<div class="codehilite"><pre><span></span><code>Nova Stage 1
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>Loading Stage 2...
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>Retry 2/3
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>Jump Stage 2
+</code></pre></div>
+
+<p>Diese Ausgaben dürfen im Releasebuild vollständig entfernt werden.</p>
+<hr>
+<h1 id="81-logging">81. Logging</h1>
+<p>Stage 1 besitzt kein vollständiges Logsystem.</p>
+<p>Es darf jedoch einfache Statusinformationen hinterlassen.</p>
+<p>Beispiel</p>
+<div class="codehilite"><pre><span></span><code>0x0500
+
+↓
+
+Bootstatus
+</code></pre></div>
+
+<p>oder</p>
+<div class="codehilite"><pre><span></span><code>0x0600
+
+↓
+
+Fehlercode
+</code></pre></div>
+
+<p>Stage 2 kann diese Informationen später übernehmen.</p>
+<hr>
+<h1 id="82-fehlercodes">82. Fehlercodes</h1>
+<p>Empfohlenes Format</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_STAGE1_OK</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_STAGE1_DISK_ERROR</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_STAGE1_RETRY</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_STAGE1_INVALID_STAGE2</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_STAGE1_MEMORY_ERROR</span><span class="p">,</span>
+
+<span class="w">    </span><span class="n">NOVA_STAGE1_FATAL_ERROR</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_stage1_error_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="83-panicstrategie">83. Panicstrategie</h1>
+<p>Stage 1 besitzt noch keinen grafischen Panic Screen.</p>
+<p>Stattdessen erfolgt</p>
+<div class="codehilite"><pre><span></span><code>Fehler
+
+↓
+
+Boot stoppen
+
+↓
+
+optional BIOS Restart
+</code></pre></div>
+
+<p>Grafische Fehlermeldungen gehören Stage 2.</p>
+<hr>
+<h1 id="84-debugmodus">84. Debugmodus</h1>
+<p>Debugbuilds dürfen</p>
+<ul>
+<li>Register ausgeben</li>
+<li>Sektornummern anzeigen</li>
+<li>Retryzähler anzeigen</li>
+<li>BIOS-Status anzeigen</li>
+</ul>
+<p>Releasebuilds enthalten diese Funktionen nicht.</p>
+<hr>
+<h1 id="85-determinismus">85. Determinismus</h1>
+<p>Stage 1 darf niemals</p>
+<ul>
+<li>Zufallszahlen erzeugen</li>
+<li>Zeitabhängigkeiten besitzen</li>
+<li>asynchron arbeiten</li>
+<li>Threads verwenden</li>
+</ul>
+<p>Der Ablauf muss immer identisch sein.</p>
+<hr>
+<h1 id="86-erweiterbarkeit">86. Erweiterbarkeit</h1>
+<p>Neue Funktionen dürfen Stage 1 nicht unnötig vergrößern.</p>
+<p>Neue Features gehören grundsätzlich</p>
+<ul>
+<li>Stage 2</li>
+<li>Boot Core</li>
+<li>Kernel</li>
+</ul>
+<p>Nur absolut notwendige Änderungen sind zulässig.</p>
+<hr>
+<h1 id="87-secure-boot">87. Secure Boot</h1>
+<p>Stage 1 selbst besitzt keine vollständige Secure-Boot-Unterstützung.</p>
+<p>Langfristig kann jedoch geprüft werden,</p>
+<p>ob</p>
+<ul>
+<li>
+<p>Firmware Secure Boot aktiv</p>
+</li>
+<li>
+<p>TPM vorhanden</p>
+</li>
+<li>
+<p>Nova Trust Store aktiv</p>
+</li>
+</ul>
+<p>ist.</p>
+<p>Die eigentliche Verifikation erfolgt später.</p>
+<hr>
+<h1 id="88-measured-boot">88. Measured Boot</h1>
+<p>Optional kann Stage 1</p>
+<p>Messwerte an Stage 2 weiterreichen.</p>
+<p>Beispiel</p>
+<div class="codehilite"><pre><span></span><code>Firmware Version
+
+↓
+
+Boot Device
+
+↓
+
+Boot Timestamp
+</code></pre></div>
+
+<p>Die TPM-Erweiterung erfolgt später.</p>
+<hr>
+<h1 id="89-selbstheilung">89. Selbstheilung</h1>
+<p>Stage 1 besitzt keine Selbstheilung.</p>
+<p>Es kann lediglich</p>
+<ul>
+<li>erneutes Lesen versuchen</li>
+<li>BIOS zurücksetzen</li>
+<li>Stage 2 erneut laden</li>
+</ul>
+<p>Die eigentliche Selbstheilung gehört</p>
+<p>NPSPEC-BOOTSELFHEAL-0001.</p>
+<hr>
+<h1 id="90-wartbarkeit">90. Wartbarkeit</h1>
+<p>Der gesamte Quellcode MUSS</p>
+<ul>
+<li>klar kommentiert</li>
+<li>modular</li>
+<li>nachvollziehbar</li>
+<li>reproduzierbar</li>
+</ul>
+<p>sein.</p>
+<p>Jeder BIOS-Aufruf erhält einen erklärenden Kommentar.</p>
+<hr>
+<h1 id="91-coding-standard">91. Coding Standard</h1>
+<p>Empfohlen</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">; ----------------------------------</span>
+<span class="c1">; Load Stage 2</span>
+<span class="c1">; ----------------------------------</span>
+</code></pre></div>
+
+<p>Jede Funktion beginnt mit</p>
+<ul>
+<li>Zweck</li>
+<li>Register</li>
+<li>Ein-/Ausgabe</li>
+<li>Nebeneffekte</li>
+</ul>
+<hr>
+<h1 id="92-buildanforderungen">92. Buildanforderungen</h1>
+<p>Der Buildprozess MUSS prüfen</p>
+<ul>
+<li>
+<p>Binärgröße</p>
+</li>
+<li>
+<p>Bootsignatur</p>
+</li>
+<li>
+<p>Sektoranzahl</p>
+</li>
+<li>
+<p>CRC</p>
+</li>
+<li>
+<p>Reproduzierbarkeit</p>
+</li>
+</ul>
+<p>Fehlerhafte Bootloader dürfen nicht ausgeliefert werden.</p>
+<hr>
+<h1 id="93-zukunft">93. Zukunft</h1>
+<p>Langfristig bleibt Stage 1 nahezu unverändert.</p>
+<p>Die meisten Weiterentwicklungen erfolgen</p>
+<ul>
+<li>Stage 2</li>
+<li>Boot Core</li>
+<li>Recovery</li>
+<li>Kernel Loader</li>
+</ul>
+<p>Dadurch bleibt Stage 1 über viele Jahre stabil.</p>
+<hr>
+<h1 id="94-offentliche-abi">94. Öffentliche ABI</h1>
+<p>Stage 1 besitzt eine bewusst sehr kleine ABI.</p>
+<p>Die einzige garantierte Information ist das Bootlaufwerk.</p>
+<h2 id="x86-real-mode">x86 Real Mode</h2>
+<p>Beim Eintritt in Stage 2 gilt:</p>
+<table>
+<thead>
+<tr>
+<th>Register</th>
+<th>Bedeutung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CS</td>
+<td>0x0000</td>
+</tr>
+<tr>
+<td>IP</td>
+<td>0x7E00</td>
+</tr>
+<tr>
+<td>DS</td>
+<td>0x0000</td>
+</tr>
+<tr>
+<td>ES</td>
+<td>0x0000</td>
+</tr>
+<tr>
+<td>SS</td>
+<td>0x0000</td>
+</tr>
+<tr>
+<td>SP</td>
+<td>0x7C00</td>
+</tr>
+<tr>
+<td>DL</td>
+<td>Bootlaufwerk</td>
+</tr>
+</tbody>
+</table>
+<p>Alle anderen Register gelten als undefiniert und dürfen von Stage 2 nicht vorausgesetzt werden.</p>
+<hr>
+<h1 id="95-stage-1-kontext">95. Stage-1-Kontext</h1>
+<p>Stage 1 übergibt ausschließlich minimale Informationen.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_stage1_context</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">boot_drive</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">retry_count</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">flags</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">reserved</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="n">nova_stage1_context_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Die vollständige <code>nova_boot_info_t</code> wird erst in Stage 2 aufgebaut.</p>
+<hr>
+<h1 id="96-interne-daten">96. Interne Daten</h1>
+<p>Empfohlene interne Variablen</p>
+<div class="codehilite"><pre><span></span><code><span class="nf">BootDrive</span><span class="w">      </span><span class="no">db</span><span class="w"> </span><span class="mi">0</span>
+
+<span class="nf">RetryCounter</span><span class="w">   </span><span class="no">db</span><span class="w"> </span><span class="mi">0</span>
+
+<span class="nf">Stage2Sector</span><span class="w">   </span><span class="no">dw</span><span class="w"> </span><span class="mi">2</span>
+
+<span class="nf">Stage2Count</span><span class="w">    </span><span class="no">dw</span><span class="w"> </span><span class="mi">8</span>
+</code></pre></div>
+
+<p>Alle Konstanten müssen dokumentiert sein.</p>
+<hr>
+<h1 id="97-referenzimplementierung">97. Referenzimplementierung</h1>
+<p>Der empfohlene Programmablauf lautet:</p>
+<div class="codehilite"><pre><span></span><code>Firmware
+
+↓
+
+Stage 1 Start
+
+↓
+
+Register initialisieren
+
+↓
+
+Stack initialisieren
+
+↓
+
+Bootlaufwerk sichern
+
+↓
+
+Stage 2 laden
+
+↓
+
+Erfolg?
+
+├── Nein
+
+↓
+
+Retry
+
+↓
+
+BIOS Reset
+
+↓
+
+Retry
+
+↓
+
+Fehler
+
+└── Ja
+
+↓
+
+Jump Stage 2
+</code></pre></div>
+
+<p>Dieser Ablauf bildet die Referenzimplementierung.</p>
+<hr>
+<h1 id="98-zustandsautomat">98. Zustandsautomat</h1>
+<div class="codehilite"><pre><span></span><code>RESET
+
+↓
+
+INITIALIZE
+
+↓
+
+LOAD
+
+↓
+
+VERIFY
+
+↓
+
+READY
+
+↓
+
+TRANSFER
+</code></pre></div>
+
+<p>Fehler führen nach</p>
+<div class="codehilite"><pre><span></span><code>ERROR
+
+↓
+
+STOP
+</code></pre></div>
+
+<hr>
+<h1 id="99-buildprozess">99. Buildprozess</h1>
+<p>Der Buildprozess besteht aus:</p>
+<div class="codehilite"><pre><span></span><code>boot1.asm
+
+↓
+
+NASM
+
+↓
+
+boot1.bin
+
+↓
+
+Bootsignatur
+
+↓
+
+Größenprüfung
+
+↓
+
+CRC
+
+↓
+
+Integration in disk.img
+</code></pre></div>
+
+<hr>
+<h1 id="100-buildregeln">100. Buildregeln</h1>
+<p>Der Build MUSS prüfen:</p>
+<ul>
+<li>exakt 512 Byte</li>
+<li>Signatur vorhanden</li>
+<li>keine Warnungen</li>
+<li>reproduzierbarer Build</li>
+<li>gültige Ladeparameter</li>
+<li>keine ungültigen Offsets</li>
+<li>Stage-2-Größe passt</li>
+</ul>
+<hr>
+<h1 id="101-qualitatsanforderungen">101. Qualitätsanforderungen</h1>
+<p>Der Stage-1-Code muss:</p>
+<p>✔ assemblerfreundlich sein</p>
+<p>✔ vollständig kommentiert sein</p>
+<p>✔ reproduzierbar sein</p>
+<p>✔ keine Magic Numbers ohne Dokumentation enthalten</p>
+<p>✔ keine unnötigen BIOS-Aufrufe besitzen</p>
+<p>✔ deterministisch arbeiten</p>
+<hr>
+<h1 id="102-teststrategie">102. Teststrategie</h1>
+<p>Jede Änderung an Stage 1 muss automatisiert getestet werden.</p>
+<p>Mindestens:</p>
+<h3 id="boottests">Boottests</h3>
+<ul>
+<li>BIOS startet</li>
+<li>MBR wird erkannt</li>
+<li>Signatur korrekt</li>
+<li>Stage 2 wird geladen</li>
+</ul>
+<hr>
+<h3 id="fehlertests">Fehlertests</h3>
+<ul>
+<li>
+<p>Datenträger entfernt</p>
+</li>
+<li>
+<p>fehlerhafte Sektoren</p>
+</li>
+<li>
+<p>falsches Bootlaufwerk</p>
+</li>
+<li>
+<p>Stage 2 fehlt</p>
+</li>
+<li>
+<p>BIOS Read Error</p>
+</li>
+</ul>
+<hr>
+<h3 id="regressionstests">Regressionstests</h3>
+<ul>
+<li>
+<p>Buildgröße</p>
+</li>
+<li>
+<p>Registerzustand</p>
+</li>
+<li>
+<p>Ladeadresse</p>
+</li>
+<li>
+<p>Retryfunktion</p>
+</li>
+</ul>
+<hr>
+<h3 id="hardwaretests">Hardwaretests</h3>
+<ul>
+<li>
+<p>QEMU</p>
+</li>
+<li>
+<p>Bochs</p>
+</li>
+<li>
+<p>VirtualBox</p>
+</li>
+<li>
+<p>VMware</p>
+</li>
+<li>
+<p>ältere BIOS-PCs</p>
+</li>
+<li>
+<p>moderne Mainboards mit CSM</p>
+</li>
+</ul>
+<hr>
+<h1 id="103-leistungsanforderungen">103. Leistungsanforderungen</h1>
+<p>Stage 1 soll</p>
+<ul>
+<li>möglichst wenige BIOS-Aufrufe besitzen</li>
+<li>unnötige Speicherzugriffe vermeiden</li>
+<li>keine Schleifen ohne Abbruch besitzen</li>
+</ul>
+<p>Der Code wird auf Lesbarkeit optimiert, nicht auf Mikrooptimierungen.</p>
+<hr>
+<h1 id="104-dokumentation">104. Dokumentation</h1>
+<p>Jede Funktion erhält mindestens:</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">;-----------------------------------------------------</span>
+<span class="c1">; Funktion:</span>
+<span class="c1">;</span>
+<span class="c1">; Zweck:</span>
+<span class="c1">;</span>
+<span class="c1">; Eingabe:</span>
+<span class="c1">;</span>
+<span class="c1">; Ausgabe:</span>
+<span class="c1">;</span>
+<span class="c1">; Verändert:</span>
+<span class="c1">;</span>
+<span class="c1">; Fehler:</span>
+<span class="c1">;-----------------------------------------------------</span>
+</code></pre></div>
+
+<p>Dadurch bleibt der Bootloader langfristig wartbar.</p>
+<hr>
+<h1 id="105-referenzprojektstruktur">105. Referenzprojektstruktur</h1>
+<div class="codehilite"><pre><span></span><code>boot/
+├── boot1.asm
+├── boot1.inc
+├── boot_error.inc
+├── boot_memory.inc
+├── boot_disk.inc
+└── boot_constants.inc
+</code></pre></div>
+
+<p>Stage 1 soll möglichst modular aufgebaut sein, obwohl daraus nur eine Binärdatei erzeugt wird.</p>
+<hr>
+<h1 id="106-beziehungen-zu-anderen-npspecs">106. Beziehungen zu anderen NPSPECs</h1>
+<p>Stage 1 bildet die Grundlage für:</p>
+<ul>
+<li>NPSPEC-BOOTSTAGE2-0001</li>
+<li>NPSPEC-BOOTLOADER-0001</li>
+<li>NPSPEC-BIOSBOOT-0001</li>
+<li>NPSPEC-BOOTMEMORY-0001</li>
+<li>NPSPEC-BOOTSECURITY-0001</li>
+<li>NPSPEC-BOOTRECOVERY-0001</li>
+<li>NPSPEC-BOOTHANDOFF-0001</li>
+</ul>
+<p>Änderungen an Stage 1 dürfen diese Spezifikationen nicht unbeabsichtigt verletzen.</p>
+<hr>
+<h1 id="107-implementierungsphasen">107. Implementierungsphasen</h1>
+<h2 id="phase-1">Phase 1</h2>
+<ul>
+<li>Bootlaufwerk sichern</li>
+<li>Stage 2 laden</li>
+<li>Sprung</li>
+</ul>
+<hr>
+<h2 id="phase-2">Phase 2</h2>
+<ul>
+<li>Retry</li>
+<li>BIOS Reset</li>
+<li>Fehlercodes</li>
+</ul>
+<hr>
+<h2 id="phase-3">Phase 3</h2>
+<ul>
+<li>CRC</li>
+<li>Integritätsprüfung</li>
+<li>Debugmeldungen</li>
+</ul>
+<hr>
+<h2 id="phase-4">Phase 4</h2>
+<ul>
+<li>Buildvalidierung</li>
+<li>Regressionstests</li>
+<li>Optimierung</li>
+</ul>
+<hr>
+<h2 id="phase-5">Phase 5</h2>
+<ul>
+<li>Langfristige Wartung</li>
+</ul>
+<hr>
+<h1 id="108-akzeptanzkriterien">108. Akzeptanzkriterien</h1>
+<p>NPSPEC-BOOTSTAGE1-0001 gilt als umgesetzt, wenn:</p>
+<ol>
+<li>Stage 1 exakt 512 Byte groß ist.</li>
+<li>Die Bootsignatur <code>0x55AA</code> korrekt geschrieben wird.</li>
+<li>Der Prozessorzustand definiert initialisiert wird.</li>
+<li>Das Bootlaufwerk zuverlässig gespeichert wird.</li>
+<li>Stage 2 erfolgreich von einem BIOS-Datenträger geladen wird.</li>
+<li>Lesefehler erkannt und bis zu drei Mal erneut versucht werden.</li>
+<li>Nach erfolgreichem Laden kontrolliert an Stage 2 übergeben wird.</li>
+<li>Der Registerzustand der ABI entspricht.</li>
+<li>Keine BIOS-Datenbereiche überschrieben werden.</li>
+<li>Der Bootloader auf QEMU und mindestens einem realen BIOS-System erfolgreich startet.</li>
+</ol>
+<hr>
+<h1 id="109-zusammenfassung">109. Zusammenfassung</h1>
+<p>Der <strong>Nova Stage-1-Bootloader</strong> ist bewusst minimal gehalten.</p>
+<p>Er übernimmt ausschließlich die Aufgaben, die zwingend notwendig sind, um die Kontrolle von der Firmware auf den erweiterten Nova-Bootloader (Stage 2) zu übertragen.</p>
+<p>Durch die strikte Trennung zwischen Stage 1 und Stage 2 bleibt der frühe Bootpfad:</p>
+<ul>
+<li>klein</li>
+<li>robust</li>
+<li>deterministisch</li>
+<li>leicht überprüfbar</li>
+<li>langfristig wartbar</li>
+</ul>
+<p>Diese Architektur reduziert die Angriffsfläche und erleichtert die Portierung auf zukünftige Plattformen.</p>
+<hr>
+<h1 id="110-langfristige-vision">110. Langfristige Vision</h1>
+<p>Der Stage-1-Bootloader soll sich über viele Jahre kaum verändern.</p>
+<p>Neue Funktionen werden grundsätzlich nicht in Stage 1 integriert, sondern in Stage 2 oder den Nova Boot Core verlagert.</p>
+<p>Langfristige Ziele:</p>
+<ul>
+<li>maximale Stabilität</li>
+<li>reproduzierbare Builds</li>
+<li>vollständige BIOS-Kompatibilität</li>
+<li>klar definierte ABI</li>
+<li>minimale Codegröße</li>
+<li>einfacher Sicherheitsnachweis</li>
+<li>Wartbarkeit über mehrere Nova-Generationen</li>
+<li>gemeinsame Architektur mit zukünftigen UEFI-, ARM64- und RISC-V-Bootpfaden</li>
+</ul>
+<p>Stage 1 bildet damit das unveränderliche Fundament der Nova-Bootplattform: klein genug, um vollständig verstanden und überprüft werden zu können, und gleichzeitig robust genug, um den Übergang von der Firmware in das Nova-Ökosystem zuverlässig einzuleiten.</p>
+                </div>
+            </article>
+            
+        </div>
+    </main>
+
+    <a
+        class="back-to-top"
+        id="backToTop"
+        href="#top"
+        title="Nach oben"
+        aria-label="Nach oben"
+    >
+        ↑
+    </a>
+
+    <script>
+        const navigation = document.getElementById("toc");
+        const overlay = document.getElementById("overlay");
+        const backToTop = document.getElementById("backToTop");
+
+        function toggleNavigation() {
+            navigation.classList.toggle("open");
+            overlay.classList.toggle("visible");
+        }
+
+        function closeNavigation() {
+            navigation.classList.remove("open");
+            overlay.classList.remove("visible");
+        }
+
+        document.querySelectorAll(".toc a").forEach((link) => {
+            link.addEventListener("click", () => {
+                if (window.innerWidth <= 900) {
+                    closeNavigation();
+                }
+            });
+        });
+
+        window.addEventListener("scroll", () => {
+            if (window.scrollY > 500) {
+                backToTop.classList.add("visible");
+            } else {
+                backToTop.classList.remove("visible");
+            }
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                closeNavigation();
+            }
+        });
+    </script>
+</body>
+</html>

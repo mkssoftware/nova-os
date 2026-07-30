@@ -1,0 +1,2120 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="color-scheme"
+        content="dark"
+    >
+
+    <title>NPSPEC UNITS 0003 Part 1 Chapters 1 10</title>
+
+    <style>
+        :root {
+            color-scheme: dark;
+
+            --background: #0c0c0c;
+            --background-secondary: #111111;
+            --surface: rgba(32, 32, 32, 0.82);
+            --surface-solid: #202020;
+            --surface-hover: rgba(255, 255, 255, 0.075);
+            --surface-active: rgba(255, 255, 255, 0.11);
+
+            --border: rgba(255, 255, 255, 0.085);
+            --border-strong: rgba(255, 255, 255, 0.15);
+
+            --text: #ffffff;
+            --text-secondary: #c8c8c8;
+            --text-muted: #8f8f8f;
+
+            --accent: #60cdff;
+            --accent-hover: #86d8ff;
+            --accent-muted: rgba(96, 205, 255, 0.15);
+
+            --success: #6ccb5f;
+            --warning: #fce100;
+            --danger: #ff99a4;
+
+            --code-background: #151515;
+            --inline-code-background: rgba(255, 255, 255, 0.08);
+
+            --sidebar-width: 320px;
+            --header-height: 64px;
+
+            --radius-small: 6px;
+            --radius-medium: 10px;
+            --radius-large: 14px;
+
+            --shadow:
+                0 16px 38px rgba(0, 0, 0, 0.40),
+                0 2px 8px rgba(0, 0, 0, 0.30);
+
+            --font:
+                "Segoe UI Variable",
+                "Segoe UI",
+                system-ui,
+                -apple-system,
+                BlinkMacSystemFont,
+                sans-serif;
+
+            --mono-font:
+                "Cascadia Code",
+                "Cascadia Mono",
+                "Consolas",
+                monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: calc(var(--header-height) + 24px);
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(
+                    circle at 15% 0%,
+                    rgba(96, 205, 255, 0.08),
+                    transparent 34rem
+                ),
+                radial-gradient(
+                    circle at 100% 40%,
+                    rgba(120, 90, 255, 0.055),
+                    transparent 30rem
+                ),
+                var(--background);
+
+            color: var(--text);
+            font-family: var(--font);
+            font-size: 15px;
+            line-height: 1.65;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            color: var(--accent-hover);
+            text-decoration: underline;
+        }
+
+        button,
+        input {
+            font: inherit;
+        }
+
+        .app-header {
+            position: fixed;
+            top: 0;
+            right: 0;
+            left: 0;
+            z-index: 1000;
+
+            height: var(--header-height);
+
+            display: flex;
+            align-items: center;
+            gap: 14px;
+
+            padding: 0 20px;
+
+            background: rgba(20, 20, 20, 0.78);
+            border-bottom: 1px solid var(--border);
+
+            backdrop-filter: blur(30px) saturate(150%);
+            -webkit-backdrop-filter: blur(30px) saturate(150%);
+        }
+
+        .menu-button,
+        .header-button,
+        .toc-close {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--text);
+
+            border-radius: var(--radius-small);
+            cursor: pointer;
+
+            transition:
+                background 120ms ease,
+                border-color 120ms ease,
+                transform 120ms ease;
+        }
+
+        .menu-button {
+            width: 38px;
+            height: 38px;
+            font-size: 20px;
+        }
+
+        .header-button {
+            min-height: 36px;
+            padding: 7px 13px;
+        }
+
+        .menu-button:hover,
+        .header-button:hover,
+        .toc-close:hover {
+            background: var(--surface-hover);
+            border-color: var(--border-strong);
+        }
+
+        .menu-button:active,
+        .header-button:active,
+        .toc-close:active {
+            background: var(--surface-active);
+            transform: scale(0.97);
+        }
+
+        .app-title-area {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .app-title {
+            overflow: hidden;
+            margin: 0;
+
+            color: var(--text);
+            font-size: 16px;
+            font-weight: 600;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .app-subtitle {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .toc {
+            position: fixed;
+            top: var(--header-height);
+            bottom: 0;
+            left: 0;
+            z-index: 900;
+
+            width: var(--sidebar-width);
+
+            background: rgba(24, 24, 24, 0.86);
+            border-right: 1px solid var(--border);
+
+            backdrop-filter: blur(35px) saturate(145%);
+            -webkit-backdrop-filter: blur(35px) saturate(145%);
+
+            transition: transform 180ms ease;
+        }
+
+        .toc-header {
+            height: 58px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            padding: 0 16px 0 20px;
+
+            border-bottom: 1px solid var(--border);
+        }
+
+        .toc-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .toc-close {
+            display: none;
+            width: 34px;
+            height: 34px;
+            font-size: 22px;
+        }
+
+        .toc-content {
+            height: calc(100% - 58px);
+            overflow-y: auto;
+            padding: 12px 10px 24px;
+        }
+
+        .toc-document {
+            margin-bottom: 5px;
+        }
+
+        .toc-document-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+
+            min-height: 38px;
+            padding: 8px 10px;
+
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 600;
+
+            border-radius: var(--radius-small);
+        }
+
+        .toc-document-link:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-document-icon {
+            color: var(--accent);
+        }
+
+        .toc-headings {
+            margin: 2px 0 8px 18px;
+            padding-left: 12px;
+            border-left: 1px solid var(--border);
+        }
+
+        .toc-heading {
+            display: block;
+
+            padding: 4px 8px;
+
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.4;
+
+            border-radius: 4px;
+        }
+
+        .toc-heading:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-level-1 {
+            font-weight: 600;
+        }
+
+        .toc-level-2 {
+            padding-left: 14px;
+        }
+
+        .toc-level-3 {
+            padding-left: 22px;
+        }
+
+        .toc-level-4,
+        .toc-level-5,
+        .toc-level-6 {
+            padding-left: 30px;
+        }
+
+        .app-main {
+            min-height: 100vh;
+
+            margin-left: var(--sidebar-width);
+            padding:
+                calc(var(--header-height) + 32px)
+                clamp(20px, 4vw, 64px)
+                80px;
+        }
+
+        .content-container {
+            width: min(100%, 1080px);
+            margin: 0 auto;
+        }
+
+        .hero {
+            margin-bottom: 32px;
+            padding: 28px 30px;
+
+            background:
+                linear-gradient(
+                    135deg,
+                    rgba(96, 205, 255, 0.12),
+                    rgba(255, 255, 255, 0.035)
+                ),
+                var(--surface);
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .hero-label {
+            margin-bottom: 7px;
+
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 600;
+
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .hero h1 {
+            margin: 0;
+
+            font-size: clamp(28px, 4vw, 44px);
+            font-weight: 650;
+            line-height: 1.12;
+            letter-spacing: -0.03em;
+        }
+
+        .hero-description {
+            margin: 14px 0 0;
+            color: var(--text-secondary);
+        }
+
+        .hero-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+
+            margin-top: 20px;
+        }
+
+        .meta-item {
+            padding: 6px 10px;
+
+            color: var(--text-secondary);
+            font-size: 12px;
+
+            background: rgba(0, 0, 0, 0.20);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+        }
+
+        .markdown-document {
+            margin-bottom: 32px;
+            overflow: hidden;
+
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+        }
+
+        .document-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+
+            padding: 20px 24px;
+
+            background: rgba(255, 255, 255, 0.025);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .document-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+            flex: 0 0 auto;
+
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 700;
+
+            background: var(--accent-muted);
+            border: 1px solid rgba(96, 205, 255, 0.20);
+            border-radius: 10px;
+        }
+
+        .document-title-area {
+            min-width: 0;
+        }
+
+        .document-title {
+            overflow: hidden;
+            margin: 0;
+
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.3;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .document-path {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .markdown-content {
+            padding: clamp(24px, 5vw, 52px);
+        }
+
+        .markdown-content > :first-child {
+            margin-top: 0;
+        }
+
+        .markdown-content > :last-child {
+            margin-bottom: 0;
+        }
+
+        .markdown-content h1,
+        .markdown-content h2,
+        .markdown-content h3,
+        .markdown-content h4,
+        .markdown-content h5,
+        .markdown-content h6 {
+            position: relative;
+
+            margin-top: 1.8em;
+            margin-bottom: 0.65em;
+
+            color: var(--text);
+            font-weight: 600;
+            line-height: 1.28;
+
+            letter-spacing: -0.015em;
+        }
+
+        .markdown-content h1 {
+            padding-bottom: 12px;
+            font-size: 30px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h2 {
+            padding-bottom: 9px;
+            font-size: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h3 {
+            font-size: 20px;
+        }
+
+        .markdown-content h4 {
+            font-size: 17px;
+        }
+
+        .markdown-content h5 {
+            font-size: 15px;
+        }
+
+        .markdown-content h6 {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .markdown-content p {
+            margin: 0.85em 0;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .markdown-content ul,
+        .markdown-content ol {
+            margin: 0.8em 0;
+            padding-left: 1.8em;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content li {
+            margin: 0.35em 0;
+        }
+
+        .markdown-content li::marker {
+            color: var(--accent);
+        }
+
+        .markdown-content blockquote {
+            margin: 1.2em 0;
+            padding: 14px 18px;
+
+            color: var(--text-secondary);
+
+            background: rgba(96, 205, 255, 0.07);
+            border: 1px solid rgba(96, 205, 255, 0.13);
+            border-left: 4px solid var(--accent);
+            border-radius: 0 var(--radius-medium) var(--radius-medium) 0;
+        }
+
+        .markdown-content blockquote p {
+            margin: 0.4em 0;
+        }
+
+        .markdown-content code {
+            padding: 0.15em 0.4em;
+
+            color: #f4f4f4;
+            font-family: var(--mono-font);
+            font-size: 0.9em;
+
+            background: var(--inline-code-background);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+        }
+
+        .markdown-content pre {
+            position: relative;
+
+            max-width: 100%;
+            overflow: auto;
+
+            margin: 1.2em 0;
+            padding: 18px;
+
+            background: var(--code-background);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.025),
+                0 8px 20px rgba(0, 0, 0, 0.18);
+        }
+
+        .markdown-content pre code {
+            display: block;
+            min-width: max-content;
+            padding: 0;
+
+            color: #e6e6e6;
+            font-size: 13px;
+            line-height: 1.55;
+
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+        }
+
+        /* Syntaxfarben für Pygments / Markdown codehilite */
+        .markdown-content .codehilite .hll { background: #3a3520; }
+        .markdown-content .codehilite .c,
+        .markdown-content .codehilite .ch,
+        .markdown-content .codehilite .cm,
+        .markdown-content .codehilite .c1,
+        .markdown-content .codehilite .cs { color: #6a9955; font-style: italic; }
+        .markdown-content .codehilite .k,
+        .markdown-content .codehilite .kc,
+        .markdown-content .codehilite .kd,
+        .markdown-content .codehilite .kn,
+        .markdown-content .codehilite .kp,
+        .markdown-content .codehilite .kr,
+        .markdown-content .codehilite .kt { color: #c586c0; }
+        .markdown-content .codehilite .n { color: #d4d4d4; }
+        .markdown-content .codehilite .na { color: #9cdcfe; }
+        .markdown-content .codehilite .nb,
+        .markdown-content .codehilite .bp { color: #4ec9b0; }
+        .markdown-content .codehilite .nc,
+        .markdown-content .codehilite .nd,
+        .markdown-content .codehilite .ne,
+        .markdown-content .codehilite .nf { color: #dcdcaa; }
+        .markdown-content .codehilite .nn { color: #4ec9b0; }
+        .markdown-content .codehilite .nv,
+        .markdown-content .codehilite .vc,
+        .markdown-content .codehilite .vg,
+        .markdown-content .codehilite .vi { color: #9cdcfe; }
+        .markdown-content .codehilite .o,
+        .markdown-content .codehilite .ow { color: #d4d4d4; }
+        .markdown-content .codehilite .m,
+        .markdown-content .codehilite .mb,
+        .markdown-content .codehilite .mf,
+        .markdown-content .codehilite .mh,
+        .markdown-content .codehilite .mi,
+        .markdown-content .codehilite .mo,
+        .markdown-content .codehilite .il { color: #b5cea8; }
+        .markdown-content .codehilite .s,
+        .markdown-content .codehilite .sa,
+        .markdown-content .codehilite .sb,
+        .markdown-content .codehilite .sc,
+        .markdown-content .codehilite .dl,
+        .markdown-content .codehilite .sd,
+        .markdown-content .codehilite .s1,
+        .markdown-content .codehilite .s2,
+        .markdown-content .codehilite .se,
+        .markdown-content .codehilite .sh,
+        .markdown-content .codehilite .si,
+        .markdown-content .codehilite .sx,
+        .markdown-content .codehilite .sr,
+        .markdown-content .codehilite .ss { color: #ce9178; }
+        .markdown-content .codehilite .p { color: #d4d4d4; }
+        .markdown-content .codehilite .gd { color: #f48771; }
+        .markdown-content .codehilite .gi { color: #89d185; }
+        .markdown-content .codehilite .gh,
+        .markdown-content .codehilite .gu { color: #569cd6; font-weight: 600; }
+        .markdown-content .codehilite .err { color: #f44747; }
+
+        .markdown-content hr {
+            margin: 2em 0;
+            border: 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .markdown-content img {
+            display: block;
+
+            max-width: 100%;
+            height: auto;
+            margin: 1.4em auto;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow: var(--shadow);
+        }
+
+        .markdown-content table {
+            width: 100%;
+            margin: 1.3em 0;
+
+            overflow: hidden;
+            border-collapse: separate;
+            border-spacing: 0;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+        }
+
+        .markdown-content th,
+        .markdown-content td {
+            padding: 11px 13px;
+            text-align: left;
+            vertical-align: top;
+
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content th {
+            color: var(--text);
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .markdown-content td {
+            color: var(--text-secondary);
+            background: rgba(0, 0, 0, 0.10);
+        }
+
+        .markdown-content tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .markdown-content th:last-child,
+        .markdown-content td:last-child {
+            border-right: 0;
+        }
+
+        .markdown-content input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin-right: 6px;
+            accent-color: var(--accent);
+            vertical-align: -2px;
+        }
+
+        .back-to-top {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 800;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+
+            color: var(--text);
+            font-size: 20px;
+
+            background: rgba(40, 40, 40, 0.86);
+            border: 1px solid var(--border);
+            border-radius: 50%;
+
+            box-shadow: var(--shadow);
+
+            opacity: 0;
+            pointer-events: none;
+
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+
+            transition:
+                opacity 150ms ease,
+                background 150ms ease,
+                transform 150ms ease;
+        }
+
+        .back-to-top.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .back-to-top:hover {
+            color: var(--text);
+            text-decoration: none;
+            background: var(--surface-active);
+            transform: translateY(-2px);
+        }
+
+        .overlay {
+            position: fixed;
+            inset: var(--header-height) 0 0 0;
+            z-index: 850;
+
+            display: none;
+
+            background: rgba(0, 0, 0, 0.48);
+            backdrop-filter: blur(3px);
+            -webkit-backdrop-filter: blur(3px);
+        }
+
+        ::selection {
+            color: #000000;
+            background: var(--accent);
+        }
+
+        ::-webkit-scrollbar {
+            width: 12px;
+            height: 12px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.16);
+            border: 3px solid transparent;
+            border-radius: 999px;
+            background-clip: padding-box;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+
+        @media print {
+            :root {
+                color-scheme: light;
+            }
+
+            body {
+                color: #111111;
+                background: #ffffff;
+            }
+
+            .app-header,
+            .toc,
+            .overlay,
+            .back-to-top {
+                display: none !important;
+            }
+
+            .app-main {
+                margin: 0;
+                padding: 0;
+            }
+
+            .hero,
+            .markdown-document {
+                color: #111111;
+                background: #ffffff;
+                border: 1px solid #dddddd;
+                box-shadow: none;
+            }
+
+            .markdown-content p,
+            .markdown-content li,
+            .markdown-content td {
+                color: #222222;
+            }
+
+            .markdown-content h1,
+            .markdown-content h2,
+            .markdown-content h3,
+            .markdown-content h4,
+            .markdown-content h5,
+            .markdown-content h6,
+            .markdown-content strong {
+                color: #111111;
+            }
+
+            .markdown-content pre {
+                white-space: pre-wrap;
+                background: #f5f5f5;
+                border-color: #dddddd;
+            }
+
+            .markdown-content pre code {
+                color: #111111;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .toc {
+                width: min(88vw, 340px);
+                transform: translateX(-105%);
+                box-shadow: var(--shadow);
+            }
+
+            .toc.open {
+                transform: translateX(0);
+            }
+
+            .toc-close {
+                display: inline-flex;
+            }
+
+            .overlay.visible {
+                display: block;
+            }
+
+            .app-main {
+                margin-left: 0;
+                padding-right: 18px;
+                padding-left: 18px;
+            }
+
+            .header-button-label {
+                display: none;
+            }
+
+            .markdown-content {
+                padding: 24px 20px;
+            }
+        }
+
+        @media (max-width: 540px) {
+            .app-header {
+                padding: 0 12px;
+            }
+
+            .app-subtitle {
+                display: none;
+            }
+
+            .hero {
+                padding: 23px 20px;
+            }
+
+            .document-header {
+                padding: 16px;
+            }
+
+            .document-number {
+                width: 38px;
+                height: 38px;
+            }
+
+            .markdown-content {
+                padding: 22px 16px;
+            }
+
+            .markdown-content h1 {
+                font-size: 25px;
+            }
+
+            .markdown-content h2 {
+                font-size: 21px;
+            }
+
+            .back-to-top {
+                right: 16px;
+                bottom: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="app-header">
+        <button
+            class="menu-button"
+            type="button"
+            onclick="toggleNavigation()"
+            aria-label="Navigation öffnen"
+            title="Navigation"
+        >
+            ☰
+        </button>
+
+        <div class="app-title-area">
+            <div class="app-title">
+                NPSPEC UNITS 0003 Part 1 Chapters 1 10
+            </div>
+
+            <div class="app-subtitle">
+                C:\recoverboot\nova-os\docs\NPSPEC\Nova Compute Platform
+            </div>
+        </div>
+
+        <div class="header-actions">
+            <button
+                class="header-button"
+                type="button"
+                onclick="window.print()"
+                title="Dokument drucken"
+            >
+                <span>⎙</span>
+                <span class="header-button-label">
+                    Drucken
+                </span>
+            </button>
+        </div>
+    </header>
+
+    <nav class="toc" id="toc">
+<div class="toc-header">
+<div class="toc-title">Inhaltsverzeichnis</div>
+<button class="toc-close" type="button" onclick="toggleNavigation()" aria-label="Navigation schließen">
+×
+</button>
+</div>
+<div class="toc-content">
+
+            <div class="toc-document">
+                <a class="toc-document-link" href="#document-npspec-units-0003-part-1-chapters-1-10-md">
+                    <span class="toc-document-icon">▤</span>
+                    <span>NPSPEC UNITS 0003 Part 1 Chapters 1 10</span>
+                </a>
+            
+<div class="toc-headings">
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#npspec-units-0003"
+                    >
+                        NPSPEC-UNITS-0003
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#unit-registry-and-conversion-engine"
+                    >
+                        Unit Registry and Conversion Engine
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#1-zweck"
+                    >
+                        1. Zweck
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#2-zielsetzung"
+                    >
+                        2. Zielsetzung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#3-nicht-ziele"
+                    >
+                        3. Nicht-Ziele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#4-grundprinzipien"
+                    >
+                        4. Grundprinzipien
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#41-eine-globale-semantische-quelle"
+                    >
+                        4.1 Eine globale semantische Quelle
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#42-keine-konvertierung-ohne-dimensionskompatibilitat"
+                    >
+                        4.2 Keine Konvertierung ohne Dimensionskompatibilität
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#43-einheiten-sind-objekte"
+                    >
+                        4.3 Einheiten sind Objekte
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#44-ids-sind-stabiler-als-namen"
+                    >
+                        4.4 IDs sind stabiler als Namen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#45-konvertierungen-sind-explizit-klassifiziert"
+                    >
+                        4.5 Konvertierungen sind explizit klassifiziert
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#46-sicherheit-vor-erweiterbarkeit"
+                    >
+                        4.6 Sicherheit vor Erweiterbarkeit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#5-systemarchitektur"
+                    >
+                        5. Systemarchitektur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#6-betriebsmodi"
+                    >
+                        6. Betriebsmodi
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#61-boot-registry-mode"
+                    >
+                        6.1 Boot Registry Mode
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#62-system-registry-mode"
+                    >
+                        6.2 System Registry Mode
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#63-user-extension-mode"
+                    >
+                        6.3 User Extension Mode
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#64-restricted-mode"
+                    >
+                        6.4 Restricted Mode
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#7-identitatsmodell"
+                    >
+                        7. Identitätsmodell
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#71-unit-id"
+                    >
+                        7.1 Unit ID
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#72-dimension-id"
+                    >
+                        7.2 Dimension ID
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#73-namespace-id"
+                    >
+                        7.3 Namespace ID
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#74-runtime-handle"
+                    >
+                        7.4 Runtime Handle
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#75-reservierte-ids"
+                    >
+                        7.5 Reservierte IDs
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#8-namespace-modell"
+                    >
+                        8. Namespace-Modell
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#81-zweck"
+                    >
+                        8.1 Zweck
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#82-system-namespaces"
+                    >
+                        8.2 System-Namespaces
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#83-hersteller-namespaces"
+                    >
+                        8.3 Hersteller-Namespaces
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#84-benutzer-namespaces"
+                    >
+                        8.4 Benutzer-Namespaces
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#85-namespace-descriptor"
+                    >
+                        8.5 Namespace Descriptor
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#86-namespace-auflosung"
+                    >
+                        8.6 Namespace-Auflösung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#9-unit-descriptor"
+                    >
+                        9. Unit Descriptor
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#91-grundstruktur"
+                    >
+                        9.1 Grundstruktur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#92-pflichtfelder"
+                    >
+                        9.2 Pflichtfelder
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#93-optionale-felder"
+                    >
+                        9.3 Optionale Felder
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#94-unit-flags"
+                    >
+                        9.4 Unit Flags
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#95-beispiel-meter"
+                    >
+                        9.5 Beispiel Meter
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#10-dimension-descriptor"
+                    >
+                        10. Dimension Descriptor
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#101-grundstruktur"
+                    >
+                        10.1 Grundstruktur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#102-pflichtfelder"
+                    >
+                        10.2 Pflichtfelder
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#103-semantische-dimensionen"
+                    >
+                        10.3 Semantische Dimensionen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#104-dimension-flags"
+                    >
+                        10.4 Dimension Flags
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#105-beispiel-kraft"
+                    >
+                        10.5 Beispiel Kraft
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#anhang-a-vorlaufige-implementierungsstruktur-fur-teil-1"
+                    >
+                        Anhang A – Vorläufige Implementierungsstruktur für Teil 1
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#anhang-b-anforderungen-aus-teil-1"
+                    >
+                        Anhang B – Anforderungen aus Teil 1
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#ausblick-auf-teil-2"
+                    >
+                        Ausblick auf Teil 2
+                    </a>
+                    
+</div>
+</div>
+</div>
+</nav>
+
+    <div
+        class="overlay"
+        id="overlay"
+        onclick="closeNavigation()"
+    ></div>
+
+    <main class="app-main" id="top">
+        <div class="content-container">
+            <section class="hero">
+                <div class="hero-label">
+                    Markdown-Dokumentation
+                </div>
+
+                <h1>
+                    NPSPEC UNITS 0003 Part 1 Chapters 1 10
+                </h1>
+
+                <p class="hero-description">
+                    Zusammengeführte HTML-Dokumentation aus
+                    1 Markdown-Dateien.
+                </p>
+
+                <div class="hero-meta">
+                    <span class="meta-item">
+                        1 Dokumente
+                    </span>
+
+                    <span class="meta-item">
+                        Fluent Dark
+                    </span>
+
+                    <span class="meta-item">
+                        Einzelne HTML-Datei
+                    </span>
+                </div>
+            </section>
+
+            
+            <article class="markdown-document" id="document-npspec-units-0003-part-1-chapters-1-10-md">
+                <header class="document-header">
+                    <div class="document-number">
+                        01
+                    </div>
+
+                    <div class="document-title-area">
+                        <h1 class="document-title">
+                            NPSPEC UNITS 0003 Part 1 Chapters 1 10
+                        </h1>
+
+                        <div class="document-path">
+                            NPSPEC-UNITS-0003-Part-1-Chapters-1-10.md
+                        </div>
+                    </div>
+                </header>
+
+                <div class="markdown-content">
+                    <h1 id="npspec-units-0003">NPSPEC-UNITS-0003</h1>
+<h1 id="unit-registry-and-conversion-engine">Unit Registry and Conversion Engine</h1>
+<table>
+<thead>
+<tr>
+<th>Feld</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dokument</td>
+<td>NPSPEC-UNITS-0003</td>
+</tr>
+<tr>
+<td>Titel</td>
+<td>Unit Registry and Conversion Engine</td>
+</tr>
+<tr>
+<td>Version</td>
+<td>1.0.0 Draft</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Draft</td>
+</tr>
+<tr>
+<td>Kategorie</td>
+<td>System Specification</td>
+</tr>
+<tr>
+<td>Bereich</td>
+<td>Nova Compute Platform</td>
+</tr>
+<tr>
+<td>Teil</td>
+<td>1 von 6</td>
+</tr>
+<tr>
+<td>Kapitel</td>
+<td>1–10</td>
+</tr>
+<tr>
+<td>Abhängigkeiten</td>
+<td>NPSPEC-COMPUTE-0001, NPSPEC-UNITS-0001, NPSPEC-UNITS-0002, NPSPEC-OBJECT-0001</td>
+</tr>
+<tr>
+<td>Zielplattformen</td>
+<td>x86_64, AArch64, RISC-V</td>
+</tr>
+<tr>
+<td>Letzte Änderung</td>
+<td>2026-07-13</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h1 id="1-zweck">1. Zweck</h1>
+<p>Diese Spezifikation definiert die Unit Registry and Conversion Engine von Nova OS.</p>
+<p>Die Unit Registry and Conversion Engine ist der zentrale Systemdienst für:</p>
+<ul>
+<li>Registrierung physikalischer Einheiten,</li>
+<li>Registrierung physikalischer Dimensionen,</li>
+<li>Registrierung von Präfixen,</li>
+<li>Registrierung von Einheitensystemen,</li>
+<li>Auflösung von Einheiten über Namen, Symbole und IDs,</li>
+<li>Validierung von Einheitenbeschreibungen,</li>
+<li>Konvertierung zwischen kompatiblen Einheiten,</li>
+<li>Verwaltung benutzerdefinierter Einheiten,</li>
+<li>Versionsverwaltung,</li>
+<li>Namespaces,</li>
+<li>Reflection,</li>
+<li>Caching,</li>
+<li>Serialisierung,</li>
+<li>Sicherheitsprüfung,</li>
+<li>Integration in Compiler und Compute Runtime.</li>
+</ul>
+<p>Die Engine ist Bestandteil der Nova Compute Platform und stellt die verbindliche Referenz für alle Einheitenoperationen innerhalb von Nova OS dar.</p>
+<hr>
+<h1 id="2-zielsetzung">2. Zielsetzung</h1>
+<p>Die Unit Registry and Conversion Engine verfolgt folgende Hauptziele:</p>
+<ol>
+<li>Jede Einheit besitzt eine eindeutige Identität.</li>
+<li>Jede Einheit ist eindeutig einer Dimension zugeordnet.</li>
+<li>Jede Konvertierung ist vollständig definiert und nachvollziehbar.</li>
+<li>Keine Anwendung darf eigene inkompatible Parallelregister verwenden.</li>
+<li>Systemweite Einheiten müssen langzeitstabil adressierbar sein.</li>
+<li>Einheiten müssen über Prozessgrenzen hinweg verlustfrei übertragen werden können.</li>
+<li>Konvertierungen müssen deterministisch, sicher und performant sein.</li>
+<li>Statisch bekannte Konvertierungen sollen zur Compile-Zeit ausgeführt werden können.</li>
+<li>Dynamische Einheiten müssen zur Laufzeit sicher registrierbar sein.</li>
+<li>Alle Compute-Dienste müssen dieselbe Registry verwenden.</li>
+</ol>
+<hr>
+<h1 id="3-nicht-ziele">3. Nicht-Ziele</h1>
+<p>Diese Spezifikation definiert nicht:</p>
+<ul>
+<li>mathematische Formelbibliotheken,</li>
+<li>konkrete Physikmodelle,</li>
+<li>vollständige Unsicherheitsrechnung,</li>
+<li>vollständige Naturkonstantenverwaltung,</li>
+<li>Tensorimplementierungen,</li>
+<li>Compilerinternas außerhalb der Unit-Metadaten,</li>
+<li>Benutzeroberflächen für wissenschaftliche Anwendungen,</li>
+<li>externe Währungsdienste,</li>
+<li>Sensor-Kalibrierungsmodelle.</li>
+</ul>
+<p>Diese Bereiche werden in separaten NPSPEC-Dokumenten behandelt.</p>
+<hr>
+<h1 id="4-grundprinzipien">4. Grundprinzipien</h1>
+<h2 id="41-eine-globale-semantische-quelle">4.1 Eine globale semantische Quelle</h2>
+<p>Nova OS besitzt eine zentrale, systemweit gültige Registry für Einheiten und Dimensionen.</p>
+<p>Es darf keine voneinander abweichenden Systemdefinitionen für dieselbe Einheit geben.</p>
+<p>Beispiel:</p>
+<div class="codehilite"><pre><span></span><code>Meter
+</code></pre></div>
+
+<p>muss in allen Nova-Komponenten dieselbe Dimension, dieselbe Basiseinheit, dieselbe Skalierung und dieselbe Identität besitzen.</p>
+<h2 id="42-keine-konvertierung-ohne-dimensionskompatibilitat">4.2 Keine Konvertierung ohne Dimensionskompatibilität</h2>
+<p>Eine Konvertierung ist nur zulässig, wenn Quell- und Zieleinheit dimensionskompatibel sind.</p>
+<p>Zulässig:</p>
+<div class="codehilite"><pre><span></span><code>Kilometer → Meter
+Grad Celsius → Kelvin
+bar → Pascal
+</code></pre></div>
+
+<p>Nicht zulässig:</p>
+<div class="codehilite"><pre><span></span><code>Kilogramm → Meter
+Sekunde → Volt
+Kelvin → Joule
+</code></pre></div>
+
+<h2 id="43-einheiten-sind-objekte">4.3 Einheiten sind Objekte</h2>
+<p>Jede Einheit ist ein registriertes Nova-Objekt mit:</p>
+<ul>
+<li>stabiler ID,</li>
+<li>Namespace,</li>
+<li>Namen,</li>
+<li>Symbolen,</li>
+<li>Dimension,</li>
+<li>Konvertierungsmodell,</li>
+<li>Version,</li>
+<li>Herkunft,</li>
+<li>Vertrauensstufe,</li>
+<li>Dokumentation,</li>
+<li>optionaler Signatur.</li>
+</ul>
+<h2 id="44-ids-sind-stabiler-als-namen">4.4 IDs sind stabiler als Namen</h2>
+<p>Namen und Symbole dürfen lokalisiert oder ergänzt werden.</p>
+<p>Die Identität einer Einheit darf jedoch nicht von ihrer sichtbaren Bezeichnung abhängen.</p>
+<h2 id="45-konvertierungen-sind-explizit-klassifiziert">4.5 Konvertierungen sind explizit klassifiziert</h2>
+<p>Die Engine unterscheidet mindestens:</p>
+<ul>
+<li>lineare Konvertierung,</li>
+<li>affine Konvertierung,</li>
+<li>logarithmische Konvertierung,</li>
+<li>tabellenbasierte Konvertierung,</li>
+<li>kontextabhängige Konvertierung,</li>
+<li>benutzerdefinierte Konvertierung,</li>
+<li>nicht konvertierbare Beziehung.</li>
+</ul>
+<h2 id="46-sicherheit-vor-erweiterbarkeit">4.6 Sicherheit vor Erweiterbarkeit</h2>
+<p>Benutzerdefinierte Einheiten dürfen die Integrität der Systemregistry nicht gefährden.</p>
+<p>Erweiterbarkeit ist nur innerhalb klar definierter Namespaces und Berechtigungsgrenzen zulässig.</p>
+<hr>
+<h1 id="5-systemarchitektur">5. Systemarchitektur</h1>
+<p>Die Unit Registry and Conversion Engine wird als Kernel-naher Systemdienst ausgeführt.</p>
+<div class="codehilite"><pre><span></span><code>+----------------------------------------------------+
+| Anwendungen, Treiber, Compute-Dienste             |
++----------------------------------------------------+
+| Nova Units API                                     |
++----------------------------------------------------+
+| Unit Registry Service                              |
+| Dimension Registry                                 |
+| Prefix Registry                                    |
+| Namespace Registry                                 |
+| Conversion Engine                                  |
+| Conversion Cache                                   |
++----------------------------------------------------+
+| Nova Object System                                 |
+| Nova IPC                                           |
+| Nova Security                                      |
+| Nova Memory                                        |
++----------------------------------------------------+
+| Nova Kernel                                        |
++----------------------------------------------------+
+</code></pre></div>
+
+<p>Die Engine besteht mindestens aus folgenden Kernkomponenten:</p>
+<div class="codehilite"><pre><span></span><code>nova_units/
+├── registry/
+│   ├── unit_registry
+│   ├── dimension_registry
+│   ├── prefix_registry
+│   ├── namespace_registry
+│   └── system_registry_loader
+├── conversion/
+│   ├── conversion_engine
+│   ├── linear_converter
+│   ├── affine_converter
+│   ├── logarithmic_converter
+│   ├── contextual_converter
+│   └── conversion_graph
+├── runtime/
+│   ├── handle_manager
+│   ├── registry_cache
+│   ├── shared_registry_view
+│   └── validation
+└── api/
+    ├── units
+    ├── dimensions
+    ├── prefixes
+    ├── namespaces
+    └── conversion
+</code></pre></div>
+
+<hr>
+<h1 id="6-betriebsmodi">6. Betriebsmodi</h1>
+<h2 id="61-boot-registry-mode">6.1 Boot Registry Mode</h2>
+<p>Während des frühen Systemstarts steht eine minimale schreibgeschützte Registry bereit.</p>
+<p>Sie enthält mindestens:</p>
+<ul>
+<li>sieben SI-Basisdimensionen,</li>
+<li>sieben SI-Basiseinheiten,</li>
+<li>elementare abgeleitete SI-Einheiten,</li>
+<li>grundlegende SI-Präfixe,</li>
+<li>elementare Konvertierungsregeln.</li>
+</ul>
+<p>Dieser Modus darf keine dynamischen Registrierungen zulassen.</p>
+<h2 id="62-system-registry-mode">6.2 System Registry Mode</h2>
+<p>Nach dem Start des Unit Registry Service wird die vollständige Systemregistry geladen.</p>
+<p>Sie enthält:</p>
+<ul>
+<li>offizielle Nova-Systemeinheiten,</li>
+<li>offizielle Dimensionen,</li>
+<li>Präfixe,</li>
+<li>Einheitensysteme,</li>
+<li>Aliasnamen,</li>
+<li>lokalisierte Namen,</li>
+<li>Versionsinformationen,</li>
+<li>Signaturen,</li>
+<li>Testmetadaten.</li>
+</ul>
+<h2 id="63-user-extension-mode">6.3 User Extension Mode</h2>
+<p>Benutzer und Anwendungen dürfen zusätzliche Einheiten innerhalb eigener Namespaces registrieren.</p>
+<p>Beispiel:</p>
+<div class="codehilite"><pre><span></span><code>user.matthias.workshop.encoder_tick
+com.example.robot.motor_step
+org.research.lab.custom_scale
+</code></pre></div>
+
+<h2 id="64-restricted-mode">6.4 Restricted Mode</h2>
+<p>Im Recovery-, Safe- oder Security-Modus wird nur die signierte Systemregistry geladen.</p>
+<p>Dynamische Erweiterungen und benutzerdefinierte Konvertierungen bleiben deaktiviert.</p>
+<hr>
+<h1 id="7-identitatsmodell">7. Identitätsmodell</h1>
+<h2 id="71-unit-id">7.1 Unit ID</h2>
+<p>Jede Einheit besitzt eine stabile Unit ID.</p>
+<p>Die öffentliche Identität wird als 128-Bit-Wert definiert.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_unit_uuid</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">high</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">low</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_unit_uuid_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Die Unit ID darf nach Veröffentlichung nicht verändert oder wiederverwendet werden.</p>
+<h2 id="72-dimension-id">7.2 Dimension ID</h2>
+<p>Jede Dimension besitzt eine stabile Dimension ID.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_dimension_uuid</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">high</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">low</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_dimension_uuid_t</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="73-namespace-id">7.3 Namespace ID</h2>
+<p>Namespaces besitzen ebenfalls stabile IDs.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">nova_namespace_id_t</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="74-runtime-handle">7.4 Runtime Handle</h2>
+<p>Für schnelle Laufzeitzugriffe werden kompakte Handles verwendet.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">nova_unit_handle_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">nova_dimension_handle_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Ein Handle ist nur innerhalb einer Registry-Sitzung stabil.</p>
+<p>Eine UUID ist langfristig und systemübergreifend stabil.</p>
+<h2 id="75-reservierte-ids">7.5 Reservierte IDs</h2>
+<p>Folgende Bereiche werden reserviert:</p>
+<div class="codehilite"><pre><span></span><code>00000000-0000-0000-0000-000000000000
+Ungültige oder nicht gesetzte ID
+
+00000000-0000-0000-0000-000000000001
+Dimensionslos
+
+00000000-0000-0000-0000-000000000002
+Unbekannte Einheit
+
+00000000-0000-0000-0000-000000000003
+Benutzerdefinierte dynamische Einheit
+</code></pre></div>
+
+<p>Weitere reservierte Bereiche werden durch die Nova Assigned Identifier Registry verwaltet.</p>
+<hr>
+<h1 id="8-namespace-modell">8. Namespace-Modell</h1>
+<h2 id="81-zweck">8.1 Zweck</h2>
+<p>Namespaces verhindern Namenskollisionen und definieren Eigentümerschaft.</p>
+<p>Beispiele:</p>
+<div class="codehilite"><pre><span></span><code>org.nova.si
+org.nova.derived
+org.nova.imperial
+org.nova.astronomy
+org.nova.information
+com.vendor.product
+user.account.project
+</code></pre></div>
+
+<h2 id="82-system-namespaces">8.2 System-Namespaces</h2>
+<p>System-Namespaces beginnen mit:</p>
+<div class="codehilite"><pre><span></span><code>org.nova.
+</code></pre></div>
+
+<p>Sie dürfen nur durch signierte Nova-Systemkomponenten verändert werden.</p>
+<h2 id="83-hersteller-namespaces">8.3 Hersteller-Namespaces</h2>
+<p>Drittanbieter verwenden einen organisationsbezogenen Namespace.</p>
+<p>Beispiel:</p>
+<div class="codehilite"><pre><span></span><code>com.acme.robotics
+de.example.measurement
+org.research.institute
+</code></pre></div>
+
+<h2 id="84-benutzer-namespaces">8.4 Benutzer-Namespaces</h2>
+<p>Benutzerdefinierte Einheiten werden standardmäßig unter einem privaten Namespace registriert.</p>
+<div class="codehilite"><pre><span></span><code>user.&lt;account-id&gt;.&lt;subnamespace&gt;
+</code></pre></div>
+
+<h2 id="85-namespace-descriptor">8.5 Namespace Descriptor</h2>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_namespace_descriptor</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_namespace_id_t</span><span class="w"> </span><span class="n">id</span><span class="p">;</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">canonical_name</span><span class="p">;</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">owner</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_namespace_flags_t</span><span class="w"> </span><span class="n">flags</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_trust_level_t</span><span class="w"> </span><span class="n">trust_level</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_version_t</span><span class="w"> </span><span class="n">version</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_namespace_descriptor_t</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="86-namespace-auflosung">8.6 Namespace-Auflösung</h2>
+<p>Die Auflösung erfolgt in folgender Reihenfolge:</p>
+<ol>
+<li>vollständig qualifizierter Name,</li>
+<li>explizit importierter Namespace,</li>
+<li>aktueller Anwendungsnamespace,</li>
+<li>offizielle Nova-Namespaces,</li>
+<li>lokale Aliasauflösung.</li>
+</ol>
+<p>Mehrdeutige Namen dürfen nicht stillschweigend aufgelöst werden.</p>
+<hr>
+<h1 id="9-unit-descriptor">9. Unit Descriptor</h1>
+<h2 id="91-grundstruktur">9.1 Grundstruktur</h2>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_unit_descriptor</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_object_header_t</span><span class="w"> </span><span class="n">object</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_unit_uuid_t</span><span class="w"> </span><span class="n">uuid</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_namespace_id_t</span><span class="w"> </span><span class="n">namespace_id</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">canonical_name</span><span class="p">;</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">primary_symbol</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_dimension_uuid_t</span><span class="w"> </span><span class="n">dimension_uuid</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_unit_uuid_t</span><span class="w"> </span><span class="n">reference_unit_uuid</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_conversion_kind_t</span><span class="w"> </span><span class="n">conversion_kind</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">long</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">scale</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">long</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">offset</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_unit_flags_t</span><span class="w"> </span><span class="n">flags</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_version_t</span><span class="w"> </span><span class="n">version</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_trust_level_t</span><span class="w"> </span><span class="n">trust_level</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">source</span><span class="p">;</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">documentation_uri</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_unit_descriptor_t</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="92-pflichtfelder">9.2 Pflichtfelder</h2>
+<p>Jede Einheit muss mindestens definieren:</p>
+<ul>
+<li>UUID,</li>
+<li>Namespace,</li>
+<li>kanonischen Namen,</li>
+<li>Primärsymbol,</li>
+<li>Dimension,</li>
+<li>Referenzeinheit,</li>
+<li>Konvertierungsart,</li>
+<li>Skalierung oder Konvertierungsfunktion,</li>
+<li>Version,</li>
+<li>Vertrauensstufe.</li>
+</ul>
+<h2 id="93-optionale-felder">9.3 Optionale Felder</h2>
+<p>Eine Einheit darf zusätzlich enthalten:</p>
+<ul>
+<li>alternative Symbole,</li>
+<li>lokalisierte Namen,</li>
+<li>veraltete Namen,</li>
+<li>Kurzbeschreibung,</li>
+<li>Normreferenz,</li>
+<li>Gültigkeitsbereich,</li>
+<li>zulässigen Wertebereich,</li>
+<li>Rundungsanforderung,</li>
+<li>Unsicherheitsmetadaten,</li>
+<li>digitale Signatur,</li>
+<li>Testvektoren.</li>
+</ul>
+<h2 id="94-unit-flags">9.4 Unit Flags</h2>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="n">nova_unit_flags</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_NONE</span><span class="w">              </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_SYSTEM</span><span class="w">            </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_BASE</span><span class="w">              </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_DERIVED</span><span class="w">           </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_AFFINE</span><span class="w">            </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_LOGARITHMIC</span><span class="w">       </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_CONTEXTUAL</span><span class="w">        </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_DEPRECATED</span><span class="w">        </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_EXPERIMENTAL</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_NON_SI</span><span class="w">            </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_LOCALIZED_SYMBOL</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">9</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_SIGNED</span><span class="w">            </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_FLAG_READ_ONLY</span><span class="w">         </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">11</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_unit_flags_t</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="95-beispiel-meter">9.5 Beispiel Meter</h2>
+<div class="codehilite"><pre><span></span><code>Namespace:
+org.nova.si
+
+Canonical Name:
+meter
+
+Symbol:
+m
+
+Dimension:
+length
+
+Reference Unit:
+meter
+
+Conversion Kind:
+linear
+
+Scale:
+1
+
+Offset:
+0
+
+Flags:
+SYSTEM | BASE | READ_ONLY
+</code></pre></div>
+
+<hr>
+<h1 id="10-dimension-descriptor">10. Dimension Descriptor</h1>
+<h2 id="101-grundstruktur">10.1 Grundstruktur</h2>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_dimension_descriptor</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_object_header_t</span><span class="w"> </span><span class="n">object</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_dimension_uuid_t</span><span class="w"> </span><span class="n">uuid</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_namespace_id_t</span><span class="w"> </span><span class="n">namespace_id</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">canonical_name</span><span class="p">;</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">symbol</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_dimension_vector_t</span><span class="w"> </span><span class="n">vector</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_dimension_flags_t</span><span class="w"> </span><span class="n">flags</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_version_t</span><span class="w"> </span><span class="n">version</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_trust_level_t</span><span class="w"> </span><span class="n">trust_level</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">source</span><span class="p">;</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">documentation_uri</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_dimension_descriptor_t</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="102-pflichtfelder">10.2 Pflichtfelder</h2>
+<p>Jede Dimension muss mindestens definieren:</p>
+<ul>
+<li>UUID,</li>
+<li>Namespace,</li>
+<li>kanonischen Namen,</li>
+<li>Dimensionsvektor,</li>
+<li>Version,</li>
+<li>Vertrauensstufe.</li>
+</ul>
+<h2 id="103-semantische-dimensionen">10.3 Semantische Dimensionen</h2>
+<p>Mehrere semantische Größen dürfen denselben Dimensionsvektor besitzen.</p>
+<p>Beispiel:</p>
+<div class="codehilite"><pre><span></span><code>Energie
+Drehmoment
+</code></pre></div>
+
+<p>Beide besitzen dimensional:</p>
+<div class="codehilite"><pre><span></span><code>kg·m²·s⁻²
+</code></pre></div>
+
+<p>Sie sind semantisch jedoch nicht vollständig austauschbar.</p>
+<p>Nova unterscheidet daher:</p>
+<ul>
+<li>physikalische Basisdimension,</li>
+<li>abgeleitete Dimension,</li>
+<li>semantische Quantity-Klasse.</li>
+</ul>
+<h2 id="104-dimension-flags">10.4 Dimension Flags</h2>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="n">nova_dimension_flags</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_DIMENSION_FLAG_NONE</span><span class="w">          </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_DIMENSION_FLAG_SYSTEM</span><span class="w">        </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_DIMENSION_FLAG_BASE</span><span class="w">          </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_DIMENSION_FLAG_DERIVED</span><span class="w">       </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_DIMENSION_FLAG_DIMENSIONLESS</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_DIMENSION_FLAG_SEMANTIC</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_DIMENSION_FLAG_DEPRECATED</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_DIMENSION_FLAG_READ_ONLY</span><span class="w">     </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">6</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_dimension_flags_t</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="105-beispiel-kraft">10.5 Beispiel Kraft</h2>
+<div class="codehilite"><pre><span></span><code>Canonical Name:
+force
+
+Symbol:
+F
+
+Dimensionsvektor:
+[1, 1, -2, 0, 0, 0, 0]
+
+SI-Einheit:
+newton
+
+Semantische Klasse:
+mechanics.force
+</code></pre></div>
+
+<hr>
+<h1 id="anhang-a-vorlaufige-implementierungsstruktur-fur-teil-1">Anhang A – Vorläufige Implementierungsstruktur für Teil 1</h1>
+<div class="codehilite"><pre><span></span><code>include/nova/units/
+├── unit_id.h
+├── dimension_id.h
+├── namespace.h
+├── unit_descriptor.h
+├── dimension_descriptor.h
+├── registry_mode.h
+└── unit_flags.h
+
+src/units/
+├── registry/
+│   ├── unit_registry.c
+│   ├── dimension_registry.c
+│   ├── namespace_registry.c
+│   └── system_registry_loader.c
+├── runtime/
+│   ├── unit_handle_table.c
+│   ├── dimension_handle_table.c
+│   └── registry_mode.c
+└── validation/
+    ├── unit_descriptor_validation.c
+    ├── dimension_descriptor_validation.c
+    └── namespace_validation.c
+</code></pre></div>
+
+<hr>
+<h1 id="anhang-b-anforderungen-aus-teil-1">Anhang B – Anforderungen aus Teil 1</h1>
+<p>Die Implementierung muss nach Abschluss von Teil 1 mindestens folgende Fähigkeiten bereitstellen:</p>
+<ul>
+<li>stabile Unit UUIDs,</li>
+<li>stabile Dimension UUIDs,</li>
+<li>Laufzeit-Handles,</li>
+<li>System- und Benutzer-Namespaces,</li>
+<li>schreibgeschützte Systemeinträge,</li>
+<li>Unit Descriptor,</li>
+<li>Dimension Descriptor,</li>
+<li>Registry-Betriebsmodi,</li>
+<li>frühe Boot-Registry,</li>
+<li>Validierung grundlegender Descriptoren,</li>
+<li>semantische Unterscheidung dimensionsgleicher Größen.</li>
+</ul>
+<hr>
+<h1 id="ausblick-auf-teil-2">Ausblick auf Teil 2</h1>
+<p>Teil 2 definiert die Kapitel 11–20:</p>
+<div class="codehilite"><pre><span></span><code>11. Registry Lifecycle
+12. Registry Storage Model
+13. System Registry Loading
+14. Unit Registration
+15. Dimension Registration
+16. Alias and Symbol Registry
+17. Prefix Registry
+18. Unit Systems
+19. Registry Lookup
+20. Registry Validation
+</code></pre></div>
+                </div>
+            </article>
+            
+        </div>
+    </main>
+
+    <a
+        class="back-to-top"
+        id="backToTop"
+        href="#top"
+        title="Nach oben"
+        aria-label="Nach oben"
+    >
+        ↑
+    </a>
+
+    <script>
+        const navigation = document.getElementById("toc");
+        const overlay = document.getElementById("overlay");
+        const backToTop = document.getElementById("backToTop");
+
+        function toggleNavigation() {
+            navigation.classList.toggle("open");
+            overlay.classList.toggle("visible");
+        }
+
+        function closeNavigation() {
+            navigation.classList.remove("open");
+            overlay.classList.remove("visible");
+        }
+
+        document.querySelectorAll(".toc a").forEach((link) => {
+            link.addEventListener("click", () => {
+                if (window.innerWidth <= 900) {
+                    closeNavigation();
+                }
+            });
+        });
+
+        window.addEventListener("scroll", () => {
+            if (window.scrollY > 500) {
+                backToTop.classList.add("visible");
+            } else {
+                backToTop.classList.remove("visible");
+            }
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                closeNavigation();
+            }
+        });
+    </script>
+</body>
+</html>

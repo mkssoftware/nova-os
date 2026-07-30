@@ -1,0 +1,2888 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="color-scheme"
+        content="dark"
+    >
+
+    <title>NPSPEC UNITS 0002 Quantity Type System</title>
+
+    <style>
+        :root {
+            color-scheme: dark;
+
+            --background: #0c0c0c;
+            --background-secondary: #111111;
+            --surface: rgba(32, 32, 32, 0.82);
+            --surface-solid: #202020;
+            --surface-hover: rgba(255, 255, 255, 0.075);
+            --surface-active: rgba(255, 255, 255, 0.11);
+
+            --border: rgba(255, 255, 255, 0.085);
+            --border-strong: rgba(255, 255, 255, 0.15);
+
+            --text: #ffffff;
+            --text-secondary: #c8c8c8;
+            --text-muted: #8f8f8f;
+
+            --accent: #60cdff;
+            --accent-hover: #86d8ff;
+            --accent-muted: rgba(96, 205, 255, 0.15);
+
+            --success: #6ccb5f;
+            --warning: #fce100;
+            --danger: #ff99a4;
+
+            --code-background: #151515;
+            --inline-code-background: rgba(255, 255, 255, 0.08);
+
+            --sidebar-width: 320px;
+            --header-height: 64px;
+
+            --radius-small: 6px;
+            --radius-medium: 10px;
+            --radius-large: 14px;
+
+            --shadow:
+                0 16px 38px rgba(0, 0, 0, 0.40),
+                0 2px 8px rgba(0, 0, 0, 0.30);
+
+            --font:
+                "Segoe UI Variable",
+                "Segoe UI",
+                system-ui,
+                -apple-system,
+                BlinkMacSystemFont,
+                sans-serif;
+
+            --mono-font:
+                "Cascadia Code",
+                "Cascadia Mono",
+                "Consolas",
+                monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: calc(var(--header-height) + 24px);
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(
+                    circle at 15% 0%,
+                    rgba(96, 205, 255, 0.08),
+                    transparent 34rem
+                ),
+                radial-gradient(
+                    circle at 100% 40%,
+                    rgba(120, 90, 255, 0.055),
+                    transparent 30rem
+                ),
+                var(--background);
+
+            color: var(--text);
+            font-family: var(--font);
+            font-size: 15px;
+            line-height: 1.65;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            color: var(--accent-hover);
+            text-decoration: underline;
+        }
+
+        button,
+        input {
+            font: inherit;
+        }
+
+        .app-header {
+            position: fixed;
+            top: 0;
+            right: 0;
+            left: 0;
+            z-index: 1000;
+
+            height: var(--header-height);
+
+            display: flex;
+            align-items: center;
+            gap: 14px;
+
+            padding: 0 20px;
+
+            background: rgba(20, 20, 20, 0.78);
+            border-bottom: 1px solid var(--border);
+
+            backdrop-filter: blur(30px) saturate(150%);
+            -webkit-backdrop-filter: blur(30px) saturate(150%);
+        }
+
+        .menu-button,
+        .header-button,
+        .toc-close {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--text);
+
+            border-radius: var(--radius-small);
+            cursor: pointer;
+
+            transition:
+                background 120ms ease,
+                border-color 120ms ease,
+                transform 120ms ease;
+        }
+
+        .menu-button {
+            width: 38px;
+            height: 38px;
+            font-size: 20px;
+        }
+
+        .header-button {
+            min-height: 36px;
+            padding: 7px 13px;
+        }
+
+        .menu-button:hover,
+        .header-button:hover,
+        .toc-close:hover {
+            background: var(--surface-hover);
+            border-color: var(--border-strong);
+        }
+
+        .menu-button:active,
+        .header-button:active,
+        .toc-close:active {
+            background: var(--surface-active);
+            transform: scale(0.97);
+        }
+
+        .app-title-area {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .app-title {
+            overflow: hidden;
+            margin: 0;
+
+            color: var(--text);
+            font-size: 16px;
+            font-weight: 600;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .app-subtitle {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .toc {
+            position: fixed;
+            top: var(--header-height);
+            bottom: 0;
+            left: 0;
+            z-index: 900;
+
+            width: var(--sidebar-width);
+
+            background: rgba(24, 24, 24, 0.86);
+            border-right: 1px solid var(--border);
+
+            backdrop-filter: blur(35px) saturate(145%);
+            -webkit-backdrop-filter: blur(35px) saturate(145%);
+
+            transition: transform 180ms ease;
+        }
+
+        .toc-header {
+            height: 58px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            padding: 0 16px 0 20px;
+
+            border-bottom: 1px solid var(--border);
+        }
+
+        .toc-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .toc-close {
+            display: none;
+            width: 34px;
+            height: 34px;
+            font-size: 22px;
+        }
+
+        .toc-content {
+            height: calc(100% - 58px);
+            overflow-y: auto;
+            padding: 12px 10px 24px;
+        }
+
+        .toc-document {
+            margin-bottom: 5px;
+        }
+
+        .toc-document-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+
+            min-height: 38px;
+            padding: 8px 10px;
+
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 600;
+
+            border-radius: var(--radius-small);
+        }
+
+        .toc-document-link:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-document-icon {
+            color: var(--accent);
+        }
+
+        .toc-headings {
+            margin: 2px 0 8px 18px;
+            padding-left: 12px;
+            border-left: 1px solid var(--border);
+        }
+
+        .toc-heading {
+            display: block;
+
+            padding: 4px 8px;
+
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.4;
+
+            border-radius: 4px;
+        }
+
+        .toc-heading:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-level-1 {
+            font-weight: 600;
+        }
+
+        .toc-level-2 {
+            padding-left: 14px;
+        }
+
+        .toc-level-3 {
+            padding-left: 22px;
+        }
+
+        .toc-level-4,
+        .toc-level-5,
+        .toc-level-6 {
+            padding-left: 30px;
+        }
+
+        .app-main {
+            min-height: 100vh;
+
+            margin-left: var(--sidebar-width);
+            padding:
+                calc(var(--header-height) + 32px)
+                clamp(20px, 4vw, 64px)
+                80px;
+        }
+
+        .content-container {
+            width: min(100%, 1080px);
+            margin: 0 auto;
+        }
+
+        .hero {
+            margin-bottom: 32px;
+            padding: 28px 30px;
+
+            background:
+                linear-gradient(
+                    135deg,
+                    rgba(96, 205, 255, 0.12),
+                    rgba(255, 255, 255, 0.035)
+                ),
+                var(--surface);
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .hero-label {
+            margin-bottom: 7px;
+
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 600;
+
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .hero h1 {
+            margin: 0;
+
+            font-size: clamp(28px, 4vw, 44px);
+            font-weight: 650;
+            line-height: 1.12;
+            letter-spacing: -0.03em;
+        }
+
+        .hero-description {
+            margin: 14px 0 0;
+            color: var(--text-secondary);
+        }
+
+        .hero-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+
+            margin-top: 20px;
+        }
+
+        .meta-item {
+            padding: 6px 10px;
+
+            color: var(--text-secondary);
+            font-size: 12px;
+
+            background: rgba(0, 0, 0, 0.20);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+        }
+
+        .markdown-document {
+            margin-bottom: 32px;
+            overflow: hidden;
+
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+        }
+
+        .document-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+
+            padding: 20px 24px;
+
+            background: rgba(255, 255, 255, 0.025);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .document-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+            flex: 0 0 auto;
+
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 700;
+
+            background: var(--accent-muted);
+            border: 1px solid rgba(96, 205, 255, 0.20);
+            border-radius: 10px;
+        }
+
+        .document-title-area {
+            min-width: 0;
+        }
+
+        .document-title {
+            overflow: hidden;
+            margin: 0;
+
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.3;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .document-path {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .markdown-content {
+            padding: clamp(24px, 5vw, 52px);
+        }
+
+        .markdown-content > :first-child {
+            margin-top: 0;
+        }
+
+        .markdown-content > :last-child {
+            margin-bottom: 0;
+        }
+
+        .markdown-content h1,
+        .markdown-content h2,
+        .markdown-content h3,
+        .markdown-content h4,
+        .markdown-content h5,
+        .markdown-content h6 {
+            position: relative;
+
+            margin-top: 1.8em;
+            margin-bottom: 0.65em;
+
+            color: var(--text);
+            font-weight: 600;
+            line-height: 1.28;
+
+            letter-spacing: -0.015em;
+        }
+
+        .markdown-content h1 {
+            padding-bottom: 12px;
+            font-size: 30px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h2 {
+            padding-bottom: 9px;
+            font-size: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h3 {
+            font-size: 20px;
+        }
+
+        .markdown-content h4 {
+            font-size: 17px;
+        }
+
+        .markdown-content h5 {
+            font-size: 15px;
+        }
+
+        .markdown-content h6 {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .markdown-content p {
+            margin: 0.85em 0;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .markdown-content ul,
+        .markdown-content ol {
+            margin: 0.8em 0;
+            padding-left: 1.8em;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content li {
+            margin: 0.35em 0;
+        }
+
+        .markdown-content li::marker {
+            color: var(--accent);
+        }
+
+        .markdown-content blockquote {
+            margin: 1.2em 0;
+            padding: 14px 18px;
+
+            color: var(--text-secondary);
+
+            background: rgba(96, 205, 255, 0.07);
+            border: 1px solid rgba(96, 205, 255, 0.13);
+            border-left: 4px solid var(--accent);
+            border-radius: 0 var(--radius-medium) var(--radius-medium) 0;
+        }
+
+        .markdown-content blockquote p {
+            margin: 0.4em 0;
+        }
+
+        .markdown-content code {
+            padding: 0.15em 0.4em;
+
+            color: #f4f4f4;
+            font-family: var(--mono-font);
+            font-size: 0.9em;
+
+            background: var(--inline-code-background);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+        }
+
+        .markdown-content pre {
+            position: relative;
+
+            max-width: 100%;
+            overflow: auto;
+
+            margin: 1.2em 0;
+            padding: 18px;
+
+            background: var(--code-background);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.025),
+                0 8px 20px rgba(0, 0, 0, 0.18);
+        }
+
+        .markdown-content pre code {
+            display: block;
+            min-width: max-content;
+            padding: 0;
+
+            color: #e6e6e6;
+            font-size: 13px;
+            line-height: 1.55;
+
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+        }
+
+        /* Syntaxfarben für Pygments / Markdown codehilite */
+        .markdown-content .codehilite .hll { background: #3a3520; }
+        .markdown-content .codehilite .c,
+        .markdown-content .codehilite .ch,
+        .markdown-content .codehilite .cm,
+        .markdown-content .codehilite .c1,
+        .markdown-content .codehilite .cs { color: #6a9955; font-style: italic; }
+        .markdown-content .codehilite .k,
+        .markdown-content .codehilite .kc,
+        .markdown-content .codehilite .kd,
+        .markdown-content .codehilite .kn,
+        .markdown-content .codehilite .kp,
+        .markdown-content .codehilite .kr,
+        .markdown-content .codehilite .kt { color: #c586c0; }
+        .markdown-content .codehilite .n { color: #d4d4d4; }
+        .markdown-content .codehilite .na { color: #9cdcfe; }
+        .markdown-content .codehilite .nb,
+        .markdown-content .codehilite .bp { color: #4ec9b0; }
+        .markdown-content .codehilite .nc,
+        .markdown-content .codehilite .nd,
+        .markdown-content .codehilite .ne,
+        .markdown-content .codehilite .nf { color: #dcdcaa; }
+        .markdown-content .codehilite .nn { color: #4ec9b0; }
+        .markdown-content .codehilite .nv,
+        .markdown-content .codehilite .vc,
+        .markdown-content .codehilite .vg,
+        .markdown-content .codehilite .vi { color: #9cdcfe; }
+        .markdown-content .codehilite .o,
+        .markdown-content .codehilite .ow { color: #d4d4d4; }
+        .markdown-content .codehilite .m,
+        .markdown-content .codehilite .mb,
+        .markdown-content .codehilite .mf,
+        .markdown-content .codehilite .mh,
+        .markdown-content .codehilite .mi,
+        .markdown-content .codehilite .mo,
+        .markdown-content .codehilite .il { color: #b5cea8; }
+        .markdown-content .codehilite .s,
+        .markdown-content .codehilite .sa,
+        .markdown-content .codehilite .sb,
+        .markdown-content .codehilite .sc,
+        .markdown-content .codehilite .dl,
+        .markdown-content .codehilite .sd,
+        .markdown-content .codehilite .s1,
+        .markdown-content .codehilite .s2,
+        .markdown-content .codehilite .se,
+        .markdown-content .codehilite .sh,
+        .markdown-content .codehilite .si,
+        .markdown-content .codehilite .sx,
+        .markdown-content .codehilite .sr,
+        .markdown-content .codehilite .ss { color: #ce9178; }
+        .markdown-content .codehilite .p { color: #d4d4d4; }
+        .markdown-content .codehilite .gd { color: #f48771; }
+        .markdown-content .codehilite .gi { color: #89d185; }
+        .markdown-content .codehilite .gh,
+        .markdown-content .codehilite .gu { color: #569cd6; font-weight: 600; }
+        .markdown-content .codehilite .err { color: #f44747; }
+
+        .markdown-content hr {
+            margin: 2em 0;
+            border: 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .markdown-content img {
+            display: block;
+
+            max-width: 100%;
+            height: auto;
+            margin: 1.4em auto;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow: var(--shadow);
+        }
+
+        .markdown-content table {
+            width: 100%;
+            margin: 1.3em 0;
+
+            overflow: hidden;
+            border-collapse: separate;
+            border-spacing: 0;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+        }
+
+        .markdown-content th,
+        .markdown-content td {
+            padding: 11px 13px;
+            text-align: left;
+            vertical-align: top;
+
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content th {
+            color: var(--text);
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .markdown-content td {
+            color: var(--text-secondary);
+            background: rgba(0, 0, 0, 0.10);
+        }
+
+        .markdown-content tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .markdown-content th:last-child,
+        .markdown-content td:last-child {
+            border-right: 0;
+        }
+
+        .markdown-content input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin-right: 6px;
+            accent-color: var(--accent);
+            vertical-align: -2px;
+        }
+
+        .back-to-top {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 800;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+
+            color: var(--text);
+            font-size: 20px;
+
+            background: rgba(40, 40, 40, 0.86);
+            border: 1px solid var(--border);
+            border-radius: 50%;
+
+            box-shadow: var(--shadow);
+
+            opacity: 0;
+            pointer-events: none;
+
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+
+            transition:
+                opacity 150ms ease,
+                background 150ms ease,
+                transform 150ms ease;
+        }
+
+        .back-to-top.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .back-to-top:hover {
+            color: var(--text);
+            text-decoration: none;
+            background: var(--surface-active);
+            transform: translateY(-2px);
+        }
+
+        .overlay {
+            position: fixed;
+            inset: var(--header-height) 0 0 0;
+            z-index: 850;
+
+            display: none;
+
+            background: rgba(0, 0, 0, 0.48);
+            backdrop-filter: blur(3px);
+            -webkit-backdrop-filter: blur(3px);
+        }
+
+        ::selection {
+            color: #000000;
+            background: var(--accent);
+        }
+
+        ::-webkit-scrollbar {
+            width: 12px;
+            height: 12px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.16);
+            border: 3px solid transparent;
+            border-radius: 999px;
+            background-clip: padding-box;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+
+        @media print {
+            :root {
+                color-scheme: light;
+            }
+
+            body {
+                color: #111111;
+                background: #ffffff;
+            }
+
+            .app-header,
+            .toc,
+            .overlay,
+            .back-to-top {
+                display: none !important;
+            }
+
+            .app-main {
+                margin: 0;
+                padding: 0;
+            }
+
+            .hero,
+            .markdown-document {
+                color: #111111;
+                background: #ffffff;
+                border: 1px solid #dddddd;
+                box-shadow: none;
+            }
+
+            .markdown-content p,
+            .markdown-content li,
+            .markdown-content td {
+                color: #222222;
+            }
+
+            .markdown-content h1,
+            .markdown-content h2,
+            .markdown-content h3,
+            .markdown-content h4,
+            .markdown-content h5,
+            .markdown-content h6,
+            .markdown-content strong {
+                color: #111111;
+            }
+
+            .markdown-content pre {
+                white-space: pre-wrap;
+                background: #f5f5f5;
+                border-color: #dddddd;
+            }
+
+            .markdown-content pre code {
+                color: #111111;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .toc {
+                width: min(88vw, 340px);
+                transform: translateX(-105%);
+                box-shadow: var(--shadow);
+            }
+
+            .toc.open {
+                transform: translateX(0);
+            }
+
+            .toc-close {
+                display: inline-flex;
+            }
+
+            .overlay.visible {
+                display: block;
+            }
+
+            .app-main {
+                margin-left: 0;
+                padding-right: 18px;
+                padding-left: 18px;
+            }
+
+            .header-button-label {
+                display: none;
+            }
+
+            .markdown-content {
+                padding: 24px 20px;
+            }
+        }
+
+        @media (max-width: 540px) {
+            .app-header {
+                padding: 0 12px;
+            }
+
+            .app-subtitle {
+                display: none;
+            }
+
+            .hero {
+                padding: 23px 20px;
+            }
+
+            .document-header {
+                padding: 16px;
+            }
+
+            .document-number {
+                width: 38px;
+                height: 38px;
+            }
+
+            .markdown-content {
+                padding: 22px 16px;
+            }
+
+            .markdown-content h1 {
+                font-size: 25px;
+            }
+
+            .markdown-content h2 {
+                font-size: 21px;
+            }
+
+            .back-to-top {
+                right: 16px;
+                bottom: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="app-header">
+        <button
+            class="menu-button"
+            type="button"
+            onclick="toggleNavigation()"
+            aria-label="Navigation öffnen"
+            title="Navigation"
+        >
+            ☰
+        </button>
+
+        <div class="app-title-area">
+            <div class="app-title">
+                NPSPEC UNITS 0002 Quantity Type System
+            </div>
+
+            <div class="app-subtitle">
+                C:\recoverboot\nova-os\docs\NPSPEC\Nova Compute Platform
+            </div>
+        </div>
+
+        <div class="header-actions">
+            <button
+                class="header-button"
+                type="button"
+                onclick="window.print()"
+                title="Dokument drucken"
+            >
+                <span>⎙</span>
+                <span class="header-button-label">
+                    Drucken
+                </span>
+            </button>
+        </div>
+    </header>
+
+    <nav class="toc" id="toc">
+<div class="toc-header">
+<div class="toc-title">Inhaltsverzeichnis</div>
+<button class="toc-close" type="button" onclick="toggleNavigation()" aria-label="Navigation schließen">
+×
+</button>
+</div>
+<div class="toc-content">
+
+            <div class="toc-document">
+                <a class="toc-document-link" href="#document-npspec-units-0002-quantity-type-system-md">
+                    <span class="toc-document-icon">▤</span>
+                    <span>NPSPEC UNITS 0002 Quantity Type System</span>
+                </a>
+            
+<div class="toc-headings">
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#npspec-units-0002"
+                    >
+                        NPSPEC-UNITS-0002
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#quantity-type-system"
+                    >
+                        Quantity Type System
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#1-zweck"
+                    >
+                        1. Zweck
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#2-geltungsbereich"
+                    >
+                        2. Geltungsbereich
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#3-leitprinzipien"
+                    >
+                        3. Leitprinzipien
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#31-jede-physikalische-groe-besitzt-eine-dimension"
+                    >
+                        3.1 Jede physikalische Größe besitzt eine Dimension
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#32-dimension-und-einheit-sind-getrennte-konzepte"
+                    >
+                        3.2 Dimension und Einheit sind getrennte Konzepte
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#33-si-ist-die-kanonische-referenz"
+                    >
+                        3.3 SI ist die kanonische Referenz
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#34-dimensionsfehler-mussen-verhindert-werden"
+                    >
+                        3.4 Dimensionsfehler müssen verhindert werden
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#35-prazision-muss-explizit-sein"
+                    >
+                        3.5 Präzision muss explizit sein
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#36-einheitenumrechnungen-mussen-nachvollziehbar-sein"
+                    >
+                        3.6 Einheitenumrechnungen müssen nachvollziehbar sein
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#4-begrifflichkeiten"
+                    >
+                        4. Begrifflichkeiten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#41-quantity"
+                    >
+                        4.1 Quantity
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#42-dimension"
+                    >
+                        4.2 Dimension
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#43-unit"
+                    >
+                        4.3 Unit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#44-dimensionless-quantity"
+                    >
+                        4.4 Dimensionless Quantity
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#45-measurement"
+                    >
+                        4.5 Measurement
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#5-si-basisdimensionen"
+                    >
+                        5. SI-Basisdimensionen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#6-dimensionsvektor"
+                    >
+                        6. Dimensionsvektor
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#61-ganzzahlige-exponenten"
+                    >
+                        6.1 Ganzzahlige Exponenten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#62-rationale-exponenten"
+                    >
+                        6.2 Rationale Exponenten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#63-dimensionsvergleich"
+                    >
+                        6.3 Dimensionsvergleich
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#7-kanonische-quantity-struktur"
+                    >
+                        7. Kanonische Quantity-Struktur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#8-statisch-typisierte-quantity-typen"
+                    >
+                        8. Statisch typisierte Quantity-Typen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#9-numerische-reprasentation"
+                    >
+                        9. Numerische Repräsentation
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#10-einheitendefinition"
+                    >
+                        10. Einheitendefinition
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#101-lineare-einheiten"
+                    >
+                        10.1 Lineare Einheiten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#102-affine-einheiten"
+                    >
+                        10.2 Affine Einheiten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#103-logarithmische-einheiten"
+                    >
+                        10.3 Logarithmische Einheiten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#104-kontextabhangige-einheiten"
+                    >
+                        10.4 Kontextabhängige Einheiten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#11-standard-quantity-typen"
+                    >
+                        11. Standard-Quantity-Typen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#111-geometrie"
+                    >
+                        11.1 Geometrie
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#112-mechanik"
+                    >
+                        11.2 Mechanik
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#113-elektrizitat-und-magnetismus"
+                    >
+                        11.3 Elektrizität und Magnetismus
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#114-thermodynamik"
+                    >
+                        11.4 Thermodynamik
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#115-stoffmenge-und-chemie"
+                    >
+                        11.5 Stoffmenge und Chemie
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#116-optik"
+                    >
+                        11.6 Optik
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#117-signalverarbeitung"
+                    >
+                        11.7 Signalverarbeitung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#118-datenverarbeitung"
+                    >
+                        11.8 Datenverarbeitung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#12-temperaturmodell"
+                    >
+                        12. Temperaturmodell
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#13-winkelmodell"
+                    >
+                        13. Winkelmodell
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#14-dimensionslose-groen"
+                    >
+                        14. Dimensionslose Größen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#15-konstruktion-von-quantities"
+                    >
+                        15. Konstruktion von Quantities
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#16-mathematische-operationen"
+                    >
+                        16. Mathematische Operationen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#17-einheitenumrechnung"
+                    >
+                        17. Einheitenumrechnung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#18-unsicherheitsmodell"
+                    >
+                        18. Unsicherheitsmodell
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#19-konstanten"
+                    >
+                        19. Konstanten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#20-tensor-und-vektorintegration"
+                    >
+                        20. Tensor- und Vektorintegration
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#21-compute-service-integration"
+                    >
+                        21. Compute-Service-Integration
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#22-abi"
+                    >
+                        22. ABI
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#23-serialisierung"
+                    >
+                        23. Serialisierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#24-reflection"
+                    >
+                        24. Reflection
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#25-formatierung"
+                    >
+                        25. Formatierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#26-parsing"
+                    >
+                        26. Parsing
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#27-fehlerbehandlung"
+                    >
+                        27. Fehlerbehandlung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#28-einheitenregistrierung"
+                    >
+                        28. Einheitenregistrierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#29-dimensionsregistrierung"
+                    >
+                        29. Dimensionsregistrierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#30-compiler-unterstutzung"
+                    >
+                        30. Compiler-Unterstützung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#31-sprachbindungen"
+                    >
+                        31. Sprachbindungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#32-c-api-beispiele"
+                    >
+                        32. C-API-Beispiele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#33-c-api-beispiele"
+                    >
+                        33. C++-API-Beispiele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#34-messwertbeispiel"
+                    >
+                        34. Messwertbeispiel
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#35-thread-sicherheit"
+                    >
+                        35. Thread-Sicherheit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#36-sicherheit"
+                    >
+                        36. Sicherheit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#37-performance"
+                    >
+                        37. Performance
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#38-tests"
+                    >
+                        38. Tests
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#39-referenztests"
+                    >
+                        39. Referenztests
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#40-abi-versionierung"
+                    >
+                        40. ABI-Versionierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#41-nicht-ziele"
+                    >
+                        41. Nicht-Ziele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#42-offene-punkte"
+                    >
+                        42. Offene Punkte
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#43-geplante-folgespezifikationen"
+                    >
+                        43. Geplante Folgespezifikationen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#44-zusammenfassung"
+                    >
+                        44. Zusammenfassung
+                    </a>
+                    
+</div>
+</div>
+</div>
+</nav>
+
+    <div
+        class="overlay"
+        id="overlay"
+        onclick="closeNavigation()"
+    ></div>
+
+    <main class="app-main" id="top">
+        <div class="content-container">
+            <section class="hero">
+                <div class="hero-label">
+                    Markdown-Dokumentation
+                </div>
+
+                <h1>
+                    NPSPEC UNITS 0002 Quantity Type System
+                </h1>
+
+                <p class="hero-description">
+                    Zusammengeführte HTML-Dokumentation aus
+                    1 Markdown-Dateien.
+                </p>
+
+                <div class="hero-meta">
+                    <span class="meta-item">
+                        1 Dokumente
+                    </span>
+
+                    <span class="meta-item">
+                        Fluent Dark
+                    </span>
+
+                    <span class="meta-item">
+                        Einzelne HTML-Datei
+                    </span>
+                </div>
+            </section>
+
+            
+            <article class="markdown-document" id="document-npspec-units-0002-quantity-type-system-md">
+                <header class="document-header">
+                    <div class="document-number">
+                        01
+                    </div>
+
+                    <div class="document-title-area">
+                        <h1 class="document-title">
+                            NPSPEC UNITS 0002 Quantity Type System
+                        </h1>
+
+                        <div class="document-path">
+                            NPSPEC-UNITS-0002-Quantity-Type-System.md
+                        </div>
+                    </div>
+                </header>
+
+                <div class="markdown-content">
+                    <h1 id="npspec-units-0002">NPSPEC-UNITS-0002</h1>
+<h1 id="quantity-type-system">Quantity Type System</h1>
+<table>
+<thead>
+<tr>
+<th>Feld</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dokument</td>
+<td>NPSPEC-UNITS-0002</td>
+</tr>
+<tr>
+<td>Titel</td>
+<td>Quantity Type System</td>
+</tr>
+<tr>
+<td>Version</td>
+<td>1.0.0 Draft</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Draft</td>
+</tr>
+<tr>
+<td>Kategorie</td>
+<td>System Specification</td>
+</tr>
+<tr>
+<td>Bereich</td>
+<td>Nova Compute Platform</td>
+</tr>
+<tr>
+<td>Abhängigkeiten</td>
+<td>NPSPEC-COMPUTE-0001, NPSPEC-UNITS-0001, NPSPEC-OBJECT-0001</td>
+</tr>
+<tr>
+<td>Zielplattformen</td>
+<td>x86_64, AArch64, RISC-V</td>
+</tr>
+<tr>
+<td>Letzte Änderung</td>
+<td>2026-07-13</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h1 id="1-zweck">1. Zweck</h1>
+<p>Diese Spezifikation definiert das native Quantity Type System von Nova OS.</p>
+<p>Das Quantity Type System beschreibt physikalische Größen, Dimensionen, Einheiten, Skalare, Messwerte, Unsicherheiten, Umrechnungen, mathematische Operationen, Speicherrepräsentationen, Laufzeitprüfung, Compilerprüfung, Serialisierung und ABI-Kompatibilität.</p>
+<p>Es bildet die verbindliche Grundlage für alle physikalischen, technischen, wissenschaftlichen und numerischen Berechnungen innerhalb der Nova Compute Platform.</p>
+<hr>
+<h1 id="2-geltungsbereich">2. Geltungsbereich</h1>
+<p>Diese Spezifikation gilt für:</p>
+<ul>
+<li>native Nova-Systembibliotheken,</li>
+<li>Nova Compute Services,</li>
+<li>Anwendungen,</li>
+<li>Treiber,</li>
+<li>wissenschaftliche Module,</li>
+<li>Robotik,</li>
+<li>KI-Systeme,</li>
+<li>Signalverarbeitung,</li>
+<li>Simulationen,</li>
+<li>Messwerterfassung,</li>
+<li>industrielle Steuerungen,</li>
+<li>Entwicklerwerkzeuge.</li>
+</ul>
+<p>Das Quantity Type System darf nicht durch modulspezifische oder anwendungsspezifische Einheitensysteme ersetzt werden.</p>
+<p>Anwendungen dürfen zusätzliche Einheiten und Größen definieren, müssen jedoch die in diesem Dokument beschriebenen Basistypen und Registrierungsmechanismen verwenden.</p>
+<hr>
+<h1 id="3-leitprinzipien">3. Leitprinzipien</h1>
+<h2 id="31-jede-physikalische-groe-besitzt-eine-dimension">3.1 Jede physikalische Größe besitzt eine Dimension</h2>
+<p>Eine physikalische Größe ist niemals nur ein primitiver Zahlenwert.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">distance</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Eine Quantity enthält mindestens:</p>
+<ul>
+<li>numerischen Wert,</li>
+<li>Dimensionsinformation,</li>
+<li>Einheit,</li>
+<li>Skalierung,</li>
+<li>Typinformation.</li>
+</ul>
+<h2 id="32-dimension-und-einheit-sind-getrennte-konzepte">3.2 Dimension und Einheit sind getrennte Konzepte</h2>
+<p>Die Dimension beschreibt die physikalische Art einer Größe. Die Einheit beschreibt ihre konkrete Darstellung.</p>
+<div class="codehilite"><pre><span></span><code>Dimension:
+Länge
+
+Einheiten:
+Meter
+Kilometer
+Millimeter
+Zoll
+Fuß
+</code></pre></div>
+
+<p><code>Meter</code> und <code>Kilometer</code> besitzen dieselbe Dimension, aber unterschiedliche Skalierungsfaktoren.</p>
+<h2 id="33-si-ist-die-kanonische-referenz">3.3 SI ist die kanonische Referenz</h2>
+<p>Alle physikalischen Größen besitzen eine kanonische SI-Repräsentation.</p>
+<div class="codehilite"><pre><span></span><code>1 Kilometer = 1000 Meter
+</code></pre></div>
+
+<p>Intern darf Nova eine optimierte Darstellung verwenden. Die semantische Referenz bleibt die zugehörige SI-Einheit.</p>
+<h2 id="34-dimensionsfehler-mussen-verhindert-werden">3.4 Dimensionsfehler müssen verhindert werden</h2>
+<p>Ungültige Operationen müssen möglichst früh erkannt werden.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_length_t</span><span class="w"> </span><span class="n">length</span><span class="p">;</span>
+<span class="n">nova_mass_t</span><span class="w"> </span><span class="n">mass</span><span class="p">;</span>
+
+<span class="n">nova_add</span><span class="p">(</span><span class="n">length</span><span class="p">,</span><span class="w"> </span><span class="n">mass</span><span class="p">);</span>
+</code></pre></div>
+
+<p>Ergebnis:</p>
+<div class="codehilite"><pre><span></span><code>NOVA_ERROR_DIMENSION_MISMATCH
+</code></pre></div>
+
+<p>Bei statisch bekannten Typen soll der Fehler bereits durch Compiler oder Typsystem erkannt werden.</p>
+<h2 id="35-prazision-muss-explizit-sein">3.5 Präzision muss explizit sein</h2>
+<p>Unterstützte Repräsentationen umfassen unter anderem:</p>
+<div class="codehilite"><pre><span></span><code>float32
+float64
+float128
+decimal64
+decimal128
+int64
+fixed-point
+rational
+</code></pre></div>
+
+<p>Stille Präzisionsverluste sind nicht zulässig.</p>
+<h2 id="36-einheitenumrechnungen-mussen-nachvollziehbar-sein">3.6 Einheitenumrechnungen müssen nachvollziehbar sein</h2>
+<p>Die Runtime unterscheidet mindestens:</p>
+<ul>
+<li>lineare Skalierung,</li>
+<li>affine Umrechnung,</li>
+<li>logarithmische Umrechnung,</li>
+<li>kontextabhängige Umrechnung,</li>
+<li>nicht unterstützte Umrechnung.</li>
+</ul>
+<hr>
+<h1 id="4-begrifflichkeiten">4. Begrifflichkeiten</h1>
+<h2 id="41-quantity">4.1 Quantity</h2>
+<p>Eine Quantity ist ein numerischer Wert mit physikalischer Bedeutung.</p>
+<div class="codehilite"><pre><span></span><code>Quantity = Wert + Dimension + Einheit + Metadaten
+</code></pre></div>
+
+<p>Beispiele:</p>
+<div class="codehilite"><pre><span></span><code>5 Meter
+12 Kilogramm
+230 Volt
+20 Grad Celsius
+48 Kilohertz
+</code></pre></div>
+
+<h2 id="42-dimension">4.2 Dimension</h2>
+<p>Eine Dimension beschreibt die physikalische Kategorie einer Größe, beispielsweise Länge, Masse, Zeit, elektrische Stromstärke, Temperatur, Stoffmenge oder Lichtstärke.</p>
+<h2 id="43-unit">4.3 Unit</h2>
+<p>Eine Unit beschreibt die konkrete Maßeinheit einer Quantity, beispielsweise Meter, Kilometer, Newton, Pascal, Volt oder Celsius.</p>
+<h2 id="44-dimensionless-quantity">4.4 Dimensionless Quantity</h2>
+<p>Eine dimensionslose Größe besitzt einen neutralen Dimensionsvektor.</p>
+<p>Beispiele:</p>
+<ul>
+<li>Reibungskoeffizient,</li>
+<li>Brechungsindex,</li>
+<li>Wirkungsgrad,</li>
+<li>Reynolds-Zahl,</li>
+<li>Wahrscheinlichkeit.</li>
+</ul>
+<p>Dimensionslos bedeutet nicht bedeutungslos. Winkel werden in Nova als semantisch eigener Quantity-Typ behandelt.</p>
+<h2 id="45-measurement">4.5 Measurement</h2>
+<p>Ein Measurement ist eine Quantity mit Messmetadaten. Es kann Unsicherheit, Messzeit, Quelle, Sensor-ID, Kalibrierungsstatus, Vertrauensintervall und Qualitätskennzeichen enthalten.</p>
+<hr>
+<h1 id="5-si-basisdimensionen">5. SI-Basisdimensionen</h1>
+<p>Nova verwendet sieben SI-Basisdimensionen.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">Index</th>
+<th>Dimension</th>
+<th>Symbol</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">0</td>
+<td>Länge</td>
+<td>L</td>
+</tr>
+<tr>
+<td style="text-align: right;">1</td>
+<td>Masse</td>
+<td>M</td>
+</tr>
+<tr>
+<td style="text-align: right;">2</td>
+<td>Zeit</td>
+<td>T</td>
+</tr>
+<tr>
+<td style="text-align: right;">3</td>
+<td>elektrische Stromstärke</td>
+<td>I</td>
+</tr>
+<tr>
+<td style="text-align: right;">4</td>
+<td>thermodynamische Temperatur</td>
+<td>Θ</td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td>Stoffmenge</td>
+<td>N</td>
+</tr>
+<tr>
+<td style="text-align: right;">6</td>
+<td>Lichtstärke</td>
+<td>J</td>
+</tr>
+</tbody>
+</table>
+<p>Der kanonische Dimensionsvektor lautet:</p>
+<div class="codehilite"><pre><span></span><code>[L, M, T, I, Θ, N, J]
+</code></pre></div>
+
+<hr>
+<h1 id="6-dimensionsvektor">6. Dimensionsvektor</h1>
+<p>Jede Dimension wird als Exponentenvektor dargestellt.</p>
+<div class="codehilite"><pre><span></span><code>Länge:            [1, 0,  0, 0, 0, 0, 0]
+Geschwindigkeit:  [1, 0, -1, 0, 0, 0, 0]
+Beschleunigung:   [1, 0, -2, 0, 0, 0, 0]
+Kraft:            [1, 1, -2, 0, 0, 0, 0]
+Energie:          [2, 1, -2, 0, 0, 0, 0]
+</code></pre></div>
+
+<h2 id="61-ganzzahlige-exponenten">6.1 Ganzzahlige Exponenten</h2>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_dimension_vector</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">int8_t</span><span class="w"> </span><span class="n">length</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">int8_t</span><span class="w"> </span><span class="n">mass</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">int8_t</span><span class="w"> </span><span class="n">time</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">int8_t</span><span class="w"> </span><span class="n">current</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">int8_t</span><span class="w"> </span><span class="n">temperature</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">int8_t</span><span class="w"> </span><span class="n">amount</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">int8_t</span><span class="w"> </span><span class="n">luminous_intensity</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_dimension_vector_t</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="62-rationale-exponenten">6.2 Rationale Exponenten</h2>
+<p>Spätere Versionen dürfen rationale Exponenten unterstützen.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_rational_exponent</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">int16_t</span><span class="w"> </span><span class="n">numerator</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">uint16_t</span><span class="w"> </span><span class="n">denominator</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_rational_exponent_t</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="63-dimensionsvergleich">6.3 Dimensionsvergleich</h2>
+<div class="codehilite"><pre><span></span><code><span class="kt">bool</span><span class="w"> </span><span class="nf">nova_dimension_equal</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_dimension_vector_t</span><span class="o">*</span><span class="w"> </span><span class="n">a</span><span class="p">,</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_dimension_vector_t</span><span class="o">*</span><span class="w"> </span><span class="n">b</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<p>Zwei Quantities sind dimensionskompatibel, wenn alle Exponenten identisch sind.</p>
+<hr>
+<h1 id="7-kanonische-quantity-struktur">7. Kanonische Quantity-Struktur</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_quantity</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_object_header_t</span><span class="w"> </span><span class="n">object</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_numeric_type_t</span><span class="w"> </span><span class="n">numeric_type</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_dimension_id_t</span><span class="w"> </span><span class="n">dimension_id</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_unit_id_t</span><span class="w"> </span><span class="n">unit_id</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_quantity_flags_t</span><span class="w"> </span><span class="n">flags</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">union</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">        </span><span class="kt">int64_t</span><span class="w"> </span><span class="n">integer_value</span><span class="p">;</span>
+<span class="w">        </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">unsigned_value</span><span class="p">;</span>
+<span class="w">        </span><span class="kt">float</span><span class="w"> </span><span class="n">float32_value</span><span class="p">;</span>
+<span class="w">        </span><span class="kt">double</span><span class="w"> </span><span class="n">float64_value</span><span class="p">;</span>
+<span class="w">        </span><span class="n">nova_float128_t</span><span class="w"> </span><span class="n">float128_value</span><span class="p">;</span>
+<span class="w">        </span><span class="n">nova_decimal128_t</span><span class="w"> </span><span class="n">decimal128_value</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span><span class="w"> </span><span class="n">value</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Jede Quantity muss einen gültigen numerischen Typ, eine gültige Dimension, eine gültige Einheit, eine definierte Speicherrepräsentation, dokumentierte Rundungsregeln und eine eindeutige Serialisierung besitzen.</p>
+<p>Für häufig verwendete Größen soll Nova statische Spezialtypen anbieten:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_length_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_mass_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_time_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_velocity_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_acceleration_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_force_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_energy_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_power_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_pressure_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_temperature_t</span><span class="p">;</span>
+<span class="k">typedef</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">nova_frequency_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Langfristig dürfen Compiler oder Sprache stärkere, voneinander getrennte Typen erzeugen.</p>
+<hr>
+<h1 id="8-statisch-typisierte-quantity-typen">8. Statisch typisierte Quantity-Typen</h1>
+<p>Statische Quantity-Typen sollen Dimensionsfehler zur Compile-Zeit verhindern.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova</span><span class="o">::</span><span class="n">Length</span><span class="w"> </span><span class="n">distance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">12.0</span><span class="n">_m</span><span class="p">;</span>
+<span class="n">nova</span><span class="o">::</span><span class="n">Time</span><span class="w"> </span><span class="n">duration</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">4.0</span><span class="n">_s</span><span class="p">;</span>
+
+<span class="n">nova</span><span class="o">::</span><span class="n">Velocity</span><span class="w"> </span><span class="n">velocity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">distance</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">duration</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Ungültig:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova</span><span class="o">::</span><span class="n">Length</span><span class="w"> </span><span class="n">length</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">10.0</span><span class="n">_m</span><span class="p">;</span>
+<span class="n">nova</span><span class="o">::</span><span class="n">Mass</span><span class="w"> </span><span class="n">mass</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">4.0</span><span class="n">_kg</span><span class="p">;</span>
+
+<span class="k">auto</span><span class="w"> </span><span class="n">invalid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">length</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">mass</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Konzeptionelles Typschema:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">template</span><span class="o">&lt;</span>
+<span class="w">    </span><span class="k">typename</span><span class="w"> </span><span class="nc">NumericType</span><span class="p">,</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">L</span><span class="p">,</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">M</span><span class="p">,</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">T</span><span class="p">,</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">I</span><span class="p">,</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">Theta</span><span class="p">,</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">N</span><span class="p">,</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">J</span>
+<span class="o">&gt;</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Quantity</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Beispiele:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">using</span><span class="w"> </span><span class="n">Length</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">Quantity</span><span class="o">&lt;</span><span class="kt">double</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="o">&gt;</span><span class="p">;</span>
+
+<span class="k">using</span><span class="w"> </span><span class="n">Velocity</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">Quantity</span><span class="o">&lt;</span><span class="kt">double</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">-1</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="o">&gt;</span><span class="p">;</span>
+
+<span class="k">using</span><span class="w"> </span><span class="n">Force</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">Quantity</span><span class="o">&lt;</span><span class="kt">double</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">-2</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="o">&gt;</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="9-numerische-reprasentation">9. Numerische Repräsentation</h1>
+<p>Mindestens folgende Typen müssen vorgesehen werden:</p>
+<div class="codehilite"><pre><span></span><code>NOVA_NUM_INT8
+NOVA_NUM_INT16
+NOVA_NUM_INT32
+NOVA_NUM_INT64
+NOVA_NUM_UINT8
+NOVA_NUM_UINT16
+NOVA_NUM_UINT32
+NOVA_NUM_UINT64
+NOVA_NUM_FLOAT16
+NOVA_NUM_FLOAT32
+NOVA_NUM_FLOAT64
+NOVA_NUM_FLOAT128
+NOVA_NUM_DECIMAL64
+NOVA_NUM_DECIMAL128
+NOVA_NUM_FIXED
+NOVA_NUM_RATIONAL
+NOVA_NUM_COMPLEX64
+NOVA_NUM_COMPLEX128
+</code></pre></div>
+
+<p>Der Standardtyp für wissenschaftliche Berechnungen ist <code>float64</code>.</p>
+<p>Für Embedded-, Echtzeit- und Finanzanwendungen muss Fixed-Point-Unterstützung vorgesehen werden:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_fixed_value</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="kt">int64_t</span><span class="w"> </span><span class="n">raw</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">uint8_t</span><span class="w"> </span><span class="n">fractional_bits</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_fixed_value_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Dezimaltypen sind insbesondere für Finanzberechnungen, juristisch relevante Werte und exakte Dezimaldarstellungen vorgesehen.</p>
+<hr>
+<h1 id="10-einheitendefinition">10. Einheitendefinition</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_unit_descriptor</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_unit_id_t</span><span class="w"> </span><span class="n">id</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">name</span><span class="p">;</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">symbol</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_dimension_id_t</span><span class="w"> </span><span class="n">dimension_id</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kt">long</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">scale</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">long</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">offset</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_unit_flags_t</span><span class="w"> </span><span class="n">flags</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_unit_descriptor_t</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="101-lineare-einheiten">10.1 Lineare Einheiten</h2>
+<div class="codehilite"><pre><span></span><code>SI-Wert = Wert × Skalierungsfaktor
+</code></pre></div>
+
+<p>Beispiel Kilometer:</p>
+<div class="codehilite"><pre><span></span><code>scale = 1000
+offset = 0
+</code></pre></div>
+
+<h2 id="102-affine-einheiten">10.2 Affine Einheiten</h2>
+<div class="codehilite"><pre><span></span><code>SI-Wert = Wert × Skalierungsfaktor + Offset
+</code></pre></div>
+
+<p>Beispiel Celsius:</p>
+<div class="codehilite"><pre><span></span><code>Kelvin = Celsius + 273.15
+</code></pre></div>
+
+<h2 id="103-logarithmische-einheiten">10.3 Logarithmische Einheiten</h2>
+<p>Logarithmische Einheiten wie Dezibel, dBm, pH oder Magnitude benötigen eine eigene Konvertierungsklasse.</p>
+<h2 id="104-kontextabhangige-einheiten">10.4 Kontextabhängige Einheiten</h2>
+<p>Währungen, Monate, Kalenderjahre und historische Maße dürfen nur über explizite Konvertierungsdienste umgerechnet werden.</p>
+<hr>
+<h1 id="11-standard-quantity-typen">11. Standard-Quantity-Typen</h1>
+<h2 id="111-geometrie">11.1 Geometrie</h2>
+<div class="codehilite"><pre><span></span><code>nova_length_t
+nova_area_t
+nova_volume_t
+nova_angle_t
+nova_solid_angle_t
+nova_curvature_t
+nova_radius_t
+</code></pre></div>
+
+<h2 id="112-mechanik">11.2 Mechanik</h2>
+<div class="codehilite"><pre><span></span><code>nova_mass_t
+nova_time_t
+nova_velocity_t
+nova_acceleration_t
+nova_force_t
+nova_momentum_t
+nova_energy_t
+nova_work_t
+nova_power_t
+nova_pressure_t
+nova_torque_t
+nova_angular_velocity_t
+nova_angular_acceleration_t
+nova_moment_of_inertia_t
+nova_density_t
+nova_dynamic_viscosity_t
+nova_kinematic_viscosity_t
+</code></pre></div>
+
+<h2 id="113-elektrizitat-und-magnetismus">11.3 Elektrizität und Magnetismus</h2>
+<div class="codehilite"><pre><span></span><code>nova_electric_current_t
+nova_electric_charge_t
+nova_voltage_t
+nova_resistance_t
+nova_conductance_t
+nova_capacitance_t
+nova_inductance_t
+nova_electric_field_t
+nova_magnetic_flux_t
+nova_magnetic_flux_density_t
+nova_electric_power_t
+</code></pre></div>
+
+<h2 id="114-thermodynamik">11.4 Thermodynamik</h2>
+<div class="codehilite"><pre><span></span><code>nova_temperature_t
+nova_temperature_delta_t
+nova_heat_t
+nova_heat_capacity_t
+nova_specific_heat_capacity_t
+nova_entropy_t
+nova_thermal_conductivity_t
+nova_heat_flux_t
+</code></pre></div>
+
+<h2 id="115-stoffmenge-und-chemie">11.5 Stoffmenge und Chemie</h2>
+<div class="codehilite"><pre><span></span><code>nova_amount_of_substance_t
+nova_molar_mass_t
+nova_molar_concentration_t
+nova_mass_concentration_t
+nova_molality_t
+</code></pre></div>
+
+<h2 id="116-optik">11.6 Optik</h2>
+<div class="codehilite"><pre><span></span><code>nova_luminous_intensity_t
+nova_luminous_flux_t
+nova_illuminance_t
+nova_luminance_t
+nova_radiant_flux_t
+nova_radiance_t
+</code></pre></div>
+
+<h2 id="117-signalverarbeitung">11.7 Signalverarbeitung</h2>
+<div class="codehilite"><pre><span></span><code>nova_frequency_t
+nova_angular_frequency_t
+nova_sample_rate_t
+nova_phase_t
+nova_amplitude_t
+nova_gain_t
+nova_sound_pressure_t
+nova_sound_pressure_level_t
+</code></pre></div>
+
+<h2 id="118-datenverarbeitung">11.8 Datenverarbeitung</h2>
+<div class="codehilite"><pre><span></span><code>nova_bit_t
+nova_byte_t
+nova_data_rate_t
+nova_storage_size_t
+nova_symbol_rate_t
+</code></pre></div>
+
+<hr>
+<h1 id="12-temperaturmodell">12. Temperaturmodell</h1>
+<p>Absolute Temperatur und Temperaturdifferenz sind unterschiedliche Typen.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_temperature_t</span><span class="w"> </span><span class="n">absolute</span><span class="p">;</span>
+<span class="n">nova_temperature_delta_t</span><span class="w"> </span><span class="n">difference</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Zulässig:</p>
+<div class="codehilite"><pre><span></span><code>Temperatur - Temperatur = Temperaturdifferenz
+Temperatur + Temperaturdifferenz = Temperatur
+</code></pre></div>
+
+<p>Nicht ohne explizite Semantik zulässig:</p>
+<div class="codehilite"><pre><span></span><code>Temperatur + Temperatur
+</code></pre></div>
+
+<p>Celsius und Fahrenheit sind affine Darstellungen absoluter Temperatur:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_temperature_t</span><span class="w"> </span><span class="n">room</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">nova_temperature_from_celsius</span><span class="p">(</span><span class="mf">20.0</span><span class="p">);</span>
+
+<span class="n">nova_temperature_t</span><span class="w"> </span><span class="n">value</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">nova_temperature_from_fahrenheit</span><span class="p">(</span><span class="mf">68.0</span><span class="p">);</span>
+</code></pre></div>
+
+<hr>
+<h1 id="13-winkelmodell">13. Winkelmodell</h1>
+<p>Winkel werden als semantisch eigener Typ behandelt.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_angle_t</span><span class="w"> </span><span class="n">angle</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Unterstützte Einheiten:</p>
+<ul>
+<li>Radiant,</li>
+<li>Grad,</li>
+<li>Bogenminute,</li>
+<li>Bogensekunde,</li>
+<li>Umdrehung.</li>
+</ul>
+<p>Trigonometrische Funktionen akzeptieren ausschließlich Winkeltypen:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_scalar_t</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">nova_sin</span><span class="p">(</span><span class="n">angle</span><span class="p">);</span>
+</code></pre></div>
+
+<hr>
+<h1 id="14-dimensionslose-groen">14. Dimensionslose Größen</h1>
+<p>Nova soll wichtige dimensionslose Größen als eigene semantische Typen anbieten:</p>
+<div class="codehilite"><pre><span></span><code>nova_ratio_t
+nova_percentage_t
+nova_efficiency_t
+nova_refractive_index_t
+nova_friction_coefficient_t
+nova_reynolds_number_t
+nova_mach_number_t
+nova_probability_t
+</code></pre></div>
+
+<p>Diese Typen besitzen denselben neutralen Dimensionsvektor, sind aber nicht automatisch semantisch austauschbar.</p>
+<hr>
+<h1 id="15-konstruktion-von-quantities">15. Konstruktion von Quantities</h1>
+<p>Generische Konstruktion:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantity_create</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_numeric_value_t</span><span class="w"> </span><span class="n">value</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_unit_id_t</span><span class="w"> </span><span class="n">unit</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">out_quantity</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<p>Spezifische Konstruktoren:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_length_t</span><span class="w"> </span><span class="nf">nova_meters</span><span class="p">(</span><span class="kt">double</span><span class="w"> </span><span class="n">value</span><span class="p">);</span>
+<span class="n">nova_length_t</span><span class="w"> </span><span class="nf">nova_kilometers</span><span class="p">(</span><span class="kt">double</span><span class="w"> </span><span class="n">value</span><span class="p">);</span>
+<span class="n">nova_mass_t</span><span class="w"> </span><span class="nf">nova_kilograms</span><span class="p">(</span><span class="kt">double</span><span class="w"> </span><span class="n">value</span><span class="p">);</span>
+<span class="n">nova_time_t</span><span class="w"> </span><span class="nf">nova_seconds</span><span class="p">(</span><span class="kt">double</span><span class="w"> </span><span class="n">value</span><span class="p">);</span>
+<span class="n">nova_force_t</span><span class="w"> </span><span class="nf">nova_newtons</span><span class="p">(</span><span class="kt">double</span><span class="w"> </span><span class="n">value</span><span class="p">);</span>
+<span class="n">nova_pressure_t</span><span class="w"> </span><span class="nf">nova_pascals</span><span class="p">(</span><span class="kt">double</span><span class="w"> </span><span class="n">value</span><span class="p">);</span>
+</code></pre></div>
+
+<p>Sprachen mit Literalunterstützung dürfen folgende Schreibweisen anbieten:</p>
+<div class="codehilite"><pre><span></span><code><span class="mf">10.0</span><span class="n">_m</span>
+<span class="mf">5.0</span><span class="n">_kg</span>
+<span class="mf">250.0</span><span class="n">_ms</span>
+<span class="mf">9.81</span><span class="n">_mps2</span>
+<span class="mf">230.0</span><span class="n">_V</span>
+<span class="mf">50.0</span><span class="n">_Hz</span>
+</code></pre></div>
+
+<hr>
+<h1 id="16-mathematische-operationen">16. Mathematische Operationen</h1>
+<p>Addition und Subtraktion sind nur bei kompatiblen Dimensionen erlaubt.</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantity_add</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">a</span><span class="p">,</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">b</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">result</span>
+<span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantity_subtract</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">a</span><span class="p">,</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">b</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">result</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<p>Bei Multiplikation werden Dimensionsexponenten addiert:</p>
+<div class="codehilite"><pre><span></span><code>Kraft × Weg = Energie
+</code></pre></div>
+
+<p>Bei Division werden Dimensionsexponenten subtrahiert:</p>
+<div class="codehilite"><pre><span></span><code>Weg / Zeit = Geschwindigkeit
+</code></pre></div>
+
+<p>Potenzen und Wurzeln sind nur zulässig, wenn die resultierenden Exponenten darstellbar sind.</p>
+<div class="codehilite"><pre><span></span><code>Länge² = Fläche
+Länge³ = Volumen
+√Fläche = Länge
+</code></pre></div>
+
+<p>Vergleiche sind nur bei kompatiblen Dimensionen erlaubt.</p>
+<hr>
+<h1 id="17-einheitenumrechnung">17. Einheitenumrechnung</h1>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantity_convert</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">source</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_unit_id_t</span><span class="w"> </span><span class="n">target_unit</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">result</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<p>Beispiel:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_length_t</span><span class="w"> </span><span class="n">distance</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">nova_kilometers</span><span class="p">(</span><span class="mf">5.0</span><span class="p">);</span>
+
+<span class="n">nova_length_t</span><span class="w"> </span><span class="n">meters</span><span class="p">;</span>
+
+<span class="n">nova_quantity_convert</span><span class="p">(</span>
+<span class="w">    </span><span class="o">&amp;</span><span class="n">distance</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_UNIT_METER</span><span class="p">,</span>
+<span class="w">    </span><span class="o">&amp;</span><span class="n">meters</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<p>Ergebnis:</p>
+<div class="codehilite"><pre><span></span><code>5000 m
+</code></pre></div>
+
+<p>Ungültige Umrechnungen wie <code>Kilogramm → Meter</code> müssen mit <code>NOVA_ERROR_INCOMPATIBLE_UNIT</code> abbrechen.</p>
+<p>Unterstützte Rundungsmodi:</p>
+<div class="codehilite"><pre><span></span><code>NOVA_ROUND_NEAREST
+NOVA_ROUND_TOWARD_ZERO
+NOVA_ROUND_UP
+NOVA_ROUND_DOWN
+NOVA_ROUND_EXACT
+</code></pre></div>
+
+<hr>
+<h1 id="18-unsicherheitsmodell">18. Unsicherheitsmodell</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_measurement</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">value</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">uncertainty</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_uncertainty_type_t</span><span class="w"> </span><span class="n">uncertainty_type</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_confidence_t</span><span class="w"> </span><span class="n">confidence</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_timestamp_t</span><span class="w"> </span><span class="n">timestamp</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_source_id_t</span><span class="w"> </span><span class="n">source</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_measurement_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Unsicherheitsarten:</p>
+<div class="codehilite"><pre><span></span><code>NOVA_UNCERTAINTY_ABSOLUTE
+NOVA_UNCERTAINTY_RELATIVE
+NOVA_UNCERTAINTY_STANDARD_DEVIATION
+NOVA_UNCERTAINTY_CONFIDENCE_INTERVAL
+NOVA_UNCERTAINTY_DISTRIBUTION
+</code></pre></div>
+
+<p>Für unabhängige Unsicherheiten bei Addition und Subtraktion:</p>
+<div class="codehilite"><pre><span></span><code>u(z) = √(u(x)² + u(y)²)
+</code></pre></div>
+
+<p>Für Multiplikation und Division werden relative Unsicherheiten kombiniert:</p>
+<div class="codehilite"><pre><span></span><code>u_r(z) = √(u_r(x)² + u_r(y)²)
+</code></pre></div>
+
+<p>Korrelierte Messgrößen benötigen eine Kovarianzbeschreibung.</p>
+<hr>
+<h1 id="19-konstanten">19. Konstanten</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_physical_constant</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_constant_id_t</span><span class="w"> </span><span class="n">id</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">name</span><span class="p">;</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">symbol</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">value</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">uncertainty</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">source</span><span class="p">;</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">reference_version</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_physical_constant_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Beispiele:</p>
+<div class="codehilite"><pre><span></span><code>NOVA_CONSTANT_SPEED_OF_LIGHT
+NOVA_CONSTANT_PLANCK
+NOVA_CONSTANT_REDUCED_PLANCK
+NOVA_CONSTANT_GRAVITATIONAL
+NOVA_CONSTANT_BOLTZMANN
+NOVA_CONSTANT_AVOGADRO
+NOVA_CONSTANT_ELEMENTARY_CHARGE
+NOVA_CONSTANT_GAS_CONSTANT
+</code></pre></div>
+
+<p>Naturkonstanten müssen versionsgebunden sein, beispielsweise an <code>CODATA-2022</code>.</p>
+<hr>
+<h1 id="20-tensor-und-vektorintegration">20. Tensor- und Vektorintegration</h1>
+<p>Tensoren dürfen Quantities enthalten:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_tensor_t</span><span class="w"> </span><span class="n">temperature_field</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Ein Quantity-Tensor besitzt einen gemeinsamen Datentyp, eine gemeinsame Dimension, eine gemeinsame Einheit und optional elementweise Unsicherheiten.</p>
+<p>Gemischte Einheiten müssen vor der Verarbeitung normalisiert werden.</p>
+<div class="codehilite"><pre><span></span><code>Nicht zulässig:
+[1 m, 2 km, 3 cm]
+
+Zulässig:
+[1, 2000, 0.03] m
+</code></pre></div>
+
+<p>Ableitungen und Integrationen führen Dimensionen korrekt weiter:</p>
+<div class="codehilite"><pre><span></span><code>dx/dt = Geschwindigkeit
+∫ Geschwindigkeit dt = Länge
+</code></pre></div>
+
+<hr>
+<h1 id="21-compute-service-integration">21. Compute-Service-Integration</h1>
+<p>Der Nova Compute Service muss Quantity-Metadaten über Prozessgrenzen hinweg erhalten.</p>
+<p>Zu übertragen sind mindestens:</p>
+<ul>
+<li>Objekt-Handle,</li>
+<li>numerischer Typ,</li>
+<li>Dimension,</li>
+<li>Einheit,</li>
+<li>Shape,</li>
+<li>Genauigkeit,</li>
+<li>Unsicherheit.</li>
+</ul>
+<p>CPU-, GPU-, NPU- und FPGA-Backends dürfen Metadaten intern reduzieren, müssen sie am API-Rand jedoch vollständig wiederherstellen.</p>
+<p>Ein Compute-Backend darf niemals stillschweigend Einheiteninformationen verlieren.</p>
+<hr>
+<h1 id="22-abi">22. ABI</h1>
+<p>Der öffentliche Quantity ABI muss langfristig stabil bleiben.</p>
+<p>Direkter Zugriff auf interne Strukturen ist außerhalb der Core-API nicht erlaubt.</p>
+<p>Für prozessübergreifende Kommunikation wird ein Handle-Modell bevorzugt:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="kt">uint64_t</span><span class="w"> </span><span class="n">nova_quantity_handle_t</span><span class="p">;</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantity_create_handle</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">quantity</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_quantity_handle_t</span><span class="o">*</span><span class="w"> </span><span class="n">out_handle</span>
+<span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantity_read_handle</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_quantity_handle_t</span><span class="w"> </span><span class="n">handle</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">out_quantity</span>
+<span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantity_release_handle</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_quantity_handle_t</span><span class="w"> </span><span class="n">handle</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<hr>
+<h1 id="23-serialisierung">23. Serialisierung</h1>
+<p>Serialisierte Quantities müssen enthalten:</p>
+<ul>
+<li>Schema-Version,</li>
+<li>numerischen Typ,</li>
+<li>Wert,</li>
+<li>Dimensions-ID,</li>
+<li>Einheiten-ID,</li>
+<li>Unsicherheit,</li>
+<li>Metadaten.</li>
+</ul>
+<p>Binärformat:</p>
+<div class="codehilite"><pre><span></span><code>NQTY
+Version
+Flags
+Numeric Type
+Dimension ID
+Unit ID
+Payload Length
+Payload
+Optional Metadata
+Checksum
+</code></pre></div>
+
+<p>Textformat:</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;nova.quantity&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">12.5</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;unit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;m&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;dimension&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;length&quot;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Externe Austauschformate dürfen JSON, CBOR oder MessagePack verwenden. Die interne ABI darf davon nicht abhängig sein.</p>
+<hr>
+<h1 id="24-reflection">24. Reflection</h1>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_dimension_id_t</span><span class="w"> </span><span class="nf">nova_quantity_get_dimension</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">quantity</span>
+<span class="p">);</span>
+
+<span class="n">nova_unit_id_t</span><span class="w"> </span><span class="nf">nova_quantity_get_unit</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">quantity</span>
+<span class="p">);</span>
+
+<span class="n">nova_numeric_type_t</span><span class="w"> </span><span class="nf">nova_quantity_get_numeric_type</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">quantity</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<hr>
+<h1 id="25-formatierung">25. Formatierung</h1>
+<p>Standarddarstellung:</p>
+<div class="codehilite"><pre><span></span><code>12.5 m
+</code></pre></div>
+
+<p>Nova darf automatisch passende SI-Präfixe wählen:</p>
+<div class="codehilite"><pre><span></span><code>0.000001 m → 1 µm
+</code></pre></div>
+
+<p>Die Darstellung darf lokalisiert werden:</p>
+<div class="codehilite"><pre><span></span><code>Deutsch: 12,5 m
+Englisch: 12.5 m
+</code></pre></div>
+
+<p>Die interne Repräsentation bleibt unverändert.</p>
+<hr>
+<h1 id="26-parsing">26. Parsing</h1>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantity_parse</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">input</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_locale_id_t</span><span class="w"> </span><span class="n">locale</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">result</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<p>Unterstützte Eingaben:</p>
+<div class="codehilite"><pre><span></span><code>12 m
+12.5 kg
+9,81 m/s²
+230 V
+20 °C
+48 kHz
+</code></pre></div>
+
+<p>Mehrdeutige Eingaben müssen abgelehnt oder durch Kontext aufgelöst werden. Das System darf keine unsichere Interpretation stillschweigend auswählen.</p>
+<hr>
+<h1 id="27-fehlerbehandlung">27. Fehlerbehandlung</h1>
+<p>Fehlercodes:</p>
+<div class="codehilite"><pre><span></span><code>NOVA_ERROR_INVALID_QUANTITY
+NOVA_ERROR_INVALID_UNIT
+NOVA_ERROR_INVALID_DIMENSION
+NOVA_ERROR_DIMENSION_MISMATCH
+NOVA_ERROR_INCOMPATIBLE_UNIT
+NOVA_ERROR_NUMERIC_OVERFLOW
+NOVA_ERROR_NUMERIC_UNDERFLOW
+NOVA_ERROR_PRECISION_LOSS
+NOVA_ERROR_DIVISION_BY_ZERO
+NOVA_ERROR_INVALID_OPERATION
+NOVA_ERROR_UNSUPPORTED_CONVERSION
+NOVA_ERROR_UNCERTAINTY_MISMATCH
+NOVA_ERROR_SERIALIZATION
+</code></pre></div>
+
+<p>Fehlerobjekt:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_quantity_error</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_error_code_t</span><span class="w"> </span><span class="n">code</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_dimension_id_t</span><span class="w"> </span><span class="n">expected_dimension</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_dimension_id_t</span><span class="w"> </span><span class="n">actual_dimension</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_unit_id_t</span><span class="w"> </span><span class="n">source_unit</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_unit_id_t</span><span class="w"> </span><span class="n">target_unit</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">message</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_quantity_error_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="28-einheitenregistrierung">28. Einheitenregistrierung</h1>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_unit_register</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_unit_descriptor_t</span><span class="o">*</span><span class="w"> </span><span class="n">descriptor</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_unit_id_t</span><span class="o">*</span><span class="w"> </span><span class="n">out_id</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<p>Eine neue Einheit muss definieren:</p>
+<ul>
+<li>eindeutigen Namen,</li>
+<li>eindeutiges Symbol,</li>
+<li>Dimension,</li>
+<li>Umrechnungsregel,</li>
+<li>Skalierung,</li>
+<li>Offset,</li>
+<li>Version,</li>
+<li>Eigentümer-Namespace.</li>
+</ul>
+<p>Beispiele:</p>
+<div class="codehilite"><pre><span></span><code>org.nova.si.meter
+org.nova.imperial.inch
+com.example.robot.encoder_tick
+</code></pre></div>
+
+<p>Benutzerdefinierte Einheiten dürfen keine Systemeinheiten überschreiben.</p>
+<hr>
+<h1 id="29-dimensionsregistrierung">29. Dimensionsregistrierung</h1>
+<p>Neue semantische Dimensionen dürfen registriert werden, sofern sie nicht vollständig durch bestehende SI-Dimensionen beschrieben werden können.</p>
+<p>Beispiele:</p>
+<ul>
+<li>Währung,</li>
+<li>Information,</li>
+<li>Ereignisanzahl,</li>
+<li>benutzerdefinierte Skalen.</li>
+</ul>
+<p>Physikalische Dimensionen sollen bevorzugt aus SI-Basisdimensionen abgeleitet werden.</p>
+<hr>
+<h1 id="30-compiler-unterstutzung">30. Compiler-Unterstützung</h1>
+<p>Der Nova-Compiler soll Dimensionsinformationen im Typsystem abbilden können.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">auto</span><span class="w"> </span><span class="n">distance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">100.0</span><span class="n">_m</span><span class="p">;</span>
+<span class="k">auto</span><span class="w"> </span><span class="n">time</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">5.0</span><span class="n">_s</span><span class="p">;</span>
+<span class="k">auto</span><span class="w"> </span><span class="n">speed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">distance</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">time</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Abgeleiteter Typ:</p>
+<div class="codehilite"><pre><span></span><code>speed: Velocity
+</code></pre></div>
+
+<p>Compilerfehler müssen verständlich sein:</p>
+<div class="codehilite"><pre><span></span><code>Cannot add Quantity&lt;Length&gt; to Quantity&lt;Mass&gt;.
+
+Left operand:
+Length [L¹]
+
+Right operand:
+Mass [M¹]
+</code></pre></div>
+
+<p>Konstante Einheitenumrechnungen sollen bereits zur Compile-Zeit ausgeführt werden.</p>
+<hr>
+<h1 id="31-sprachbindungen">31. Sprachbindungen</h1>
+<p>Offizielle Bindings sollen mindestens vorgesehen werden für:</p>
+<ul>
+<li>C,</li>
+<li>C++,</li>
+<li>Rust,</li>
+<li>Nova Language,</li>
+<li>Python,</li>
+<li>JavaScript,</li>
+<li>C#,</li>
+<li>Swift.</li>
+</ul>
+<p>Alle Sprachbindungen müssen dieselben Dimensionsregeln einhalten.</p>
+<hr>
+<h1 id="32-c-api-beispiele">32. C-API-Beispiele</h1>
+<p>Geschwindigkeit:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_length_t</span><span class="w"> </span><span class="n">distance</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">nova_meters</span><span class="p">(</span><span class="mf">120.0</span><span class="p">);</span>
+
+<span class="n">nova_time_t</span><span class="w"> </span><span class="n">duration</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">nova_seconds</span><span class="p">(</span><span class="mf">8.0</span><span class="p">);</span>
+
+<span class="n">nova_velocity_t</span><span class="w"> </span><span class="n">velocity</span><span class="p">;</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">nova_quantity_divide</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="n">distance</span><span class="p">,</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="n">duration</span><span class="p">,</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="n">velocity</span>
+<span class="w">    </span><span class="p">);</span>
+</code></pre></div>
+
+<p>Kraft:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_mass_t</span><span class="w"> </span><span class="n">mass</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">nova_kilograms</span><span class="p">(</span><span class="mf">12.0</span><span class="p">);</span>
+
+<span class="n">nova_acceleration_t</span><span class="w"> </span><span class="n">acceleration</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">nova_meters_per_second_squared</span><span class="p">(</span><span class="mf">9.81</span><span class="p">);</span>
+
+<span class="n">nova_force_t</span><span class="w"> </span><span class="n">force</span><span class="p">;</span>
+
+<span class="n">nova_physics_force</span><span class="p">(</span>
+<span class="w">    </span><span class="o">&amp;</span><span class="n">mass</span><span class="p">,</span>
+<span class="w">    </span><span class="o">&amp;</span><span class="n">acceleration</span><span class="p">,</span>
+<span class="w">    </span><span class="o">&amp;</span><span class="n">force</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<p>Temperatur:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_temperature_t</span><span class="w"> </span><span class="n">room</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">nova_temperature_from_celsius</span><span class="p">(</span><span class="mf">21.5</span><span class="p">);</span>
+
+<span class="kt">double</span><span class="w"> </span><span class="n">kelvin</span><span class="p">;</span>
+
+<span class="n">nova_temperature_to_kelvin</span><span class="p">(</span>
+<span class="w">    </span><span class="o">&amp;</span><span class="n">room</span><span class="p">,</span>
+<span class="w">    </span><span class="o">&amp;</span><span class="n">kelvin</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<hr>
+<h1 id="33-c-api-beispiele">33. C++-API-Beispiele</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">using</span><span class="w"> </span><span class="k">namespace</span><span class="w"> </span><span class="nn">nova</span><span class="o">::</span><span class="nn">units</span><span class="p">;</span>
+
+<span class="n">Length</span><span class="w"> </span><span class="n">distance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">120.0</span><span class="n">_m</span><span class="p">;</span>
+<span class="n">Time</span><span class="w"> </span><span class="n">duration</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">8.0</span><span class="n">_s</span><span class="p">;</span>
+
+<span class="n">Velocity</span><span class="w"> </span><span class="n">speed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">distance</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">duration</span><span class="p">;</span>
+
+<span class="n">Force</span><span class="w"> </span><span class="n">force</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="mf">12.0</span><span class="n">_kg</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">9.81</span><span class="n">_mps2</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="34-messwertbeispiel">34. Messwertbeispiel</h1>
+<div class="codehilite"><pre><span></span><code><span class="n">Measurement</span><span class="o">&lt;</span><span class="n">Temperature</span><span class="o">&gt;</span><span class="w"> </span><span class="n">roomTemperature</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="p">.</span><span class="n">value</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">21.3</span><span class="n">_degC</span><span class="p">,</span>
+<span class="w">    </span><span class="p">.</span><span class="n">uncertainty</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.2</span><span class="n">_K</span><span class="p">,</span>
+<span class="w">    </span><span class="p">.</span><span class="n">confidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.95</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<hr>
+<h1 id="35-thread-sicherheit">35. Thread-Sicherheit</h1>
+<p>Unveränderliche Quantity-Objekte sind thread-sicher.</p>
+<p>Veränderliche Messwert- oder Tensorobjekte müssen Synchronisationsregeln definieren.</p>
+<p>Globale Einheiten- und Dimensionsregister müssen nebenläufigen Lesezugriff unterstützen. Registrierungsvorgänge müssen atomar sein.</p>
+<hr>
+<h1 id="36-sicherheit">36. Sicherheit</h1>
+<p>Quantity-Daten dürfen keinen direkten Hardwarezugriff ermöglichen.</p>
+<p>Einheiten- und Dimensionsdefinitionen müssen validiert werden.</p>
+<p>Nicht vertrauenswürdige Anwendungen dürfen:</p>
+<ul>
+<li>keine Systemeinheiten überschreiben,</li>
+<li>keine Systemdimensionen verändern,</li>
+<li>keine ABI-IDs reservierter Namespaces verwenden,</li>
+<li>keine ungültigen Umrechnungsfunktionen registrieren.</li>
+</ul>
+<hr>
+<h1 id="37-performance">37. Performance</h1>
+<p>Für statisch bekannte Quantities soll die Dimensionsprüfung zur Compile-Zeit erfolgen.</p>
+<p>Dynamische Quantities müssen optimierte Dimension- und Unit-IDs verwenden.</p>
+<p>Häufige Umrechnungsfaktoren dürfen gecacht werden.</p>
+<p>Homogene Quantity-Arrays müssen SIMD-fähig sein.</p>
+<hr>
+<h1 id="38-tests">38. Tests</h1>
+<p>Jeder Quantity-Typ muss mindestens folgende Tests besitzen:</p>
+<ul>
+<li>Konstruktion,</li>
+<li>Dimensionsvergleich,</li>
+<li>Addition,</li>
+<li>Subtraktion,</li>
+<li>Multiplikation,</li>
+<li>Division,</li>
+<li>Potenz,</li>
+<li>Umrechnung,</li>
+<li>Serialisierung,</li>
+<li>Parsing,</li>
+<li>Formatierung,</li>
+<li>Rundung,</li>
+<li>Überlauf,</li>
+<li>Unsicherheitsfortpflanzung.</li>
+</ul>
+<hr>
+<h1 id="39-referenztests">39. Referenztests</h1>
+<div class="codehilite"><pre><span></span><code>1 km = 1000 m
+1 h = 3600 s
+0 °C = 273.15 K
+1 N = 1 kg·m·s⁻²
+1 J = 1 kg·m²·s⁻²
+1 Pa = 1 kg·m⁻¹·s⁻²
+1 W = 1 kg·m²·s⁻³
+</code></pre></div>
+
+<hr>
+<h1 id="40-abi-versionierung">40. ABI-Versionierung</h1>
+<p>Der Quantity ABI besitzt eine eigene Versionsnummer:</p>
+<div class="codehilite"><pre><span></span><code>NOVA_QUANTITY_ABI_VERSION
+</code></pre></div>
+
+<p>Erweiterungen müssen abwärtskompatibel sein. Nicht kompatible Änderungen erfordern eine neue Major-Version.</p>
+<hr>
+<h1 id="41-nicht-ziele">41. Nicht-Ziele</h1>
+<p>Diese Spezifikation definiert nicht:</p>
+<ul>
+<li>konkrete Formelbibliotheken,</li>
+<li>vollständige Physikmodelle,</li>
+<li>FFT-Implementierungen,</li>
+<li>Tensoralgorithmen,</li>
+<li>numerische Löser,</li>
+<li>UI-Darstellungen wissenschaftlicher Daten.</li>
+</ul>
+<p>Diese Themen werden in separaten NPSPEC-Dokumenten beschrieben.</p>
+<hr>
+<h1 id="42-offene-punkte">42. Offene Punkte</h1>
+<p>Folgende Punkte müssen in späteren Revisionen konkretisiert werden:</p>
+<ul>
+<li>rationale Dimensionsexponenten,</li>
+<li>exakte Rationalarithmetik,</li>
+<li>symbolische Einheitenrechnung,</li>
+<li>automatische Einheitensimplifizierung,</li>
+<li>benutzerdefinierte Dimensionssemantik,</li>
+<li>komplexe Quantities,</li>
+<li>probabilistische Unsicherheitsmodelle,</li>
+<li>Interoperabilität mit externen Wissenschaftsformaten,</li>
+<li>Compiler-ABI für statische Quantity-Typen.</li>
+</ul>
+<hr>
+<h1 id="43-geplante-folgespezifikationen">43. Geplante Folgespezifikationen</h1>
+<div class="codehilite"><pre><span></span><code>NPSPEC-UNITS-0003
+Unit Registry and Conversion Engine
+
+NPSPEC-UNITS-0004
+Measurement Uncertainty and Error Propagation
+
+NPSPEC-UNITS-0005
+Physical Constants Registry
+
+NPSPEC-UNITS-0006
+Quantity Serialization Format
+
+NPSPEC-UNITS-0007
+Compiler-Level Dimension Checking
+
+NPSPEC-UNITS-0008
+Quantity Tensor Integration
+</code></pre></div>
+
+<hr>
+<h1 id="44-zusammenfassung">44. Zusammenfassung</h1>
+<p>Das Nova Quantity Type System stellt sicher, dass physikalische und technische Werte innerhalb von Nova OS niemals als bedeutungslose Zahlen behandelt werden.</p>
+<p>Jede Quantity besitzt:</p>
+<ul>
+<li>einen Wert,</li>
+<li>einen numerischen Typ,</li>
+<li>eine Dimension,</li>
+<li>eine Einheit,</li>
+<li>definierte Umrechnungsregeln,</li>
+<li>optionale Unsicherheiten,</li>
+<li>eine stabile ABI-Repräsentation.</li>
+</ul>
+<p>Dadurch können Dimensionsfehler früh erkannt, Einheiten automatisch umgerechnet und wissenschaftliche Berechnungen konsistent über alle Nova-Systemdienste hinweg ausgeführt werden.</p>
+<p>Das Quantity Type System bildet die Grundlage für Physik, Signalverarbeitung, Robotik, Simulation, KI, Messwerterfassung und sämtliche weiteren wissenschaftlichen Compute-Dienste von Nova OS.</p>
+                </div>
+            </article>
+            
+        </div>
+    </main>
+
+    <a
+        class="back-to-top"
+        id="backToTop"
+        href="#top"
+        title="Nach oben"
+        aria-label="Nach oben"
+    >
+        ↑
+    </a>
+
+    <script>
+        const navigation = document.getElementById("toc");
+        const overlay = document.getElementById("overlay");
+        const backToTop = document.getElementById("backToTop");
+
+        function toggleNavigation() {
+            navigation.classList.toggle("open");
+            overlay.classList.toggle("visible");
+        }
+
+        function closeNavigation() {
+            navigation.classList.remove("open");
+            overlay.classList.remove("visible");
+        }
+
+        document.querySelectorAll(".toc a").forEach((link) => {
+            link.addEventListener("click", () => {
+                if (window.innerWidth <= 900) {
+                    closeNavigation();
+                }
+            });
+        });
+
+        window.addEventListener("scroll", () => {
+            if (window.scrollY > 500) {
+                backToTop.classList.add("visible");
+            } else {
+                backToTop.classList.remove("visible");
+            }
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                closeNavigation();
+            }
+        });
+    </script>
+</body>
+</html>

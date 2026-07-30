@@ -1,0 +1,1860 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="color-scheme"
+        content="dark"
+    >
+
+    <title>NPSPEC AI 0001</title>
+
+    <style>
+        :root {
+            color-scheme: dark;
+
+            --background: #0c0c0c;
+            --background-secondary: #111111;
+            --surface: rgba(32, 32, 32, 0.82);
+            --surface-solid: #202020;
+            --surface-hover: rgba(255, 255, 255, 0.075);
+            --surface-active: rgba(255, 255, 255, 0.11);
+
+            --border: rgba(255, 255, 255, 0.085);
+            --border-strong: rgba(255, 255, 255, 0.15);
+
+            --text: #ffffff;
+            --text-secondary: #c8c8c8;
+            --text-muted: #8f8f8f;
+
+            --accent: #60cdff;
+            --accent-hover: #86d8ff;
+            --accent-muted: rgba(96, 205, 255, 0.15);
+
+            --success: #6ccb5f;
+            --warning: #fce100;
+            --danger: #ff99a4;
+
+            --code-background: #151515;
+            --inline-code-background: rgba(255, 255, 255, 0.08);
+
+            --sidebar-width: 320px;
+            --header-height: 64px;
+
+            --radius-small: 6px;
+            --radius-medium: 10px;
+            --radius-large: 14px;
+
+            --shadow:
+                0 16px 38px rgba(0, 0, 0, 0.40),
+                0 2px 8px rgba(0, 0, 0, 0.30);
+
+            --font:
+                "Segoe UI Variable",
+                "Segoe UI",
+                system-ui,
+                -apple-system,
+                BlinkMacSystemFont,
+                sans-serif;
+
+            --mono-font:
+                "Cascadia Code",
+                "Cascadia Mono",
+                "Consolas",
+                monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: calc(var(--header-height) + 24px);
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(
+                    circle at 15% 0%,
+                    rgba(96, 205, 255, 0.08),
+                    transparent 34rem
+                ),
+                radial-gradient(
+                    circle at 100% 40%,
+                    rgba(120, 90, 255, 0.055),
+                    transparent 30rem
+                ),
+                var(--background);
+
+            color: var(--text);
+            font-family: var(--font);
+            font-size: 15px;
+            line-height: 1.65;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            color: var(--accent-hover);
+            text-decoration: underline;
+        }
+
+        button,
+        input {
+            font: inherit;
+        }
+
+        .app-header {
+            position: fixed;
+            top: 0;
+            right: 0;
+            left: 0;
+            z-index: 1000;
+
+            height: var(--header-height);
+
+            display: flex;
+            align-items: center;
+            gap: 14px;
+
+            padding: 0 20px;
+
+            background: rgba(20, 20, 20, 0.78);
+            border-bottom: 1px solid var(--border);
+
+            backdrop-filter: blur(30px) saturate(150%);
+            -webkit-backdrop-filter: blur(30px) saturate(150%);
+        }
+
+        .menu-button,
+        .header-button,
+        .toc-close {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--text);
+
+            border-radius: var(--radius-small);
+            cursor: pointer;
+
+            transition:
+                background 120ms ease,
+                border-color 120ms ease,
+                transform 120ms ease;
+        }
+
+        .menu-button {
+            width: 38px;
+            height: 38px;
+            font-size: 20px;
+        }
+
+        .header-button {
+            min-height: 36px;
+            padding: 7px 13px;
+        }
+
+        .menu-button:hover,
+        .header-button:hover,
+        .toc-close:hover {
+            background: var(--surface-hover);
+            border-color: var(--border-strong);
+        }
+
+        .menu-button:active,
+        .header-button:active,
+        .toc-close:active {
+            background: var(--surface-active);
+            transform: scale(0.97);
+        }
+
+        .app-title-area {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .app-title {
+            overflow: hidden;
+            margin: 0;
+
+            color: var(--text);
+            font-size: 16px;
+            font-weight: 600;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .app-subtitle {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .toc {
+            position: fixed;
+            top: var(--header-height);
+            bottom: 0;
+            left: 0;
+            z-index: 900;
+
+            width: var(--sidebar-width);
+
+            background: rgba(24, 24, 24, 0.86);
+            border-right: 1px solid var(--border);
+
+            backdrop-filter: blur(35px) saturate(145%);
+            -webkit-backdrop-filter: blur(35px) saturate(145%);
+
+            transition: transform 180ms ease;
+        }
+
+        .toc-header {
+            height: 58px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            padding: 0 16px 0 20px;
+
+            border-bottom: 1px solid var(--border);
+        }
+
+        .toc-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .toc-close {
+            display: none;
+            width: 34px;
+            height: 34px;
+            font-size: 22px;
+        }
+
+        .toc-content {
+            height: calc(100% - 58px);
+            overflow-y: auto;
+            padding: 12px 10px 24px;
+        }
+
+        .toc-document {
+            margin-bottom: 5px;
+        }
+
+        .toc-document-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+
+            min-height: 38px;
+            padding: 8px 10px;
+
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 600;
+
+            border-radius: var(--radius-small);
+        }
+
+        .toc-document-link:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-document-icon {
+            color: var(--accent);
+        }
+
+        .toc-headings {
+            margin: 2px 0 8px 18px;
+            padding-left: 12px;
+            border-left: 1px solid var(--border);
+        }
+
+        .toc-heading {
+            display: block;
+
+            padding: 4px 8px;
+
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.4;
+
+            border-radius: 4px;
+        }
+
+        .toc-heading:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-level-1 {
+            font-weight: 600;
+        }
+
+        .toc-level-2 {
+            padding-left: 14px;
+        }
+
+        .toc-level-3 {
+            padding-left: 22px;
+        }
+
+        .toc-level-4,
+        .toc-level-5,
+        .toc-level-6 {
+            padding-left: 30px;
+        }
+
+        .app-main {
+            min-height: 100vh;
+
+            margin-left: var(--sidebar-width);
+            padding:
+                calc(var(--header-height) + 32px)
+                clamp(20px, 4vw, 64px)
+                80px;
+        }
+
+        .content-container {
+            width: min(100%, 1080px);
+            margin: 0 auto;
+        }
+
+        .hero {
+            margin-bottom: 32px;
+            padding: 28px 30px;
+
+            background:
+                linear-gradient(
+                    135deg,
+                    rgba(96, 205, 255, 0.12),
+                    rgba(255, 255, 255, 0.035)
+                ),
+                var(--surface);
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .hero-label {
+            margin-bottom: 7px;
+
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 600;
+
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .hero h1 {
+            margin: 0;
+
+            font-size: clamp(28px, 4vw, 44px);
+            font-weight: 650;
+            line-height: 1.12;
+            letter-spacing: -0.03em;
+        }
+
+        .hero-description {
+            margin: 14px 0 0;
+            color: var(--text-secondary);
+        }
+
+        .hero-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+
+            margin-top: 20px;
+        }
+
+        .meta-item {
+            padding: 6px 10px;
+
+            color: var(--text-secondary);
+            font-size: 12px;
+
+            background: rgba(0, 0, 0, 0.20);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+        }
+
+        .markdown-document {
+            margin-bottom: 32px;
+            overflow: hidden;
+
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+        }
+
+        .document-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+
+            padding: 20px 24px;
+
+            background: rgba(255, 255, 255, 0.025);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .document-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+            flex: 0 0 auto;
+
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 700;
+
+            background: var(--accent-muted);
+            border: 1px solid rgba(96, 205, 255, 0.20);
+            border-radius: 10px;
+        }
+
+        .document-title-area {
+            min-width: 0;
+        }
+
+        .document-title {
+            overflow: hidden;
+            margin: 0;
+
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.3;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .document-path {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .markdown-content {
+            padding: clamp(24px, 5vw, 52px);
+        }
+
+        .markdown-content > :first-child {
+            margin-top: 0;
+        }
+
+        .markdown-content > :last-child {
+            margin-bottom: 0;
+        }
+
+        .markdown-content h1,
+        .markdown-content h2,
+        .markdown-content h3,
+        .markdown-content h4,
+        .markdown-content h5,
+        .markdown-content h6 {
+            position: relative;
+
+            margin-top: 1.8em;
+            margin-bottom: 0.65em;
+
+            color: var(--text);
+            font-weight: 600;
+            line-height: 1.28;
+
+            letter-spacing: -0.015em;
+        }
+
+        .markdown-content h1 {
+            padding-bottom: 12px;
+            font-size: 30px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h2 {
+            padding-bottom: 9px;
+            font-size: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h3 {
+            font-size: 20px;
+        }
+
+        .markdown-content h4 {
+            font-size: 17px;
+        }
+
+        .markdown-content h5 {
+            font-size: 15px;
+        }
+
+        .markdown-content h6 {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .markdown-content p {
+            margin: 0.85em 0;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .markdown-content ul,
+        .markdown-content ol {
+            margin: 0.8em 0;
+            padding-left: 1.8em;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content li {
+            margin: 0.35em 0;
+        }
+
+        .markdown-content li::marker {
+            color: var(--accent);
+        }
+
+        .markdown-content blockquote {
+            margin: 1.2em 0;
+            padding: 14px 18px;
+
+            color: var(--text-secondary);
+
+            background: rgba(96, 205, 255, 0.07);
+            border: 1px solid rgba(96, 205, 255, 0.13);
+            border-left: 4px solid var(--accent);
+            border-radius: 0 var(--radius-medium) var(--radius-medium) 0;
+        }
+
+        .markdown-content blockquote p {
+            margin: 0.4em 0;
+        }
+
+        .markdown-content code {
+            padding: 0.15em 0.4em;
+
+            color: #f4f4f4;
+            font-family: var(--mono-font);
+            font-size: 0.9em;
+
+            background: var(--inline-code-background);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+        }
+
+        .markdown-content pre {
+            position: relative;
+
+            max-width: 100%;
+            overflow: auto;
+
+            margin: 1.2em 0;
+            padding: 18px;
+
+            background: var(--code-background);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.025),
+                0 8px 20px rgba(0, 0, 0, 0.18);
+        }
+
+        .markdown-content pre code {
+            display: block;
+            min-width: max-content;
+            padding: 0;
+
+            color: #e6e6e6;
+            font-size: 13px;
+            line-height: 1.55;
+
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+        }
+
+        /* Syntaxfarben für Pygments / Markdown codehilite */
+        .markdown-content .codehilite .hll { background: #3a3520; }
+        .markdown-content .codehilite .c,
+        .markdown-content .codehilite .ch,
+        .markdown-content .codehilite .cm,
+        .markdown-content .codehilite .c1,
+        .markdown-content .codehilite .cs { color: #6a9955; font-style: italic; }
+        .markdown-content .codehilite .k,
+        .markdown-content .codehilite .kc,
+        .markdown-content .codehilite .kd,
+        .markdown-content .codehilite .kn,
+        .markdown-content .codehilite .kp,
+        .markdown-content .codehilite .kr,
+        .markdown-content .codehilite .kt { color: #c586c0; }
+        .markdown-content .codehilite .n { color: #d4d4d4; }
+        .markdown-content .codehilite .na { color: #9cdcfe; }
+        .markdown-content .codehilite .nb,
+        .markdown-content .codehilite .bp { color: #4ec9b0; }
+        .markdown-content .codehilite .nc,
+        .markdown-content .codehilite .nd,
+        .markdown-content .codehilite .ne,
+        .markdown-content .codehilite .nf { color: #dcdcaa; }
+        .markdown-content .codehilite .nn { color: #4ec9b0; }
+        .markdown-content .codehilite .nv,
+        .markdown-content .codehilite .vc,
+        .markdown-content .codehilite .vg,
+        .markdown-content .codehilite .vi { color: #9cdcfe; }
+        .markdown-content .codehilite .o,
+        .markdown-content .codehilite .ow { color: #d4d4d4; }
+        .markdown-content .codehilite .m,
+        .markdown-content .codehilite .mb,
+        .markdown-content .codehilite .mf,
+        .markdown-content .codehilite .mh,
+        .markdown-content .codehilite .mi,
+        .markdown-content .codehilite .mo,
+        .markdown-content .codehilite .il { color: #b5cea8; }
+        .markdown-content .codehilite .s,
+        .markdown-content .codehilite .sa,
+        .markdown-content .codehilite .sb,
+        .markdown-content .codehilite .sc,
+        .markdown-content .codehilite .dl,
+        .markdown-content .codehilite .sd,
+        .markdown-content .codehilite .s1,
+        .markdown-content .codehilite .s2,
+        .markdown-content .codehilite .se,
+        .markdown-content .codehilite .sh,
+        .markdown-content .codehilite .si,
+        .markdown-content .codehilite .sx,
+        .markdown-content .codehilite .sr,
+        .markdown-content .codehilite .ss { color: #ce9178; }
+        .markdown-content .codehilite .p { color: #d4d4d4; }
+        .markdown-content .codehilite .gd { color: #f48771; }
+        .markdown-content .codehilite .gi { color: #89d185; }
+        .markdown-content .codehilite .gh,
+        .markdown-content .codehilite .gu { color: #569cd6; font-weight: 600; }
+        .markdown-content .codehilite .err { color: #f44747; }
+
+        .markdown-content hr {
+            margin: 2em 0;
+            border: 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .markdown-content img {
+            display: block;
+
+            max-width: 100%;
+            height: auto;
+            margin: 1.4em auto;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow: var(--shadow);
+        }
+
+        .markdown-content table {
+            width: 100%;
+            margin: 1.3em 0;
+
+            overflow: hidden;
+            border-collapse: separate;
+            border-spacing: 0;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+        }
+
+        .markdown-content th,
+        .markdown-content td {
+            padding: 11px 13px;
+            text-align: left;
+            vertical-align: top;
+
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content th {
+            color: var(--text);
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .markdown-content td {
+            color: var(--text-secondary);
+            background: rgba(0, 0, 0, 0.10);
+        }
+
+        .markdown-content tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .markdown-content th:last-child,
+        .markdown-content td:last-child {
+            border-right: 0;
+        }
+
+        .markdown-content input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin-right: 6px;
+            accent-color: var(--accent);
+            vertical-align: -2px;
+        }
+
+        .back-to-top {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 800;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+
+            color: var(--text);
+            font-size: 20px;
+
+            background: rgba(40, 40, 40, 0.86);
+            border: 1px solid var(--border);
+            border-radius: 50%;
+
+            box-shadow: var(--shadow);
+
+            opacity: 0;
+            pointer-events: none;
+
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+
+            transition:
+                opacity 150ms ease,
+                background 150ms ease,
+                transform 150ms ease;
+        }
+
+        .back-to-top.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .back-to-top:hover {
+            color: var(--text);
+            text-decoration: none;
+            background: var(--surface-active);
+            transform: translateY(-2px);
+        }
+
+        .overlay {
+            position: fixed;
+            inset: var(--header-height) 0 0 0;
+            z-index: 850;
+
+            display: none;
+
+            background: rgba(0, 0, 0, 0.48);
+            backdrop-filter: blur(3px);
+            -webkit-backdrop-filter: blur(3px);
+        }
+
+        ::selection {
+            color: #000000;
+            background: var(--accent);
+        }
+
+        ::-webkit-scrollbar {
+            width: 12px;
+            height: 12px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.16);
+            border: 3px solid transparent;
+            border-radius: 999px;
+            background-clip: padding-box;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+
+        @media print {
+            :root {
+                color-scheme: light;
+            }
+
+            body {
+                color: #111111;
+                background: #ffffff;
+            }
+
+            .app-header,
+            .toc,
+            .overlay,
+            .back-to-top {
+                display: none !important;
+            }
+
+            .app-main {
+                margin: 0;
+                padding: 0;
+            }
+
+            .hero,
+            .markdown-document {
+                color: #111111;
+                background: #ffffff;
+                border: 1px solid #dddddd;
+                box-shadow: none;
+            }
+
+            .markdown-content p,
+            .markdown-content li,
+            .markdown-content td {
+                color: #222222;
+            }
+
+            .markdown-content h1,
+            .markdown-content h2,
+            .markdown-content h3,
+            .markdown-content h4,
+            .markdown-content h5,
+            .markdown-content h6,
+            .markdown-content strong {
+                color: #111111;
+            }
+
+            .markdown-content pre {
+                white-space: pre-wrap;
+                background: #f5f5f5;
+                border-color: #dddddd;
+            }
+
+            .markdown-content pre code {
+                color: #111111;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .toc {
+                width: min(88vw, 340px);
+                transform: translateX(-105%);
+                box-shadow: var(--shadow);
+            }
+
+            .toc.open {
+                transform: translateX(0);
+            }
+
+            .toc-close {
+                display: inline-flex;
+            }
+
+            .overlay.visible {
+                display: block;
+            }
+
+            .app-main {
+                margin-left: 0;
+                padding-right: 18px;
+                padding-left: 18px;
+            }
+
+            .header-button-label {
+                display: none;
+            }
+
+            .markdown-content {
+                padding: 24px 20px;
+            }
+        }
+
+        @media (max-width: 540px) {
+            .app-header {
+                padding: 0 12px;
+            }
+
+            .app-subtitle {
+                display: none;
+            }
+
+            .hero {
+                padding: 23px 20px;
+            }
+
+            .document-header {
+                padding: 16px;
+            }
+
+            .document-number {
+                width: 38px;
+                height: 38px;
+            }
+
+            .markdown-content {
+                padding: 22px 16px;
+            }
+
+            .markdown-content h1 {
+                font-size: 25px;
+            }
+
+            .markdown-content h2 {
+                font-size: 21px;
+            }
+
+            .back-to-top {
+                right: 16px;
+                bottom: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="app-header">
+        <button
+            class="menu-button"
+            type="button"
+            onclick="toggleNavigation()"
+            aria-label="Navigation öffnen"
+            title="Navigation"
+        >
+            ☰
+        </button>
+
+        <div class="app-title-area">
+            <div class="app-title">
+                NPSPEC AI 0001
+            </div>
+
+            <div class="app-subtitle">
+                C:\recoverboot\nova-os\docs\NPSPEC\Nova Compute Platform
+            </div>
+        </div>
+
+        <div class="header-actions">
+            <button
+                class="header-button"
+                type="button"
+                onclick="window.print()"
+                title="Dokument drucken"
+            >
+                <span>⎙</span>
+                <span class="header-button-label">
+                    Drucken
+                </span>
+            </button>
+        </div>
+    </header>
+
+    <nav class="toc" id="toc">
+<div class="toc-header">
+<div class="toc-title">Inhaltsverzeichnis</div>
+<button class="toc-close" type="button" onclick="toggleNavigation()" aria-label="Navigation schließen">
+×
+</button>
+</div>
+<div class="toc-content">
+
+            <div class="toc-document">
+                <a class="toc-document-link" href="#document-npspec-ai-0001-md">
+                    <span class="toc-document-icon">▤</span>
+                    <span>NPSPEC AI 0001</span>
+                </a>
+            
+<div class="toc-headings">
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#ai-compute-runtime"
+                    >
+                        AI Compute Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#1-zweck"
+                    >
+                        1. Zweck
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#2-ziele"
+                    >
+                        2. Ziele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#3-gesamtarchitektur"
+                    >
+                        3. Gesamtarchitektur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#4-ai-kernel"
+                    >
+                        4. AI Kernel
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#5-model-runtime"
+                    >
+                        5. Model Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#6-agent-runtime"
+                    >
+                        6. Agent Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#7-context-runtime"
+                    >
+                        7. Context Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#8-memory-runtime"
+                    >
+                        8. Memory Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#9-knowledge-runtime"
+                    >
+                        9. Knowledge Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#10-tool-runtime"
+                    >
+                        10. Tool Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#11-skill-runtime"
+                    >
+                        11. Skill Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#12-planner"
+                    >
+                        12. Planner
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#13-reasoning-engine"
+                    >
+                        13. Reasoning Engine
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#14-workflow-runtime"
+                    >
+                        14. Workflow Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#15-hardware-runtime"
+                    >
+                        15. Hardware Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#cpu"
+                    >
+                        CPU
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#gpu"
+                    >
+                        GPU
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#npu"
+                    >
+                        NPU
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#fpga"
+                    >
+                        FPGA
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#16-verteilte-ki"
+                    >
+                        16. Verteilte KI
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#17-sicherheit"
+                    >
+                        17. Sicherheit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#18-monitoring"
+                    >
+                        18. Monitoring
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#19-measurement-integration"
+                    >
+                        19. Measurement Integration
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#20-reflection"
+                    >
+                        20. Reflection
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#21-offentliche-api"
+                    >
+                        21. Öffentliche API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#22-integration"
+                    >
+                        22. Integration
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#23-testanforderungen"
+                    >
+                        23. Testanforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#24-roadmap"
+                    >
+                        24. Roadmap
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#25-zusammenfassung"
+                    >
+                        25. Zusammenfassung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#anhang-a-langfristige-vision"
+                    >
+                        Anhang A – Langfristige Vision
+                    </a>
+                    
+</div>
+</div>
+</div>
+</nav>
+
+    <div
+        class="overlay"
+        id="overlay"
+        onclick="closeNavigation()"
+    ></div>
+
+    <main class="app-main" id="top">
+        <div class="content-container">
+            <section class="hero">
+                <div class="hero-label">
+                    Markdown-Dokumentation
+                </div>
+
+                <h1>
+                    NPSPEC AI 0001
+                </h1>
+
+                <p class="hero-description">
+                    Zusammengeführte HTML-Dokumentation aus
+                    1 Markdown-Dateien.
+                </p>
+
+                <div class="hero-meta">
+                    <span class="meta-item">
+                        1 Dokumente
+                    </span>
+
+                    <span class="meta-item">
+                        Fluent Dark
+                    </span>
+
+                    <span class="meta-item">
+                        Einzelne HTML-Datei
+                    </span>
+                </div>
+            </section>
+
+            
+            <article class="markdown-document" id="document-npspec-ai-0001-md">
+                <header class="document-header">
+                    <div class="document-number">
+                        01
+                    </div>
+
+                    <div class="document-title-area">
+                        <h1 class="document-title">
+                            NPSPEC AI 0001
+                        </h1>
+
+                        <div class="document-path">
+                            NPSPEC-AI-0001.md
+                        </div>
+                    </div>
+                </header>
+
+                <div class="markdown-content">
+                    <div class="codehilite"><pre><span></span><code># NPSPEC-AI-0001
+</code></pre></div>
+
+<h1 id="ai-compute-runtime">AI Compute Runtime</h1>
+<table>
+<thead>
+<tr>
+<th>Feld</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dokument</td>
+<td>NPSPEC-AI-0001</td>
+</tr>
+<tr>
+<td>Titel</td>
+<td>AI Compute Runtime</td>
+</tr>
+<tr>
+<td>Version</td>
+<td>1.0.0 Draft</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Draft</td>
+</tr>
+<tr>
+<td>Kategorie</td>
+<td>System Specification</td>
+</tr>
+<tr>
+<td>Bereich</td>
+<td>Nova Compute Platform</td>
+</tr>
+<tr>
+<td>Übergeordnet</td>
+<td>NPSPEC-COMPUTE-0001</td>
+</tr>
+<tr>
+<td>Abhängigkeiten</td>
+<td>NPSPEC-ML-0001, NPSPEC-TENSOR-0001, NPSPEC-MATRIX-0001, NPSPEC-VECTOR-0001, NPSPEC-IMAGE-0001, NPSPEC-SIGNAL-0001, NPSPEC-OPTIMIZATION-0001, NPSPEC-STATS-0001, NPSPEC-UNITS-0001 bis 0008</td>
+</tr>
+<tr>
+<td>Letzte Änderung</td>
+<td>2026-07-14</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h1 id="1-zweck">1. Zweck</h1>
+<p>Das <strong>AI Compute Runtime</strong> bildet die zentrale Laufzeitumgebung sämtlicher künstlicher Intelligenz innerhalb der Nova Compute Platform.</p>
+<p>Während das <strong>Machine Learning Runtime</strong> das Training und die Ausführung einzelner Modelle übernimmt, verwaltet das AI Runtime die komplette KI-Infrastruktur:</p>
+<ul>
+<li>Modellverwaltung</li>
+<li>Multi-Agent-Systeme</li>
+<li>Orchestrierung</li>
+<li>Scheduling</li>
+<li>Speicherverwaltung</li>
+<li>Kontextverwaltung</li>
+<li>Tool-Ausführung</li>
+<li>Hardwareverwaltung</li>
+<li>verteilte KI</li>
+<li>lokale KI</li>
+<li>Edge-KI</li>
+<li>Robotik</li>
+<li>Nova Assistant</li>
+<li>autonome Systeme</li>
+</ul>
+<p>Es bildet die eigentliche KI-Plattform von Nova.</p>
+<hr>
+<h1 id="2-ziele">2. Ziele</h1>
+<p>Das Runtime soll</p>
+<ul>
+<li>vollständig lokal arbeiten können</li>
+<li>DSGVO-konform sein</li>
+<li>Cloud und Offline unterstützen</li>
+<li>CPU-, GPU-, NPU- und FPGA-Beschleunigung besitzen</li>
+<li>mehrere Modelle gleichzeitig verwalten</li>
+<li>beliebig viele Agenten koordinieren</li>
+<li>fehlertolerant arbeiten</li>
+<li>Hot Reload unterstützen</li>
+<li>Reflection vollständig unterstützen</li>
+<li>Echtzeitfähigkeit besitzen</li>
+</ul>
+<p>Moderne AI-Runtimes trennen Modellinferenz, Steuerung und Ressourcenverwaltung in eigenständige Komponenten, um Skalierbarkeit und Ausfallsicherheit zu erreichen.</p>
+<hr>
+<h1 id="3-gesamtarchitektur">3. Gesamtarchitektur</h1>
+<div class="codehilite"><pre><span></span><code>AI Compute Runtime
+
+├── AI Kernel
+├── Runtime Scheduler
+├── Agent Runtime
+├── Model Runtime
+├── Memory Runtime
+├── Context Runtime
+├── Knowledge Runtime
+├── Tool Runtime
+├── Skill Runtime
+├── Workflow Runtime
+├── Planner
+├── Reasoning Engine
+├── Execution Engine
+├── Safety Runtime
+├── Security Runtime
+├── Monitoring
+├── Resource Manager
+├── Distributed Runtime
+├── Edge Runtime
+├── Reflection
+└── Scientific Runtime
+</code></pre></div>
+
+<hr>
+<h1 id="4-ai-kernel">4. AI Kernel</h1>
+<p>Der AI Kernel bildet den eigentlichen Kern der Runtime.</p>
+<p>Verantwortlich für</p>
+<ul>
+<li>Initialisierung</li>
+<li>Ressourcenverwaltung</li>
+<li>Modellverwaltung</li>
+<li>Threadverwaltung</li>
+<li>Scheduling</li>
+<li>Hardwareerkennung</li>
+<li>Runtime-Konfiguration</li>
+<li>Sicherheit</li>
+<li>Lebenszyklusverwaltung</li>
+</ul>
+<hr>
+<h1 id="5-model-runtime">5. Model Runtime</h1>
+<p>Verwaltet</p>
+<ul>
+<li>LLMs</li>
+<li>Vision Modelle</li>
+<li>Audio Modelle</li>
+<li>Robotics Modelle</li>
+<li>Diffusion Modelle</li>
+<li>Reinforcement Learning Modelle</li>
+<li>Klassische ML Modelle</li>
+<li>Eigene Nova Modelle</li>
+</ul>
+<p>Unterstützt</p>
+<ul>
+<li>GGUF</li>
+<li>ONNX</li>
+<li>SafeTensors</li>
+<li>TensorFlow</li>
+<li>TorchScript</li>
+<li>CoreML</li>
+<li>OpenVINO</li>
+<li>NovaAI</li>
+</ul>
+<hr>
+<h1 id="6-agent-runtime">6. Agent Runtime</h1>
+<p>Unterstützt</p>
+<ul>
+<li>Einzelagenten</li>
+<li>Multi-Agent-Systeme</li>
+<li>Hierarchische Agenten</li>
+<li>Spezialagenten</li>
+<li>Supervisor-Agenten</li>
+<li>Kooperative Agenten</li>
+<li>Verteilte Agenten</li>
+</ul>
+<p>Jeder Agent besitzt</p>
+<ul>
+<li>Identität</li>
+<li>Fähigkeiten</li>
+<li>Speicher</li>
+<li>Werkzeuge</li>
+<li>Ziele</li>
+<li>Prioritäten</li>
+<li>Sicherheitsrichtlinien</li>
+</ul>
+<hr>
+<h1 id="7-context-runtime">7. Context Runtime</h1>
+<p>Verwaltet</p>
+<ul>
+<li>Kurzzeitgedächtnis</li>
+<li>Langzeitgedächtnis</li>
+<li>Gesprächskontext</li>
+<li>Arbeitskontext</li>
+<li>Projektkontext</li>
+<li>Benutzerprofile</li>
+<li>Dokumentkontext</li>
+<li>Sensorinformationen</li>
+<li>Systemstatus</li>
+</ul>
+<hr>
+<h1 id="8-memory-runtime">8. Memory Runtime</h1>
+<p>Unterstützt</p>
+<ul>
+<li>RAM</li>
+<li>VRAM</li>
+<li>Shared Memory</li>
+<li>Zero Copy</li>
+<li>Persistent Memory</li>
+<li>Tensor Cache</li>
+<li>KV Cache</li>
+<li>Vector Memory</li>
+<li>Semantic Memory</li>
+<li>Episodic Memory</li>
+</ul>
+<hr>
+<h1 id="9-knowledge-runtime">9. Knowledge Runtime</h1>
+<p>Verwaltet</p>
+<ul>
+<li>Wissensgraphen</li>
+<li>Dokumente</li>
+<li>Datenbanken</li>
+<li>Embeddings</li>
+<li>Vektordatenbanken</li>
+<li>Ontologien</li>
+<li>Faktenwissen</li>
+<li>Symbolisches Wissen</li>
+</ul>
+<hr>
+<h1 id="10-tool-runtime">10. Tool Runtime</h1>
+<p>Unterstützt</p>
+<ul>
+<li>Native Nova APIs</li>
+<li>Dateisystem</li>
+<li>Netzwerk</li>
+<li>Datenbanken</li>
+<li>Robotik</li>
+<li>Kamera</li>
+<li>Mikrofon</li>
+<li>Sensoren</li>
+<li>Compiler</li>
+<li>Shell</li>
+<li>Browser</li>
+<li>Plug-ins</li>
+<li>MCP-Server</li>
+<li>REST</li>
+<li>gRPC</li>
+</ul>
+<hr>
+<h1 id="11-skill-runtime">11. Skill Runtime</h1>
+<p>Verwaltet</p>
+<ul>
+<li>installierte Skills</li>
+<li>dynamische Skills</li>
+<li>Benutzer-Skills</li>
+<li>Unternehmens-Skills</li>
+<li>Robotik-Skills</li>
+<li>Scientific Skills</li>
+<li>KI-generierte Skills</li>
+</ul>
+<hr>
+<h1 id="12-planner">12. Planner</h1>
+<p>Unterstützt</p>
+<ul>
+<li>Goal Planning</li>
+<li>Task Planning</li>
+<li>Hierarchical Planning</li>
+<li>Workflow Planning</li>
+<li>Multi-Step Planning</li>
+<li>Reactive Planning</li>
+<li>Adaptive Planning</li>
+</ul>
+<hr>
+<h1 id="13-reasoning-engine">13. Reasoning Engine</h1>
+<p>Unterstützt</p>
+<ul>
+<li>Symbolisches Schließen</li>
+<li>LLM Reasoning</li>
+<li>Rule Based AI</li>
+<li>Probabilistisches Reasoning</li>
+<li>Bayesian Inference</li>
+<li>Constraint Solving</li>
+<li>Graph Reasoning</li>
+</ul>
+<hr>
+<h1 id="14-workflow-runtime">14. Workflow Runtime</h1>
+<p>Unterstützt</p>
+<ul>
+<li>DAG Workflows</li>
+<li>Event Workflows</li>
+<li>Agent Workflows</li>
+<li>Parallel Workflows</li>
+<li>Langlaufende Aufgaben</li>
+<li>Checkpoints</li>
+<li>Rollback</li>
+<li>Recovery</li>
+</ul>
+<hr>
+<h1 id="15-hardware-runtime">15. Hardware Runtime</h1>
+<p>Unterstützt</p>
+<h2 id="cpu">CPU</h2>
+<ul>
+<li>x86</li>
+<li>ARM</li>
+<li>RISC-V</li>
+</ul>
+<h2 id="gpu">GPU</h2>
+<ul>
+<li>CUDA</li>
+<li>ROCm</li>
+<li>Vulkan Compute</li>
+<li>Metal</li>
+<li>OpenCL</li>
+</ul>
+<h2 id="npu">NPU</h2>
+<ul>
+<li>Qualcomm</li>
+<li>Intel</li>
+<li>AMD</li>
+<li>Apple</li>
+<li>MediaTek</li>
+</ul>
+<h2 id="fpga">FPGA</h2>
+<ul>
+<li>AMD/Xilinx</li>
+<li>Intel FPGA</li>
+</ul>
+<hr>
+<h1 id="16-verteilte-ki">16. Verteilte KI</h1>
+<p>Unterstützt</p>
+<ul>
+<li>Cluster</li>
+<li>HPC</li>
+<li>Multi GPU</li>
+<li>Edge Cluster</li>
+<li>Robot Swarms</li>
+<li>Hybrid Cloud</li>
+<li>Peer-to-Peer AI</li>
+</ul>
+<hr>
+<h1 id="17-sicherheit">17. Sicherheit</h1>
+<p>Unterstützt</p>
+<ul>
+<li>Sandboxing</li>
+<li>Capability Model</li>
+<li>Signierte Modelle</li>
+<li>Signierte Skills</li>
+<li>Runtime Policies</li>
+<li>Audit Logs</li>
+<li>Rollback</li>
+<li>Resource Limits</li>
+<li>Human Approval</li>
+</ul>
+<p>Eine getrennte Governance- und Steuerungsebene verbessert Sicherheit und Nachvollziehbarkeit agentischer Systeme.</p>
+<hr>
+<h1 id="18-monitoring">18. Monitoring</h1>
+<p>Überwacht</p>
+<ul>
+<li>CPU</li>
+<li>GPU</li>
+<li>VRAM</li>
+<li>RAM</li>
+<li>Token/s</li>
+<li>Latenz</li>
+<li>Energieverbrauch</li>
+<li>Modellqualität</li>
+<li>Agentstatus</li>
+<li>Fehler</li>
+<li>Temperatur</li>
+</ul>
+<hr>
+<h1 id="19-measurement-integration">19. Measurement Integration</h1>
+<p>Alle Berechnungen unterstützen</p>
+<ul>
+<li>Units</li>
+<li>Quantities</li>
+<li>Measurements</li>
+<li>Physical Constants Registry</li>
+<li>Measurement Uncertainty</li>
+</ul>
+<p>KI kann dadurch physikalische Größen direkt verarbeiten.</p>
+<hr>
+<h1 id="20-reflection">20. Reflection</h1>
+<p>Abfragbar sind</p>
+<ul>
+<li>Modelle</li>
+<li>Agenten</li>
+<li>Skills</li>
+<li>Hardware</li>
+<li>Speicher</li>
+<li>Scheduler</li>
+<li>Workflows</li>
+<li>Tokenverbrauch</li>
+<li>Energiebedarf</li>
+<li>Laufzeiten</li>
+</ul>
+<hr>
+<h1 id="21-offentliche-api">21. Öffentliche API</h1>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_ai_initialize</span><span class="p">();</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_ai_load_model</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_model_t</span><span class="o">*</span><span class="w"> </span><span class="n">model</span><span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_ai_create_agent</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_agent_t</span><span class="o">*</span><span class="w"> </span><span class="n">agent</span><span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_ai_execute</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_agent_t</span><span class="o">*</span><span class="w"> </span><span class="n">agent</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_task_t</span><span class="o">*</span><span class="w"> </span><span class="n">task</span><span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_ai_shutdown</span><span class="p">();</span>
+</code></pre></div>
+
+<hr>
+<h1 id="22-integration">22. Integration</h1>
+<p>Das Runtime integriert sich vollständig mit</p>
+<ul>
+<li>Machine Learning Runtime</li>
+<li>Nova Assistant</li>
+<li>Robotics Framework</li>
+<li>Computer Vision Framework</li>
+<li>Image Processing Framework</li>
+<li>Signal Processing Framework</li>
+<li>Physics Framework</li>
+<li>GIS Framework</li>
+<li>Medical Imaging Framework</li>
+<li>Nova OS</li>
+</ul>
+<hr>
+<h1 id="23-testanforderungen">23. Testanforderungen</h1>
+<ul>
+<li>Modellverwaltung</li>
+<li>Agentenkommunikation</li>
+<li>Hardwarewechsel</li>
+<li>Speicherverwaltung</li>
+<li>Workflow-Ausführung</li>
+<li>Sicherheit</li>
+<li>Reflection</li>
+<li>Performance</li>
+<li>API-Tests</li>
+<li>Langzeitstabilität</li>
+</ul>
+<hr>
+<h1 id="24-roadmap">24. Roadmap</h1>
+<ul>
+<li>NPSPEC-AGENT-0001</li>
+<li>NPSPEC-REASONING-0001</li>
+<li>NPSPEC-MEMORY-0001</li>
+<li>NPSPEC-PLANNER-0001</li>
+<li>NPSPEC-KNOWLEDGE-0001</li>
+<li>NPSPEC-TOOLS-0001</li>
+<li>NPSPEC-SKILLS-0001</li>
+<li>NPSPEC-WORKFLOW-0001</li>
+<li>NPSPEC-AUTONOMY-0001</li>
+<li>NPSPEC-GOVERNANCE-0001</li>
+</ul>
+<hr>
+<h1 id="25-zusammenfassung">25. Zusammenfassung</h1>
+<p>Das <strong>AI Compute Runtime</strong> ist die oberste KI-Laufzeitumgebung der Nova Compute Platform.</p>
+<p>Es koordiniert Modelle, Agenten, Speicher, Werkzeuge, Planung, Kontext und Hardware zu einer einheitlichen Ausführungsplattform. Während das <strong>Machine Learning Runtime</strong> einzelne Modelle trainiert und ausführt, übernimmt das <strong>AI Compute Runtime</strong> deren Orchestrierung, Zusammenarbeit und Lebenszyklusverwaltung.</p>
+<p>Damit bildet es die Grundlage für den Nova Assistant, autonome Robotik, wissenschaftliche KI, industrielle Automatisierung und zukünftige agentische Systeme.</p>
+<hr>
+<h1 id="anhang-a-langfristige-vision">Anhang A – Langfristige Vision</h1>
+<p>Das <strong>AI Compute Runtime</strong> soll langfristig das Herzstück des gesamten Nova-Ökosystems werden.</p>
+<p>Langfristige Ziele:</p>
+<ul>
+<li>vollständig lokale KI ohne Cloud-Zwang</li>
+<li>verteilte Multi-Agent-Systeme</li>
+<li>einheitliche Runtime für Desktop, Server, Embedded und Robotik</li>
+<li>automatische Modell- und Hardwareauswahl</li>
+<li>selbstoptimierende Scheduler</li>
+<li>integrierte Wissensgraphen</li>
+<li>semantische Speicherverwaltung</li>
+<li>autonome wissenschaftliche Workflows</li>
+<li>Digital-Twin-Unterstützung</li>
+<li>Exascale-HPC-Unterstützung</li>
+</ul>
+<p>Die Architektur orientiert sich an modernen AI-Runtime-Konzepten mit einer klaren Trennung von Modellausführung, Orchestrierung, Kontextverwaltung und Governance. Dadurch bleibt sie skalierbar, austauschbar und für zukünftige KI-Generationen erweiterbar.</p>
+                </div>
+            </article>
+            
+        </div>
+    </main>
+
+    <a
+        class="back-to-top"
+        id="backToTop"
+        href="#top"
+        title="Nach oben"
+        aria-label="Nach oben"
+    >
+        ↑
+    </a>
+
+    <script>
+        const navigation = document.getElementById("toc");
+        const overlay = document.getElementById("overlay");
+        const backToTop = document.getElementById("backToTop");
+
+        function toggleNavigation() {
+            navigation.classList.toggle("open");
+            overlay.classList.toggle("visible");
+        }
+
+        function closeNavigation() {
+            navigation.classList.remove("open");
+            overlay.classList.remove("visible");
+        }
+
+        document.querySelectorAll(".toc a").forEach((link) => {
+            link.addEventListener("click", () => {
+                if (window.innerWidth <= 900) {
+                    closeNavigation();
+                }
+            });
+        });
+
+        window.addEventListener("scroll", () => {
+            if (window.scrollY > 500) {
+                backToTop.classList.add("visible");
+            } else {
+                backToTop.classList.remove("visible");
+            }
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                closeNavigation();
+            }
+        });
+    </script>
+</body>
+</html>

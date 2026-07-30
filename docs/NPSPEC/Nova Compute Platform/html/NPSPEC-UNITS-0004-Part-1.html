@@ -1,0 +1,1889 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="color-scheme"
+        content="dark"
+    >
+
+    <title>NPSPEC UNITS 0004 Part 1</title>
+
+    <style>
+        :root {
+            color-scheme: dark;
+
+            --background: #0c0c0c;
+            --background-secondary: #111111;
+            --surface: rgba(32, 32, 32, 0.82);
+            --surface-solid: #202020;
+            --surface-hover: rgba(255, 255, 255, 0.075);
+            --surface-active: rgba(255, 255, 255, 0.11);
+
+            --border: rgba(255, 255, 255, 0.085);
+            --border-strong: rgba(255, 255, 255, 0.15);
+
+            --text: #ffffff;
+            --text-secondary: #c8c8c8;
+            --text-muted: #8f8f8f;
+
+            --accent: #60cdff;
+            --accent-hover: #86d8ff;
+            --accent-muted: rgba(96, 205, 255, 0.15);
+
+            --success: #6ccb5f;
+            --warning: #fce100;
+            --danger: #ff99a4;
+
+            --code-background: #151515;
+            --inline-code-background: rgba(255, 255, 255, 0.08);
+
+            --sidebar-width: 320px;
+            --header-height: 64px;
+
+            --radius-small: 6px;
+            --radius-medium: 10px;
+            --radius-large: 14px;
+
+            --shadow:
+                0 16px 38px rgba(0, 0, 0, 0.40),
+                0 2px 8px rgba(0, 0, 0, 0.30);
+
+            --font:
+                "Segoe UI Variable",
+                "Segoe UI",
+                system-ui,
+                -apple-system,
+                BlinkMacSystemFont,
+                sans-serif;
+
+            --mono-font:
+                "Cascadia Code",
+                "Cascadia Mono",
+                "Consolas",
+                monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: calc(var(--header-height) + 24px);
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(
+                    circle at 15% 0%,
+                    rgba(96, 205, 255, 0.08),
+                    transparent 34rem
+                ),
+                radial-gradient(
+                    circle at 100% 40%,
+                    rgba(120, 90, 255, 0.055),
+                    transparent 30rem
+                ),
+                var(--background);
+
+            color: var(--text);
+            font-family: var(--font);
+            font-size: 15px;
+            line-height: 1.65;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            color: var(--accent-hover);
+            text-decoration: underline;
+        }
+
+        button,
+        input {
+            font: inherit;
+        }
+
+        .app-header {
+            position: fixed;
+            top: 0;
+            right: 0;
+            left: 0;
+            z-index: 1000;
+
+            height: var(--header-height);
+
+            display: flex;
+            align-items: center;
+            gap: 14px;
+
+            padding: 0 20px;
+
+            background: rgba(20, 20, 20, 0.78);
+            border-bottom: 1px solid var(--border);
+
+            backdrop-filter: blur(30px) saturate(150%);
+            -webkit-backdrop-filter: blur(30px) saturate(150%);
+        }
+
+        .menu-button,
+        .header-button,
+        .toc-close {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--text);
+
+            border-radius: var(--radius-small);
+            cursor: pointer;
+
+            transition:
+                background 120ms ease,
+                border-color 120ms ease,
+                transform 120ms ease;
+        }
+
+        .menu-button {
+            width: 38px;
+            height: 38px;
+            font-size: 20px;
+        }
+
+        .header-button {
+            min-height: 36px;
+            padding: 7px 13px;
+        }
+
+        .menu-button:hover,
+        .header-button:hover,
+        .toc-close:hover {
+            background: var(--surface-hover);
+            border-color: var(--border-strong);
+        }
+
+        .menu-button:active,
+        .header-button:active,
+        .toc-close:active {
+            background: var(--surface-active);
+            transform: scale(0.97);
+        }
+
+        .app-title-area {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .app-title {
+            overflow: hidden;
+            margin: 0;
+
+            color: var(--text);
+            font-size: 16px;
+            font-weight: 600;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .app-subtitle {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .toc {
+            position: fixed;
+            top: var(--header-height);
+            bottom: 0;
+            left: 0;
+            z-index: 900;
+
+            width: var(--sidebar-width);
+
+            background: rgba(24, 24, 24, 0.86);
+            border-right: 1px solid var(--border);
+
+            backdrop-filter: blur(35px) saturate(145%);
+            -webkit-backdrop-filter: blur(35px) saturate(145%);
+
+            transition: transform 180ms ease;
+        }
+
+        .toc-header {
+            height: 58px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            padding: 0 16px 0 20px;
+
+            border-bottom: 1px solid var(--border);
+        }
+
+        .toc-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .toc-close {
+            display: none;
+            width: 34px;
+            height: 34px;
+            font-size: 22px;
+        }
+
+        .toc-content {
+            height: calc(100% - 58px);
+            overflow-y: auto;
+            padding: 12px 10px 24px;
+        }
+
+        .toc-document {
+            margin-bottom: 5px;
+        }
+
+        .toc-document-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+
+            min-height: 38px;
+            padding: 8px 10px;
+
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 600;
+
+            border-radius: var(--radius-small);
+        }
+
+        .toc-document-link:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-document-icon {
+            color: var(--accent);
+        }
+
+        .toc-headings {
+            margin: 2px 0 8px 18px;
+            padding-left: 12px;
+            border-left: 1px solid var(--border);
+        }
+
+        .toc-heading {
+            display: block;
+
+            padding: 4px 8px;
+
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.4;
+
+            border-radius: 4px;
+        }
+
+        .toc-heading:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-level-1 {
+            font-weight: 600;
+        }
+
+        .toc-level-2 {
+            padding-left: 14px;
+        }
+
+        .toc-level-3 {
+            padding-left: 22px;
+        }
+
+        .toc-level-4,
+        .toc-level-5,
+        .toc-level-6 {
+            padding-left: 30px;
+        }
+
+        .app-main {
+            min-height: 100vh;
+
+            margin-left: var(--sidebar-width);
+            padding:
+                calc(var(--header-height) + 32px)
+                clamp(20px, 4vw, 64px)
+                80px;
+        }
+
+        .content-container {
+            width: min(100%, 1080px);
+            margin: 0 auto;
+        }
+
+        .hero {
+            margin-bottom: 32px;
+            padding: 28px 30px;
+
+            background:
+                linear-gradient(
+                    135deg,
+                    rgba(96, 205, 255, 0.12),
+                    rgba(255, 255, 255, 0.035)
+                ),
+                var(--surface);
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .hero-label {
+            margin-bottom: 7px;
+
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 600;
+
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .hero h1 {
+            margin: 0;
+
+            font-size: clamp(28px, 4vw, 44px);
+            font-weight: 650;
+            line-height: 1.12;
+            letter-spacing: -0.03em;
+        }
+
+        .hero-description {
+            margin: 14px 0 0;
+            color: var(--text-secondary);
+        }
+
+        .hero-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+
+            margin-top: 20px;
+        }
+
+        .meta-item {
+            padding: 6px 10px;
+
+            color: var(--text-secondary);
+            font-size: 12px;
+
+            background: rgba(0, 0, 0, 0.20);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+        }
+
+        .markdown-document {
+            margin-bottom: 32px;
+            overflow: hidden;
+
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+        }
+
+        .document-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+
+            padding: 20px 24px;
+
+            background: rgba(255, 255, 255, 0.025);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .document-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+            flex: 0 0 auto;
+
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 700;
+
+            background: var(--accent-muted);
+            border: 1px solid rgba(96, 205, 255, 0.20);
+            border-radius: 10px;
+        }
+
+        .document-title-area {
+            min-width: 0;
+        }
+
+        .document-title {
+            overflow: hidden;
+            margin: 0;
+
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.3;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .document-path {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .markdown-content {
+            padding: clamp(24px, 5vw, 52px);
+        }
+
+        .markdown-content > :first-child {
+            margin-top: 0;
+        }
+
+        .markdown-content > :last-child {
+            margin-bottom: 0;
+        }
+
+        .markdown-content h1,
+        .markdown-content h2,
+        .markdown-content h3,
+        .markdown-content h4,
+        .markdown-content h5,
+        .markdown-content h6 {
+            position: relative;
+
+            margin-top: 1.8em;
+            margin-bottom: 0.65em;
+
+            color: var(--text);
+            font-weight: 600;
+            line-height: 1.28;
+
+            letter-spacing: -0.015em;
+        }
+
+        .markdown-content h1 {
+            padding-bottom: 12px;
+            font-size: 30px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h2 {
+            padding-bottom: 9px;
+            font-size: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h3 {
+            font-size: 20px;
+        }
+
+        .markdown-content h4 {
+            font-size: 17px;
+        }
+
+        .markdown-content h5 {
+            font-size: 15px;
+        }
+
+        .markdown-content h6 {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .markdown-content p {
+            margin: 0.85em 0;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .markdown-content ul,
+        .markdown-content ol {
+            margin: 0.8em 0;
+            padding-left: 1.8em;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content li {
+            margin: 0.35em 0;
+        }
+
+        .markdown-content li::marker {
+            color: var(--accent);
+        }
+
+        .markdown-content blockquote {
+            margin: 1.2em 0;
+            padding: 14px 18px;
+
+            color: var(--text-secondary);
+
+            background: rgba(96, 205, 255, 0.07);
+            border: 1px solid rgba(96, 205, 255, 0.13);
+            border-left: 4px solid var(--accent);
+            border-radius: 0 var(--radius-medium) var(--radius-medium) 0;
+        }
+
+        .markdown-content blockquote p {
+            margin: 0.4em 0;
+        }
+
+        .markdown-content code {
+            padding: 0.15em 0.4em;
+
+            color: #f4f4f4;
+            font-family: var(--mono-font);
+            font-size: 0.9em;
+
+            background: var(--inline-code-background);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+        }
+
+        .markdown-content pre {
+            position: relative;
+
+            max-width: 100%;
+            overflow: auto;
+
+            margin: 1.2em 0;
+            padding: 18px;
+
+            background: var(--code-background);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.025),
+                0 8px 20px rgba(0, 0, 0, 0.18);
+        }
+
+        .markdown-content pre code {
+            display: block;
+            min-width: max-content;
+            padding: 0;
+
+            color: #e6e6e6;
+            font-size: 13px;
+            line-height: 1.55;
+
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+        }
+
+        /* Syntaxfarben für Pygments / Markdown codehilite */
+        .markdown-content .codehilite .hll { background: #3a3520; }
+        .markdown-content .codehilite .c,
+        .markdown-content .codehilite .ch,
+        .markdown-content .codehilite .cm,
+        .markdown-content .codehilite .c1,
+        .markdown-content .codehilite .cs { color: #6a9955; font-style: italic; }
+        .markdown-content .codehilite .k,
+        .markdown-content .codehilite .kc,
+        .markdown-content .codehilite .kd,
+        .markdown-content .codehilite .kn,
+        .markdown-content .codehilite .kp,
+        .markdown-content .codehilite .kr,
+        .markdown-content .codehilite .kt { color: #c586c0; }
+        .markdown-content .codehilite .n { color: #d4d4d4; }
+        .markdown-content .codehilite .na { color: #9cdcfe; }
+        .markdown-content .codehilite .nb,
+        .markdown-content .codehilite .bp { color: #4ec9b0; }
+        .markdown-content .codehilite .nc,
+        .markdown-content .codehilite .nd,
+        .markdown-content .codehilite .ne,
+        .markdown-content .codehilite .nf { color: #dcdcaa; }
+        .markdown-content .codehilite .nn { color: #4ec9b0; }
+        .markdown-content .codehilite .nv,
+        .markdown-content .codehilite .vc,
+        .markdown-content .codehilite .vg,
+        .markdown-content .codehilite .vi { color: #9cdcfe; }
+        .markdown-content .codehilite .o,
+        .markdown-content .codehilite .ow { color: #d4d4d4; }
+        .markdown-content .codehilite .m,
+        .markdown-content .codehilite .mb,
+        .markdown-content .codehilite .mf,
+        .markdown-content .codehilite .mh,
+        .markdown-content .codehilite .mi,
+        .markdown-content .codehilite .mo,
+        .markdown-content .codehilite .il { color: #b5cea8; }
+        .markdown-content .codehilite .s,
+        .markdown-content .codehilite .sa,
+        .markdown-content .codehilite .sb,
+        .markdown-content .codehilite .sc,
+        .markdown-content .codehilite .dl,
+        .markdown-content .codehilite .sd,
+        .markdown-content .codehilite .s1,
+        .markdown-content .codehilite .s2,
+        .markdown-content .codehilite .se,
+        .markdown-content .codehilite .sh,
+        .markdown-content .codehilite .si,
+        .markdown-content .codehilite .sx,
+        .markdown-content .codehilite .sr,
+        .markdown-content .codehilite .ss { color: #ce9178; }
+        .markdown-content .codehilite .p { color: #d4d4d4; }
+        .markdown-content .codehilite .gd { color: #f48771; }
+        .markdown-content .codehilite .gi { color: #89d185; }
+        .markdown-content .codehilite .gh,
+        .markdown-content .codehilite .gu { color: #569cd6; font-weight: 600; }
+        .markdown-content .codehilite .err { color: #f44747; }
+
+        .markdown-content hr {
+            margin: 2em 0;
+            border: 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .markdown-content img {
+            display: block;
+
+            max-width: 100%;
+            height: auto;
+            margin: 1.4em auto;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow: var(--shadow);
+        }
+
+        .markdown-content table {
+            width: 100%;
+            margin: 1.3em 0;
+
+            overflow: hidden;
+            border-collapse: separate;
+            border-spacing: 0;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+        }
+
+        .markdown-content th,
+        .markdown-content td {
+            padding: 11px 13px;
+            text-align: left;
+            vertical-align: top;
+
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content th {
+            color: var(--text);
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .markdown-content td {
+            color: var(--text-secondary);
+            background: rgba(0, 0, 0, 0.10);
+        }
+
+        .markdown-content tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .markdown-content th:last-child,
+        .markdown-content td:last-child {
+            border-right: 0;
+        }
+
+        .markdown-content input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin-right: 6px;
+            accent-color: var(--accent);
+            vertical-align: -2px;
+        }
+
+        .back-to-top {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 800;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+
+            color: var(--text);
+            font-size: 20px;
+
+            background: rgba(40, 40, 40, 0.86);
+            border: 1px solid var(--border);
+            border-radius: 50%;
+
+            box-shadow: var(--shadow);
+
+            opacity: 0;
+            pointer-events: none;
+
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+
+            transition:
+                opacity 150ms ease,
+                background 150ms ease,
+                transform 150ms ease;
+        }
+
+        .back-to-top.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .back-to-top:hover {
+            color: var(--text);
+            text-decoration: none;
+            background: var(--surface-active);
+            transform: translateY(-2px);
+        }
+
+        .overlay {
+            position: fixed;
+            inset: var(--header-height) 0 0 0;
+            z-index: 850;
+
+            display: none;
+
+            background: rgba(0, 0, 0, 0.48);
+            backdrop-filter: blur(3px);
+            -webkit-backdrop-filter: blur(3px);
+        }
+
+        ::selection {
+            color: #000000;
+            background: var(--accent);
+        }
+
+        ::-webkit-scrollbar {
+            width: 12px;
+            height: 12px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.16);
+            border: 3px solid transparent;
+            border-radius: 999px;
+            background-clip: padding-box;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+
+        @media print {
+            :root {
+                color-scheme: light;
+            }
+
+            body {
+                color: #111111;
+                background: #ffffff;
+            }
+
+            .app-header,
+            .toc,
+            .overlay,
+            .back-to-top {
+                display: none !important;
+            }
+
+            .app-main {
+                margin: 0;
+                padding: 0;
+            }
+
+            .hero,
+            .markdown-document {
+                color: #111111;
+                background: #ffffff;
+                border: 1px solid #dddddd;
+                box-shadow: none;
+            }
+
+            .markdown-content p,
+            .markdown-content li,
+            .markdown-content td {
+                color: #222222;
+            }
+
+            .markdown-content h1,
+            .markdown-content h2,
+            .markdown-content h3,
+            .markdown-content h4,
+            .markdown-content h5,
+            .markdown-content h6,
+            .markdown-content strong {
+                color: #111111;
+            }
+
+            .markdown-content pre {
+                white-space: pre-wrap;
+                background: #f5f5f5;
+                border-color: #dddddd;
+            }
+
+            .markdown-content pre code {
+                color: #111111;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .toc {
+                width: min(88vw, 340px);
+                transform: translateX(-105%);
+                box-shadow: var(--shadow);
+            }
+
+            .toc.open {
+                transform: translateX(0);
+            }
+
+            .toc-close {
+                display: inline-flex;
+            }
+
+            .overlay.visible {
+                display: block;
+            }
+
+            .app-main {
+                margin-left: 0;
+                padding-right: 18px;
+                padding-left: 18px;
+            }
+
+            .header-button-label {
+                display: none;
+            }
+
+            .markdown-content {
+                padding: 24px 20px;
+            }
+        }
+
+        @media (max-width: 540px) {
+            .app-header {
+                padding: 0 12px;
+            }
+
+            .app-subtitle {
+                display: none;
+            }
+
+            .hero {
+                padding: 23px 20px;
+            }
+
+            .document-header {
+                padding: 16px;
+            }
+
+            .document-number {
+                width: 38px;
+                height: 38px;
+            }
+
+            .markdown-content {
+                padding: 22px 16px;
+            }
+
+            .markdown-content h1 {
+                font-size: 25px;
+            }
+
+            .markdown-content h2 {
+                font-size: 21px;
+            }
+
+            .back-to-top {
+                right: 16px;
+                bottom: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="app-header">
+        <button
+            class="menu-button"
+            type="button"
+            onclick="toggleNavigation()"
+            aria-label="Navigation öffnen"
+            title="Navigation"
+        >
+            ☰
+        </button>
+
+        <div class="app-title-area">
+            <div class="app-title">
+                NPSPEC UNITS 0004 Part 1
+            </div>
+
+            <div class="app-subtitle">
+                C:\recoverboot\nova-os\docs\NPSPEC\Nova Compute Platform
+            </div>
+        </div>
+
+        <div class="header-actions">
+            <button
+                class="header-button"
+                type="button"
+                onclick="window.print()"
+                title="Dokument drucken"
+            >
+                <span>⎙</span>
+                <span class="header-button-label">
+                    Drucken
+                </span>
+            </button>
+        </div>
+    </header>
+
+    <nav class="toc" id="toc">
+<div class="toc-header">
+<div class="toc-title">Inhaltsverzeichnis</div>
+<button class="toc-close" type="button" onclick="toggleNavigation()" aria-label="Navigation schließen">
+×
+</button>
+</div>
+<div class="toc-content">
+
+            <div class="toc-document">
+                <a class="toc-document-link" href="#document-npspec-units-0004-part-1-md">
+                    <span class="toc-document-icon">▤</span>
+                    <span>NPSPEC UNITS 0004 Part 1</span>
+                </a>
+            
+<div class="toc-headings">
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#npspec-units-0004"
+                    >
+                        NPSPEC-UNITS-0004
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#measurement-uncertainty-and-error-propagation"
+                    >
+                        Measurement Uncertainty and Error Propagation
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#1-zweck"
+                    >
+                        1. Zweck
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#2-zielsetzung"
+                    >
+                        2. Zielsetzung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#3-geltungsbereich"
+                    >
+                        3. Geltungsbereich
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#4-leitprinzipien"
+                    >
+                        4. Leitprinzipien
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#41-messwert-statt-rohzahl"
+                    >
+                        4.1 Messwert statt Rohzahl
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#42-unsicherheit-ist-teil-der-semantik"
+                    >
+                        4.2 Unsicherheit ist Teil der Semantik
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#43-einheit-und-dimension-bleiben-erhalten"
+                    >
+                        4.3 Einheit und Dimension bleiben erhalten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#44-fehler-und-unsicherheit-sind-zu-unterscheiden"
+                    >
+                        4.4 Fehler und Unsicherheit sind zu unterscheiden
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#45-ruckfuhrbarkeit-ist-explizit"
+                    >
+                        4.5 Rückführbarkeit ist explizit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#46-metadaten-durfen-nicht-still-verloren-gehen"
+                    >
+                        4.6 Metadaten dürfen nicht still verloren gehen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#5-terminologie"
+                    >
+                        5. Terminologie
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#51-messgroe"
+                    >
+                        5.1 Messgröße
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#52-messwert"
+                    >
+                        5.2 Messwert
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#53-wahrer-wert"
+                    >
+                        5.3 Wahrer Wert
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#54-referenzwert"
+                    >
+                        5.4 Referenzwert
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#55-fehler"
+                    >
+                        5.5 Fehler
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#56-unsicherheit"
+                    >
+                        5.6 Unsicherheit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#57-standardunsicherheit"
+                    >
+                        5.7 Standardunsicherheit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#58-erweiterte-unsicherheit"
+                    >
+                        5.8 Erweiterte Unsicherheit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#59-bias"
+                    >
+                        5.9 Bias
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#510-drift"
+                    >
+                        5.10 Drift
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#6-measurement-object-model"
+                    >
+                        6. Measurement Object Model
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#7-messwert-und-unsicherheit"
+                    >
+                        7. Messwert und Unsicherheit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#71-dimensionsgleichheit"
+                    >
+                        7.1 Dimensionsgleichheit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#72-relative-unsicherheit"
+                    >
+                        7.2 Relative Unsicherheit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#73-nullwerte"
+                    >
+                        7.3 Nullwerte
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#8-measurement-descriptor"
+                    >
+                        8. Measurement Descriptor
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#9-measurement-flags"
+                    >
+                        9. Measurement Flags
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#10-messwertarten"
+                    >
+                        10. Messwertarten
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#101-direkte-messung"
+                    >
+                        10.1 Direkte Messung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#102-indirekte-messung"
+                    >
+                        10.2 Indirekte Messung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#103-abgeleiteter-messwert"
+                    >
+                        10.3 Abgeleiteter Messwert
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#104-simulierter-messwert"
+                    >
+                        10.4 Simulierter Messwert
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#105-referenzmesswert"
+                    >
+                        10.5 Referenzmesswert
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#106-fusionsmesswert"
+                    >
+                        10.6 Fusionsmesswert
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#11-fehlerklassifikation"
+                    >
+                        11. Fehlerklassifikation
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#12-zufallige-fehler"
+                    >
+                        12. Zufällige Fehler
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#anhang-a-vorlaufige-api-aus-part-1"
+                    >
+                        Anhang A – Vorläufige API aus Part 1
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#anhang-b-anforderungen-aus-part-1"
+                    >
+                        Anhang B – Anforderungen aus Part 1
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#ausblick-auf-part-2"
+                    >
+                        Ausblick auf Part 2
+                    </a>
+                    
+</div>
+</div>
+</div>
+</nav>
+
+    <div
+        class="overlay"
+        id="overlay"
+        onclick="closeNavigation()"
+    ></div>
+
+    <main class="app-main" id="top">
+        <div class="content-container">
+            <section class="hero">
+                <div class="hero-label">
+                    Markdown-Dokumentation
+                </div>
+
+                <h1>
+                    NPSPEC UNITS 0004 Part 1
+                </h1>
+
+                <p class="hero-description">
+                    Zusammengeführte HTML-Dokumentation aus
+                    1 Markdown-Dateien.
+                </p>
+
+                <div class="hero-meta">
+                    <span class="meta-item">
+                        1 Dokumente
+                    </span>
+
+                    <span class="meta-item">
+                        Fluent Dark
+                    </span>
+
+                    <span class="meta-item">
+                        Einzelne HTML-Datei
+                    </span>
+                </div>
+            </section>
+
+            
+            <article class="markdown-document" id="document-npspec-units-0004-part-1-md">
+                <header class="document-header">
+                    <div class="document-number">
+                        01
+                    </div>
+
+                    <div class="document-title-area">
+                        <h1 class="document-title">
+                            NPSPEC UNITS 0004 Part 1
+                        </h1>
+
+                        <div class="document-path">
+                            NPSPEC-UNITS-0004-Part-1.md
+                        </div>
+                    </div>
+                </header>
+
+                <div class="markdown-content">
+                    <h1 id="npspec-units-0004">NPSPEC-UNITS-0004</h1>
+<h1 id="measurement-uncertainty-and-error-propagation">Measurement Uncertainty and Error Propagation</h1>
+<table>
+<thead>
+<tr>
+<th>Feld</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dokument</td>
+<td>NPSPEC-UNITS-0004</td>
+</tr>
+<tr>
+<td>Titel</td>
+<td>Measurement Uncertainty and Error Propagation</td>
+</tr>
+<tr>
+<td>Version</td>
+<td>1.0.0 Draft</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Draft</td>
+</tr>
+<tr>
+<td>Kategorie</td>
+<td>System Specification</td>
+</tr>
+<tr>
+<td>Bereich</td>
+<td>Nova Compute Platform</td>
+</tr>
+<tr>
+<td>Teil</td>
+<td>1 von 6</td>
+</tr>
+<tr>
+<td>Kapitel</td>
+<td>1–12</td>
+</tr>
+<tr>
+<td>Abhängigkeiten</td>
+<td>NPSPEC-COMPUTE-0001, NPSPEC-UNITS-0001, NPSPEC-UNITS-0002, NPSPEC-UNITS-0003, NPSPEC-OBJECT-0001</td>
+</tr>
+<tr>
+<td>Zielplattformen</td>
+<td>x86_64, AArch64, RISC-V</td>
+</tr>
+<tr>
+<td>Letzte Änderung</td>
+<td>2026-07-13</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h1 id="1-zweck">1. Zweck</h1>
+<p>Diese Spezifikation definiert das Messwert-, Unsicherheits- und Fehlerfortpflanzungsmodell von Nova OS.</p>
+<p>Sie legt fest, wie Nova:</p>
+<ul>
+<li>Messwerte repräsentiert,</li>
+<li>Unsicherheiten speichert,</li>
+<li>Messfehler klassifiziert,</li>
+<li>Verteilungen beschreibt,</li>
+<li>Kovarianzen und Korrelationen behandelt,</li>
+<li>Unsicherheiten mathematisch fortpflanzt,</li>
+<li>Kalibrierungen referenziert,</li>
+<li>Messketten dokumentiert,</li>
+<li>Messwerte serialisiert,</li>
+<li>Messwerte über IPC austauscht,</li>
+<li>Messdaten in Tensoren und Compute-Diensten verarbeitet.</li>
+</ul>
+<p>Die Spezifikation ist die verbindliche Grundlage für alle Nova-Komponenten, die reale Messdaten verarbeiten.</p>
+<hr>
+<h1 id="2-zielsetzung">2. Zielsetzung</h1>
+<p>Das Measurement Framework verfolgt folgende Ziele:</p>
+<ol>
+<li>Messwerte dürfen nicht als bedeutungslose Skalare behandelt werden.</li>
+<li>Unsicherheiten müssen Bestandteil des Datentyps sein.</li>
+<li>Messwert und Unsicherheit müssen dieselbe Dimension besitzen.</li>
+<li>Fehlerfortpflanzung muss automatisch und nachvollziehbar erfolgen.</li>
+<li>Messketten müssen rückverfolgbar sein.</li>
+<li>Kalibrierungen müssen versioniert und zeitlich gültig sein.</li>
+<li>Messdaten müssen über Prozessgrenzen verlustfrei übertragen werden können.</li>
+<li>Unsicherheitsmodelle müssen skalare, vektorielle und tensorielle Daten unterstützen.</li>
+<li>Deterministische und Monte-Carlo-basierte Verfahren müssen vorgesehen werden.</li>
+<li>Compute-Backends dürfen Unsicherheitsmetadaten nicht verlieren.</li>
+</ol>
+<hr>
+<h1 id="3-geltungsbereich">3. Geltungsbereich</h1>
+<p>Diese Spezifikation gilt für:</p>
+<ul>
+<li>physikalische Messungen,</li>
+<li>Sensoren,</li>
+<li>Robotik,</li>
+<li>industrielle Automatisierung,</li>
+<li>Laborsoftware,</li>
+<li>wissenschaftliche Anwendungen,</li>
+<li>Signalverarbeitung,</li>
+<li>Navigation,</li>
+<li>Bild- und Audiosensorik,</li>
+<li>medizinische Messgeräte,</li>
+<li>Simulationen mit Messdaten,</li>
+<li>KI-Systeme mit Sensorschnittstellen,</li>
+<li>Datenlogger,</li>
+<li>Kalibrierungssoftware,</li>
+<li>Qualitätskontrolle.</li>
+</ul>
+<p>Nicht Gegenstand dieser Spezifikation sind:</p>
+<ul>
+<li>konkrete Sensortreiber,</li>
+<li>physikalische Formelbibliotheken,</li>
+<li>vollständige Statistikbibliotheken,</li>
+<li>hardwareabhängige Kalibrierungsverfahren,</li>
+<li>regulatorische Zertifizierungsprozesse einzelner Branchen.</li>
+</ul>
+<hr>
+<h1 id="4-leitprinzipien">4. Leitprinzipien</h1>
+<h2 id="41-messwert-statt-rohzahl">4.1 Messwert statt Rohzahl</h2>
+<p>Ein Sensorwert wird als <code>nova_measurement_t</code> und nicht als nackter primitiver Datentyp behandelt.</p>
+<p>Nicht ausreichend:</p>
+<div class="codehilite"><pre><span></span><code><span class="kt">double</span><span class="w"> </span><span class="n">temperature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">21.4</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Vorgesehen:</p>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_measurement_t</span><span class="w"> </span><span class="n">temperature</span><span class="p">;</span>
+</code></pre></div>
+
+<h2 id="42-unsicherheit-ist-teil-der-semantik">4.2 Unsicherheit ist Teil der Semantik</h2>
+<p>Ein Messwert ohne Unsicherheitsinformation ist unvollständig, sofern die Quelle keine exakte Größe liefert.</p>
+<h2 id="43-einheit-und-dimension-bleiben-erhalten">4.3 Einheit und Dimension bleiben erhalten</h2>
+<p>Wert, Unsicherheit und Verteilung müssen mit dem Nova Quantity Type System kompatibel sein.</p>
+<h2 id="44-fehler-und-unsicherheit-sind-zu-unterscheiden">4.4 Fehler und Unsicherheit sind zu unterscheiden</h2>
+<p>Ein Fehler ist die Abweichung zwischen Messwert und Referenzwert.</p>
+<p>Eine Unsicherheit beschreibt den Bereich plausibler Werte unter einem definierten Modell.</p>
+<h2 id="45-ruckfuhrbarkeit-ist-explizit">4.5 Rückführbarkeit ist explizit</h2>
+<p>Kalibrierungen, Referenzen und Messketten müssen durch stabile IDs beschrieben werden.</p>
+<h2 id="46-metadaten-durfen-nicht-still-verloren-gehen">4.6 Metadaten dürfen nicht still verloren gehen</h2>
+<p>Bei Berechnung, Serialisierung, IPC und Backend-Ausführung müssen relevante Messmetadaten erhalten bleiben.</p>
+<hr>
+<h1 id="5-terminologie">5. Terminologie</h1>
+<h2 id="51-messgroe">5.1 Messgröße</h2>
+<p>Die physikalische oder technische Größe, die bestimmt werden soll.</p>
+<p>Beispiele:</p>
+<ul>
+<li>Temperatur,</li>
+<li>Länge,</li>
+<li>Spannung,</li>
+<li>Druck,</li>
+<li>Geschwindigkeit.</li>
+</ul>
+<h2 id="52-messwert">5.2 Messwert</h2>
+<p>Der numerisch bestimmte Wert einer Messgröße.</p>
+<h2 id="53-wahrer-wert">5.3 Wahrer Wert</h2>
+<p>Der idealisierte exakte Wert einer Messgröße.</p>
+<p>Der wahre Wert ist in realen Messsystemen im Allgemeinen nicht vollständig bekannt.</p>
+<h2 id="54-referenzwert">5.4 Referenzwert</h2>
+<p>Ein bekannter oder vereinbarter Wert, gegen den Messungen verglichen werden.</p>
+<h2 id="55-fehler">5.5 Fehler</h2>
+<div class="codehilite"><pre><span></span><code>Fehler = Messwert - Referenzwert
+</code></pre></div>
+
+<h2 id="56-unsicherheit">5.6 Unsicherheit</h2>
+<p>Ein nichtnegativer Parameter, der die Streuung der Werte beschreibt, die der Messgröße vernünftigerweise zugeordnet werden können.</p>
+<h2 id="57-standardunsicherheit">5.7 Standardunsicherheit</h2>
+<p>Eine Unsicherheit, die als Standardabweichung ausgedrückt wird.</p>
+<h2 id="58-erweiterte-unsicherheit">5.8 Erweiterte Unsicherheit</h2>
+<p>Eine kombinierte Standardunsicherheit multipliziert mit einem Überdeckungsfaktor.</p>
+<h2 id="59-bias">5.9 Bias</h2>
+<p>Eine systematische Verschiebung des Erwartungswertes gegenüber einem Referenzwert.</p>
+<h2 id="510-drift">5.10 Drift</h2>
+<p>Eine zeitabhängige systematische Veränderung einer Messeigenschaft.</p>
+<hr>
+<h1 id="6-measurement-object-model">6. Measurement Object Model</h1>
+<p>Jeder Messwert ist ein Nova-Objekt.</p>
+<div class="codehilite"><pre><span></span><code>Nova Object
+    ↓
+Measurement Object
+    ├── Quantity Value
+    ├── Standard Uncertainty
+    ├── Distribution
+    ├── Confidence
+    ├── Timestamp
+    ├── Sensor Reference
+    ├── Calibration Reference
+    ├── Traceability Reference
+    └── Metadata
+</code></pre></div>
+
+<p>Grundstruktur:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_measurement</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_object_header_t</span><span class="w"> </span><span class="n">object</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">value</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">standard_uncertainty</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_distribution_descriptor_t</span><span class="w"> </span><span class="n">distribution</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_sensor_handle_t</span><span class="w"> </span><span class="n">sensor</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_calibration_handle_t</span><span class="w"> </span><span class="n">calibration</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_traceability_handle_t</span><span class="w"> </span><span class="n">traceability</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_timestamp_t</span><span class="w"> </span><span class="n">timestamp</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_confidence_level_t</span><span class="w"> </span><span class="n">confidence</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_measurement_flags_t</span><span class="w"> </span><span class="n">flags</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_measurement_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="7-messwert-und-unsicherheit">7. Messwert und Unsicherheit</h1>
+<h2 id="71-dimensionsgleichheit">7.1 Dimensionsgleichheit</h2>
+<p>Messwert und absolute Unsicherheit müssen dieselbe Dimension besitzen.</p>
+<p>Beispiel:</p>
+<div class="codehilite"><pre><span></span><code>Messwert:
+12.5 m
+
+Standardunsicherheit:
+0.02 m
+</code></pre></div>
+
+<p>Ungültig:</p>
+<div class="codehilite"><pre><span></span><code>Messwert:
+12.5 m
+
+Unsicherheit:
+0.02 s
+</code></pre></div>
+
+<h2 id="72-relative-unsicherheit">7.2 Relative Unsicherheit</h2>
+<p>Relative Unsicherheit ist dimensionslos.</p>
+<div class="codehilite"><pre><span></span><code>u_rel = u_abs / |x|
+</code></pre></div>
+
+<h2 id="73-nullwerte">7.3 Nullwerte</h2>
+<p>Bei einem Messwert von null darf eine relative Unsicherheit nicht ohne Sonderbehandlung berechnet werden.</p>
+<p>Die Runtime muss in diesem Fall entweder:</p>
+<ul>
+<li>absolute Unsicherheit verwenden,</li>
+<li>eine definierte Grenzwertregel anwenden,</li>
+<li>oder einen Fehler zurückgeben.</li>
+</ul>
+<hr>
+<h1 id="8-measurement-descriptor">8. Measurement Descriptor</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">nova_measurement_descriptor</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">nova_measurement_uuid_t</span><span class="w"> </span><span class="n">uuid</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">value</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_quantity_t</span><span class="w"> </span><span class="n">standard_uncertainty</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_distribution_id_t</span><span class="w"> </span><span class="n">distribution_id</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_sensor_uuid_t</span><span class="w"> </span><span class="n">sensor_uuid</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_calibration_uuid_t</span><span class="w"> </span><span class="n">calibration_uuid</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_traceability_uuid_t</span><span class="w"> </span><span class="n">traceability_uuid</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_timestamp_t</span><span class="w"> </span><span class="n">timestamp</span><span class="p">;</span>
+
+<span class="w">    </span><span class="n">nova_measurement_flags_t</span><span class="w"> </span><span class="n">flags</span><span class="p">;</span>
+<span class="w">    </span><span class="n">nova_version_t</span><span class="w"> </span><span class="n">version</span><span class="p">;</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_measurement_descriptor_t</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Pflichtfelder:</p>
+<ul>
+<li>Messwert,</li>
+<li>Dimension,</li>
+<li>Einheit,</li>
+<li>Standardunsicherheit oder Unsicherheitsstatus,</li>
+<li>Zeitstempel oder expliziter <code>NO_TIMESTAMP</code>-Status,</li>
+<li>Herkunft oder expliziter <code>UNKNOWN_SOURCE</code>-Status.</li>
+</ul>
+<hr>
+<h1 id="9-measurement-flags">9. Measurement Flags</h1>
+<div class="codehilite"><pre><span></span><code><span class="k">typedef</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="n">nova_measurement_flags</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_NONE</span><span class="w">              </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_EXACT</span><span class="w">             </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_ESTIMATED</span><span class="w">         </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_CALIBRATED</span><span class="w">        </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_UNCALIBRATED</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_TRACEABLE</span><span class="w">         </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_SIMULATED</span><span class="w">         </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_DERIVED</span><span class="w">           </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_FILTERED</span><span class="w">          </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_FUSED</span><span class="w">             </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_OUTLIER</span><span class="w">           </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">9</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_INVALID</span><span class="w">           </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<span class="w">    </span><span class="n">NOVA_MEASUREMENT_FLAG_STALE</span><span class="w">             </span><span class="o">=</span><span class="w"> </span><span class="mi">1u</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">11</span>
+<span class="p">}</span><span class="w"> </span><span class="n">nova_measurement_flags_t</span><span class="p">;</span>
+</code></pre></div>
+
+<hr>
+<h1 id="10-messwertarten">10. Messwertarten</h1>
+<p>Nova unterscheidet mindestens folgende Messwertarten:</p>
+<h2 id="101-direkte-messung">10.1 Direkte Messung</h2>
+<p>Der Wert wird unmittelbar durch einen Sensor bestimmt.</p>
+<h2 id="102-indirekte-messung">10.2 Indirekte Messung</h2>
+<p>Der Wert wird aus mehreren Eingangsmessungen berechnet.</p>
+<h2 id="103-abgeleiteter-messwert">10.3 Abgeleiteter Messwert</h2>
+<p>Der Wert entsteht durch mathematische Verarbeitung eines oder mehrerer Messwerte.</p>
+<h2 id="104-simulierter-messwert">10.4 Simulierter Messwert</h2>
+<p>Der Wert stammt aus einer Simulation und nicht aus realer Sensorik.</p>
+<h2 id="105-referenzmesswert">10.5 Referenzmesswert</h2>
+<p>Der Wert dient als Referenz für Vergleich, Kalibrierung oder Validierung.</p>
+<h2 id="106-fusionsmesswert">10.6 Fusionsmesswert</h2>
+<p>Der Wert entsteht durch die Kombination mehrerer Sensorquellen.</p>
+<hr>
+<h1 id="11-fehlerklassifikation">11. Fehlerklassifikation</h1>
+<p>Fehler werden mindestens in folgende Klassen eingeteilt:</p>
+<div class="codehilite"><pre><span></span><code>Messfehler
+├── Zufälliger Fehler
+├── Systematischer Fehler
+├── Grober Fehler
+├── Quantisierungsfehler
+├── Rundungsfehler
+├── Kalibrierungsfehler
+├── Driftfehler
+├── Modellfehler
+└── Übertragungsfehler
+</code></pre></div>
+
+<p>Jeder Fehler darf klassifiziert, protokolliert und mit einer Ursache verknüpft werden.</p>
+<hr>
+<h1 id="12-zufallige-fehler">12. Zufällige Fehler</h1>
+<p>Zufällige Fehler ändern sich bei wiederholten Messungen unvorhersehbar.</p>
+<p>Typische Ursachen:</p>
+<ul>
+<li>thermisches Rauschen,</li>
+<li>Quantisierungsrauschen,</li>
+<li>mechanische Schwingungen,</li>
+<li>elektromagnetische Störungen,</li>
+<li>begrenzte Sensorauflösung.</li>
+</ul>
+<p>Zufällige Fehler werden durch statistische Modelle beschrieben.</p>
+<p>Mindestens zu unterstützen sind:</p>
+<ul>
+<li>Normalverteilung,</li>
+<li>Gleichverteilung,</li>
+<li>Dreiecksverteilung,</li>
+<li>Student-t-Verteilung,</li>
+<li>benutzerdefinierte Verteilung.</li>
+</ul>
+<p>Ein zufälliger Fehler darf nicht automatisch als systematischer Bias interpretiert werden.</p>
+<hr>
+<h1 id="anhang-a-vorlaufige-api-aus-part-1">Anhang A – Vorläufige API aus Part 1</h1>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_measurement_create</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">value</span><span class="p">,</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_quantity_t</span><span class="o">*</span><span class="w"> </span><span class="n">standard_uncertainty</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_measurement_t</span><span class="o">*</span><span class="w"> </span><span class="n">out_measurement</span>
+<span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_measurement_validate</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_measurement_t</span><span class="o">*</span><span class="w"> </span><span class="n">measurement</span>
+<span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_measurement_get_relative_uncertainty</span><span class="p">(</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="n">nova_measurement_t</span><span class="o">*</span><span class="w"> </span><span class="n">measurement</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_ratio_t</span><span class="o">*</span><span class="w"> </span><span class="n">out_relative_uncertainty</span>
+<span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_measurement_set_sensor</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_measurement_t</span><span class="o">*</span><span class="w"> </span><span class="n">measurement</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_sensor_handle_t</span><span class="w"> </span><span class="n">sensor</span>
+<span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_measurement_set_calibration</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_measurement_t</span><span class="o">*</span><span class="w"> </span><span class="n">measurement</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_calibration_handle_t</span><span class="w"> </span><span class="n">calibration</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<hr>
+<h1 id="anhang-b-anforderungen-aus-part-1">Anhang B – Anforderungen aus Part 1</h1>
+<p>Die Implementierung muss mindestens unterstützen:</p>
+<ul>
+<li>Measurement als Nova-Objekt,</li>
+<li>Messwert mit Quantity-Typ,</li>
+<li>absolute Standardunsicherheit,</li>
+<li>relative Unsicherheit,</li>
+<li>Dimensionsprüfung,</li>
+<li>Zeitstempel,</li>
+<li>Sensorreferenz,</li>
+<li>Kalibrierungsreferenz,</li>
+<li>Traceability-Referenz,</li>
+<li>Fehlerklassifikation,</li>
+<li>Verteilungsreferenz,</li>
+<li>Measurement Flags.</li>
+</ul>
+<hr>
+<h1 id="ausblick-auf-part-2">Ausblick auf Part 2</h1>
+<p>Part 2 umfasst die Kapitel 13–24:</p>
+<div class="codehilite"><pre><span></span><code>13. Systematische Fehler
+14. Grobe Fehler
+15. Bias
+16. Drift
+17. Wiederholbarkeit
+18. Reproduzierbarkeit
+19. Stabilität
+20. Auflösung
+21. Genauigkeit
+22. Präzision
+23. Kalibrierung
+24. Rückführbarkeit
+</code></pre></div>
+                </div>
+            </article>
+            
+        </div>
+    </main>
+
+    <a
+        class="back-to-top"
+        id="backToTop"
+        href="#top"
+        title="Nach oben"
+        aria-label="Nach oben"
+    >
+        ↑
+    </a>
+
+    <script>
+        const navigation = document.getElementById("toc");
+        const overlay = document.getElementById("overlay");
+        const backToTop = document.getElementById("backToTop");
+
+        function toggleNavigation() {
+            navigation.classList.toggle("open");
+            overlay.classList.toggle("visible");
+        }
+
+        function closeNavigation() {
+            navigation.classList.remove("open");
+            overlay.classList.remove("visible");
+        }
+
+        document.querySelectorAll(".toc a").forEach((link) => {
+            link.addEventListener("click", () => {
+                if (window.innerWidth <= 900) {
+                    closeNavigation();
+                }
+            });
+        });
+
+        window.addEventListener("scroll", () => {
+            if (window.scrollY > 500) {
+                backToTop.classList.add("visible");
+            } else {
+                backToTop.classList.remove("visible");
+            }
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                closeNavigation();
+            }
+        });
+    </script>
+</body>
+</html>

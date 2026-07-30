@@ -1,0 +1,1841 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="color-scheme"
+        content="dark"
+    >
+
+    <title>NPSPEC QUANTIZATION 0001</title>
+
+    <style>
+        :root {
+            color-scheme: dark;
+
+            --background: #0c0c0c;
+            --background-secondary: #111111;
+            --surface: rgba(32, 32, 32, 0.82);
+            --surface-solid: #202020;
+            --surface-hover: rgba(255, 255, 255, 0.075);
+            --surface-active: rgba(255, 255, 255, 0.11);
+
+            --border: rgba(255, 255, 255, 0.085);
+            --border-strong: rgba(255, 255, 255, 0.15);
+
+            --text: #ffffff;
+            --text-secondary: #c8c8c8;
+            --text-muted: #8f8f8f;
+
+            --accent: #60cdff;
+            --accent-hover: #86d8ff;
+            --accent-muted: rgba(96, 205, 255, 0.15);
+
+            --success: #6ccb5f;
+            --warning: #fce100;
+            --danger: #ff99a4;
+
+            --code-background: #151515;
+            --inline-code-background: rgba(255, 255, 255, 0.08);
+
+            --sidebar-width: 320px;
+            --header-height: 64px;
+
+            --radius-small: 6px;
+            --radius-medium: 10px;
+            --radius-large: 14px;
+
+            --shadow:
+                0 16px 38px rgba(0, 0, 0, 0.40),
+                0 2px 8px rgba(0, 0, 0, 0.30);
+
+            --font:
+                "Segoe UI Variable",
+                "Segoe UI",
+                system-ui,
+                -apple-system,
+                BlinkMacSystemFont,
+                sans-serif;
+
+            --mono-font:
+                "Cascadia Code",
+                "Cascadia Mono",
+                "Consolas",
+                monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: calc(var(--header-height) + 24px);
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(
+                    circle at 15% 0%,
+                    rgba(96, 205, 255, 0.08),
+                    transparent 34rem
+                ),
+                radial-gradient(
+                    circle at 100% 40%,
+                    rgba(120, 90, 255, 0.055),
+                    transparent 30rem
+                ),
+                var(--background);
+
+            color: var(--text);
+            font-family: var(--font);
+            font-size: 15px;
+            line-height: 1.65;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            color: var(--accent-hover);
+            text-decoration: underline;
+        }
+
+        button,
+        input {
+            font: inherit;
+        }
+
+        .app-header {
+            position: fixed;
+            top: 0;
+            right: 0;
+            left: 0;
+            z-index: 1000;
+
+            height: var(--header-height);
+
+            display: flex;
+            align-items: center;
+            gap: 14px;
+
+            padding: 0 20px;
+
+            background: rgba(20, 20, 20, 0.78);
+            border-bottom: 1px solid var(--border);
+
+            backdrop-filter: blur(30px) saturate(150%);
+            -webkit-backdrop-filter: blur(30px) saturate(150%);
+        }
+
+        .menu-button,
+        .header-button,
+        .toc-close {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--text);
+
+            border-radius: var(--radius-small);
+            cursor: pointer;
+
+            transition:
+                background 120ms ease,
+                border-color 120ms ease,
+                transform 120ms ease;
+        }
+
+        .menu-button {
+            width: 38px;
+            height: 38px;
+            font-size: 20px;
+        }
+
+        .header-button {
+            min-height: 36px;
+            padding: 7px 13px;
+        }
+
+        .menu-button:hover,
+        .header-button:hover,
+        .toc-close:hover {
+            background: var(--surface-hover);
+            border-color: var(--border-strong);
+        }
+
+        .menu-button:active,
+        .header-button:active,
+        .toc-close:active {
+            background: var(--surface-active);
+            transform: scale(0.97);
+        }
+
+        .app-title-area {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .app-title {
+            overflow: hidden;
+            margin: 0;
+
+            color: var(--text);
+            font-size: 16px;
+            font-weight: 600;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .app-subtitle {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+            line-height: 1.2;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .toc {
+            position: fixed;
+            top: var(--header-height);
+            bottom: 0;
+            left: 0;
+            z-index: 900;
+
+            width: var(--sidebar-width);
+
+            background: rgba(24, 24, 24, 0.86);
+            border-right: 1px solid var(--border);
+
+            backdrop-filter: blur(35px) saturate(145%);
+            -webkit-backdrop-filter: blur(35px) saturate(145%);
+
+            transition: transform 180ms ease;
+        }
+
+        .toc-header {
+            height: 58px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            padding: 0 16px 0 20px;
+
+            border-bottom: 1px solid var(--border);
+        }
+
+        .toc-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .toc-close {
+            display: none;
+            width: 34px;
+            height: 34px;
+            font-size: 22px;
+        }
+
+        .toc-content {
+            height: calc(100% - 58px);
+            overflow-y: auto;
+            padding: 12px 10px 24px;
+        }
+
+        .toc-document {
+            margin-bottom: 5px;
+        }
+
+        .toc-document-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+
+            min-height: 38px;
+            padding: 8px 10px;
+
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 600;
+
+            border-radius: var(--radius-small);
+        }
+
+        .toc-document-link:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-document-icon {
+            color: var(--accent);
+        }
+
+        .toc-headings {
+            margin: 2px 0 8px 18px;
+            padding-left: 12px;
+            border-left: 1px solid var(--border);
+        }
+
+        .toc-heading {
+            display: block;
+
+            padding: 4px 8px;
+
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.4;
+
+            border-radius: 4px;
+        }
+
+        .toc-heading:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .toc-level-1 {
+            font-weight: 600;
+        }
+
+        .toc-level-2 {
+            padding-left: 14px;
+        }
+
+        .toc-level-3 {
+            padding-left: 22px;
+        }
+
+        .toc-level-4,
+        .toc-level-5,
+        .toc-level-6 {
+            padding-left: 30px;
+        }
+
+        .app-main {
+            min-height: 100vh;
+
+            margin-left: var(--sidebar-width);
+            padding:
+                calc(var(--header-height) + 32px)
+                clamp(20px, 4vw, 64px)
+                80px;
+        }
+
+        .content-container {
+            width: min(100%, 1080px);
+            margin: 0 auto;
+        }
+
+        .hero {
+            margin-bottom: 32px;
+            padding: 28px 30px;
+
+            background:
+                linear-gradient(
+                    135deg,
+                    rgba(96, 205, 255, 0.12),
+                    rgba(255, 255, 255, 0.035)
+                ),
+                var(--surface);
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .hero-label {
+            margin-bottom: 7px;
+
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 600;
+
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .hero h1 {
+            margin: 0;
+
+            font-size: clamp(28px, 4vw, 44px);
+            font-weight: 650;
+            line-height: 1.12;
+            letter-spacing: -0.03em;
+        }
+
+        .hero-description {
+            margin: 14px 0 0;
+            color: var(--text-secondary);
+        }
+
+        .hero-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+
+            margin-top: 20px;
+        }
+
+        .meta-item {
+            padding: 6px 10px;
+
+            color: var(--text-secondary);
+            font-size: 12px;
+
+            background: rgba(0, 0, 0, 0.20);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+        }
+
+        .markdown-document {
+            margin-bottom: 32px;
+            overflow: hidden;
+
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-large);
+
+            box-shadow: var(--shadow);
+
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+        }
+
+        .document-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+
+            padding: 20px 24px;
+
+            background: rgba(255, 255, 255, 0.025);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .document-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+            flex: 0 0 auto;
+
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 700;
+
+            background: var(--accent-muted);
+            border: 1px solid rgba(96, 205, 255, 0.20);
+            border-radius: 10px;
+        }
+
+        .document-title-area {
+            min-width: 0;
+        }
+
+        .document-title {
+            overflow: hidden;
+            margin: 0;
+
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.3;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .document-path {
+            overflow: hidden;
+            margin-top: 3px;
+
+            color: var(--text-muted);
+            font-size: 11px;
+
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .markdown-content {
+            padding: clamp(24px, 5vw, 52px);
+        }
+
+        .markdown-content > :first-child {
+            margin-top: 0;
+        }
+
+        .markdown-content > :last-child {
+            margin-bottom: 0;
+        }
+
+        .markdown-content h1,
+        .markdown-content h2,
+        .markdown-content h3,
+        .markdown-content h4,
+        .markdown-content h5,
+        .markdown-content h6 {
+            position: relative;
+
+            margin-top: 1.8em;
+            margin-bottom: 0.65em;
+
+            color: var(--text);
+            font-weight: 600;
+            line-height: 1.28;
+
+            letter-spacing: -0.015em;
+        }
+
+        .markdown-content h1 {
+            padding-bottom: 12px;
+            font-size: 30px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h2 {
+            padding-bottom: 9px;
+            font-size: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content h3 {
+            font-size: 20px;
+        }
+
+        .markdown-content h4 {
+            font-size: 17px;
+        }
+
+        .markdown-content h5 {
+            font-size: 15px;
+        }
+
+        .markdown-content h6 {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .markdown-content p {
+            margin: 0.85em 0;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .markdown-content ul,
+        .markdown-content ol {
+            margin: 0.8em 0;
+            padding-left: 1.8em;
+            color: var(--text-secondary);
+        }
+
+        .markdown-content li {
+            margin: 0.35em 0;
+        }
+
+        .markdown-content li::marker {
+            color: var(--accent);
+        }
+
+        .markdown-content blockquote {
+            margin: 1.2em 0;
+            padding: 14px 18px;
+
+            color: var(--text-secondary);
+
+            background: rgba(96, 205, 255, 0.07);
+            border: 1px solid rgba(96, 205, 255, 0.13);
+            border-left: 4px solid var(--accent);
+            border-radius: 0 var(--radius-medium) var(--radius-medium) 0;
+        }
+
+        .markdown-content blockquote p {
+            margin: 0.4em 0;
+        }
+
+        .markdown-content code {
+            padding: 0.15em 0.4em;
+
+            color: #f4f4f4;
+            font-family: var(--mono-font);
+            font-size: 0.9em;
+
+            background: var(--inline-code-background);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+        }
+
+        .markdown-content pre {
+            position: relative;
+
+            max-width: 100%;
+            overflow: auto;
+
+            margin: 1.2em 0;
+            padding: 18px;
+
+            background: var(--code-background);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.025),
+                0 8px 20px rgba(0, 0, 0, 0.18);
+        }
+
+        .markdown-content pre code {
+            display: block;
+            min-width: max-content;
+            padding: 0;
+
+            color: #e6e6e6;
+            font-size: 13px;
+            line-height: 1.55;
+
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+        }
+
+        /* Syntaxfarben für Pygments / Markdown codehilite */
+        .markdown-content .codehilite .hll { background: #3a3520; }
+        .markdown-content .codehilite .c,
+        .markdown-content .codehilite .ch,
+        .markdown-content .codehilite .cm,
+        .markdown-content .codehilite .c1,
+        .markdown-content .codehilite .cs { color: #6a9955; font-style: italic; }
+        .markdown-content .codehilite .k,
+        .markdown-content .codehilite .kc,
+        .markdown-content .codehilite .kd,
+        .markdown-content .codehilite .kn,
+        .markdown-content .codehilite .kp,
+        .markdown-content .codehilite .kr,
+        .markdown-content .codehilite .kt { color: #c586c0; }
+        .markdown-content .codehilite .n { color: #d4d4d4; }
+        .markdown-content .codehilite .na { color: #9cdcfe; }
+        .markdown-content .codehilite .nb,
+        .markdown-content .codehilite .bp { color: #4ec9b0; }
+        .markdown-content .codehilite .nc,
+        .markdown-content .codehilite .nd,
+        .markdown-content .codehilite .ne,
+        .markdown-content .codehilite .nf { color: #dcdcaa; }
+        .markdown-content .codehilite .nn { color: #4ec9b0; }
+        .markdown-content .codehilite .nv,
+        .markdown-content .codehilite .vc,
+        .markdown-content .codehilite .vg,
+        .markdown-content .codehilite .vi { color: #9cdcfe; }
+        .markdown-content .codehilite .o,
+        .markdown-content .codehilite .ow { color: #d4d4d4; }
+        .markdown-content .codehilite .m,
+        .markdown-content .codehilite .mb,
+        .markdown-content .codehilite .mf,
+        .markdown-content .codehilite .mh,
+        .markdown-content .codehilite .mi,
+        .markdown-content .codehilite .mo,
+        .markdown-content .codehilite .il { color: #b5cea8; }
+        .markdown-content .codehilite .s,
+        .markdown-content .codehilite .sa,
+        .markdown-content .codehilite .sb,
+        .markdown-content .codehilite .sc,
+        .markdown-content .codehilite .dl,
+        .markdown-content .codehilite .sd,
+        .markdown-content .codehilite .s1,
+        .markdown-content .codehilite .s2,
+        .markdown-content .codehilite .se,
+        .markdown-content .codehilite .sh,
+        .markdown-content .codehilite .si,
+        .markdown-content .codehilite .sx,
+        .markdown-content .codehilite .sr,
+        .markdown-content .codehilite .ss { color: #ce9178; }
+        .markdown-content .codehilite .p { color: #d4d4d4; }
+        .markdown-content .codehilite .gd { color: #f48771; }
+        .markdown-content .codehilite .gi { color: #89d185; }
+        .markdown-content .codehilite .gh,
+        .markdown-content .codehilite .gu { color: #569cd6; font-weight: 600; }
+        .markdown-content .codehilite .err { color: #f44747; }
+
+        .markdown-content hr {
+            margin: 2em 0;
+            border: 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .markdown-content img {
+            display: block;
+
+            max-width: 100%;
+            height: auto;
+            margin: 1.4em auto;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+
+            box-shadow: var(--shadow);
+        }
+
+        .markdown-content table {
+            width: 100%;
+            margin: 1.3em 0;
+
+            overflow: hidden;
+            border-collapse: separate;
+            border-spacing: 0;
+
+            border: 1px solid var(--border);
+            border-radius: var(--radius-medium);
+        }
+
+        .markdown-content th,
+        .markdown-content td {
+            padding: 11px 13px;
+            text-align: left;
+            vertical-align: top;
+
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .markdown-content th {
+            color: var(--text);
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .markdown-content td {
+            color: var(--text-secondary);
+            background: rgba(0, 0, 0, 0.10);
+        }
+
+        .markdown-content tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .markdown-content th:last-child,
+        .markdown-content td:last-child {
+            border-right: 0;
+        }
+
+        .markdown-content input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin-right: 6px;
+            accent-color: var(--accent);
+            vertical-align: -2px;
+        }
+
+        .back-to-top {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 800;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            width: 42px;
+            height: 42px;
+
+            color: var(--text);
+            font-size: 20px;
+
+            background: rgba(40, 40, 40, 0.86);
+            border: 1px solid var(--border);
+            border-radius: 50%;
+
+            box-shadow: var(--shadow);
+
+            opacity: 0;
+            pointer-events: none;
+
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+
+            transition:
+                opacity 150ms ease,
+                background 150ms ease,
+                transform 150ms ease;
+        }
+
+        .back-to-top.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .back-to-top:hover {
+            color: var(--text);
+            text-decoration: none;
+            background: var(--surface-active);
+            transform: translateY(-2px);
+        }
+
+        .overlay {
+            position: fixed;
+            inset: var(--header-height) 0 0 0;
+            z-index: 850;
+
+            display: none;
+
+            background: rgba(0, 0, 0, 0.48);
+            backdrop-filter: blur(3px);
+            -webkit-backdrop-filter: blur(3px);
+        }
+
+        ::selection {
+            color: #000000;
+            background: var(--accent);
+        }
+
+        ::-webkit-scrollbar {
+            width: 12px;
+            height: 12px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.16);
+            border: 3px solid transparent;
+            border-radius: 999px;
+            background-clip: padding-box;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+
+        @media print {
+            :root {
+                color-scheme: light;
+            }
+
+            body {
+                color: #111111;
+                background: #ffffff;
+            }
+
+            .app-header,
+            .toc,
+            .overlay,
+            .back-to-top {
+                display: none !important;
+            }
+
+            .app-main {
+                margin: 0;
+                padding: 0;
+            }
+
+            .hero,
+            .markdown-document {
+                color: #111111;
+                background: #ffffff;
+                border: 1px solid #dddddd;
+                box-shadow: none;
+            }
+
+            .markdown-content p,
+            .markdown-content li,
+            .markdown-content td {
+                color: #222222;
+            }
+
+            .markdown-content h1,
+            .markdown-content h2,
+            .markdown-content h3,
+            .markdown-content h4,
+            .markdown-content h5,
+            .markdown-content h6,
+            .markdown-content strong {
+                color: #111111;
+            }
+
+            .markdown-content pre {
+                white-space: pre-wrap;
+                background: #f5f5f5;
+                border-color: #dddddd;
+            }
+
+            .markdown-content pre code {
+                color: #111111;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .toc {
+                width: min(88vw, 340px);
+                transform: translateX(-105%);
+                box-shadow: var(--shadow);
+            }
+
+            .toc.open {
+                transform: translateX(0);
+            }
+
+            .toc-close {
+                display: inline-flex;
+            }
+
+            .overlay.visible {
+                display: block;
+            }
+
+            .app-main {
+                margin-left: 0;
+                padding-right: 18px;
+                padding-left: 18px;
+            }
+
+            .header-button-label {
+                display: none;
+            }
+
+            .markdown-content {
+                padding: 24px 20px;
+            }
+        }
+
+        @media (max-width: 540px) {
+            .app-header {
+                padding: 0 12px;
+            }
+
+            .app-subtitle {
+                display: none;
+            }
+
+            .hero {
+                padding: 23px 20px;
+            }
+
+            .document-header {
+                padding: 16px;
+            }
+
+            .document-number {
+                width: 38px;
+                height: 38px;
+            }
+
+            .markdown-content {
+                padding: 22px 16px;
+            }
+
+            .markdown-content h1 {
+                font-size: 25px;
+            }
+
+            .markdown-content h2 {
+                font-size: 21px;
+            }
+
+            .back-to-top {
+                right: 16px;
+                bottom: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="app-header">
+        <button
+            class="menu-button"
+            type="button"
+            onclick="toggleNavigation()"
+            aria-label="Navigation öffnen"
+            title="Navigation"
+        >
+            ☰
+        </button>
+
+        <div class="app-title-area">
+            <div class="app-title">
+                NPSPEC QUANTIZATION 0001
+            </div>
+
+            <div class="app-subtitle">
+                C:\recoverboot\nova-os\docs\NPSPEC\Nova Compute Platform
+            </div>
+        </div>
+
+        <div class="header-actions">
+            <button
+                class="header-button"
+                type="button"
+                onclick="window.print()"
+                title="Dokument drucken"
+            >
+                <span>⎙</span>
+                <span class="header-button-label">
+                    Drucken
+                </span>
+            </button>
+        </div>
+    </header>
+
+    <nav class="toc" id="toc">
+<div class="toc-header">
+<div class="toc-title">Inhaltsverzeichnis</div>
+<button class="toc-close" type="button" onclick="toggleNavigation()" aria-label="Navigation schließen">
+×
+</button>
+</div>
+<div class="toc-content">
+
+            <div class="toc-document">
+                <a class="toc-document-link" href="#document-npspec-quantization-0001-md">
+                    <span class="toc-document-icon">▤</span>
+                    <span>NPSPEC QUANTIZATION 0001</span>
+                </a>
+            
+<div class="toc-headings">
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#npspec-quantization-0001"
+                    >
+                        NPSPEC-QUANTIZATION-0001
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#universal-ai-quantization-framework"
+                    >
+                        Universal AI Quantization Framework
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#1-zweck"
+                    >
+                        1. Zweck
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#2-ziele"
+                    >
+                        2. Ziele
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#3-gesamtarchitektur"
+                    >
+                        3. Gesamtarchitektur
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#4-quantization-pipeline"
+                    >
+                        4. Quantization Pipeline
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#5-unterstutzte-datentypen"
+                    >
+                        5. Unterstützte Datentypen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#floating-point"
+                    >
+                        Floating Point
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#integer"
+                    >
+                        Integer
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#gguf-quantisierung"
+                    >
+                        GGUF Quantisierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#spezialformate"
+                    >
+                        Spezialformate
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#6-quantisierungsverfahren"
+                    >
+                        6. Quantisierungsverfahren
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#post-training-quantization-ptq"
+                    >
+                        Post Training Quantization (PTQ)
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#quantization-aware-training-qat"
+                    >
+                        Quantization Aware Training (QAT)
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#7-kalibrierung"
+                    >
+                        7. Kalibrierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#8-skalierung"
+                    >
+                        8. Skalierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#9-unterstutzte-algorithmen"
+                    >
+                        9. Unterstützte Algorithmen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#10-tensor-runtime"
+                    >
+                        10. Tensor Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#11-hardware-runtime"
+                    >
+                        11. Hardware Runtime
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#cpu"
+                    >
+                        CPU
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#gpu"
+                    >
+                        GPU
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#npu"
+                    >
+                        NPU
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-2"
+                        href="#fpga"
+                    >
+                        FPGA
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#12-accuracy-evaluation"
+                    >
+                        12. Accuracy Evaluation
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#13-benchmarking"
+                    >
+                        13. Benchmarking
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#14-automatische-optimierung"
+                    >
+                        14. Automatische Optimierung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#15-sicherheit"
+                    >
+                        15. Sicherheit
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#16-reflection"
+                    >
+                        16. Reflection
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#17-offentliche-api"
+                    >
+                        17. Öffentliche API
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#18-integration"
+                    >
+                        18. Integration
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#19-testanforderungen"
+                    >
+                        19. Testanforderungen
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#20-roadmap"
+                    >
+                        20. Roadmap
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#21-zusammenfassung"
+                    >
+                        21. Zusammenfassung
+                    </a>
+                    
+
+                    <a
+                        class="toc-heading toc-level-1"
+                        href="#anhang-a-langfristige-vision"
+                    >
+                        Anhang A – Langfristige Vision
+                    </a>
+                    
+</div>
+</div>
+</div>
+</nav>
+
+    <div
+        class="overlay"
+        id="overlay"
+        onclick="closeNavigation()"
+    ></div>
+
+    <main class="app-main" id="top">
+        <div class="content-container">
+            <section class="hero">
+                <div class="hero-label">
+                    Markdown-Dokumentation
+                </div>
+
+                <h1>
+                    NPSPEC QUANTIZATION 0001
+                </h1>
+
+                <p class="hero-description">
+                    Zusammengeführte HTML-Dokumentation aus
+                    1 Markdown-Dateien.
+                </p>
+
+                <div class="hero-meta">
+                    <span class="meta-item">
+                        1 Dokumente
+                    </span>
+
+                    <span class="meta-item">
+                        Fluent Dark
+                    </span>
+
+                    <span class="meta-item">
+                        Einzelne HTML-Datei
+                    </span>
+                </div>
+            </section>
+
+            
+            <article class="markdown-document" id="document-npspec-quantization-0001-md">
+                <header class="document-header">
+                    <div class="document-number">
+                        01
+                    </div>
+
+                    <div class="document-title-area">
+                        <h1 class="document-title">
+                            NPSPEC QUANTIZATION 0001
+                        </h1>
+
+                        <div class="document-path">
+                            NPSPEC-QUANTIZATION-0001.md
+                        </div>
+                    </div>
+                </header>
+
+                <div class="markdown-content">
+                    <h1 id="npspec-quantization-0001">NPSPEC-QUANTIZATION-0001</h1>
+<h1 id="universal-ai-quantization-framework">Universal AI Quantization Framework</h1>
+<table>
+<thead>
+<tr>
+<th>Feld</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dokument</td>
+<td>NPSPEC-QUANTIZATION-0001</td>
+</tr>
+<tr>
+<td>Titel</td>
+<td>Universal AI Quantization Framework</td>
+</tr>
+<tr>
+<td>Version</td>
+<td>1.0.0 Draft</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Draft</td>
+</tr>
+<tr>
+<td>Kategorie</td>
+<td>System Specification</td>
+</tr>
+<tr>
+<td>Bereich</td>
+<td>Nova Compute Platform</td>
+</tr>
+<tr>
+<td>Übergeordnet</td>
+<td>NPSPEC-ML-0001</td>
+</tr>
+<tr>
+<td>Abhängigkeiten</td>
+<td>NPSPEC-TRAINING-0001, NPSPEC-INFERENCE-0001, NPSPEC-ONNX-0001, NPSPEC-GGUF-0001, NPSPEC-TENSOR-0001, NPSPEC-MATRIX-0001, NPSPEC-STATS-0001, NPSPEC-PROBABILITY-0001</td>
+</tr>
+<tr>
+<td>Letzte Änderung</td>
+<td>2026-07-14</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h1 id="1-zweck">1. Zweck</h1>
+<p>Das <strong>Universal AI Quantization Framework</strong> definiert die vollständige Infrastruktur zur Reduzierung der numerischen Präzision von KI-Modellen innerhalb der Nova Compute Platform.</p>
+<p>Ziel ist es, Speicherbedarf, Energieverbrauch und Inferenzlatenz erheblich zu reduzieren, ohne die Modellqualität unnötig zu verschlechtern.</p>
+<p>Das Framework unterstützt</p>
+<ul>
+<li>Large Language Models</li>
+<li>Vision Models</li>
+<li>Speech Models</li>
+<li>Multimodale Modelle</li>
+<li>Reinforcement Learning</li>
+<li>Scientific AI</li>
+<li>Robotics AI</li>
+<li>Foundation Models</li>
+<li>NovaAI Modelle</li>
+</ul>
+<p>Es integriert sowohl klassische Quantisierung als auch moderne Quantisierungsverfahren für Training und Inferenz. Quantisierung reduziert Speicher- und Rechenaufwand durch niedrigpräzise Gewichte und Aktivierungen und gehört heute zu den wichtigsten Optimierungstechniken moderner KI-Systeme. :contentReference[oaicite:0]{index=0}</p>
+<hr>
+<h1 id="2-ziele">2. Ziele</h1>
+<p>Das Framework soll</p>
+<ul>
+<li>maximale Modellkompression ermöglichen</li>
+<li>Inferenz beschleunigen</li>
+<li>Energieverbrauch reduzieren</li>
+<li>Genauigkeit möglichst erhalten</li>
+<li>Hardware automatisch auswählen</li>
+<li>Quantisierung automatisieren</li>
+<li>Reflection unterstützen</li>
+<li>reproduzierbare Ergebnisse liefern</li>
+<li>Offlinebetrieb unterstützen</li>
+</ul>
+<hr>
+<h1 id="3-gesamtarchitektur">3. Gesamtarchitektur</h1>
+<div class="codehilite"><pre><span></span><code>Quantization Framework
+
+├── Model Analyzer
+├── Calibration Engine
+├── Quantization Engine
+├── QAT Runtime
+├── PTQ Runtime
+├── Quantization Optimizer
+├── Accuracy Evaluator
+├── Hardware Profiler
+├── Tensor Converter
+├── Model Validator
+├── Quantized Runtime
+├── Reflection
+├── Benchmark Engine
+└── Runtime
+</code></pre></div>
+
+<hr>
+<h1 id="4-quantization-pipeline">4. Quantization Pipeline</h1>
+<div class="codehilite"><pre><span></span><code>Model
+
+↓
+
+Analysis
+
+↓
+
+Calibration
+
+↓
+
+Quantization Strategy
+
+↓
+
+Tensor Conversion
+
+↓
+
+Validation
+
+↓
+
+Benchmark
+
+↓
+
+Accuracy Evaluation
+
+↓
+
+Deployment
+</code></pre></div>
+
+<hr>
+<h1 id="5-unterstutzte-datentypen">5. Unterstützte Datentypen</h1>
+<h2 id="floating-point">Floating Point</h2>
+<ul>
+<li>FP64</li>
+<li>FP32</li>
+<li>TF32</li>
+<li>BF16</li>
+<li>FP16</li>
+<li>FP8</li>
+</ul>
+<hr>
+<h2 id="integer">Integer</h2>
+<ul>
+<li>INT32</li>
+<li>INT16</li>
+<li>INT8</li>
+<li>INT4</li>
+<li>INT2</li>
+<li>INT1</li>
+</ul>
+<hr>
+<h2 id="gguf-quantisierung">GGUF Quantisierung</h2>
+<ul>
+<li>Q2_K</li>
+<li>Q3_K</li>
+<li>Q4_K</li>
+<li>Q5_K</li>
+<li>Q6_K</li>
+<li>Q8_K</li>
+<li>IQ1</li>
+<li>IQ2</li>
+<li>IQ3</li>
+<li>IQ4</li>
+</ul>
+<hr>
+<h2 id="spezialformate">Spezialformate</h2>
+<ul>
+<li>NF4</li>
+<li>MXFP4</li>
+<li>Binary Networks</li>
+<li>Ternary Networks</li>
+</ul>
+<hr>
+<h1 id="6-quantisierungsverfahren">6. Quantisierungsverfahren</h1>
+<h2 id="post-training-quantization-ptq">Post Training Quantization (PTQ)</h2>
+<p>Unterstützt</p>
+<ul>
+<li>Static PTQ</li>
+<li>Dynamic PTQ</li>
+<li>Weight Only Quantization</li>
+<li>Activation Quantization</li>
+</ul>
+<p>PTQ benötigt lediglich ein trainiertes Modell und optional Kalibrierungsdaten. :contentReference[oaicite:1]{index=1}</p>
+<hr>
+<h2 id="quantization-aware-training-qat">Quantization Aware Training (QAT)</h2>
+<p>Unterstützt</p>
+<ul>
+<li>Fake Quantization</li>
+<li>Gradient Simulation</li>
+<li>Fine Tuning</li>
+<li>Mixed Precision Training</li>
+</ul>
+<p>QAT simuliert Quantisierung bereits während des Trainings und erzielt häufig höhere Genauigkeit als PTQ. :contentReference[oaicite:2]{index=2}</p>
+<hr>
+<h1 id="7-kalibrierung">7. Kalibrierung</h1>
+<p>Unterstützt</p>
+<ul>
+<li>Min/Max</li>
+<li>Entropy</li>
+<li>KL Divergence</li>
+<li>Percentile</li>
+<li>Histogram</li>
+<li>Representative Dataset</li>
+</ul>
+<hr>
+<h1 id="8-skalierung">8. Skalierung</h1>
+<p>Unterstützt</p>
+<ul>
+<li>Per Tensor</li>
+<li>Per Channel</li>
+<li>Per Group</li>
+<li>Block Wise</li>
+<li>Symmetric</li>
+<li>Asymmetric</li>
+</ul>
+<hr>
+<h1 id="9-unterstutzte-algorithmen">9. Unterstützte Algorithmen</h1>
+<ul>
+<li>GPTQ</li>
+<li>AWQ</li>
+<li>SmoothQuant</li>
+<li>QLoRA</li>
+<li>AQLM</li>
+<li>NF4</li>
+<li>GGUF Quantization</li>
+<li>Binary Quantization</li>
+<li>Adaptive Quantization</li>
+</ul>
+<p>Frameworks wie Hugging Face unterstützen unter anderem GPTQ, AWQ, NF4 und QLoRA für effiziente LLM-Bereitstellung. :contentReference[oaicite:3]{index=3}</p>
+<hr>
+<h1 id="10-tensor-runtime">10. Tensor Runtime</h1>
+<p>Unterstützt</p>
+<ul>
+<li>automatische Typkonvertierung</li>
+<li>Zero Copy</li>
+<li>Tensor Sharing</li>
+<li>Tensor Fusion</li>
+<li>Memory Mapping</li>
+<li>Lazy Allocation</li>
+</ul>
+<hr>
+<h1 id="11-hardware-runtime">11. Hardware Runtime</h1>
+<h2 id="cpu">CPU</h2>
+<ul>
+<li>x86</li>
+<li>ARM</li>
+<li>RISC-V</li>
+</ul>
+<hr>
+<h2 id="gpu">GPU</h2>
+<ul>
+<li>CUDA</li>
+<li>ROCm</li>
+<li>Vulkan Compute</li>
+<li>DirectML</li>
+<li>Metal</li>
+</ul>
+<hr>
+<h2 id="npu">NPU</h2>
+<ul>
+<li>Intel</li>
+<li>Qualcomm</li>
+<li>AMD</li>
+<li>Apple</li>
+</ul>
+<hr>
+<h2 id="fpga">FPGA</h2>
+<ul>
+<li>AMD/Xilinx</li>
+<li>Intel FPGA</li>
+</ul>
+<hr>
+<h1 id="12-accuracy-evaluation">12. Accuracy Evaluation</h1>
+<p>Berechnet</p>
+<ul>
+<li>Accuracy</li>
+<li>Precision</li>
+<li>Recall</li>
+<li>F1</li>
+<li>BLEU</li>
+<li>ROUGE</li>
+<li>Perplexity</li>
+<li>PSNR</li>
+<li>SSIM</li>
+<li>Quantization Error</li>
+</ul>
+<hr>
+<h1 id="13-benchmarking">13. Benchmarking</h1>
+<p>Misst</p>
+<ul>
+<li>Speicherbedarf</li>
+<li>Modellgröße</li>
+<li>Latenz</li>
+<li>Tokens/s</li>
+<li>Samples/s</li>
+<li>Energieverbrauch</li>
+<li>CPU-Auslastung</li>
+<li>GPU-Auslastung</li>
+<li>VRAM</li>
+<li>RAM</li>
+</ul>
+<hr>
+<h1 id="14-automatische-optimierung">14. Automatische Optimierung</h1>
+<p>Unterstützt</p>
+<ul>
+<li>Layeranalyse</li>
+<li>Sensitivitätsanalyse</li>
+<li>automatische Bitbreitenwahl</li>
+<li>gemischte Präzision</li>
+<li>Layer-Ausnahmen</li>
+<li>Hardwareoptimierung</li>
+</ul>
+<hr>
+<h1 id="15-sicherheit">15. Sicherheit</h1>
+<p>Unterstützt</p>
+<ul>
+<li>Modellvalidierung</li>
+<li>Hashprüfung</li>
+<li>Signierte Modelle</li>
+<li>Audit Logs</li>
+<li>Rollback</li>
+<li>reproduzierbare Quantisierung</li>
+</ul>
+<hr>
+<h1 id="16-reflection">16. Reflection</h1>
+<p>Abfragbar</p>
+<ul>
+<li>Quantisierungstyp</li>
+<li>Bitbreite</li>
+<li>Layerstatistik</li>
+<li>Kompressionsrate</li>
+<li>Modellgröße</li>
+<li>Genauigkeitsverlust</li>
+<li>Hardwarebackend</li>
+<li>Speicherverbrauch</li>
+<li>Laufzeit</li>
+</ul>
+<hr>
+<h1 id="17-offentliche-api">17. Öffentliche API</h1>
+<div class="codehilite"><pre><span></span><code><span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantize_model</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_model_t</span><span class="o">*</span><span class="w"> </span><span class="n">model</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_quantization_config_t</span><span class="o">*</span><span class="w"> </span><span class="n">config</span><span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantize_validate</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_model_t</span><span class="o">*</span><span class="w"> </span><span class="n">model</span><span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantize_benchmark</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_model_t</span><span class="o">*</span><span class="w"> </span><span class="n">model</span><span class="p">,</span>
+<span class="w">    </span><span class="n">nova_benchmark_result_t</span><span class="o">*</span><span class="w"> </span><span class="n">result</span><span class="p">);</span>
+
+<span class="n">nova_result_t</span><span class="w"> </span><span class="nf">nova_quantize_export</span><span class="p">(</span>
+<span class="w">    </span><span class="n">nova_model_t</span><span class="o">*</span><span class="w"> </span><span class="n">model</span><span class="p">,</span>
+<span class="w">    </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">filename</span><span class="p">);</span>
+</code></pre></div>
+
+<hr>
+<h1 id="18-integration">18. Integration</h1>
+<p>Das Framework integriert sich vollständig mit</p>
+<ul>
+<li>Machine Learning Runtime</li>
+<li>Training Framework</li>
+<li>Inference Framework</li>
+<li>ONNX Runtime</li>
+<li>GGUF Runtime</li>
+<li>Tensor Framework</li>
+<li>AI Compute Runtime</li>
+<li>Nova Robotics</li>
+<li>Nova OS</li>
+</ul>
+<hr>
+<h1 id="19-testanforderungen">19. Testanforderungen</h1>
+<ul>
+<li>PTQ</li>
+<li>QAT</li>
+<li>Layeranalyse</li>
+<li>Genauigkeitsvergleich</li>
+<li>Hardwaretests</li>
+<li>Reflection</li>
+<li>Benchmark</li>
+<li>API-Tests</li>
+<li>Langzeittests</li>
+</ul>
+<hr>
+<h1 id="20-roadmap">20. Roadmap</h1>
+<ul>
+<li>NPSPEC-PTQ-0001</li>
+<li>NPSPEC-QAT-0001</li>
+<li>NPSPEC-GPTQ-0001</li>
+<li>NPSPEC-AWQ-0001</li>
+<li>NPSPEC-SMOOTHQUANT-0001</li>
+<li>NPSPEC-MIXEDPRECISION-0001</li>
+<li>NPSPEC-CALIBRATION-0001</li>
+<li>NPSPEC-LAYERANALYZER-0001</li>
+<li>NPSPEC-QUANTBENCH-0001</li>
+<li>NPSPEC-QUANTSDK-0001</li>
+</ul>
+<hr>
+<h1 id="21-zusammenfassung">21. Zusammenfassung</h1>
+<p>Das <strong>Universal AI Quantization Framework</strong> bildet die zentrale Optimierungsplattform für KI-Modelle innerhalb der Nova Compute Platform.</p>
+<p>Es vereint Post-Training-Quantisierung, Quantization-Aware-Training, moderne LLM-Verfahren wie GPTQ, AWQ und QLoRA sowie automatische Hardwareoptimierung in einer gemeinsamen Architektur. Dadurch können Modelle deutlich kompakter, schneller und energieeffizienter ausgeführt werden, ohne auf Portabilität oder wissenschaftliche Reproduzierbarkeit zu verzichten.</p>
+<hr>
+<h1 id="anhang-a-langfristige-vision">Anhang A – Langfristige Vision</h1>
+<p>Das <strong>Universal AI Quantization Framework</strong> soll langfristig sämtliche Quantisierungstechnologien unter einer einheitlichen Runtime vereinen.</p>
+<p>Langfristige Ziele:</p>
+<ul>
+<li>automatische Auswahl des optimalen Quantisierungsverfahrens</li>
+<li>adaptive Bitbreiten pro Layer</li>
+<li>hardwareabhängige Laufzeitoptimierung</li>
+<li>KI-gestützte Quantisierungsempfehlungen</li>
+<li>Online-Requantisierung während der Inferenz</li>
+<li>gemeinsame Quantisierung für Multi-Agent-Systeme</li>
+<li>Exascale-HPC-Unterstützung</li>
+<li>vollständige Integration mit Nova AI Runtime</li>
+<li>automatische Modellkompression vor Deployment</li>
+<li>universelle Unterstützung zukünftiger Quantisierungsverfahren</li>
+</ul>
+<p>Damit bildet das Framework die zentrale Optimierungsschicht der Nova Compute Platform und sorgt dafür, dass KI-Modelle auf Embedded-Systemen, Desktop-Rechnern, Robotern und Hochleistungsclustern mit maximaler Effizienz betrieben werden können. Moderne Frameworks kombinieren hierfür PTQ, QAT, hardwareabhängige Optimierungen und gemischte Präzision, um den besten Kompromiss zwischen Geschwindigkeit, Speicherbedarf und Genauigkeit zu erreichen. :contentReference[oaicite:4]{index=4}</p>
+                </div>
+            </article>
+            
+        </div>
+    </main>
+
+    <a
+        class="back-to-top"
+        id="backToTop"
+        href="#top"
+        title="Nach oben"
+        aria-label="Nach oben"
+    >
+        ↑
+    </a>
+
+    <script>
+        const navigation = document.getElementById("toc");
+        const overlay = document.getElementById("overlay");
+        const backToTop = document.getElementById("backToTop");
+
+        function toggleNavigation() {
+            navigation.classList.toggle("open");
+            overlay.classList.toggle("visible");
+        }
+
+        function closeNavigation() {
+            navigation.classList.remove("open");
+            overlay.classList.remove("visible");
+        }
+
+        document.querySelectorAll(".toc a").forEach((link) => {
+            link.addEventListener("click", () => {
+                if (window.innerWidth <= 900) {
+                    closeNavigation();
+                }
+            });
+        });
+
+        window.addEventListener("scroll", () => {
+            if (window.scrollY > 500) {
+                backToTop.classList.add("visible");
+            } else {
+                backToTop.classList.remove("visible");
+            }
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                closeNavigation();
+            }
+        });
+    </script>
+</body>
+</html>

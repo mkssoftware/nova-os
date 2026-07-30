@@ -1,0 +1,27 @@
+NASM ?= nasm
+BUILD_DIR ?= build
+
+NASM_FLAGS := -Wall -Werror -w-reloc-abs-dword \
+	-I../boot/bootloader/include/
+
+KERNEL_SOURCE := arch/x86_64/entry32.asm
+KERNEL_BINARY := $(BUILD_DIR)/kernel.bin
+LAYOUT_INCLUDE := ../boot/bootloader/include/layout.inc
+ART_INCLUDE := ../boot/bootloader/include/nova-art.inc
+
+.PHONY: all clean verify
+
+all: $(KERNEL_BINARY) verify
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+$(KERNEL_BINARY): $(KERNEL_SOURCE) $(LAYOUT_INCLUDE) $(ART_INCLUDE) | $(BUILD_DIR)
+	$(NASM) $(NASM_FLAGS) -f bin $< -o $@
+
+verify: $(KERNEL_BINARY)
+	test "$$(wc -c < $(KERNEL_BINARY))" -gt 0
+	test "$$(wc -c < $(KERNEL_BINARY))" -le 40960
+
+clean:
+	rm -f $(KERNEL_BINARY)
