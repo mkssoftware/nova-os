@@ -1,0 +1,20 @@
+NOVA: Kernel Entry
+NOVA: Panic Reporter ABI 1.0 bereit
+NOVA: NBHP/BIB v1 validiert
+NOVA: PMM ABI 1.0 und Seitentest bereit
+NOVA: Heap ABI 1.0 und Schreibtest bereit
+NOVA: Object Manager ABI 1.0 bereit
+NOVA: Component Manager ABI 1.0 bereit
+NOVA: Paging ABI 1.0 und Speichertest bereit
+NOVA: IDT, PIC und PIT 100 Hz aktiv
+NOVA: IPC ABI 1.0 FIFO bereit
+NOVA: Service Manager ABI 1.0 bereit
+NOVA: Process Manager ABI 1.0 bereit
+NOVA: Security ABI 1.0 Capabilities aktiv
+NOVA: Thread Manager ABI 1.0 bereit
+NOVA: Scheduler ABI 1.0 und zwei Threads aktiv
+NOVA: Kernel Context und Framebuffer aktiv
+NOVA_KERNEL_READY
+NOVA PANIC REPORT code=0xDEB60001 subsystem=0x0000DEB6 eip=0x00101F6A cr2=0x00000000
+NOVA PANIC: manueller F12-Diagnosetest
+NOVA_PANIC_HALTED

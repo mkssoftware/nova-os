@@ -1,0 +1,1080 @@
+     1                                  ; Nova Boot Manager - BIOS Stage 2
+     2                                  ; Referenzimplementierung für NKI v1 und NBHP/BIB v1.
+     3                                  
+     4                                  %include "layout.inc"
+     1                              <1> ; Gemeinsames physisches Speicher- und Datenträgerlayout des BIOS-Bootpfads.
+     2                              <1> ; Änderungen an diesen Konstanten müssen zusammen mit Image Builder,
+     3                              <1> ; Kernel-Linkerskript und BootInfo-ABI erfolgen.
+     4                              <1> 
+     5                              <1> %ifndef NOVA_BOOT_LAYOUT_INC
+     6                              <1> %define NOVA_BOOT_LAYOUT_INC
+     7                              <1> 
+     8                              <1> ; Datenträgerlayout
+     9                              <1> STAGE2_FIRST_SECTOR        equ 2
+    10                              <1> STAGE2_SECTOR_COUNT        equ 16
+    11                              <1> STAGE2_BYTE_COUNT          equ STAGE2_SECTOR_COUNT * 512
+    12                              <1> KERNEL_FIRST_LBA           equ 17
+    13                              <1> KERNEL_PAYLOAD_MAX_SIZE    equ 32768
+    14                              <1> NKI_HEADER_SIZE            equ 64
+    15                              <1> KERNEL_IMAGE_SECTOR_COUNT  equ 65
+    16                              <1> KERNEL_IMAGE_BYTE_COUNT    equ KERNEL_IMAGE_SECTOR_COUNT * 512
+    17                              <1> 
+    18                              <1> DISK_RETRY_COUNT           equ 3
+    19                              <1> 
+    20                              <1> ; Physisches Speicherlayout unterhalb von 1 MiB
+    21                              <1> BOOT_INFO_ADDRESS          equ 0x00005000
+    22                              <1> BOOT_INFO_CAPACITY         equ 0x00000800
+    23                              <1> MEMORY_MAP_ADDRESS         equ 0x00005800
+    24                              <1> MEMORY_MAP_ENTRY_SIZE      equ 24
+    25                              <1> MEMORY_MAP_MAX_ENTRIES     equ 64
+    26                              <1> VBE_MODE_INFO_ADDRESS      equ 0x00006000
+    27                              <1> STAGE2_STACK_TOP           equ 0x00007800
+    28                              <1> STAGE1_STACK_TOP           equ 0x00007C00
+    29                              <1> STAGE2_LOAD_ADDRESS        equ 0x00007E00
+    30                              <1> 
+    31                              <1> KERNEL_TEMP_SEGMENT        equ 0x1000
+    32                              <1> KERNEL_TEMP_OFFSET         equ 0x0000
+    33                              <1> KERNEL_TEMP_ADDRESS        equ 0x00010000
+    34                              <1> 
+    35                              <1> ; 32-Bit-Kernel
+    36                              <1> KERNEL_ENTRY_ADDRESS       equ 0x00100000
+    37                              <1> KERNEL_STACK_TOP           equ 0x00090000
+    38                              <1> 
+    39                              <1> ; Protected-Mode-Segmente
+    40                              <1> CODE_SEGMENT               equ 0x08
+    41                              <1> DATA_SEGMENT               equ 0x10
+    42                              <1> 
+    43                              <1> ; Grafik
+    44                              <1> ; QEMU/Bochs VBE: 800 x 600 x 32 Bit mit linearem Framebuffer.
+    45                              <1> ; Der klassische Modus 0x118 besitzt nur 24 Bit und darf nicht als
+    46                              <1> ; BGRX8888 an den Kernel übergeben werden.
+    47                              <1> VBE_REQUESTED_MODE         equ 0x0143
+    48                              <1> NOVA_PIXEL_FORMAT_BGRX8888 equ 1
+    49                              <1> 
+    50                              <1> ; Nova Kernel Image v1 (NKI)
+    51                              <1> NKI_MAGIC_LOW              equ 0x41564F4E ; "NOVA"
+    52                              <1> NKI_MAGIC_HIGH             equ 0x00494B4E ; "NKI\0"
+    53                              <1> NKI_VERSION                equ 1
+    54                              <1> NKI_ARCH_X86_32            equ 1
+    55                              <1> NKI_COMPRESSION_NONE       equ 0
+    56                              <1> 
+    57                              <1> NKI_OFF_MAGIC_LOW          equ 0
+    58                              <1> NKI_OFF_MAGIC_HIGH         equ 4
+    59                              <1> NKI_OFF_VERSION            equ 8
+    60                              <1> NKI_OFF_HEADER_SIZE        equ 12
+    61                              <1> NKI_OFF_ARCHITECTURE       equ 16
+    62                              <1> NKI_OFF_FLAGS              equ 20
+    63                              <1> NKI_OFF_ENTRY_POINT        equ 24
+    64                              <1> NKI_OFF_LOAD_ADDRESS       equ 28
+    65                              <1> NKI_OFF_IMAGE_SIZE         equ 32
+    66                              <1> NKI_OFF_COMPRESSION        equ 36
+    67                              <1> NKI_OFF_CRC32              equ 40
+    68                              <1> NKI_OFF_BUILD_ID           equ 44
+    69                              <1> 
+    70                              <1> ; Boot Information Block (BIB) v1
+    71                              <1> NOVA_BIB_MAGIC_LOW         equ 0x5048424E ; "NBHP"
+    72                              <1> NOVA_BIB_MAGIC_HIGH        equ 0x00424942 ; "BIB\0"
+    73                              <1> NOVA_BIB_VERSION_MAJOR     equ 1
+    74                              <1> NOVA_BIB_VERSION_MINOR     equ 0
+    75                              <1> NOVA_BIB_VERSION_PATCH     equ 0
+    76                              <1> NOVA_BIB_HEADER_SIZE       equ 32
+    77                              <1> NOVA_X86_BOOT_MAGIC        equ 0x4E4F5641
+    78                              <1> NOVA_BOOT_PLATFORM_BIOS    equ 1
+    79                              <1> NOVA_BOOT_FLAG_FRAMEBUFFER equ 0x00000001
+    80                              <1> 
+    81                              <1> BIB_OFF_MAGIC_LOW          equ 0
+    82                              <1> BIB_OFF_MAGIC_HIGH         equ 4
+    83                              <1> BIB_OFF_VERSION_MAJOR      equ 8
+    84                              <1> BIB_OFF_VERSION_MINOR      equ 10
+    85                              <1> BIB_OFF_VERSION_PATCH      equ 12
+    86                              <1> BIB_OFF_HEADER_SIZE        equ 14
+    87                              <1> BIB_OFF_TOTAL_SIZE         equ 16
+    88                              <1> BIB_OFF_CHECKSUM           equ 20
+    89                              <1> BIB_OFF_ARCHITECTURE       equ 24
+    90                              <1> BIB_OFF_FLAGS              equ 28
+    91                              <1> 
+    92                              <1> BIB_TLV_HEADER_SIZE        equ 8
+    93                              <1> BIB_TLV_FIRMWARE           equ 1
+    94                              <1> BIB_TLV_MEMORY             equ 3
+    95                              <1> BIB_TLV_GRAPHICS           equ 4
+    96                              <1> BIB_TLV_KERNEL             equ 6
+    97                              <1> BIB_TLV_SECURITY           equ 7
+    98                              <1> BIB_TLV_BOOT_OPTIONS       equ 9
+    99                              <1> 
+   100                              <1> BIB_FIRMWARE_SIZE          equ 16
+   101                              <1> BIB_MEMORY_SIZE            equ 16
+   102                              <1> BIB_GRAPHICS_SIZE          equ 32
+   103                              <1> BIB_KERNEL_SIZE            equ 32
+   104                              <1> BIB_SECURITY_SIZE          equ 16
+   105                              <1> BIB_BOOT_OPTIONS_SIZE      equ 16
+   106                              <1> 
+   107                              <1> %endif
+     5                                  
+     6                                  [org STAGE2_LOAD_ADDRESS]
+     7                                  [bits 16]
+     8                                  
+     9                                  BIB_FIRMWARE_OFFSET     equ NOVA_BIB_HEADER_SIZE
+    10                                  BIB_MEMORY_OFFSET       equ BIB_FIRMWARE_OFFSET + BIB_TLV_HEADER_SIZE + BIB_FIRMWARE_SIZE
+    11                                  BIB_GRAPHICS_OFFSET     equ BIB_MEMORY_OFFSET + BIB_TLV_HEADER_SIZE + BIB_MEMORY_SIZE
+    12                                  BIB_KERNEL_OFFSET       equ BIB_GRAPHICS_OFFSET + BIB_TLV_HEADER_SIZE + BIB_GRAPHICS_SIZE
+    13                                  BIB_SECURITY_OFFSET     equ BIB_KERNEL_OFFSET + BIB_TLV_HEADER_SIZE + BIB_KERNEL_SIZE
+    14                                  BIB_OPTIONS_OFFSET      equ BIB_SECURITY_OFFSET + BIB_TLV_HEADER_SIZE + BIB_SECURITY_SIZE
+    15                                  BIB_TOTAL_SIZE          equ BIB_OPTIONS_OFFSET + BIB_TLV_HEADER_SIZE + BIB_BOOT_OPTIONS_SIZE
+    16                                  
+    17                                  stage2_start:
+    18 00000000 FA                          cli
+    19 00000001 31C0                        xor ax, ax
+    20 00000003 8ED8                        mov ds, ax
+    21 00000005 8EC0                        mov es, ax
+    22 00000007 8ED0                        mov ss, ax
+    23 00000009 BC0078                      mov sp, STAGE2_STACK_TOP
+    24 0000000C FC                          cld
+    25 0000000D FB                          sti
+    26                                  
+    27 0000000E 8816[300B]                  mov [boot_drive], dl
+    28 00000012 BE[4C0B]                    mov si, message_start
+    29 00000015 E8F60A                      call print_string
+    30                                  
+    31 00000018 E81800                      call initialize_bib
+    32 0000001B E8DD00                      call collect_memory_map
+    33 0000001E E84301                      call initialize_vbe
+    34 00000021 E8DB01                      call load_kernel_image
+    35 00000024 E8E202                      call validate_kernel_image
+    36 00000027 E8C203                      call finalize_bib
+    37 0000002A E8DD03                      call enable_a20
+    38 0000002D E8EC03                      call enter_protected_mode
+    39 00000030 E9F10A                      jmp fatal_halt
+    40                                  
+    41                                  ; ---------------------------------------------------------------------------
+    42                                  ; Boot Information Block v1
+    43                                  ; Alle TLVs sind 8-Byte-ausgerichtet und Little-Endian kodiert.
+    44                                  ; ---------------------------------------------------------------------------
+    45                                  
+    46                                  initialize_bib:
+    47 00000033 31C0                        xor ax, ax
+    48 00000035 8EC0                        mov es, ax
+    49 00000037 BF0050                      mov di, BOOT_INFO_ADDRESS
+    50 0000003A B90004                      mov cx, BOOT_INFO_CAPACITY / 2
+    51 0000003D F3AB                        rep stosw
+    52                                  
+    53 0000003F 66C70600504E424850          mov dword [BOOT_INFO_ADDRESS + BIB_OFF_MAGIC_LOW], NOVA_BIB_MAGIC_LOW
+    54 00000048 66C706045042494200          mov dword [BOOT_INFO_ADDRESS + BIB_OFF_MAGIC_HIGH], NOVA_BIB_MAGIC_HIGH
+    55 00000051 C70608500100                mov word [BOOT_INFO_ADDRESS + BIB_OFF_VERSION_MAJOR], NOVA_BIB_VERSION_MAJOR
+    56 00000057 C7060A500000                mov word [BOOT_INFO_ADDRESS + BIB_OFF_VERSION_MINOR], NOVA_BIB_VERSION_MINOR
+    57 0000005D C7060C500000                mov word [BOOT_INFO_ADDRESS + BIB_OFF_VERSION_PATCH], NOVA_BIB_VERSION_PATCH
+    58 00000063 C7060E502000                mov word [BOOT_INFO_ADDRESS + BIB_OFF_HEADER_SIZE], NOVA_BIB_HEADER_SIZE
+    59 00000069 66C7061050D0000000          mov dword [BOOT_INFO_ADDRESS + BIB_OFF_TOTAL_SIZE], BIB_TOTAL_SIZE
+    60 00000072 66C706185001000000          mov dword [BOOT_INFO_ADDRESS + BIB_OFF_ARCHITECTURE], NKI_ARCH_X86_32
+    61                                  
+    62                                      ; Firmware TLV
+    63 0000007B C70620500100                mov word [BOOT_INFO_ADDRESS + BIB_FIRMWARE_OFFSET + 0], BIB_TLV_FIRMWARE
+    64 00000081 66C706245010000000          mov dword [BOOT_INFO_ADDRESS + BIB_FIRMWARE_OFFSET + 4], BIB_FIRMWARE_SIZE
+    65 0000008A 66C706285001000000          mov dword [BOOT_INFO_ADDRESS + BIB_FIRMWARE_OFFSET + 8], NOVA_BOOT_PLATFORM_BIOS
+    66 00000093 6631C0                      xor eax, eax
+    67 00000096 A0[300B]                    mov al, [boot_drive]
+    68 00000099 66A32C50                    mov dword [BOOT_INFO_ADDRESS + BIB_FIRMWARE_OFFSET + 12], eax
+    69                                  
+    70                                      ; Memory TLV
+    71 0000009D C70638500300                mov word [BOOT_INFO_ADDRESS + BIB_MEMORY_OFFSET + 0], BIB_TLV_MEMORY
+    72 000000A3 66C7063C5010000000          mov dword [BOOT_INFO_ADDRESS + BIB_MEMORY_OFFSET + 4], BIB_MEMORY_SIZE
+    73 000000AC 66C706405000580000          mov dword [BOOT_INFO_ADDRESS + BIB_MEMORY_OFFSET + 8], MEMORY_MAP_ADDRESS
+    74 000000B5 66C706485018000000          mov dword [BOOT_INFO_ADDRESS + BIB_MEMORY_OFFSET + 16], MEMORY_MAP_ENTRY_SIZE
+    75                                  
+    76                                      ; Graphics TLV
+    77 000000BE C70650500400                mov word [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 0], BIB_TLV_GRAPHICS
+    78 000000C4 66C706545020000000          mov dword [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 4], BIB_GRAPHICS_SIZE
+    79                                  
+    80                                      ; Kernel TLV
+    81 000000CD C70678500600                mov word [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 0], BIB_TLV_KERNEL
+    82 000000D3 66C7067C5020000000          mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 4], BIB_KERNEL_SIZE
+    83                                  
+    84                                      ; Security TLV: Status 0 = nicht verifiziert, transparent gemeldet.
+    85 000000DC C706A0500700                mov word [BOOT_INFO_ADDRESS + BIB_SECURITY_OFFSET + 0], BIB_TLV_SECURITY
+    86 000000E2 66C706A45010000000          mov dword [BOOT_INFO_ADDRESS + BIB_SECURITY_OFFSET + 4], BIB_SECURITY_SIZE
+    87                                  
+    88                                      ; Boot Options TLV: Standardprofil, kein Debug-/Recovery-Modus.
+    89 000000EB C706B8500900                mov word [BOOT_INFO_ADDRESS + BIB_OPTIONS_OFFSET + 0], BIB_TLV_BOOT_OPTIONS
+    90 000000F1 66C706BC5010000000          mov dword [BOOT_INFO_ADDRESS + BIB_OPTIONS_OFFSET + 4], BIB_BOOT_OPTIONS_SIZE
+    91 000000FA C3                          ret
+    92                                  
+    93                                  collect_memory_map:
+    94 000000FB 31C0                        xor ax, ax
+    95 000000FD 8EC0                        mov es, ax
+    96 000000FF BF0058                      mov di, MEMORY_MAP_ADDRESS
+    97 00000102 6631DB                      xor ebx, ebx
+    98 00000105 31ED                        xor bp, bp
+    99                                  
+   100                                  .next:
+   101 00000107 83FD40                      cmp bp, MEMORY_MAP_MAX_ENTRIES
+   102 0000010A 733C                        jae .done
+   103                                  
+   104 0000010C 66B820E80000                mov eax, 0x0000E820
+   105 00000112 66BA50414D53                mov edx, 0x534D4150             ; "SMAP"
+   106 00000118 66B918000000                mov ecx, MEMORY_MAP_ENTRY_SIZE
+   107 0000011E CD15                        int 0x15
+   108 00000120 7226                        jc .done
+   109 00000122 663D50414D53                cmp eax, 0x534D4150
+   110 00000128 751E                        jne .done
+   111 0000012A 6683F914                    cmp ecx, 20
+   112 0000012E 7218                        jb .done
+   113                                  
+   114 00000130 6683F918                    cmp ecx, MEMORY_MAP_ENTRY_SIZE
+   115 00000134 7309                        jae .entry_complete
+   116 00000136 2666C7451401000000          mov dword [es:di + 20], 1
+   117                                  
+   118                                  .entry_complete:
+   119 0000013F 45                          inc bp
+   120 00000140 83C718                      add di, MEMORY_MAP_ENTRY_SIZE
+   121 00000143 6685DB                      test ebx, ebx
+   122 00000146 75BF                        jnz .next
+   123                                  
+   124                                  .done:
+   125 00000148 31C0                        xor ax, ax
+   126 0000014A 8ED8                        mov ds, ax
+   127 0000014C 8EC0                        mov es, ax
+   128 0000014E 660FB7C5                    movzx eax, bp
+   129 00000152 66A34450                    mov dword [BOOT_INFO_ADDRESS + BIB_MEMORY_OFFSET + 12], eax
+   130 00000156 85ED                        test bp, bp
+   131 00000158 7509                        jnz .success
+   132 0000015A BE[980B]                    mov si, message_memory_error
+   133 0000015D E8AE09                      call print_string
+   134 00000160 E9C109                      jmp fatal_halt
+   135                                  
+   136                                  .success:
+   137 00000163 C3                          ret
+   138                                  
+   139                                  ; ---------------------------------------------------------------------------
+   140                                  ; VBE. Ein Fehler ist recoverable und aktiviert den Textmodus-Fallback.
+   141                                  ; ---------------------------------------------------------------------------
+   142                                  
+   143                                  initialize_vbe:
+   144 00000164 B8014F                      mov ax, 0x4F01
+   145 00000167 B94301                      mov cx, VBE_REQUESTED_MODE
+   146 0000016A 31DB                        xor bx, bx
+   147 0000016C 8EC3                        mov es, bx
+   148 0000016E BF0060                      mov di, VBE_MODE_INFO_ADDRESS
+   149 00000171 CD10                        int 0x10
+   150 00000173 83F84F                      cmp ax, 0x004F
+   151 00000176 7575                        jne .fallback
+   152                                  
+   153 00000178 31C0                        xor ax, ax
+   154 0000017A 8ED8                        mov ds, ax
+   155 0000017C 8EC0                        mov es, ax
+   156 0000017E A10060                      mov ax, [VBE_MODE_INFO_ADDRESS]
+   157 00000181 A90100                      test ax, 0x0001
+   158 00000184 7467                        jz .fallback
+   159 00000186 A98000                      test ax, 0x0080
+   160 00000189 7462                        jz .fallback
+   161 0000018B 803E196020                  cmp byte [VBE_MODE_INFO_ADDRESS + 25], 32
+   162 00000190 755B                        jne .fallback
+   163 00000192 66833E286000                cmp dword [VBE_MODE_INFO_ADDRESS + 40], 0
+   164 00000198 7453                        je .fallback
+   165                                  
+   166 0000019A B8024F                      mov ax, 0x4F02
+   167 0000019D BB4341                      mov bx, VBE_REQUESTED_MODE | 0x4000
+   168 000001A0 CD10                        int 0x10
+   169 000001A2 83F84F                      cmp ax, 0x004F
+   170 000001A5 7546                        jne .fallback
+   171                                  
+   172 000001A7 31C0                        xor ax, ax
+   173 000001A9 8ED8                        mov ds, ax
+   174 000001AB 8EC0                        mov es, ax
+   175 000001AD 66830E1C5001                or dword [BOOT_INFO_ADDRESS + BIB_OFF_FLAGS], NOVA_BOOT_FLAG_FRAMEBUFFER
+   176                                  
+   177 000001B3 66A12860                    mov eax, [VBE_MODE_INFO_ADDRESS + 40]
+   178 000001B7 66A35850                    mov dword [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 8], eax
+   179 000001BB 6631C0                      xor eax, eax
+   180 000001BE A11060                      mov ax, [VBE_MODE_INFO_ADDRESS + 16]
+   181 000001C1 66A35C50                    mov dword [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 12], eax
+   182 000001C5 6631C0                      xor eax, eax
+   183 000001C8 A11260                      mov ax, [VBE_MODE_INFO_ADDRESS + 18]
+   184 000001CB 66A36050                    mov dword [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 16], eax
+   185 000001CF 6631C0                      xor eax, eax
+   186 000001D2 A11460                      mov ax, [VBE_MODE_INFO_ADDRESS + 20]
+   187 000001D5 66A36450                    mov dword [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 20], eax
+   188 000001D9 6631C0                      xor eax, eax
+   189 000001DC A01960                      mov al, [VBE_MODE_INFO_ADDRESS + 25]
+   190 000001DF 66A36850                    mov dword [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 24], eax
+   191 000001E3 66C7066C5001000000          mov dword [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 28], NOVA_PIXEL_FORMAT_BGRX8888
+   192 000001EC C3                          ret
+   193                                  
+   194                                  .fallback:
+   195 000001ED B80300                      mov ax, 0x0003
+   196 000001F0 CD10                        int 0x10
+   197 000001F2 31C0                        xor ax, ax
+   198 000001F4 8ED8                        mov ds, ax
+   199 000001F6 8EC0                        mov es, ax
+   200 000001F8 BE[650B]                    mov si, message_vbe_fallback
+   201 000001FB E81009                      call print_string
+   202 000001FE C3                          ret
+   203                                  
+   204                                  ; ---------------------------------------------------------------------------
+   205                                  ; Kernel Image Loader
+   206                                  ; ---------------------------------------------------------------------------
+   207                                  
+   208                                  load_kernel_image:
+   209 000001FF E82B00                      call detect_bios_extensions
+   210 00000202 721B                        jc .chs
+   211 00000204 C606[310B]03                mov byte [retry_count], DISK_RETRY_COUNT
+   212                                  
+   213                                  .lba_retry:
+   214 00000209 BE[3C0B]                    mov si, kernel_dap
+   215 0000020C B442                        mov ah, 0x42
+   216 0000020E 8A16[300B]                  mov dl, [boot_drive]
+   217 00000212 CD13                        int 0x13
+   218 00000214 7310                        jnc .done
+   219 00000216 E8E300                      call reset_disk
+   220 00000219 FE0E[310B]                  dec byte [retry_count]
+   221 0000021D 75EA                        jnz .lba_retry
+   222                                  
+   223                                  .chs:
+   224 0000021F E82800                      call load_kernel_chs
+   225 00000222 0F820209                    jc kernel_load_error
+   226                                  
+   227                                  .done:
+   228 00000226 31C0                        xor ax, ax
+   229 00000228 8ED8                        mov ds, ax
+   230 0000022A 8EC0                        mov es, ax
+   231 0000022C C3                          ret
+   232                                  
+   233                                  detect_bios_extensions:
+   234 0000022D B441                        mov ah, 0x41
+   235 0000022F BBAA55                      mov bx, 0x55AA
+   236 00000232 8A16[300B]                  mov dl, [boot_drive]
+   237 00000236 CD13                        int 0x13
+   238 00000238 720E                        jc .missing
+   239 0000023A 81FB55AA                    cmp bx, 0xAA55
+   240 0000023E 7508                        jne .missing
+   241 00000240 F7C10100                    test cx, 1
+   242 00000244 7402                        jz .missing
+   243 00000246 F8                          clc
+   244 00000247 C3                          ret
+   245                                  .missing:
+   246 00000248 F9                          stc
+   247 00000249 C3                          ret
+   248                                  
+   249                                  load_kernel_chs:
+   250 0000024A E86300                      call get_disk_geometry
+   251 0000024D C706[320B]0000              mov word [kernel_destination_offset], KERNEL_TEMP_OFFSET
+   252 00000253 C606[340B]00                mov byte [kernel_cylinder], 0
+   253 00000258 C606[350B]00                mov byte [kernel_head], 0
+   254 0000025D C606[360B]12                mov byte [kernel_sector], KERNEL_FIRST_LBA + 1
+   255 00000262 C606[370B]41                mov byte [kernel_remaining], KERNEL_IMAGE_SECTOR_COUNT
+   256                                  
+   257                                  .next_sector:
+   258 00000267 803E[370B]00                cmp byte [kernel_remaining], 0
+   259 0000026C 7440                        je .success
+   260 0000026E C606[310B]03                mov byte [retry_count], DISK_RETRY_COUNT
+   261                                  .retry:
+   262 00000273 B80010                      mov ax, KERNEL_TEMP_SEGMENT
+   263 00000276 8EC0                        mov es, ax
+   264 00000278 8B1E[320B]                  mov bx, [kernel_destination_offset]
+   265 0000027C B402                        mov ah, 0x02
+   266 0000027E B001                        mov al, 1
+   267 00000280 8A2E[340B]                  mov ch, [kernel_cylinder]
+   268 00000284 8A0E[360B]                  mov cl, [kernel_sector]
+   269 00000288 8A36[350B]                  mov dh, [kernel_head]
+   270 0000028C 8A16[300B]                  mov dl, [boot_drive]
+   271 00000290 CD13                        int 0x13
+   272 00000292 730B                        jnc .loaded
+   273 00000294 E86500                      call reset_disk
+   274 00000297 FE0E[310B]                  dec byte [retry_count]
+   275 0000029B 75D6                        jnz .retry
+   276 0000029D F9                          stc
+   277 0000029E C3                          ret
+   278                                  .loaded:
+   279 0000029F 8106[320B]0002              add word [kernel_destination_offset], 512
+   280 000002A5 E82A00                      call advance_chs
+   281 000002A8 FE0E[370B]                  dec byte [kernel_remaining]
+   282 000002AC EBB9                        jmp .next_sector
+   283                                  .success:
+   284 000002AE F8                          clc
+   285 000002AF C3                          ret
+   286                                  
+   287                                  get_disk_geometry:
+   288 000002B0 C606[380B]12                mov byte [sectors_per_track], 18
+   289 000002B5 C606[390B]01                mov byte [maximum_head], 1
+   290 000002BA B408                        mov ah, 0x08
+   291 000002BC 8A16[300B]                  mov dl, [boot_drive]
+   292 000002C0 CD13                        int 0x13
+   293 000002C2 720D                        jc .done
+   294 000002C4 88C8                        mov al, cl
+   295 000002C6 243F                        and al, 0x3F
+   296 000002C8 7407                        jz .done
+   297 000002CA A2[380B]                    mov [sectors_per_track], al
+   298 000002CD 8836[390B]                  mov [maximum_head], dh
+   299                                  .done:
+   300 000002D1 C3                          ret
+   301                                  
+   302                                  advance_chs:
+   303 000002D2 FE06[360B]                  inc byte [kernel_sector]
+   304 000002D6 A0[380B]                    mov al, [sectors_per_track]
+   305 000002D9 3806[360B]                  cmp byte [kernel_sector], al
+   306 000002DD 761C                        jbe .done
+   307 000002DF C606[360B]01                mov byte [kernel_sector], 1
+   308 000002E4 A0[390B]                    mov al, [maximum_head]
+   309 000002E7 3806[350B]                  cmp byte [kernel_head], al
+   310 000002EB 720A                        jb .next_head
+   311 000002ED C606[350B]00                mov byte [kernel_head], 0
+   312 000002F2 FE06[340B]                  inc byte [kernel_cylinder]
+   313 000002F6 C3                          ret
+   314                                  .next_head:
+   315 000002F7 FE06[350B]                  inc byte [kernel_head]
+   316                                  .done:
+   317 000002FB C3                          ret
+   318                                  
+   319                                  reset_disk:
+   320 000002FC 50                          push ax
+   321 000002FD 52                          push dx
+   322 000002FE 31C0                        xor ax, ax
+   323 00000300 8A16[300B]                  mov dl, [boot_drive]
+   324 00000304 CD13                        int 0x13
+   325 00000306 5A                          pop dx
+   326 00000307 58                          pop ax
+   327 00000308 C3                          ret
+   328                                  
+   329                                  validate_kernel_image:
+   330 00000309 1E                          push ds
+   331 0000030A B80010                      mov ax, KERNEL_TEMP_SEGMENT
+   332 0000030D 8ED8                        mov ds, ax
+   333                                  
+   334 0000030F 66813E00004E4F5641          cmp dword [NKI_OFF_MAGIC_LOW], NKI_MAGIC_LOW
+   335 00000318 0F859400                    jne .invalid_header
+   336 0000031C 66813E04004E4B4900          cmp dword [NKI_OFF_MAGIC_HIGH], NKI_MAGIC_HIGH
+   337 00000325 0F858700                    jne .invalid_header
+   338 00000329 66833E080001                cmp dword [NKI_OFF_VERSION], NKI_VERSION
+   339 0000032F 757F                        jne .invalid_header
+   340 00000331 66833E0C0040                cmp dword [NKI_OFF_HEADER_SIZE], NKI_HEADER_SIZE
+   341 00000337 7577                        jne .invalid_header
+   342 00000339 66833E100001                cmp dword [NKI_OFF_ARCHITECTURE], NKI_ARCH_X86_32
+   343 0000033F 756F                        jne .invalid_header
+   344 00000341 66833E240000                cmp dword [NKI_OFF_COMPRESSION], NKI_COMPRESSION_NONE
+   345 00000347 7567                        jne .invalid_header
+   346 00000349 66813E180000001000          cmp dword [NKI_OFF_ENTRY_POINT], KERNEL_ENTRY_ADDRESS
+   347 00000352 755C                        jne .invalid_header
+   348 00000354 66813E1C0000001000          cmp dword [NKI_OFF_LOAD_ADDRESS], KERNEL_ENTRY_ADDRESS
+   349 0000035D 7551                        jne .invalid_header
+   350                                  
+   351 0000035F 668B0E2000                  mov ecx, [NKI_OFF_IMAGE_SIZE]
+   352 00000364 6685C9                      test ecx, ecx
+   353 00000367 7447                        jz .invalid_header
+   354 00000369 6681F900800000              cmp ecx, KERNEL_PAYLOAD_MAX_SIZE
+   355 00000370 773E                        ja .invalid_header
+   356                                  
+   357 00000372 BE4000                      mov si, NKI_HEADER_SIZE
+   358 00000375 E84C00                      call crc32_ds_si
+   359 00000378 663B062800                  cmp eax, [NKI_OFF_CRC32]
+   360 0000037D 753B                        jne .invalid_checksum
+   361                                  
+   362                                      ; Kernel-TLV aus dem validierten NKI befüllen.
+   363 0000037F 66A11C00                    mov eax, [NKI_OFF_LOAD_ADDRESS]
+   364 00000383 668B162000                  mov edx, [NKI_OFF_IMAGE_SIZE]
+   365 00000388 668B0E1800                  mov ecx, [NKI_OFF_ENTRY_POINT]
+   366 0000038D 668B2E2800                  mov ebp, [NKI_OFF_CRC32]
+   367 00000392 1F                          pop ds
+   368 00000393 66A38050                    mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 8], eax
+   369 00000397 6689168450                  mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 12], edx
+   370 0000039C 66890E8850                  mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 16], ecx
+   371 000003A1 66C7068C5001000000          mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 20], NKI_VERSION
+   372 000003AA 66892E9050                  mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 24], ebp
+   373 000003AF C3                          ret
+   374                                  
+   375                                  .invalid_header:
+   376 000003B0 1F                          pop ds
+   377 000003B1 BE[E70B]                    mov si, message_kernel_header_error
+   378 000003B4 E85707                      call print_string
+   379 000003B7 E96A07                      jmp fatal_halt
+   380                                  .invalid_checksum:
+   381 000003BA 1F                          pop ds
+   382 000003BB BE[0C0C]                    mov si, message_kernel_checksum_error
+   383 000003BE E84D07                      call print_string
+   384 000003C1 E96007                      jmp fatal_halt
+   385                                  
+   386                                  ; CRC32/ISO-HDLC über DS:SI, Länge ECX. Ergebnis EAX.
+   387                                  crc32_ds_si:
+   388 000003C4 66B8FFFFFFFF                mov eax, 0xFFFFFFFF
+   389                                  .byte:
+   390 000003CA 6685C9                      test ecx, ecx
+   391 000003CD 7419                        jz .finish
+   392 000003CF 3204                        xor al, [si]
+   393 000003D1 46                          inc si
+   394 000003D2 51                          push cx
+   395 000003D3 B90800                      mov cx, 8
+   396                                  .bit:
+   397 000003D6 66D1E8                      shr eax, 1
+   398 000003D9 7306                        jnc .next_bit
+   399 000003DB 66352083B8ED                xor eax, 0xEDB88320
+   400                                  .next_bit:
+   401 000003E1 E2F3                        loop .bit
+   402 000003E3 59                          pop cx
+   403 000003E4 6649                        dec ecx
+   404 000003E6 EBE2                        jmp .byte
+   405                                  .finish:
+   406 000003E8 66F7D0                      not eax
+   407 000003EB C3                          ret
+   408                                  
+   409                                  finalize_bib:
+   410 000003EC 66C706145000000000          mov dword [BOOT_INFO_ADDRESS + BIB_OFF_CHECKSUM], 0
+   411 000003F5 31C0                        xor ax, ax
+   412 000003F7 8ED8                        mov ds, ax
+   413 000003F9 BE0050                      mov si, BOOT_INFO_ADDRESS
+   414 000003FC 66B9D0000000                mov ecx, BIB_TOTAL_SIZE
+   415 00000402 E8BFFF                      call crc32_ds_si
+   416 00000405 66A31450                    mov dword [BOOT_INFO_ADDRESS + BIB_OFF_CHECKSUM], eax
+   417 00000409 C3                          ret
+   418                                  
+   419                                  ; ---------------------------------------------------------------------------
+   420                                  ; CPU-Handoff
+   421                                  ; ---------------------------------------------------------------------------
+   422                                  
+   423                                  enable_a20:
+   424 0000040A B80124                      mov ax, 0x2401
+   425 0000040D CD15                        int 0x15
+   426 0000040F E492                        in al, 0x92
+   427 00000411 A802                        test al, 0x02
+   428 00000413 7506                        jnz .done
+   429 00000415 0C02                        or al, 0x02
+   430 00000417 24FE                        and al, 0xFE
+   431 00000419 E692                        out 0x92, al
+   432                                  .done:
+   433 0000041B C3                          ret
+   434                                  
+   435                                  enter_protected_mode:
+   436 0000041C FA                          cli
+   437 0000041D 0F0116[080B]                lgdt [gdt_descriptor]
+   438 00000422 0F20C0                      mov eax, cr0
+   439 00000425 6683C801                    or eax, 1
+   440 00000429 0F22C0                      mov cr0, eax
+   441 0000042C EA[3104]0800                jmp CODE_SEGMENT:protected_mode_start
+   442                                  
+   443                                  [bits 32]
+   444                                  protected_mode_start:
+   445 00000431 66B81000                    mov ax, DATA_SEGMENT
+   446 00000435 8ED8                        mov ds, ax
+   447 00000437 8EC0                        mov es, ax
+   448 00000439 8EE0                        mov fs, ax
+   449 0000043B 8EE8                        mov gs, ax
+   450 0000043D 8ED0                        mov ss, ax
+   451 0000043F BC00000900                  mov esp, KERNEL_STACK_TOP
+   452 00000444 FC                          cld
+   453                                  
+   454 00000445 E82E000000                  call boot_manager_run
+   455                                  
+   456 0000044A BE40000100                  mov esi, KERNEL_TEMP_ADDRESS + NKI_HEADER_SIZE
+   457 0000044F BF00001000                  mov edi, KERNEL_ENTRY_ADDRESS
+   458 00000454 8B0D20000100                mov ecx, [KERNEL_TEMP_ADDRESS + NKI_OFF_IMAGE_SIZE]
+   459 0000045A 51                          push ecx
+   460 0000045B C1E902                      shr ecx, 2
+   461 0000045E F3A5                        rep movsd
+   462 00000460 59                          pop ecx
+   463 00000461 83E103                      and ecx, 3
+   464 00000464 F3A4                        rep movsb
+   465                                  
+   466 00000466 B841564F4E                  mov eax, NOVA_X86_BOOT_MAGIC
+   467 0000046B BB00500000                  mov ebx, BOOT_INFO_ADDRESS
+   468 00000470 8B0D18000100                mov ecx, [KERNEL_TEMP_ADDRESS + NKI_OFF_ENTRY_POINT]
+   469 00000476 FFE1                        jmp ecx
+   470                                  
+   471                                  ; ---------------------------------------------------------------------------
+   472                                  ; Grafischer Boot Manager
+   473                                  ; ENTER startet Nova OS. D blendet validierte Diagnosedaten ein.
+   474                                  ; R meldet den noch nicht implementierten Recoverypfad transparent.
+   475                                  ; ---------------------------------------------------------------------------
+   476                                  
+   477                                  boot_manager_run:
+   478 00000478 F7051C500000010000-         test dword [BOOT_INFO_ADDRESS + BIB_OFF_FLAGS], NOVA_BOOT_FLAG_FRAMEBUFFER
+   478 00000481 00                 
+   479 00000482 7450                        jz .no_graphics
+   480 00000484 E84C000000                  call boot_manager_draw
+   481                                  
+   482                                  .wait_key:
+   483 00000489 E464                        in al, 0x64
+   484 0000048B A801                        test al, 0x01
+   485 0000048D 74FA                        jz .wait_key
+   486 0000048F E460                        in al, 0x60
+   487 00000491 A880                        test al, 0x80
+   488 00000493 75F4                        jnz .wait_key
+   489 00000495 3C1C                        cmp al, 0x1C                    ; Enter
+   490 00000497 742C                        je .start
+   491 00000499 3C20                        cmp al, 0x20                    ; D
+   492 0000049B 7406                        je .diagnostics
+   493 0000049D 3C13                        cmp al, 0x13                    ; R
+   494 0000049F 7413                        je .recovery
+   495 000004A1 EBE6                        jmp .wait_key
+   496                                  
+   497                                  .diagnostics:
+   498 000004A3 BE[6F090000]                mov esi, bm_event_diagnostics
+   499 000004A8 E865030000                  call bm_debug_write_string
+   500 000004AD E883010000                  call boot_manager_draw_diagnostics
+   501 000004B2 EBD5                        jmp .wait_key
+   502                                  .recovery:
+   503 000004B4 BE[7F090000]                mov esi, bm_event_recovery
+   504 000004B9 E854030000                  call bm_debug_write_string
+   505 000004BE E8AF010000                  call boot_manager_draw_recovery_notice
+   506 000004C3 EBC4                        jmp .wait_key
+   507                                  .start:
+   508 000004C5 BE[98090000]                mov esi, bm_event_start
+   509 000004CA E843030000                  call bm_debug_write_string
+   510 000004CF E8DB010000                  call boot_manager_draw_starting
+   511                                  .no_graphics:
+   512 000004D4 C3                          ret
+   513                                  
+   514                                  boot_manager_draw:
+   515 000004D5 B813111000                  mov eax, BM_COLOR_BACKGROUND
+   516 000004DA 31DB                        xor ebx, ebx
+   517 000004DC 31C9                        xor ecx, ecx
+   518 000004DE 8B1560500000                mov edx, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 16]
+   519 000004E4 8B3564500000                mov esi, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 20]
+   520 000004EA E8FD010000                  call bm_fill_rectangle
+   521                                  
+   522 000004EF B8FFC24C00                  mov eax, BM_COLOR_CYAN
+   523 000004F4 31DB                        xor ebx, ebx
+   524 000004F6 31C9                        xor ecx, ecx
+   525 000004F8 8B1560500000                mov edx, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 16]
+   526 000004FE BE06000000                  mov esi, 6
+   527 00000503 E8E4010000                  call bm_fill_rectangle
+   528                                  
+   529 00000508 BE[4C080000]                mov esi, bm_text_brand
+   530 0000050D BB40000000                  mov ebx, 64
+   531 00000512 B92A000000                  mov ecx, 42
+   532 00000517 BAFFC24C00                  mov edx, BM_COLOR_CYAN
+   533 0000051C BD02000000                  mov ebp, 2
+   534 00000521 E820020000                  call bm_draw_text
+   535                                  
+   536 00000526 BE[54080000]                mov esi, bm_text_title
+   537 0000052B BB40000000                  mov ebx, 64
+   538 00000530 B954000000                  mov ecx, 84
+   539 00000535 BAFFFFFF00                  mov edx, BM_COLOR_WHITE
+   540 0000053A BD03000000                  mov ebp, 3
+   541 0000053F E802020000                  call bm_draw_text
+   542                                  
+   543 00000544 B8201C1A00                  mov eax, BM_COLOR_PANEL
+   544 00000549 BB40000000                  mov ebx, 64
+   545 0000054E B994000000                  mov ecx, 148
+   546 00000553 BAA0020000                  mov edx, 672
+   547 00000558 BEFA000000                  mov esi, 250
+   548 0000055D E88A010000                  call bm_fill_rectangle
+   549 00000562 B8FFC24C00                  mov eax, BM_COLOR_CYAN
+   550 00000567 BB40000000                  mov ebx, 64
+   551 0000056C B994000000                  mov ecx, 148
+   552 00000571 BA05000000                  mov edx, 5
+   553 00000576 BEFA000000                  mov esi, 250
+   554 0000057B E86C010000                  call bm_fill_rectangle
+   555                                  
+   556 00000580 BE[61080000]                mov esi, bm_text_os
+   557 00000585 BB60000000                  mov ebx, 96
+   558 0000058A B9B8000000                  mov ecx, 184
+   559 0000058F BAFFFFFF00                  mov edx, BM_COLOR_WHITE
+   560 00000594 BD03000000                  mov ebp, 3
+   561 00000599 E8A8010000                  call bm_draw_text
+   562 0000059E BE[69080000]                mov esi, bm_text_kernel
+   563 000005A3 BB62000000                  mov ebx, 98
+   564 000005A8 B9E0000000                  mov ecx, 224
+   565 000005AD BACFCFCF00                  mov edx, BM_COLOR_SECONDARY
+   566 000005B2 BD01000000                  mov ebp, 1
+   567 000005B7 E88A010000                  call bm_draw_text
+   568 000005BC BE[8A080000]                mov esi, bm_text_verified
+   569 000005C1 BB62000000                  mov ebx, 98
+   570 000005C6 B904010000                  mov ecx, 260
+   571 000005CB BA58D13000                  mov edx, BM_COLOR_SUCCESS
+   572 000005D0 BD02000000                  mov ebp, 2
+   573 000005D5 E86C010000                  call bm_draw_text
+   574 000005DA BE[96080000]                mov esi, bm_text_security
+   575 000005DF BB62000000                  mov ebx, 98
+   576 000005E4 B930010000                  mov ecx, 304
+   577 000005E9 BA47B3FF00                  mov edx, BM_COLOR_WARNING
+   578 000005EE BD01000000                  mov ebp, 1
+   579 000005F3 E84E010000                  call bm_draw_text
+   580                                  
+   581 000005F8 BE[B8080000]                mov esi, bm_text_enter
+   582 000005FD BB62000000                  mov ebx, 98
+   583 00000602 B962010000                  mov ecx, 354
+   584 00000607 BAFFC24C00                  mov edx, BM_COLOR_CYAN
+   585 0000060C BD01000000                  mov ebp, 1
+   586 00000611 E830010000                  call bm_draw_text
+   587 00000616 BE[CE080000]                mov esi, bm_text_actions
+   588 0000061B BB40000000                  mov ebx, 64
+   589 00000620 B9C0010000                  mov ecx, 448
+   590 00000625 BACFCFCF00                  mov edx, BM_COLOR_SECONDARY
+   591 0000062A BD01000000                  mov ebp, 1
+   592 0000062F E812010000                  call bm_draw_text
+   593 00000634 C3                          ret
+   594                                  
+   595                                  boot_manager_draw_diagnostics:
+   596 00000635 B813111000                  mov eax, BM_COLOR_BACKGROUND
+   597 0000063A BB40000000                  mov ebx, 64
+   598 0000063F B9F4010000                  mov ecx, 500
+   599 00000644 BAA0020000                  mov edx, 672
+   600 00000649 BE18000000                  mov esi, 24
+   601 0000064E E899000000                  call bm_fill_rectangle
+   602 00000653 BE[F1080000]                mov esi, bm_text_diagnostics
+   603 00000658 BB40000000                  mov ebx, 64
+   604 0000065D B9F4010000                  mov ecx, 500
+   605 00000662 BACFCFCF00                  mov edx, BM_COLOR_SECONDARY
+   606 00000667 BD01000000                  mov ebp, 1
+   607 0000066C E8D5000000                  call bm_draw_text
+   608 00000671 C3                          ret
+   609                                  
+   610                                  boot_manager_draw_recovery_notice:
+   611 00000672 B813111000                  mov eax, BM_COLOR_BACKGROUND
+   612 00000677 BB40000000                  mov ebx, 64
+   613 0000067C B9F4010000                  mov ecx, 500
+   614 00000681 BAA0020000                  mov edx, 672
+   615 00000686 BE18000000                  mov esi, 24
+   616 0000068B E85C000000                  call bm_fill_rectangle
+   617 00000690 BE[22090000]                mov esi, bm_text_recovery
+   618 00000695 BB40000000                  mov ebx, 64
+   619 0000069A B9F4010000                  mov ecx, 500
+   620 0000069F BA47B3FF00                  mov edx, BM_COLOR_WARNING
+   621 000006A4 BD01000000                  mov ebp, 1
+   622 000006A9 E898000000                  call bm_draw_text
+   623 000006AE C3                          ret
+   624                                  
+   625                                  boot_manager_draw_starting:
+   626 000006AF B8201C1A00                  mov eax, BM_COLOR_PANEL
+   627 000006B4 BB40000000                  mov ebx, 64
+   628 000006B9 B9C0010000                  mov ecx, 448
+   629 000006BE BAA0020000                  mov edx, 672
+   630 000006C3 BE4C000000                  mov esi, 76
+   631 000006C8 E81F000000                  call bm_fill_rectangle
+   632 000006CD BE[58090000]                mov esi, bm_text_starting
+   633 000006D2 BB60000000                  mov ebx, 96
+   634 000006D7 B9DA010000                  mov ecx, 474
+   635 000006DC BAFFC24C00                  mov edx, BM_COLOR_CYAN
+   636 000006E1 BD02000000                  mov ebp, 2
+   637 000006E6 E85B000000                  call bm_draw_text
+   638 000006EB C3                          ret
+   639                                  
+   640                                  ; EAX=Farbe, EBX=x, ECX=y, EDX=Breite, ESI=Höhe
+   641                                  bm_fill_rectangle:
+   642 000006EC 60                          pushad
+   643 000006ED A3[24080000]                mov [bm_rect_color], eax
+   644 000006F2 891D[28080000]              mov [bm_rect_x], ebx
+   645 000006F8 890D[2C080000]              mov [bm_rect_y], ecx
+   646 000006FE 8915[30080000]              mov [bm_rect_width], edx
+   647 00000704 8935[34080000]              mov [bm_rect_height], esi
+   648 0000070A 31ED                        xor ebp, ebp
+   649                                  .row:
+   650 0000070C 3B2D[34080000]              cmp ebp, [bm_rect_height]
+   651 00000712 7330                        jae .done
+   652 00000714 A1[2C080000]                mov eax, [bm_rect_y]
+   653 00000719 01E8                        add eax, ebp
+   654 0000071B 0FAF055C500000              imul eax, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 12]
+   655 00000722 030558500000                add eax, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 8]
+   656 00000728 89C7                        mov edi, eax
+   657 0000072A A1[28080000]                mov eax, [bm_rect_x]
+   658 0000072F C1E002                      shl eax, 2
+   659 00000732 01C7                        add edi, eax
+   660 00000734 A1[24080000]                mov eax, [bm_rect_color]
+   661 00000739 8B0D[30080000]              mov ecx, [bm_rect_width]
+   662 0000073F F3AB                        rep stosd
+   663 00000741 45                          inc ebp
+   664 00000742 EBC8                        jmp .row
+   665                                  .done:
+   666 00000744 61                          popad
+   667 00000745 C3                          ret
+   668                                  
+   669                                  ; ESI=Text, EBX=x, ECX=y, EDX=Farbe, EBP=Skalierung
+   670                                  bm_draw_text:
+   671 00000746 8935[38080000]              mov [bm_text_pointer], esi
+   672 0000074C 891D[3C080000]              mov [bm_text_x], ebx
+   673 00000752 890D[40080000]              mov [bm_text_y], ecx
+   674 00000758 8915[44080000]              mov [bm_text_color], edx
+   675 0000075E 892D[48080000]              mov [bm_text_scale], ebp
+   676                                  .next:
+   677 00000764 8B35[38080000]              mov esi, [bm_text_pointer]
+   678 0000076A AC                          lodsb
+   679 0000076B 8935[38080000]              mov [bm_text_pointer], esi
+   680 00000771 84C0                        test al, al
+   681 00000773 7419                        jz .done
+   682 00000775 3C20                        cmp al, ' '
+   683 00000777 7405                        je .advance
+   684 00000779 E811000000                  call bm_draw_character
+   685                                  .advance:
+   686 0000077E A1[48080000]                mov eax, [bm_text_scale]
+   687 00000783 6BC006                      imul eax, 6
+   688 00000786 0105[3C080000]              add [bm_text_x], eax
+   689 0000078C EBD6                        jmp .next
+   690                                  .done:
+   691 0000078E C3                          ret
+   692                                  
+   693                                  bm_draw_character:
+   694 0000078F 60                          pushad
+   695 00000790 88C3                        mov bl, al
+   696 00000792 BF[A2090000]                mov edi, bm_font_characters
+   697 00000797 31C9                        xor ecx, ecx
+   698                                  .find:
+   699 00000799 8A040F                      mov al, [edi + ecx]
+   700 0000079C 84C0                        test al, al
+   701 0000079E 7470                        jz .done
+   702 000007A0 38D8                        cmp al, bl
+   703 000007A2 7403                        je .found
+   704 000007A4 41                          inc ecx
+   705 000007A5 EBF2                        jmp .find
+   706                                  .found:
+   707 000007A7 6BC907                      imul ecx, 7
+   708 000007AA BE[CC090000]                mov esi, bm_font_bitmap
+   709 000007AF 01CE                        add esi, ecx
+   710 000007B1 31ED                        xor ebp, ebp
+   711                                  .glyph_row:
+   712 000007B3 83FD07                      cmp ebp, 7
+   713 000007B6 7358                        jae .done
+   714 000007B8 8A142E                      mov dl, [esi + ebp]
+   715 000007BB 31C9                        xor ecx, ecx
+   716                                  .glyph_column:
+   717 000007BD 83F905                      cmp ecx, 5
+   718 000007C0 734B                        jae .next_row
+   719 000007C2 B010                        mov al, 0x10
+   720 000007C4 D2E8                        shr al, cl
+   721 000007C6 84C2                        test dl, al
+   722 000007C8 7440                        jz .next_column
+   723 000007CA 51                          push ecx
+   724 000007CB 52                          push edx
+   725 000007CC 56                          push esi
+   726 000007CD 55                          push ebp
+   727 000007CE 89C8                        mov eax, ecx
+   728 000007D0 0FAF05[48080000]            imul eax, [bm_text_scale]
+   729 000007D7 0305[3C080000]              add eax, [bm_text_x]
+   730 000007DD 89C3                        mov ebx, eax
+   731 000007DF 89E8                        mov eax, ebp
+   732 000007E1 0FAF05[48080000]            imul eax, [bm_text_scale]
+   733 000007E8 0305[40080000]              add eax, [bm_text_y]
+   734 000007EE 89C1                        mov ecx, eax
+   735 000007F0 8B15[48080000]              mov edx, [bm_text_scale]
+   736 000007F6 8B35[48080000]              mov esi, [bm_text_scale]
+   737 000007FC A1[44080000]                mov eax, [bm_text_color]
+   738 00000801 E8E6FEFFFF                  call bm_fill_rectangle
+   739 00000806 5D                          pop ebp
+   740 00000807 5E                          pop esi
+   741 00000808 5A                          pop edx
+   742 00000809 59                          pop ecx
+   743                                  .next_column:
+   744 0000080A 41                          inc ecx
+   745 0000080B EBB0                        jmp .glyph_column
+   746                                  .next_row:
+   747 0000080D 45                          inc ebp
+   748 0000080E EBA3                        jmp .glyph_row
+   749                                  .done:
+   750 00000810 61                          popad
+   751 00000811 C3                          ret
+   752                                  
+   753                                  bm_debug_write_string:
+   754 00000812 50                          push eax
+   755 00000813 52                          push edx
+   756 00000814 66BAE900                    mov dx, 0x00E9
+   757                                  .next:
+   758 00000818 AC                          lodsb
+   759 00000819 84C0                        test al, al
+   760 0000081B 7403                        jz .done
+   761 0000081D EE                          out dx, al
+   762 0000081E EBF8                        jmp .next
+   763                                  .done:
+   764 00000820 5A                          pop edx
+   765 00000821 58                          pop eax
+   766 00000822 C3                          ret
+   767                                  
+   768                                  BM_COLOR_BACKGROUND equ 0x00101113
+   769                                  BM_COLOR_PANEL      equ 0x001A1C20
+   770                                  BM_COLOR_CYAN       equ 0x004CC2FF
+   771                                  BM_COLOR_WHITE      equ 0x00FFFFFF
+   772                                  BM_COLOR_SECONDARY  equ 0x00CFCFCF
+   773                                  BM_COLOR_SUCCESS    equ 0x0030D158
+   774                                  BM_COLOR_WARNING    equ 0x00FFB347
+   775                                  
+   776 00000823 90                      align 4
+   777 00000824 00000000                bm_rect_color:   dd 0
+   778 00000828 00000000                bm_rect_x:       dd 0
+   779 0000082C 00000000                bm_rect_y:       dd 0
+   780 00000830 00000000                bm_rect_width:   dd 0
+   781 00000834 00000000                bm_rect_height:  dd 0
+   782 00000838 00000000                bm_text_pointer: dd 0
+   783 0000083C 00000000                bm_text_x:       dd 0
+   784 00000840 00000000                bm_text_y:       dd 0
+   785 00000844 00000000                bm_text_color:   dd 0
+   786 00000848 01000000                bm_text_scale:   dd 1
+   787                                  
+   788 0000084C 4E4F5641204F5300        bm_text_brand:       db "NOVA OS",0
+   789 00000854 424F4F54204D414E41-     bm_text_title:       db "BOOT MANAGER",0
+   789 0000085D 47455200           
+   790 00000861 4E4F5641204F5300        bm_text_os:          db "NOVA OS",0
+   791 00000869 5354414E444152444B-     bm_text_kernel:      db "STANDARDKERNEL | NKI V1 | X86-32",0
+   791 00000872 45524E454C207C204E-
+   791 0000087B 4B49205631207C2058-
+   791 00000884 38362D333200       
+   792 0000088A 535441525442455245-     bm_text_verified:    db "STARTBEREIT",0
+   792 00000893 495400             
+   793 00000896 534943484552484549-     bm_text_security:    db "SICHERHEIT NOCH NICHT VERIFIZIERT",0
+   793 0000089F 54204E4F4348204E49-
+   793 000008A8 434854205645524946-
+   793 000008B1 495A4945525400     
+   794 000008B8 454E54455220205359-     bm_text_enter:       db "ENTER  SYSTEM STARTEN",0
+   794 000008C1 5354454D2053544152-
+   794 000008CA 54454E00           
+   795 000008CE 442020444941474E4F-     bm_text_actions:     db "D  DIAGNOSE     R  RECOVERY-STATUS",0
+   795 000008D7 534520202020205220-
+   795 000008E0 205245434F56455259-
+   795 000008E9 2D53544154555300   
+   796 000008F1 4352433332204F4B20-     bm_text_diagnostics: db "CRC32 OK | NBHP/BIB 1.0 | MEMORY MAP OK | VBE OK",0
+   796 000008FA 7C204E4248502F4249-
+   796 00000903 4220312E30207C204D-
+   796 0000090C 454D4F5259204D4150-
+   796 00000915 204F4B207C20564245-
+   796 0000091E 204F4B00           
+   797 00000922 5245434F5645525920-     bm_text_recovery:    db "RECOVERY IST IN DIESEM PROTOTYP NOCH NICHT VERFUEGBAR",0
+   797 0000092B 49535420494E204449-
+   797 00000934 4553454D2050524F54-
+   797 0000093D 4F545950204E4F4348-
+   797 00000946 204E49434854205645-
+   797 0000094F 524655454742415200 
+   798 00000958 4E4F5641204F532057-     bm_text_starting:    db "NOVA OS WIRD GESTARTET",0
+   798 00000961 495244204745535441-
+   798 0000096A 5254455400         
+   799 0000096F 424D3A444941474E4F-     bm_event_diagnostics: db "BM:DIAGNOSTICS",10,0
+   799 00000978 53544943530A00     
+   800 0000097F 424D3A5245434F5645-     bm_event_recovery:    db "BM:RECOVERY-UNAVAILABLE",10,0
+   800 00000988 52592D554E41564149-
+   800 00000991 4C41424C450A00     
+   801 00000998 424D3A53544152540A-     bm_event_start:       db "BM:START",10,0
+   801 000009A1 00                 
+   802                                  
+   803                                  bm_font_characters:
+   804 000009A2 414243444546474849-         db "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-./:|",0
+   804 000009AB 4A4B4C4D4E4F505152-
+   804 000009B4 535455565758595A30-
+   804 000009BD 313233343536373839-
+   804 000009C6 2D2E2F3A7C00       
+   805                                  bm_font_bitmap:
+   806 000009CC 0E11111F111111              db 0x0E,0x11,0x11,0x1F,0x11,0x11,0x11
+   807 000009D3 1E11111E11111E              db 0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E
+   808 000009DA 0E11101010110E              db 0x0E,0x11,0x10,0x10,0x10,0x11,0x0E
+   809 000009E1 1E11111111111E              db 0x1E,0x11,0x11,0x11,0x11,0x11,0x1E
+   810 000009E8 1F10101E10101F              db 0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F
+   811 000009EF 1F10101E101010              db 0x1F,0x10,0x10,0x1E,0x10,0x10,0x10
+   812 000009F6 0E11101711110F              db 0x0E,0x11,0x10,0x17,0x11,0x11,0x0F
+   813 000009FD 1111111F111111              db 0x11,0x11,0x11,0x1F,0x11,0x11,0x11
+   814 00000A04 0E04040404040E              db 0x0E,0x04,0x04,0x04,0x04,0x04,0x0E
+   815 00000A0B 0702020212120C              db 0x07,0x02,0x02,0x02,0x12,0x12,0x0C
+   816 00000A12 11121418141211              db 0x11,0x12,0x14,0x18,0x14,0x12,0x11
+   817 00000A19 1010101010101F              db 0x10,0x10,0x10,0x10,0x10,0x10,0x1F
+   818 00000A20 111B1515111111              db 0x11,0x1B,0x15,0x15,0x11,0x11,0x11
+   819 00000A27 11191513111111              db 0x11,0x19,0x15,0x13,0x11,0x11,0x11
+   820 00000A2E 0E11111111110E              db 0x0E,0x11,0x11,0x11,0x11,0x11,0x0E
+   821 00000A35 1E11111E101010              db 0x1E,0x11,0x11,0x1E,0x10,0x10,0x10
+   822 00000A3C 0E11111115120D              db 0x0E,0x11,0x11,0x11,0x15,0x12,0x0D
+   823 00000A43 1E11111E141211              db 0x1E,0x11,0x11,0x1E,0x14,0x12,0x11
+   824 00000A4A 0F10100E01011E              db 0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E
+   825 00000A51 1F040404040404              db 0x1F,0x04,0x04,0x04,0x04,0x04,0x04
+   826 00000A58 1111111111110E              db 0x11,0x11,0x11,0x11,0x11,0x11,0x0E
+   827 00000A5F 11111111110A04              db 0x11,0x11,0x11,0x11,0x11,0x0A,0x04
+   828 00000A66 1111111515150A              db 0x11,0x11,0x11,0x15,0x15,0x15,0x0A
+   829 00000A6D 11110A040A1111              db 0x11,0x11,0x0A,0x04,0x0A,0x11,0x11
+   830 00000A74 11110A04040404              db 0x11,0x11,0x0A,0x04,0x04,0x04,0x04
+   831 00000A7B 1F01020408101F              db 0x1F,0x01,0x02,0x04,0x08,0x10,0x1F
+   832 00000A82 0E11131519110E              db 0x0E,0x11,0x13,0x15,0x19,0x11,0x0E
+   833 00000A89 040C040404040E              db 0x04,0x0C,0x04,0x04,0x04,0x04,0x0E
+   834 00000A90 0E11010204081F              db 0x0E,0x11,0x01,0x02,0x04,0x08,0x1F
+   835 00000A97 1E01010E01011E              db 0x1E,0x01,0x01,0x0E,0x01,0x01,0x1E
+   836 00000A9E 02060A121F0202              db 0x02,0x06,0x0A,0x12,0x1F,0x02,0x02
+   837 00000AA5 1F10101E01011E              db 0x1F,0x10,0x10,0x1E,0x01,0x01,0x1E
+   838 00000AAC 0E10101E11110E              db 0x0E,0x10,0x10,0x1E,0x11,0x11,0x0E
+   839 00000AB3 1F010204080808              db 0x1F,0x01,0x02,0x04,0x08,0x08,0x08
+   840 00000ABA 0E11110E11110E              db 0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E
+   841 00000AC1 0E11110F01010E              db 0x0E,0x11,0x11,0x0F,0x01,0x01,0x0E
+   842 00000AC8 0000001F000000              db 0x00,0x00,0x00,0x1F,0x00,0x00,0x00
+   843 00000ACF 00000000000C0C              db 0x00,0x00,0x00,0x00,0x00,0x0C,0x0C
+   844 00000AD6 01020204080810              db 0x01,0x02,0x02,0x04,0x08,0x08,0x10
+   845 00000ADD 000C0C000C0C00              db 0x00,0x0C,0x0C,0x00,0x0C,0x0C,0x00
+   846 00000AE4 04040404040404              db 0x04,0x04,0x04,0x04,0x04,0x04,0x04
+   847                                  
+   848 00000AEB 90<rep 5h>              align 8
+   849                                  gdt_start:
+   850 00000AF0 0000000000000000            dq 0
+   851 00000AF8 FFFF0000009ACF00            dq 0x00CF9A000000FFFF
+   852 00000B00 FFFF00000092CF00            dq 0x00CF92000000FFFF
+   853                                  gdt_end:
+   854                                  gdt_descriptor:
+   855 00000B08 1700                        dw gdt_end - gdt_start - 1
+   856 00000B0A [F00A0000]                  dd gdt_start
+   857                                  
+   858                                  [bits 16]
+   859                                  print_string:
+   860 00000B0E AC                          lodsb
+   861 00000B0F 84C0                        test al, al
+   862 00000B11 7410                        jz .done
+   863 00000B13 52                          push dx
+   864 00000B14 BAE900                      mov dx, 0x00E9
+   865 00000B17 EE                          out dx, al
+   866 00000B18 5A                          pop dx
+   867 00000B19 B40E                        mov ah, 0x0E
+   868 00000B1B 30FF                        xor bh, bh
+   869 00000B1D B307                        mov bl, 0x07
+   870 00000B1F CD10                        int 0x10
+   871 00000B21 EBEB                        jmp print_string
+   872                                  .done:
+   873 00000B23 C3                          ret
+   874                                  
+   875                                  fatal_halt:
+   876 00000B24 FA                          cli
+   877                                  .loop:
+   878 00000B25 F4                          hlt
+   879 00000B26 EBFD                        jmp .loop
+   880                                  
+   881                                  kernel_load_error:
+   882 00000B28 BE[C40B]                    mov si, message_kernel_load_error
+   883 00000B2B E8E0FF                      call print_string
+   884 00000B2E EBF4                        jmp fatal_halt
+   885                                  
+   886 00000B30 00                      boot_drive:                 db 0
+   887 00000B31 00                      retry_count:                db 0
+   888 00000B32 0000                    kernel_destination_offset: dw 0
+   889 00000B34 00                      kernel_cylinder:            db 0
+   890 00000B35 00                      kernel_head:                db 0
+   891 00000B36 00                      kernel_sector:              db 0
+   892 00000B37 00                      kernel_remaining:           db 0
+   893 00000B38 12                      sectors_per_track:          db 18
+   894 00000B39 01                      maximum_head:               db 1
+   895                                  
+   896 00000B3A 90<rep 2h>              align 4
+   897                                  kernel_dap:
+   898 00000B3C 1000                        db 0x10, 0
+   899 00000B3E 4100                        dw KERNEL_IMAGE_SECTOR_COUNT
+   900 00000B40 0000                        dw KERNEL_TEMP_OFFSET
+   901 00000B42 0010                        dw KERNEL_TEMP_SEGMENT
+   902 00000B44 1100000000000000            dq KERNEL_FIRST_LBA
+   903                                  
+   904                                  message_start:
+   905 00000B4C 4E6F76612053746167-         db "Nova Stage 2 / NBHP v1", 13, 10, 0
+   905 00000B55 652032202F204E4248-
+   905 00000B5E 502076310D0A00     
+   906                                  message_vbe_fallback:
+   907 00000B65 424F4F542D57303031-         db "BOOT-W001: VBE nicht verfuegbar, Textmodus aktiv", 13, 10, 0
+   907 00000B6E 3A20564245206E6963-
+   907 00000B77 687420766572667565-
+   907 00000B80 676261722C20546578-
+   907 00000B89 746D6F64757320616B-
+   907 00000B92 7469760D0A00       
+   908                                  message_memory_error:
+   909 00000B98 424F4F542D32303031-         db "BOOT-2001: Speicherkarte nicht verfuegbar", 13, 10, 0
+   909 00000BA1 3A2053706569636865-
+   909 00000BAA 726B61727465206E69-
+   909 00000BB3 636874207665726675-
+   909 00000BBC 65676261720D0A00   
+   910                                  message_kernel_load_error:
+   911 00000BC4 424F4F542D31303031-         db "BOOT-1001: Kernel nicht gefunden", 13, 10, 0
+   911 00000BCD 3A204B65726E656C20-
+   911 00000BD6 6E6963687420676566-
+   911 00000BDF 756E64656E0D0A00   
+   912                                  message_kernel_header_error:
+   913 00000BE7 424F4F542D31303032-         db "BOOT-1002: Kernel-Header ungueltig", 13, 10, 0
+   913 00000BF0 3A204B65726E656C2D-
+   913 00000BF9 48656164657220756E-
+   913 00000C02 6775656C7469670D0A-
+   913 00000C0B 00                 
+   914                                  message_kernel_checksum_error:
+   915 00000C0C 424F4F542D31303032-         db "BOOT-1002: Kernel-Pruefsumme ungueltig", 13, 10, 0
+   915 00000C15 3A204B65726E656C2D-
+   915 00000C1E 507275656673756D6D-
+   915 00000C27 6520756E6775656C74-
+   915 00000C30 69670D0A00         
+   916                                  
+   917 00000C35 00<rep 13CBh>           times STAGE2_BYTE_COUNT - ($ - $$) db 0

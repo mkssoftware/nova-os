@@ -1,0 +1,7 @@
+NOVA: Kernel Entry
+NOVA: NBHP/BIB v1 validiert
+NOVA: PMM ABI 1.0 und Seitentest bereit
+NOVA: Heap ABI 1.0 und Schreibtest bereit
+NOVA: Paging ABI 1.0 und Speichertest bereit
+NOVA: IDT, PIC und PIT 100 Hz aktiv
+NOVA PANIC: CPU-Ausnahme Vektor 0x0000000E bei Adresse 0xFD001000

@@ -1,36 +1,6 @@
 ```gitignore
 # Build
-/build/
-/out/
-/dist/
-/cmake-build-*/
-/CMakeFiles/
-CMakeCache.txt
-compile_commands.json
 /Conceptual/
-
-# Object files
-*.o
-*.obj
-*.a
-*.lib
-*.so
-*.dll
-*.dylib
-*.exe
-*.elf
-*.bin
-*.img
-*.iso
-
-# Logs
-*.log
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
 
 # OS files
 .DS_Store
