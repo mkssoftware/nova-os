@@ -44,9 +44,16 @@ kernel_entry:
 
     call create_kernel_context
     jc panic_invalid_handoff
+    call early_security_entropy_initialize
+    jc panic_invalid_handoff
 
     mov esi, message_bib_ok
     call serial_write_string
+    test dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_KERNEL_ID
+    jz .kernel_identity_done
+    mov esi, message_kernel_identity_ok
+    call serial_write_string
+.kernel_identity_done:
 
     call pmm_initialize
     jc panic_memory_manager
@@ -313,6 +320,8 @@ create_kernel_context:
 
     cmp eax, BIB_TLV_FIRMWARE
     je .firmware
+    cmp eax, BIB_TLV_CPU
+    je .cpu
     cmp eax, BIB_TLV_MEMORY
     je .memory
     cmp eax, BIB_TLV_GRAPHICS
@@ -321,7 +330,23 @@ create_kernel_context:
     je .kernel
     cmp eax, BIB_TLV_SECURITY
     je .security
-    jmp .advance                    ; unbekannte TLVs sind rückwärtskompatibel
+    cmp eax, BIB_TLV_STORAGE
+    je .storage
+    cmp eax, BIB_TLV_ACPI
+    je .acpi
+    cmp eax, BIB_TLV_BOOT_OPTIONS
+    je .boot_options
+    cmp eax, BIB_TLV_MODULES
+    je .modules
+    cmp eax, BIB_TLV_ENTROPY
+    je .entropy
+    cmp eax, BIB_TLV_SYSTEM
+    je .system
+    cmp eax, BIB_TLV_KERNEL_IDENTITY
+    je .kernel_identity
+    test word [esi + 2], BIB_TLV_FLAG_REQUIRED
+    jnz .invalid
+    jmp .advance                    ; unbekannte optionale TLVs überspringen
 
 .firmware:
     cmp ecx, BIB_FIRMWARE_SIZE
@@ -347,6 +372,16 @@ create_kernel_context:
     jne .invalid
     cmp dword [kernel_context + CONTEXT_MEMORY_COUNT], 0
     je .invalid
+    jmp .advance
+
+.cpu:
+    cmp ecx, BIB_CPU_SIZE
+    jb .invalid
+    or dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_CPU
+    mov eax, [edx + 16]
+    mov [kernel_context + CONTEXT_CPU_FEATURE_EDX], eax
+    mov eax, [edx + 20]
+    mov [kernel_context + CONTEXT_CPU_FEATURE_ECX], eax
     jmp .advance
 
 .graphics:
@@ -383,11 +418,88 @@ create_kernel_context:
     jne .invalid
     jmp .advance
 
+.kernel_identity:
+    cmp ecx, BIB_KERNEL_IDENTITY_SIZE
+    jb .invalid
+    or dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_KERNEL_ID
+    mov eax, [edx + 0]
+    mov [kernel_context + CONTEXT_KERNEL_BUILD_ID + 0], eax
+    mov eax, [edx + 4]
+    mov [kernel_context + CONTEXT_KERNEL_BUILD_ID + 4], eax
+    mov eax, [edx + 8]
+    mov [kernel_context + CONTEXT_KERNEL_BUILD_ID + 8], eax
+    mov eax, [edx + 12]
+    mov [kernel_context + CONTEXT_KERNEL_BUILD_ID + 12], eax
+    mov eax, [edx + 16]
+    mov [kernel_context + CONTEXT_KERNEL_BUILD_ID + 16], eax
+    mov eax, [edx + 20]
+    mov [kernel_context + CONTEXT_KERNEL_FORMAT], eax
+    jmp .advance
+
 .security:
     cmp ecx, BIB_SECURITY_SIZE
     jb .invalid
     mov eax, [edx]
     mov [kernel_context + CONTEXT_SECURITY_STATE], eax
+    mov eax, [edx + 8]
+    mov [kernel_context + CONTEXT_ENTROPY_QUALITY], eax
+    jmp .advance
+
+.storage:
+    cmp ecx, BIB_STORAGE_SIZE
+    jb .invalid
+    mov eax, [edx + 4]
+    mov [kernel_context + CONTEXT_BOOT_DRIVE], eax
+    jmp .advance
+
+.acpi:
+    cmp ecx, BIB_ACPI_SIZE
+    jb .invalid
+    mov eax, [edx + 0]
+    mov [kernel_context + CONTEXT_ACPI_ADDRESS], eax
+    jmp .advance
+
+.modules:
+    cmp ecx, BIB_MODULES_SIZE
+    jb .invalid
+    mov eax, [edx + 0]
+    mov [kernel_context + CONTEXT_MODULES_ADDRESS], eax
+    mov eax, [edx + 4]
+    mov [kernel_context + CONTEXT_MODULE_COUNT], eax
+    jmp .advance
+
+.boot_options:
+    cmp ecx, BIB_BOOT_OPTIONS_SIZE
+    jb .invalid
+    jmp .advance
+
+.entropy:
+    cmp ecx, BIB_ENTROPY_SIZE
+    jb .invalid
+    cmp dword [edx + 24], 16
+    jb .invalid
+    or dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_ENTROPY
+    mov eax, [edx + 0]
+    mov [kernel_context + CONTEXT_ENTROPY_SEED + 0], eax
+    mov eax, [edx + 4]
+    mov [kernel_context + CONTEXT_ENTROPY_SEED + 4], eax
+    mov eax, [edx + 8]
+    mov [kernel_context + CONTEXT_ENTROPY_SEED + 8], eax
+    mov eax, [edx + 12]
+    mov [kernel_context + CONTEXT_ENTROPY_SEED + 12], eax
+    mov eax, [edx + 20]
+    mov [kernel_context + CONTEXT_ENTROPY_QUALITY], eax
+    jmp .advance
+
+.system:
+    cmp ecx, BIB_SYSTEM_SIZE
+    jb .invalid
+    or dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_SYSTEM
+    mov eax, [edx + 0]
+    mov [kernel_context + CONTEXT_SYSTEM_GENERATION], eax
+    mov eax, [edx + 8]
+    mov [kernel_context + CONTEXT_BOOT_ATTEMPT], eax
+    jmp .advance
 
 .advance:
     mov esi, ebp
@@ -398,6 +510,22 @@ create_kernel_context:
     and eax, CONTEXT_REQUIRED
     cmp eax, CONTEXT_REQUIRED
     jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+early_security_entropy_initialize:
+    mov eax, [kernel_context + CONTEXT_ENTROPY_SEED + 0]
+    xor eax, [kernel_context + CONTEXT_ENTROPY_SEED + 4]
+    rol eax, 9
+    xor eax, [kernel_context + CONTEXT_ENTROPY_SEED + 8]
+    rol eax, 13
+    xor eax, [kernel_context + CONTEXT_ENTROPY_SEED + 12]
+    test eax, eax
+    jz .invalid
+    mov [stack_canary_seed], eax
     clc
     ret
 .invalid:
@@ -3590,17 +3718,33 @@ CONTEXT_KERNEL_ADDRESS    equ 52
 CONTEXT_KERNEL_SIZE       equ 56
 CONTEXT_KERNEL_ENTRY      equ 60
 CONTEXT_SECURITY_STATE    equ 64
-CONTEXT_SIZE              equ 68
+CONTEXT_CPU_FEATURE_EDX   equ 68
+CONTEXT_CPU_FEATURE_ECX   equ 72
+CONTEXT_ACPI_ADDRESS      equ 76
+CONTEXT_MODULES_ADDRESS   equ 80
+CONTEXT_MODULE_COUNT      equ 84
+CONTEXT_ENTROPY_QUALITY   equ 88
+CONTEXT_ENTROPY_SEED      equ 92
+CONTEXT_SYSTEM_GENERATION equ 108
+CONTEXT_BOOT_ATTEMPT      equ 112
+CONTEXT_KERNEL_BUILD_ID   equ 116
+CONTEXT_KERNEL_FORMAT     equ 136
+CONTEXT_SIZE              equ 140
 
 CONTEXT_HAS_FIRMWARE      equ 0x01
 CONTEXT_HAS_MEMORY        equ 0x02
 CONTEXT_HAS_GRAPHICS      equ 0x04
 CONTEXT_HAS_KERNEL        equ 0x08
-CONTEXT_REQUIRED          equ CONTEXT_HAS_FIRMWARE | CONTEXT_HAS_MEMORY | CONTEXT_HAS_KERNEL
+CONTEXT_HAS_CPU           equ 0x10
+CONTEXT_HAS_ENTROPY       equ 0x20
+CONTEXT_HAS_SYSTEM        equ 0x40
+CONTEXT_HAS_KERNEL_ID     equ 0x80
+CONTEXT_REQUIRED          equ CONTEXT_HAS_FIRMWARE | CONTEXT_HAS_MEMORY | CONTEXT_HAS_KERNEL | CONTEXT_HAS_CPU | CONTEXT_HAS_ENTROPY | CONTEXT_HAS_SYSTEM
 
 align 8
 kernel_context:
     times CONTEXT_SIZE db 0
+stack_canary_seed: dd 0
 
 COM1_BASE             equ 0x03F8
 NOVA_COLOR_BACKGROUND equ 0x00101113
@@ -3795,6 +3939,8 @@ message_shutdown:
     db "NOVA: Shutdown angefordert, System wird ausgeschaltet", 13, 10, 0
 message_bib_ok:
     db "NOVA: NBHP/BIB v1 validiert", 13, 10, 0
+message_kernel_identity_ok:
+    db "NOVA: Kernel Build-ID aus NBHP/BIB importiert", 13, 10, 0
 message_pmm_ok:
     db "NOVA: PMM ABI 1.0 und Seitentest bereit", 13, 10, 0
 message_pmm_error:

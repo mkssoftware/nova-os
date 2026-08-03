@@ -1,0 +1,3 @@
+# NovaOS BootControl ADRs
+
+Enthält ADR-BOOTCONTROL-0001 bis ADR-BOOTCONTROL-0007.

@@ -5,13 +5,15 @@
 %ifndef NOVA_BOOT_LAYOUT_INC
 %define NOVA_BOOT_LAYOUT_INC
 
+%include "nova_boot_protocol.inc"
+
 ; Datenträgerlayout
 STAGE2_FIRST_SECTOR        equ 2
-STAGE2_SECTOR_COUNT        equ 40
+STAGE2_SECTOR_COUNT        equ 48
 STAGE2_BYTE_COUNT          equ STAGE2_SECTOR_COUNT * 512
-KERNEL_FIRST_LBA           equ 41
+KERNEL_FIRST_LBA           equ 49
 KERNEL_PAYLOAD_MAX_SIZE    equ 40960
-NKI_HEADER_SIZE            equ 64
+NKI_HEADER_SIZE            equ NOVA_NKI_HEADER_SIZE
 KERNEL_IMAGE_SECTOR_COUNT  equ 81
 KERNEL_IMAGE_BYTE_COUNT    equ KERNEL_IMAGE_SECTOR_COUNT * 512
 
@@ -39,6 +41,10 @@ KERNEL_STACK_TOP           equ 0x00090000
 ; Protected-Mode-Segmente
 CODE_SEGMENT               equ 0x08
 DATA_SEGMENT               equ 0x10
+LONG_CODE_SEGMENT          equ 0x18
+LONG_MODE_PML4             equ 0x00070000
+LONG_MODE_PDPT             equ 0x00071000
+LONG_MODE_PD               equ 0x00072000
 
 ; Grafik
 ; QEMU/Bochs VBE: 800 x 600 x 32 Bit mit linearem Framebuffer.
@@ -66,42 +72,5 @@ NKI_OFF_IMAGE_SIZE         equ 32
 NKI_OFF_COMPRESSION        equ 36
 NKI_OFF_CRC32              equ 40
 NKI_OFF_BUILD_ID           equ 44
-
-; Boot Information Block (BIB) v1
-NOVA_BIB_MAGIC_LOW         equ 0x5048424E ; "NBHP"
-NOVA_BIB_MAGIC_HIGH        equ 0x00424942 ; "BIB\0"
-NOVA_BIB_VERSION_MAJOR     equ 1
-NOVA_BIB_VERSION_MINOR     equ 0
-NOVA_BIB_VERSION_PATCH     equ 0
-NOVA_BIB_HEADER_SIZE       equ 32
-NOVA_X86_BOOT_MAGIC        equ 0x4E4F5641
-NOVA_BOOT_PLATFORM_BIOS    equ 1
-NOVA_BOOT_FLAG_FRAMEBUFFER equ 0x00000001
-
-BIB_OFF_MAGIC_LOW          equ 0
-BIB_OFF_MAGIC_HIGH         equ 4
-BIB_OFF_VERSION_MAJOR      equ 8
-BIB_OFF_VERSION_MINOR      equ 10
-BIB_OFF_VERSION_PATCH      equ 12
-BIB_OFF_HEADER_SIZE        equ 14
-BIB_OFF_TOTAL_SIZE         equ 16
-BIB_OFF_CHECKSUM           equ 20
-BIB_OFF_ARCHITECTURE       equ 24
-BIB_OFF_FLAGS              equ 28
-
-BIB_TLV_HEADER_SIZE        equ 8
-BIB_TLV_FIRMWARE           equ 1
-BIB_TLV_MEMORY             equ 3
-BIB_TLV_GRAPHICS           equ 4
-BIB_TLV_KERNEL             equ 6
-BIB_TLV_SECURITY           equ 7
-BIB_TLV_BOOT_OPTIONS       equ 9
-
-BIB_FIRMWARE_SIZE          equ 16
-BIB_MEMORY_SIZE            equ 16
-BIB_GRAPHICS_SIZE          equ 32
-BIB_KERNEL_SIZE            equ 32
-BIB_SECURITY_SIZE          equ 16
-BIB_BOOT_OPTIONS_SIZE      equ 16
 
 %endif

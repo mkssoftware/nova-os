@@ -12,7 +12,15 @@ BIB_GRAPHICS_OFFSET     equ BIB_MEMORY_OFFSET + BIB_TLV_HEADER_SIZE + BIB_MEMORY
 BIB_KERNEL_OFFSET       equ BIB_GRAPHICS_OFFSET + BIB_TLV_HEADER_SIZE + BIB_GRAPHICS_SIZE
 BIB_SECURITY_OFFSET     equ BIB_KERNEL_OFFSET + BIB_TLV_HEADER_SIZE + BIB_KERNEL_SIZE
 BIB_OPTIONS_OFFSET      equ BIB_SECURITY_OFFSET + BIB_TLV_HEADER_SIZE + BIB_SECURITY_SIZE
-BIB_TOTAL_SIZE          equ BIB_OPTIONS_OFFSET + BIB_TLV_HEADER_SIZE + BIB_BOOT_OPTIONS_SIZE
+BIB_CPU_OFFSET          equ BIB_OPTIONS_OFFSET + BIB_TLV_HEADER_SIZE + BIB_BOOT_OPTIONS_SIZE
+BIB_STORAGE_OFFSET      equ BIB_CPU_OFFSET + BIB_TLV_HEADER_SIZE + BIB_CPU_SIZE
+BIB_ACPI_OFFSET         equ BIB_STORAGE_OFFSET + BIB_TLV_HEADER_SIZE + BIB_STORAGE_SIZE
+BIB_MODULES_OFFSET      equ BIB_ACPI_OFFSET + BIB_TLV_HEADER_SIZE + BIB_ACPI_SIZE
+BIB_TIMING_OFFSET       equ BIB_MODULES_OFFSET + BIB_TLV_HEADER_SIZE + BIB_MODULES_SIZE
+BIB_ENTROPY_OFFSET      equ BIB_TIMING_OFFSET + BIB_TLV_HEADER_SIZE + BIB_TIMING_SIZE
+BIB_SYSTEM_OFFSET       equ BIB_ENTROPY_OFFSET + BIB_TLV_HEADER_SIZE + BIB_ENTROPY_SIZE
+BIB_KERNEL_ID_OFFSET    equ BIB_SYSTEM_OFFSET + BIB_TLV_HEADER_SIZE + BIB_SYSTEM_SIZE
+BIB_TOTAL_SIZE          equ BIB_KERNEL_ID_OFFSET + BIB_TLV_HEADER_SIZE + BIB_KERNEL_IDENTITY_SIZE
 
 BM_ENTRY_SIZE           equ 8
 BM_ENTRY_LABEL          equ 0
@@ -39,6 +47,7 @@ stage2_start:
     call print_string
 
     call initialize_bib
+    call collect_cpu_and_entropy
     call collect_memory_map
     call initialize_vbe
     call load_kernel_image
@@ -72,6 +81,7 @@ initialize_bib:
 
     ; Firmware TLV
     mov word [BOOT_INFO_ADDRESS + BIB_FIRMWARE_OFFSET + 0], BIB_TLV_FIRMWARE
+    mov word [BOOT_INFO_ADDRESS + BIB_FIRMWARE_OFFSET + 2], BIB_TLV_FLAG_REQUIRED
     mov dword [BOOT_INFO_ADDRESS + BIB_FIRMWARE_OFFSET + 4], BIB_FIRMWARE_SIZE
     mov dword [BOOT_INFO_ADDRESS + BIB_FIRMWARE_OFFSET + 8], NOVA_BOOT_PLATFORM_BIOS
     xor eax, eax
@@ -80,6 +90,7 @@ initialize_bib:
 
     ; Memory TLV
     mov word [BOOT_INFO_ADDRESS + BIB_MEMORY_OFFSET + 0], BIB_TLV_MEMORY
+    mov word [BOOT_INFO_ADDRESS + BIB_MEMORY_OFFSET + 2], BIB_TLV_FLAG_REQUIRED
     mov dword [BOOT_INFO_ADDRESS + BIB_MEMORY_OFFSET + 4], BIB_MEMORY_SIZE
     mov dword [BOOT_INFO_ADDRESS + BIB_MEMORY_OFFSET + 8], MEMORY_MAP_ADDRESS
     mov dword [BOOT_INFO_ADDRESS + BIB_MEMORY_OFFSET + 16], MEMORY_MAP_ENTRY_SIZE
@@ -90,15 +101,83 @@ initialize_bib:
 
     ; Kernel TLV
     mov word [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 0], BIB_TLV_KERNEL
+    mov word [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 2], BIB_TLV_FLAG_REQUIRED
     mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 4], BIB_KERNEL_SIZE
 
     ; Security TLV: Status 0 = nicht verifiziert, transparent gemeldet.
     mov word [BOOT_INFO_ADDRESS + BIB_SECURITY_OFFSET + 0], BIB_TLV_SECURITY
+    mov word [BOOT_INFO_ADDRESS + BIB_SECURITY_OFFSET + 2], BIB_TLV_FLAG_REQUIRED
     mov dword [BOOT_INFO_ADDRESS + BIB_SECURITY_OFFSET + 4], BIB_SECURITY_SIZE
 
     ; Boot Options TLV: Standardprofil, kein Debug-/Recovery-Modus.
     mov word [BOOT_INFO_ADDRESS + BIB_OPTIONS_OFFSET + 0], BIB_TLV_BOOT_OPTIONS
+    mov word [BOOT_INFO_ADDRESS + BIB_OPTIONS_OFFSET + 2], BIB_TLV_FLAG_REQUIRED
     mov dword [BOOT_INFO_ADDRESS + BIB_OPTIONS_OFFSET + 4], BIB_BOOT_OPTIONS_SIZE
+
+    ; Erweiterte NBHP/BIB-1.1-Informationen. Nicht verfügbare optionale
+    ; Zeiger bleiben null und werden dadurch nicht als gültig ausgegeben.
+    mov word [BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 0], BIB_TLV_CPU
+    mov word [BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 2], BIB_TLV_FLAG_REQUIRED
+    mov dword [BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 4], BIB_CPU_SIZE
+
+    mov word [BOOT_INFO_ADDRESS + BIB_STORAGE_OFFSET + 0], BIB_TLV_STORAGE
+    mov dword [BOOT_INFO_ADDRESS + BIB_STORAGE_OFFSET + 4], BIB_STORAGE_SIZE
+    mov dword [BOOT_INFO_ADDRESS + BIB_STORAGE_OFFSET + 8], NOVA_BOOT_PLATFORM_BIOS
+    xor eax, eax
+    mov al, [boot_drive]
+    mov dword [BOOT_INFO_ADDRESS + BIB_STORAGE_OFFSET + 12], eax
+
+    mov word [BOOT_INFO_ADDRESS + BIB_ACPI_OFFSET + 0], BIB_TLV_ACPI
+    mov dword [BOOT_INFO_ADDRESS + BIB_ACPI_OFFSET + 4], BIB_ACPI_SIZE
+
+    mov word [BOOT_INFO_ADDRESS + BIB_MODULES_OFFSET + 0], BIB_TLV_MODULES
+    mov dword [BOOT_INFO_ADDRESS + BIB_MODULES_OFFSET + 4], BIB_MODULES_SIZE
+
+    mov word [BOOT_INFO_ADDRESS + BIB_TIMING_OFFSET + 0], BIB_TLV_TIMING
+    mov dword [BOOT_INFO_ADDRESS + BIB_TIMING_OFFSET + 4], BIB_TIMING_SIZE
+
+    mov word [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET + 0], BIB_TLV_ENTROPY
+    mov word [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET + 2], BIB_TLV_FLAG_REQUIRED
+    mov dword [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET + 4], BIB_ENTROPY_SIZE
+
+    mov word [BOOT_INFO_ADDRESS + BIB_SYSTEM_OFFSET + 0], BIB_TLV_SYSTEM
+    mov word [BOOT_INFO_ADDRESS + BIB_SYSTEM_OFFSET + 2], BIB_TLV_FLAG_REQUIRED
+    mov dword [BOOT_INFO_ADDRESS + BIB_SYSTEM_OFFSET + 4], BIB_SYSTEM_SIZE
+    mov dword [BOOT_INFO_ADDRESS + BIB_SYSTEM_OFFSET + 16], 1 ; erster Bootversuch
+    mov word [BOOT_INFO_ADDRESS + BIB_KERNEL_ID_OFFSET + 0], BIB_TLV_KERNEL_IDENTITY
+    mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_ID_OFFSET + 4], BIB_KERNEL_IDENTITY_SIZE
+    ret
+
+collect_cpu_and_entropy:
+    xor eax, eax
+    cpuid
+    mov dword [BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 8], ebx
+    mov dword [BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 12], edx
+    mov dword [BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 16], ecx
+    mov dword [BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 20], eax
+    mov eax, 1
+    cpuid
+    mov dword [BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 24], edx
+    mov dword [BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 28], ecx
+
+    rdtsc
+    mov dword [BOOT_INFO_ADDRESS + BIB_TIMING_OFFSET + 8], eax
+    mov dword [BOOT_INFO_ADDRESS + BIB_TIMING_OFFSET + 12], edx
+    xor eax, dword [0x046C]       ; BIOS-Tickzähler beim Eintritt
+    rol edx, 13
+    xor edx, eax
+    mov dword [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET + 8], eax
+    mov dword [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET + 12], edx
+    not eax
+    xor eax, 0x4E4F5641
+    mov dword [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET + 16], eax
+    rol edx, 7
+    xor edx, 0x424F4F54
+    mov dword [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET + 20], edx
+    mov dword [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET + 24], NOVA_ENTROPY_SOURCE_RDTSC
+    mov dword [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET + 28], NOVA_ENTROPY_QUALITY_WEAK
+    mov dword [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET + 32], 16
+    mov dword [BOOT_INFO_ADDRESS + BIB_SECURITY_OFFSET + 16], NOVA_ENTROPY_QUALITY_WEAK
     ret
 
 collect_memory_map:
@@ -356,7 +435,7 @@ validate_kernel_image:
     mov ds, ax
 
     cmp dword [NKI_OFF_MAGIC_LOW], NKI_MAGIC_LOW
-    jne .invalid_header
+    jne .try_direct_elf
     cmp dword [NKI_OFF_MAGIC_HIGH], NKI_MAGIC_HIGH
     jne .invalid_header
     cmp dword [NKI_OFF_VERSION], NKI_VERSION
@@ -365,6 +444,9 @@ validate_kernel_image:
     jne .invalid_header
     cmp dword [NKI_OFF_ARCHITECTURE], NKI_ARCH_X86_32
     jne .invalid_header
+    mov eax, [NKI_OFF_FLAGS]
+    test eax, ~(NOVA_NKI_FLAG_ELF_BUILD_ID | NOVA_NKI_FLAG_NOVA_METADATA)
+    jnz .invalid_header
     cmp dword [NKI_OFF_COMPRESSION], NKI_COMPRESSION_NONE
     jne .invalid_header
     cmp dword [NKI_OFF_ENTRY_POINT], KERNEL_ENTRY_ADDRESS
@@ -382,18 +464,79 @@ validate_kernel_image:
     call crc32_ds_si
     cmp eax, [NKI_OFF_CRC32]
     jne .invalid_checksum
+    mov [cs:kernel_payload_crc], eax
+    mov dword [cs:kernel_payload_base], KERNEL_TEMP_ADDRESS + NKI_HEADER_SIZE
 
-    ; Kernel-TLV aus dem validierten NKI befüllen.
+    cmp dword [NKI_HEADER_SIZE], ELF_MAGIC
+    jne .native_nki
+    mov si, NKI_HEADER_SIZE
+    mov ecx, [NKI_OFF_IMAGE_SIZE]
+    call validate_elf_ds_si
+    jc .invalid_header
+    test dword [NKI_OFF_FLAGS], NOVA_NKI_FLAG_ELF_BUILD_ID
+    jz .invalid_header
+    test dword [NKI_OFF_FLAGS], NOVA_NKI_FLAG_NOVA_METADATA
+    jz .invalid_header
+    cmp byte [cs:elf_nova_metadata_found], 1
+    jne .invalid_header
+    mov eax, [NKI_OFF_BUILD_ID + 0]
+    cmp eax, [cs:elf_build_id + 0]
+    jne .invalid_header
+    mov eax, [NKI_OFF_BUILD_ID + 4]
+    cmp eax, [cs:elf_build_id + 4]
+    jne .invalid_header
+    mov eax, [NKI_OFF_BUILD_ID + 8]
+    cmp eax, [cs:elf_build_id + 8]
+    jne .invalid_header
+    mov eax, [NKI_OFF_BUILD_ID + 12]
+    cmp eax, [cs:elf_build_id + 12]
+    jne .invalid_header
+    jmp .publish
+
+.native_nki:
+    mov byte [cs:kernel_payload_format], NOVA_KERNEL_FORMAT_NATIVE
     mov eax, [NKI_OFF_LOAD_ADDRESS]
-    mov edx, [NKI_OFF_IMAGE_SIZE]
-    mov ecx, [NKI_OFF_ENTRY_POINT]
-    mov ebp, [NKI_OFF_CRC32]
+    mov [cs:elf_load_address], eax
+    mov eax, [NKI_OFF_IMAGE_SIZE]
+    mov [cs:elf_memory_size], eax
+    mov eax, [NKI_OFF_ENTRY_POINT]
+    mov [cs:elf_entry_point], eax
+    jmp .publish
+
+.try_direct_elf:
+    cmp dword [0], ELF_MAGIC
+    jne .invalid_header
+    mov si, 0
+    mov ecx, KERNEL_IMAGE_BYTE_COUNT
+    call validate_elf_ds_si
+    jc .invalid_header
+    mov dword [cs:kernel_payload_base], KERNEL_TEMP_ADDRESS
+    mov dword [cs:kernel_payload_crc], 0
+
+.publish:
     pop ds
+    mov eax, [elf_load_address]
+    mov edx, [elf_memory_size]
+    mov ecx, [elf_entry_point]
+    mov ebp, [kernel_payload_crc]
     mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 8], eax
     mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 12], edx
     mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 16], ecx
-    mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 20], NKI_VERSION
+    movzx eax, byte [kernel_payload_format]
+    mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 20], eax
     mov dword [BOOT_INFO_ADDRESS + BIB_KERNEL_OFFSET + 24], ebp
+    mov eax, [elf_build_id + 0]
+    mov [BOOT_INFO_ADDRESS + BIB_KERNEL_ID_OFFSET + 8], eax
+    mov eax, [elf_build_id + 4]
+    mov [BOOT_INFO_ADDRESS + BIB_KERNEL_ID_OFFSET + 12], eax
+    mov eax, [elf_build_id + 8]
+    mov [BOOT_INFO_ADDRESS + BIB_KERNEL_ID_OFFSET + 16], eax
+    mov eax, [elf_build_id + 12]
+    mov [BOOT_INFO_ADDRESS + BIB_KERNEL_ID_OFFSET + 20], eax
+    mov eax, [elf_build_id + 16]
+    mov [BOOT_INFO_ADDRESS + BIB_KERNEL_ID_OFFSET + 24], eax
+    movzx eax, byte [kernel_payload_format]
+    mov [BOOT_INFO_ADDRESS + BIB_KERNEL_ID_OFFSET + 28], eax
     ret
 
 .invalid_header:
@@ -407,6 +550,454 @@ validate_kernel_image:
     mov si, message_kernel_checksum_error
     call print_string
     mov byte [boot_error_code], 2
+    ret
+
+; DS:SI zeigt auf ein ELF32-Image, ECX enthält die verfügbare Dateigröße.
+; Alle PT_LOAD-Segmente werden vor dem späteren Kopieren vollständig geprüft.
+validate_elf_ds_si:
+    cmp byte [si + 4], ELFCLASS32
+    je .elf32
+    cmp byte [si + 4], ELFCLASS64
+    je .elf64
+    stc
+    ret
+.elf32:
+    call validate_elf32_ds_si
+    jc .done
+    mov byte [cs:kernel_payload_format], NOVA_KERNEL_FORMAT_ELF32
+.done:
+    ret
+.elf64:
+    call validate_elf64_ds_si
+    jc .done
+    mov byte [cs:kernel_payload_format], NOVA_KERNEL_FORMAT_ELF64
+    ret
+
+validate_elf32_ds_si:
+    pushad
+    movzx esi, si
+    mov edi, ecx
+    cmp edi, ELF32_HEADER_SIZE
+    jb .invalid
+    cmp dword [esi], ELF_MAGIC
+    jne .invalid
+    cmp byte [esi + 4], ELFCLASS32
+    jne .invalid
+    cmp byte [esi + 5], ELFDATA2LSB
+    jne .invalid
+    cmp byte [esi + 6], 1
+    jne .invalid
+    cmp word [esi + 16], ELF_ET_EXEC
+    jne .invalid
+    cmp word [esi + 18], ELF_EM_386
+    jne .invalid
+    cmp dword [esi + 20], 1
+    jne .invalid
+    cmp word [esi + ELF32_OFF_EHSIZE], ELF32_HEADER_SIZE
+    jne .invalid
+    cmp word [esi + ELF32_OFF_PHENTSIZE], ELF32_PROGRAM_HEADER_SIZE
+    jne .invalid
+    movzx ecx, word [esi + ELF32_OFF_PHNUM]
+    test ecx, ecx
+    jz .invalid
+    cmp ecx, 16
+    ja .invalid
+    mov eax, [esi + ELF32_OFF_PHOFF]
+    mov edx, ecx
+    shl edx, 5
+    add edx, eax
+    jc .invalid
+    cmp edx, edi
+    ja .invalid
+    add eax, esi
+    mov edx, eax
+    mov eax, [esi + ELF32_OFF_ENTRY]
+    mov [cs:elf_entry_point], eax
+    mov dword [cs:elf_min_address], 0xFFFFFFFF
+    mov dword [cs:elf_max_address], 0
+    mov dword [cs:elf_segment_count], 0
+    mov byte [cs:elf_entry_covered], 0
+    mov byte [cs:elf_build_id_found], 0
+    mov byte [cs:elf_nova_metadata_found], 0
+.program_header:
+    mov eax, [edx + ELF32_PH_OFF_TYPE]
+    cmp eax, ELF_PT_DYNAMIC
+    je .invalid
+    cmp eax, ELF_PT_INTERP
+    je .invalid
+    cmp eax, ELF_PT_NOTE
+    jne .check_load
+    call validate_elf_note_segment
+    jc .invalid
+    jmp .next
+.check_load:
+    cmp eax, ELF_PT_LOAD
+    jne .next
+    mov eax, [edx + ELF32_PH_OFF_FLAGS]
+    and eax, ELF_PF_EXECUTE | ELF_PF_WRITE
+    cmp eax, ELF_PF_EXECUTE | ELF_PF_WRITE
+    je .invalid                    ; W^X bereits im Loader erzwingen
+    mov eax, [edx + ELF32_PH_OFF_FILESZ]
+    cmp eax, [edx + ELF32_PH_OFF_MEMSZ]
+    ja .invalid
+    cmp dword [edx + ELF32_PH_OFF_MEMSZ], 0
+    je .invalid
+    add eax, [edx + ELF32_PH_OFF_OFFSET]
+    jc .invalid
+    cmp eax, edi
+    ja .invalid
+    mov eax, [edx + ELF32_PH_OFF_PADDR]
+    cmp eax, KERNEL_ENTRY_ADDRESS
+    jb .invalid
+    mov ebx, eax
+    add ebx, [edx + ELF32_PH_OFF_MEMSZ]
+    jc .invalid
+    cmp ebx, 0x01000000
+    ja .invalid
+
+    ; p_vaddr und p_offset müssen modulo p_align übereinstimmen.
+    mov ebp, [edx + ELF32_PH_OFF_ALIGN]
+    cmp ebp, 1
+    jbe .alignment_ok
+    mov eax, ebp
+    dec eax
+    test ebp, eax
+    jnz .invalid
+    mov ebp, [edx + ELF32_PH_OFF_OFFSET]
+    and ebp, eax
+    ; Der zweite AND benötigt align-1, nicht align.
+    mov eax, [edx + ELF32_PH_OFF_ALIGN]
+    dec eax
+    and eax, [edx + ELF32_PH_OFF_VADDR]
+    cmp ebp, eax
+    jne .invalid
+.alignment_ok:
+    mov eax, [edx + ELF32_PH_OFF_PADDR]
+    mov ebx, eax
+    add ebx, [edx + ELF32_PH_OFF_MEMSZ]
+    mov [cs:elf_current_start], eax
+    mov [cs:elf_current_end], ebx
+
+    ; Kein geladenes Speicherintervall darf ein früheres PT_LOAD überlappen.
+    xor ebp, ebp
+.overlap_loop:
+    cmp ebp, [cs:elf_segment_count]
+    jae .store_interval
+    cmp eax, [cs:elf_segment_ends + ebp * 4]
+    jae .overlap_next
+    mov ebx, [cs:elf_segment_starts + ebp * 4]
+    cmp ebx, [cs:elf_current_end]
+    jb .invalid
+.overlap_next:
+    inc ebp
+    jmp .overlap_loop
+.store_interval:
+    mov ebp, [cs:elf_segment_count]
+    mov eax, [cs:elf_current_start]
+    mov [cs:elf_segment_starts + ebp * 4], eax
+    mov ebx, [cs:elf_current_end]
+    mov [cs:elf_segment_ends + ebp * 4], ebx
+    inc dword [cs:elf_segment_count]
+    cmp eax, [cs:elf_min_address]
+    jae .minimum_ok
+    mov [cs:elf_min_address], eax
+.minimum_ok:
+    cmp ebx, [cs:elf_max_address]
+    jbe .check_entry
+    mov [cs:elf_max_address], ebx
+.check_entry:
+    test dword [edx + ELF32_PH_OFF_FLAGS], ELF_PF_EXECUTE
+    jz .next
+    mov ebp, [cs:elf_entry_point]
+    cmp ebp, [cs:elf_current_start]
+    jb .next
+    cmp ebp, [cs:elf_current_end]
+    jae .next
+    mov byte [cs:elf_entry_covered], 1
+.next:
+    add edx, ELF32_PROGRAM_HEADER_SIZE
+    dec ecx
+    jnz .program_header
+    cmp dword [cs:elf_segment_count], 0
+    je .invalid
+    cmp byte [cs:elf_entry_covered], 1
+    jne .invalid
+    mov eax, [cs:elf_min_address]
+    mov [cs:elf_load_address], eax
+    mov ebx, [cs:elf_max_address]
+    sub ebx, eax
+    mov [cs:elf_memory_size], ebx
+    popad
+    clc
+    ret
+.invalid:
+    popad
+    stc
+    ret
+
+validate_elf64_ds_si:
+    pushad
+    movzx esi, si
+    mov edi, ecx
+    cmp edi, ELF64_HEADER_SIZE
+    jb .invalid
+    cmp dword [esi], ELF_MAGIC
+    jne .invalid
+    cmp byte [esi + 4], ELFCLASS64
+    jne .invalid
+    cmp byte [esi + 5], ELFDATA2LSB
+    jne .invalid
+    cmp word [esi + 16], ELF_ET_EXEC
+    jne .invalid
+    cmp word [esi + 18], ELF_EM_X86_64
+    jne .invalid
+    cmp dword [esi + 20], 1
+    jne .invalid
+    cmp word [esi + ELF64_OFF_EHSIZE], ELF64_HEADER_SIZE
+    jne .invalid
+    cmp word [esi + ELF64_OFF_PHENTSIZE], ELF64_PROGRAM_HEADER_SIZE
+    jne .invalid
+    cmp dword [esi + ELF64_OFF_ENTRY + 4], 0
+    jne .invalid
+    cmp dword [esi + ELF64_OFF_PHOFF + 4], 0
+    jne .invalid
+    movzx ecx, word [esi + ELF64_OFF_PHNUM]
+    test ecx, ecx
+    jz .invalid
+    cmp ecx, 16
+    ja .invalid
+    mov eax, [esi + ELF64_OFF_PHOFF]
+    imul edx, ecx, ELF64_PROGRAM_HEADER_SIZE
+    add edx, eax
+    jc .invalid
+    cmp edx, edi
+    ja .invalid
+    add eax, esi
+    mov edx, eax
+    mov eax, [esi + ELF64_OFF_ENTRY]
+    mov [cs:elf_entry_point], eax
+    mov dword [cs:elf_min_address], 0xFFFFFFFF
+    mov dword [cs:elf_max_address], 0
+    mov dword [cs:elf_segment_count], 0
+    mov byte [cs:elf_entry_covered], 0
+.ph:
+    cmp dword [edx + ELF64_PH_OFF_TYPE], ELF_PT_DYNAMIC
+    je .invalid
+    cmp dword [edx + ELF64_PH_OFF_TYPE], ELF_PT_INTERP
+    je .invalid
+    cmp dword [edx + ELF64_PH_OFF_TYPE], ELF_PT_LOAD
+    jne .next
+    mov eax, [edx + ELF64_PH_OFF_FLAGS]
+    and eax, ELF_PF_EXECUTE | ELF_PF_WRITE
+    cmp eax, ELF_PF_EXECUTE | ELF_PF_WRITE
+    je .invalid
+    cmp dword [edx + ELF64_PH_OFF_OFFSET + 4], 0
+    jne .invalid
+    cmp dword [edx + ELF64_PH_OFF_PADDR + 4], 0
+    jne .invalid
+    cmp dword [edx + ELF64_PH_OFF_FILESZ + 4], 0
+    jne .invalid
+    cmp dword [edx + ELF64_PH_OFF_MEMSZ + 4], 0
+    jne .invalid
+    cmp dword [edx + ELF64_PH_OFF_ALIGN + 4], 0
+    jne .invalid
+    mov eax, [edx + ELF64_PH_OFF_FILESZ]
+    cmp eax, [edx + ELF64_PH_OFF_MEMSZ]
+    ja .invalid
+    add eax, [edx + ELF64_PH_OFF_OFFSET]
+    jc .invalid
+    cmp eax, edi
+    ja .invalid
+    mov eax, [edx + ELF64_PH_OFF_PADDR]
+    cmp eax, KERNEL_ENTRY_ADDRESS
+    jb .invalid
+    mov ebx, eax
+    add ebx, [edx + ELF64_PH_OFF_MEMSZ]
+    jc .invalid
+    cmp ebx, 0x01000000
+    ja .invalid
+    mov [cs:elf_current_start], eax
+    mov [cs:elf_current_end], ebx
+    mov ebp, [edx + ELF64_PH_OFF_ALIGN]
+    cmp ebp, 1
+    jbe .alignment_ok
+    mov eax, ebp
+    dec eax
+    test ebp, eax
+    jnz .invalid
+    mov ebp, [edx + ELF64_PH_OFF_OFFSET]
+    and ebp, eax
+    mov eax, [edx + ELF64_PH_OFF_VADDR]
+    and eax, [edx + ELF64_PH_OFF_ALIGN]
+    ; align-1 erneut bilden, damit virtuelle Adresse und Offset kongruent sind.
+    mov eax, [edx + ELF64_PH_OFF_ALIGN]
+    dec eax
+    and eax, [edx + ELF64_PH_OFF_VADDR]
+    cmp ebp, eax
+    jne .invalid
+.alignment_ok:
+    xor ebp, ebp
+.overlap:
+    cmp ebp, [cs:elf_segment_count]
+    jae .store
+    mov eax, [cs:elf_current_start]
+    cmp eax, [cs:elf_segment_ends + ebp * 4]
+    jae .overlap_next
+    mov eax, [cs:elf_segment_starts + ebp * 4]
+    cmp eax, [cs:elf_current_end]
+    jb .invalid
+.overlap_next:
+    inc ebp
+    jmp .overlap
+.store:
+    mov ebp, [cs:elf_segment_count]
+    mov eax, [cs:elf_current_start]
+    mov [cs:elf_segment_starts + ebp * 4], eax
+    mov ebx, [cs:elf_current_end]
+    mov [cs:elf_segment_ends + ebp * 4], ebx
+    cmp eax, [cs:elf_min_address]
+    jae .min_ok
+    mov [cs:elf_min_address], eax
+.min_ok:
+    cmp ebx, [cs:elf_max_address]
+    jbe .entry
+    mov [cs:elf_max_address], ebx
+.entry:
+    inc dword [cs:elf_segment_count]
+    test dword [edx + ELF64_PH_OFF_FLAGS], ELF_PF_EXECUTE
+    jz .next
+    mov ebp, [cs:elf_entry_point]
+    cmp ebp, eax
+    jb .next
+    cmp ebp, ebx
+    jae .next
+    mov byte [cs:elf_entry_covered], 1
+.next:
+    add edx, ELF64_PROGRAM_HEADER_SIZE
+    dec ecx
+    jnz .ph
+    cmp dword [cs:elf_segment_count], 0
+    je .invalid
+    cmp byte [cs:elf_entry_covered], 1
+    jne .invalid
+    mov eax, [cs:elf_min_address]
+    mov [cs:elf_load_address], eax
+    mov ebx, [cs:elf_max_address]
+    sub ebx, eax
+    mov [cs:elf_memory_size], ebx
+    mov eax, 0x80000000
+    cpuid
+    cmp eax, 0x80000001
+    jb .invalid
+    mov eax, 0x80000001
+    cpuid
+    test edx, 1 << 29
+    jz .invalid
+    popad
+    clc
+    ret
+.invalid:
+    popad
+    stc
+    ret
+
+; Validiert alle ELF32-Notes eines PT_NOTE-Segments. Unbekannte Notes bleiben optional.
+validate_elf_note_segment:
+    pushad
+    mov eax, [edx + ELF32_PH_OFF_OFFSET]
+    mov ebx, [edx + ELF32_PH_OFF_FILESZ]
+    add ebx, eax
+    jc .invalid
+    cmp ebx, edi
+    ja .invalid
+    add eax, esi
+    add ebx, esi
+    jc .invalid
+    mov ebp, eax
+.note:
+    cmp ebp, ebx
+    je .valid
+    ja .invalid
+    mov eax, ebx
+    sub eax, ebp
+    cmp eax, 12
+    jb .invalid
+    mov eax, [ds:ebp]
+    mov ecx, [ds:ebp + 4]
+    mov [cs:elf_note_name_size], eax
+    mov [cs:elf_note_desc_size], ecx
+    add eax, 3
+    jc .invalid
+    and eax, 0xFFFFFFFC
+    add ecx, 3
+    jc .invalid
+    and ecx, 0xFFFFFFFC
+    add eax, ecx
+    jc .invalid
+    add eax, 12
+    jc .invalid
+    mov ecx, ebp
+    add ecx, eax
+    jc .invalid
+    cmp ecx, ebx
+    ja .invalid
+    mov [cs:elf_note_next], ecx
+    cmp dword [ds:ebp + 8], ELF_NT_GNU_BUILD_ID
+    jne .check_nova
+    cmp dword [cs:elf_note_name_size], 4
+    jne .advance
+    cmp dword [cs:elf_note_desc_size], 20
+    jne .advance
+    cmp dword [ds:ebp + 12], 0x00554E47 ; "GNU\0"
+    jne .advance
+    mov byte [cs:elf_build_id_found], 1
+    mov eax, [ds:ebp + 16]
+    mov [cs:elf_build_id + 0], eax
+    mov eax, [ds:ebp + 20]
+    mov [cs:elf_build_id + 4], eax
+    mov eax, [ds:ebp + 24]
+    mov [cs:elf_build_id + 8], eax
+    mov eax, [ds:ebp + 28]
+    mov [cs:elf_build_id + 12], eax
+    mov eax, [ds:ebp + 32]
+    mov [cs:elf_build_id + 16], eax
+    jmp .advance
+.check_nova:
+    cmp dword [ds:ebp + 8], ELF_NT_NOVA_REQUIREMENTS
+    jne .advance
+    cmp dword [cs:elf_note_name_size], 5
+    jne .invalid
+    cmp dword [cs:elf_note_desc_size], 16
+    jne .invalid
+    cmp dword [ds:ebp + 12], 0x41564F4E ; "NOVA"
+    jne .invalid
+    cmp byte [ds:ebp + 16], 0
+    jne .invalid
+    cmp dword [ds:ebp + 20], 1
+    jne .invalid
+    cmp dword [ds:ebp + 24], NOVA_LOADER_ABI_VERSION
+    ja .invalid
+    mov eax, [ds:ebp + 28]
+    mov edx, [cs:BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 24]
+    not edx
+    test eax, edx
+    jnz .invalid
+    mov eax, [ds:ebp + 32]
+    mov edx, [cs:BOOT_INFO_ADDRESS + BIB_CPU_OFFSET + 28]
+    not edx
+    test eax, edx
+    jnz .invalid
+    mov byte [cs:elf_nova_metadata_found], 1
+.advance:
+    mov ebp, [cs:elf_note_next]
+    jmp .note
+.valid:
+    popad
+    clc
+    ret
+.invalid:
+    popad
+    stc
     ret
 
 ; CRC32/ISO-HDLC über DS:SI, Länge ECX. Ergebnis EAX.
@@ -466,6 +1057,14 @@ validate_bib:
     jne .invalid
     cmp word [BOOT_INFO_ADDRESS + BIB_OPTIONS_OFFSET], BIB_TLV_BOOT_OPTIONS
     jne .invalid
+    cmp word [BOOT_INFO_ADDRESS + BIB_CPU_OFFSET], BIB_TLV_CPU
+    jne .invalid
+    cmp word [BOOT_INFO_ADDRESS + BIB_ENTROPY_OFFSET], BIB_TLV_ENTROPY
+    jne .invalid
+    cmp word [BOOT_INFO_ADDRESS + BIB_SYSTEM_OFFSET], BIB_TLV_SYSTEM
+    jne .invalid
+    cmp word [BOOT_INFO_ADDRESS + BIB_KERNEL_ID_OFFSET], BIB_TLV_KERNEL_IDENTITY
+    jne .invalid
     ret
 .invalid:
     mov si, message_bib_error
@@ -517,21 +1116,141 @@ protected_mode_start:
 
 .kernel_valid:
     call boot_manager_run
+    cmp byte [kernel_payload_format], NOVA_KERNEL_FORMAT_ELF32
+    je .load_elf32
+    cmp byte [kernel_payload_format], NOVA_KERNEL_FORMAT_ELF64
+    je .load_elf64
 
-    mov esi, KERNEL_TEMP_ADDRESS + NKI_HEADER_SIZE
-    mov edi, KERNEL_ENTRY_ADDRESS
-    mov ecx, [KERNEL_TEMP_ADDRESS + NKI_OFF_IMAGE_SIZE]
+    mov esi, [kernel_payload_base]
+    mov edi, [elf_load_address]
+    mov ecx, [elf_memory_size]
     push ecx
     shr ecx, 2
     rep movsd
     pop ecx
     and ecx, 3
     rep movsb
+    jmp .handoff
 
+.load_elf32:
+    mov ebp, [kernel_payload_base]
+    movzx eax, word [ebp + ELF32_OFF_PHNUM]
+    mov [elf_ph_remaining], eax
+    mov esi, [ebp + ELF32_OFF_PHOFF]
+    add esi, ebp
+    mov [elf_ph_pointer], esi
+.next_segment:
+    cmp dword [elf_ph_remaining], 0
+    je .handoff
+    mov esi, [elf_ph_pointer]
+    cmp dword [esi + ELF32_PH_OFF_TYPE], ELF_PT_LOAD
+    jne .advance_segment
+    mov ebx, [esi + ELF32_PH_OFF_FILESZ]
+    mov edi, [esi + ELF32_PH_OFF_PADDR]
+    mov eax, [esi + ELF32_PH_OFF_OFFSET]
+    add eax, ebp
+    mov esi, eax
+    mov ecx, ebx
+    push ecx
+    shr ecx, 2
+    rep movsd
+    pop ecx
+    and ecx, 3
+    rep movsb
+    mov esi, [elf_ph_pointer]
+    mov ecx, [esi + ELF32_PH_OFF_MEMSZ]
+    sub ecx, ebx
+    xor eax, eax
+    rep stosb
+.advance_segment:
+    add dword [elf_ph_pointer], ELF32_PROGRAM_HEADER_SIZE
+    dec dword [elf_ph_remaining]
+    jmp .next_segment
+
+.load_elf64:
+    mov ebp, [kernel_payload_base]
+    movzx eax, word [ebp + ELF64_OFF_PHNUM]
+    mov [elf_ph_remaining], eax
+    mov esi, [ebp + ELF64_OFF_PHOFF]
+    add esi, ebp
+    mov [elf_ph_pointer], esi
+.next_segment64:
+    cmp dword [elf_ph_remaining], 0
+    je .enter_long_mode
+    mov esi, [elf_ph_pointer]
+    cmp dword [esi + ELF64_PH_OFF_TYPE], ELF_PT_LOAD
+    jne .advance_segment64
+    mov ebx, [esi + ELF64_PH_OFF_FILESZ]
+    mov edi, [esi + ELF64_PH_OFF_PADDR]
+    mov eax, [esi + ELF64_PH_OFF_OFFSET]
+    add eax, ebp
+    mov esi, eax
+    mov ecx, ebx
+    push ecx
+    shr ecx, 2
+    rep movsd
+    pop ecx
+    and ecx, 3
+    rep movsb
+    mov esi, [elf_ph_pointer]
+    mov ecx, [esi + ELF64_PH_OFF_MEMSZ]
+    sub ecx, ebx
+    xor eax, eax
+    rep stosb
+.advance_segment64:
+    add dword [elf_ph_pointer], ELF64_PROGRAM_HEADER_SIZE
+    dec dword [elf_ph_remaining]
+    jmp .next_segment64
+
+.enter_long_mode:
+    mov edi, LONG_MODE_PML4
+    xor eax, eax
+    mov ecx, (3 * 4096) / 4
+    rep stosd
+    mov dword [LONG_MODE_PML4], LONG_MODE_PDPT | 3
+    mov dword [LONG_MODE_PDPT], LONG_MODE_PD | 3
+    mov edi, LONG_MODE_PD
+    mov eax, 0x00000083
+    mov ecx, 512
+.map_2m:
+    mov [edi], eax
+    mov dword [edi + 4], 0
+    add eax, 0x00200000
+    add edi, 8
+    loop .map_2m
+    mov eax, cr4
+    or eax, 1 << 5
+    mov cr4, eax
+    mov eax, LONG_MODE_PML4
+    mov cr3, eax
+    mov ecx, 0xC0000080
+    rdmsr
+    or eax, 1 << 8
+    wrmsr
+    mov eax, cr0
+    or eax, 1 << 31
+    mov cr0, eax
+    jmp LONG_CODE_SEGMENT:long_mode_start
+
+.handoff:
     mov eax, NOVA_X86_BOOT_MAGIC
     mov ebx, BOOT_INFO_ADDRESS
-    mov ecx, [KERNEL_TEMP_ADDRESS + NKI_OFF_ENTRY_POINT]
+    mov ecx, [elf_entry_point]
     jmp ecx
+
+[bits 64]
+long_mode_start:
+    mov ax, DATA_SEGMENT
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov rsp, KERNEL_STACK_TOP
+    mov eax, NOVA_X86_BOOT_MAGIC
+    mov ebx, BOOT_INFO_ADDRESS
+    mov ecx, [abs elf_entry_point]
+    jmp rcx
+
+[bits 32]
 
 ; ---------------------------------------------------------------------------
 ; Grafischer Fehlerzustand. Technische Details bleiben am Debug-Port erhalten,
@@ -1501,6 +2220,7 @@ gdt_start:
     dq 0
     dq 0x00CF9A000000FFFF
     dq 0x00CF92000000FFFF
+    dq 0x00AF9A000000FFFF
 gdt_end:
 gdt_descriptor:
     dw gdt_end - gdt_start - 1
@@ -1536,6 +2256,7 @@ kernel_load_error:
 
 boot_drive:                 db 0
 boot_error_code:            db 0
+kernel_payload_format:      db 0
 retry_count:                db 0
 kernel_destination_offset: dw 0
 kernel_cylinder:            db 0
@@ -1544,6 +2265,31 @@ kernel_sector:              db 0
 kernel_remaining:           db 0
 sectors_per_track:          db 18
 maximum_head:               db 1
+
+align 4
+kernel_payload_base:        dd 0
+kernel_payload_crc:         dd 0
+elf_load_address:           dd 0
+elf_memory_size:            dd 0
+elf_entry_point:            dd 0
+elf_ph_pointer:             dd 0
+elf_ph_remaining:           dd 0
+elf_min_address:            dd 0
+elf_max_address:            dd 0
+elf_segment_count:          dd 0
+elf_current_start:          dd 0
+elf_current_end:            dd 0
+elf_note_name_size:         dd 0
+elf_note_desc_size:         dd 0
+elf_note_next:              dd 0
+elf_entry_covered:          db 0
+elf_build_id_found:         db 0
+elf_nova_metadata_found:    db 0
+
+align 4
+elf_build_id:               times 5 dd 0
+elf_segment_starts:         times 16 dd 0
+elf_segment_ends:           times 16 dd 0
 
 align 4
 kernel_dap:

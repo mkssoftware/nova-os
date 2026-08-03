@@ -1,0 +1,3 @@
+# NovaOS BootInput ADRs
+
+Enthält ADR-BOOTINPUT-0001 bis ADR-BOOTINPUT-0007.

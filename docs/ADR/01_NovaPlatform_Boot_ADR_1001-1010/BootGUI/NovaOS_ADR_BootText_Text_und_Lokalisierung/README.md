@@ -1,0 +1,3 @@
+# NovaOS BootText ADRs
+
+Enthält ADR-BOOTTEXT-0001 bis ADR-BOOTTEXT-0007.

@@ -1,6 +1,7 @@
 NOVA: Kernel Entry
 NOVA: Panic Reporter ABI 1.0 bereit
 NOVA: NBHP/BIB v1 validiert
+NOVA: Kernel Build-ID aus NBHP/BIB importiert
 NOVA: PMM ABI 1.0 und Seitentest bereit
 NOVA: Heap ABI 1.0 und Schreibtest bereit
 NOVA: Object Manager ABI 1.0 bereit

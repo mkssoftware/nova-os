@@ -1,0 +1,3 @@
+# NovaOS BootResource ADRs
+
+Enthält ADR-BOOTRESOURCE-0001 bis ADR-BOOTRESOURCE-0010.

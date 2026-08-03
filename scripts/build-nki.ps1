@@ -36,11 +36,41 @@ function Get-Crc32 {
 }
 
 $crc32 = Get-Crc32 -Data $payload
-$sha256 = [Security.Cryptography.SHA256]::Create()
-try {
-    $buildId = $sha256.ComputeHash($payload)[0..15]
-} finally {
-    $sha256.Dispose()
+function Get-U16([byte[]]$Data, [int]$Offset) { return [BitConverter]::ToUInt16($Data, $Offset) }
+function Get-U32([byte[]]$Data, [int]$Offset) { return [BitConverter]::ToUInt32($Data, $Offset) }
+
+$buildId = $null
+if ($payload.Length -ge 52 -and (Get-U32 $payload 0) -eq 0x464C457F) {
+    $phoff = Get-U32 $payload 28
+    $phentsize = Get-U16 $payload 42
+    $phnum = Get-U16 $payload 44
+    for ($index = 0; $index -lt $phnum; $index++) {
+        $ph = $phoff + ($index * $phentsize)
+        if (($ph + 32) -gt $payload.Length) { break }
+        if ((Get-U32 $payload $ph) -ne 4) { continue }
+        $note = Get-U32 $payload ($ph + 4)
+        $noteEnd = $note + (Get-U32 $payload ($ph + 16))
+        while (($note + 12) -le $noteEnd -and $noteEnd -le $payload.Length) {
+            $nameSize = Get-U32 $payload $note
+            $descSize = Get-U32 $payload ($note + 4)
+            $noteType = Get-U32 $payload ($note + 8)
+            $namePadded = ($nameSize + 3) -band -4
+            $descPadded = ($descSize + 3) -band -4
+            $next = $note + 12 + $namePadded + $descPadded
+            if ($next -gt $noteEnd) { break }
+            if ($noteType -eq 3 -and $nameSize -eq 4 -and $descSize -ge 16 -and
+                [Text.Encoding]::ASCII.GetString($payload, $note + 12, 3) -eq 'GNU') {
+                $start = $note + 12 + $namePadded
+                $buildId = $payload[$start..($start + 15)]
+                break
+            }
+            $note = $next
+        }
+        if ($null -ne $buildId) { break }
+    }
+}
+if ($null -eq $buildId) {
+    throw 'Dem ELF-Payload fehlt eine gueltige GNU-Build-ID.'
 }
 
 $outputDirectory = Split-Path -Parent $OutputFile
@@ -56,7 +86,7 @@ try {
     $writer.Write([uint32]1)                  # Formatversion
     $writer.Write([uint32]$headerSize)
     $writer.Write([uint32]1)                  # x86-32
-    $writer.Write([uint32]0)                  # Flags
+    $writer.Write([uint32]3)                  # Build-ID und Nova-Metadaten verbindlich
     $writer.Write($entryPoint)
     $writer.Write($entryPoint)
     $writer.Write([uint32]$payload.Length)
