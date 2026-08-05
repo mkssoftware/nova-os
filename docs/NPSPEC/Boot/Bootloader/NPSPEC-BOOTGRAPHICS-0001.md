@@ -3156,17 +3156,17 @@ Nova verwendet konsistente Eckradien.
 Standardwerte
 
 ```text
-2 px
+2 DLU
 
-4 px
+4 DLU
 
-8 px
+8 DLU
 
-12 px
+12 DLU
 
-16 px
+16 DLU
 
-24 px
+24 DLU
 ```
 
 Eigene Werte sollen vermieden werden.
@@ -3178,19 +3178,19 @@ Eigene Werte sollen vermieden werden.
 Ein gemeinsames Spacing-System sorgt für ein einheitliches Layout.
 
 ```text
-4 px
+4 DLU
 
-8 px
+8 DLU
 
-12 px
+12 DLU
 
-16 px
+16 DLU
 
-24 px
+24 DLU
 
-32 px
+32 DLU
 
-48 px
+48 DLU
 ```
 
 Alle Widgets orientieren sich an diesen Einheiten.

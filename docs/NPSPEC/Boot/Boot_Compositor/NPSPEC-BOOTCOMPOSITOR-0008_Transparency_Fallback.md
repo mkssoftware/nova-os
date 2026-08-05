@@ -192,23 +192,23 @@ Der Übergang erfolgt abhängig vom Qualitätsprofil.
 Blur wird in mehreren Stufen reduziert.
 
 ```text
-16 px
+16 DLU
 
 ↓
 
-12 px
+12 DLU
 
 ↓
 
-8 px
+8 DLU
 
 ↓
 
-4 px
+4 DLU
 
 ↓
 
-0 px
+0 DLU
 ```
 
 ---

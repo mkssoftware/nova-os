@@ -1206,25 +1206,25 @@ Empfohlene Klassen
 ```text
 Small
 
-800 px
+800 DLU
 
 ↓
 
 Medium
 
-1280 px
+1280 DLU
 
 ↓
 
 Large
 
-1920 px
+1920 DLU
 
 ↓
 
 Ultra
 
-2560 px+
+2560 DLU+
 ```
 
 ---

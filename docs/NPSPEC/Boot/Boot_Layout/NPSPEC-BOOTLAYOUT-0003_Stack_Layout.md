@@ -172,11 +172,11 @@ Standard:
 
 | Token | Abstand |
 |---|---:|
-| XS | 4 px |
-| S | 8 px |
-| M | 12 px |
-| L | 16 px |
-| XL | 24 px |
+| XS | 4 DLU |
+| S | 8 DLU |
+| M | 12 DLU |
+| L | 16 DLU |
+| XL | 24 DLU |
 
 Die Werte stammen aus den Design Tokens.
 

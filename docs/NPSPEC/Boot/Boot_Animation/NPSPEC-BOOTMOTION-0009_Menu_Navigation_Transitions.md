@@ -260,7 +260,7 @@ Empfohlene Werte:
 
 | Eigenschaft | Start | Ende |
 |---|---:|---:|
-| X-Offset | ±32 px | 0 px |
+| X-Offset | ±32 DLU | 0 DLU |
 | Deckkraft | 0 % | 100 % |
 | Skalierung | 98 % | 100 % |
 

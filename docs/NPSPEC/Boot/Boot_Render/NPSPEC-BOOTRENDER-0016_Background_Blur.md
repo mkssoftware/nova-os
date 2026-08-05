@@ -145,11 +145,11 @@ Empfohlene Werte:
 
 | Verwendung | Radius |
 |---|---:|
-| Menü | 6 px |
-| Button | 4 px |
-| Dialog | 12 px |
-| Glass Panel | 16 px |
-| Overlay | 20 px |
+| Menü | 6 DLU |
+| Button | 4 DLU |
+| Dialog | 12 DLU |
+| Glass Panel | 16 DLU |
+| Overlay | 20 DLU |
 
 Alle Werte werden über Design Tokens definiert.
 

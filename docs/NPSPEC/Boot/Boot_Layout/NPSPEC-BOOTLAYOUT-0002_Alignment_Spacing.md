@@ -194,14 +194,14 @@ Empfohlene Design Tokens:
 
 | Token | Wert |
 |---|---:|
-| XS | 4 px |
-| S | 8 px |
-| M | 12 px |
-| L | 16 px |
-| XL | 24 px |
-| XXL | 32 px |
+| XS | 4 DLU |
+| S | 8 DLU |
+| M | 12 DLU |
+| L | 16 DLU |
+| XL | 24 DLU |
+| XXL | 32 DLU |
 
-Direkte Pixelwerte im UI-Code sind unzulässig.
+Direkte Pixelwerte im UI-Code sind unzulässig. Sämtliche Abstände werden in DLU angegeben.
 
 ---
 

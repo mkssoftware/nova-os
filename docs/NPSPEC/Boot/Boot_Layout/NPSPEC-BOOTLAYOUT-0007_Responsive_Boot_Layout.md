@@ -179,9 +179,9 @@ Empfohlene Klassen:
 
 | Klasse | Breite |
 |---|---:|
-| Compact | < 800 px |
-| Standard | 800–1279 px |
-| Wide | ≥ 1280 px |
+| Compact | < 800 DLU |
+| Standard | 800–1279 DLU |
+| Wide | ≥ 1280 DLU |
 
 ---
 

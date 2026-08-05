@@ -155,13 +155,13 @@ Empfohlene Werte:
 
 | Element | Radius |
 |---|---:|
-| Button | 8 px |
-| Dialog | 18 px |
-| Panel | 12 px |
-| Card | 14 px |
-| Textfeld | 8 px |
-| Menü | 10 px |
-| Overlay | 20 px |
+| Button | 8 DLU |
+| Dialog | 18 DLU |
+| Panel | 12 DLU |
+| Card | 14 DLU |
+| Textfeld | 8 DLU |
+| Menü | 10 DLU |
+| Overlay | 20 DLU |
 
 Alle Werte werden über Design Tokens bereitgestellt.
 

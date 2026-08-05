@@ -228,7 +228,7 @@ Jede Acrylic-Fläche besitzt einen feinen Rahmen.
 
 Eigenschaften:
 
-- 1 px
+- 1 DLU
 - leicht transparent
 - heller als die Oberfläche
 

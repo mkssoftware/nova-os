@@ -18,7 +18,7 @@
 
 Diese Spezifikation definiert das **Constraint-Based Sizing System** der NovaOS Boot UI.
 
-Das System berechnet Größen aller UI-Elemente anhand deklarativer Größenregeln (Constraints) anstelle fester Pixelwerte.
+Das System berechnet Größen aller UI-Elemente anhand deklarativer Größenregeln (Constraints) in DLU anstelle physischer Pixelwerte.
 
 Es unterstützt:
 
@@ -96,7 +96,7 @@ Rendering
 
 Jedes UI-Element beschreibt seine gewünschte Größe ausschließlich über Constraints.
 
-Absolute Pixelgrößen sind nur in begründeten Ausnahmefällen zulässig.
+Absolute Pixelgrößen sind innerhalb der Layoutlogik unzulässig. Feste logische Größen werden ausschließlich in DLU angegeben.
 
 Die endgültige Größe wird erst während des Layoutdurchlaufs bestimmt.
 
@@ -454,4 +454,4 @@ Die Spezifikation gilt als erfüllt, wenn:
 
 # 31. Zusammenfassung
 
-Das **Constraint-Based Sizing System** definiert die adaptive Größenberechnung sämtlicher UI-Elemente der NovaOS Bootoberfläche. Anstelle fester Pixelgrößen werden deklarative Constraints wie Mindest- und Maximalgrößen, Prozentwerte, Stretch-Regeln und Seitenverhältnisse verwendet. Durch deterministische Constraint-Auswertung, automatische Konfliktauflösung und vollständige Integration in das Skalierungs- und Accessibility-System entstehen konsistente, auflösungsunabhängige Layouts auf BIOS- und UEFI-Systemen.
+Das **Constraint-Based Sizing System** definiert die adaptive Größenberechnung sämtlicher UI-Elemente der NovaOS Bootoberfläche. Alle festen logischen Größen und Constraints werden in DLU angegeben; physische Pixelwerte entstehen erst an der Rendering-Grenze. Mindest- und Maximalgrößen, Prozentwerte, Stretch-Regeln und Seitenverhältnisse ermöglichen eine deterministische, auflösungsunabhängige Darstellung auf BIOS- und UEFI-Systemen.

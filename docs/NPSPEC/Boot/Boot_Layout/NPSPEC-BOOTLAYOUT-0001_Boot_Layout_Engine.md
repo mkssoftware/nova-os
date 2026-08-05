@@ -240,7 +240,10 @@ Position:
 oben links
 ```
 
-Alle Koordinaten verwenden Pixel.
+Alle logischen Koordinaten und Größen verwenden DLU (Device Layout Units).
+
+Physische Pixelkoordinaten entstehen ausschließlich durch die abschließende,
+deterministische Umrechnung im Scaling- und Rendering-System.
 
 ---
 

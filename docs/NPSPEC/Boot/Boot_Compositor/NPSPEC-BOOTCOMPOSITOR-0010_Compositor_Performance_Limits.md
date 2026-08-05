@@ -168,7 +168,7 @@ Bei Überschreitung erfolgt automatisch Full Damage.
 Maximal gleichzeitig:
 
 - 16 Blur-Operationen
-- 32 px Blur-Radius
+- 32 DLU Blur-Radius
 - 8 aktive Glass-Flächen
 
 ---
