@@ -181,20 +181,22 @@ Die Symbolsprache soll zeitlos wirken.
 Empfohlene Zielgrößen:
 
 ```text
-16 px
+16 DLU
 
-20 px
+20 DLU
 
-24 px
+24 DLU
 
-32 px
+32 DLU
 
-48 px
+48 DLU
 
-64 px
+64 DLU
 ```
 
-Die Rasterisierung erfolgt verlustfrei.
+Die Zielgrößen sind logische Größen in DLU. Die Umrechnung in physische Pixel
+erfolgt ausschließlich durch das zentrale Resolution-and-Scaling-System vor
+der Rasterisierung.
 
 ---
 

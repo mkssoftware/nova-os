@@ -2,6 +2,7 @@
 ; Referenzimplementierung für NKI v1 und NBHP/BIB v1.
 
 %include "layout.inc"
+%include "boot-ui-tokens.inc"
 
 [org STAGE2_LOAD_ADDRESS]
 [bits 16]
@@ -31,6 +32,24 @@ BM_ACTION_UNAVAILABLE   equ 1
 BM_ACTION_DIAGNOSTICS   equ 2
 BM_ACTION_RECOVERY      equ 3
 BM_ACTION_POWEROFF      equ 4
+BM_ACTION_SETTINGS      equ 5
+
+BM_VIEW_MAIN            equ 0
+BM_VIEW_SETTINGS        equ 1
+BM_VIEW_DIAGNOSTICS     equ 2
+BM_VIEW_RECOVERY        equ 3
+BM_VIEW_UNAVAILABLE     equ 4
+BM_VIEW_HELP            equ 5
+BM_VIEW_DETAILS         equ 6
+BM_VIEW_ADVANCED        equ 7
+BM_VIEW_POWER           equ 8
+BM_VIEW_SELF_HEALING    equ 9
+BM_VIEW_SNAPSHOTS       equ 10
+BM_VIEW_MEMORY_TEST     equ 11
+BM_VIEW_DISK_TOOLS      equ 12
+BM_VIEW_ENCRYPTION      equ 13
+BM_VIEW_NETWORK         equ 14
+BM_VIEW_FIRMWARE        equ 15
 
 stage2_start:
     cli
@@ -1371,8 +1390,11 @@ boot_manager_run:
     test dword [BOOT_INFO_ADDRESS + BIB_OFF_FLAGS], NOVA_BOOT_FLAG_FRAMEBUFFER
     jz .no_graphics
     mov byte [bm_selection], 0
+    mov byte [bm_subselection], 0
+    mov byte [bm_view], BM_VIEW_MAIN
     mov byte [bm_countdown_active], 1
     mov byte [bm_countdown_digit], '5'
+    call bm_mouse_initialize
     call boot_manager_draw
     mov ebp, 5
 .timeout_second:
@@ -1402,13 +1424,73 @@ boot_manager_run:
     jmp .start
 
 .wait_key:
-    in al, 0x64
-    test al, 0x01
-    jz .wait_key
-    in al, 0x60
+    call bm_wait_input_event
+    cmp eax, 1
+    je .keyboard_event
+    cmp eax, 2
+    je .mouse_redraw
+    cmp eax, 3
+    je .mouse_click
+    jmp .wait_key
+.keyboard_event:
+    mov al, bl
+    jmp .handle_key
+.mouse_redraw:
+    call bm_redraw_current_view
+    jmp .wait_key
+.mouse_click:
+    call bm_mouse_hit_test
+    jnc .mouse_redraw
+    jmp .handle_key
 .handle_key:
     test al, 0x80
     jnz .wait_key
+    cmp al, 0x3B                    ; F1: kontextuelle Hilfe aus jeder Ansicht
+    je .help
+    cmp al, 0x23                    ; H: globaler Hochkontrastmodus
+    je .toggle_contrast
+    cmp byte [bm_view], BM_VIEW_ADVANCED
+    je .handle_advanced_key
+    cmp byte [bm_view], BM_VIEW_POWER
+    je .handle_power_key
+    cmp byte [bm_view], BM_VIEW_DETAILS
+    je .handle_details_key
+    cmp byte [bm_view], BM_VIEW_RECOVERY
+    je .handle_recovery_key
+    cmp byte [bm_view], BM_VIEW_MEMORY_TEST
+    je .handle_memory_key
+    cmp byte [bm_view], BM_VIEW_MAIN
+    je .handle_main_key
+    cmp al, 0x01                    ; ESC: einheitliche Zurück-Navigation
+    je .back_to_main
+    cmp al, 0x0E                    ; Backspace: alternative Zurück-Taste
+    je .back_to_main
+    cmp al, 0x20                    ; D wechselt direkt zur Diagnose
+    je .diagnostics
+    cmp al, 0x13                    ; R wechselt direkt zur Recovery-Seite
+    je .recovery
+    jmp .wait_key
+.toggle_contrast:
+    call bm_toggle_contrast_theme
+    call bm_redraw_current_view
+    jmp .wait_key
+.handle_main_key:
+    cmp al, 0x3E                    ; F4: Netzwerk-Boot-Status
+    je .network
+    cmp al, 0x3F                    ; F5: Firmwareinformationen
+    je .firmware
+    cmp al, 0x40                    ; F6: Verschluesselungsstatus
+    je .encryption
+    cmp al, 0x3C                    ; F2: Details des markierten Eintrags
+    je .details
+    cmp al, 0x3D                    ; F3: erweiterte Startoptionen
+    je .advanced
+    cmp al, 0x47                    ; Pos1
+    je .first
+    cmp al, 0x4F                    ; Ende
+    je .last
+    cmp al, 0x1F                    ; S: Einstellungen
+    je .settings
     cmp al, 0x1C                    ; Enter
     je .activate
     cmp al, 0x48                    ; Pfeil hoch
@@ -1420,6 +1502,12 @@ boot_manager_run:
     cmp al, 0x13                    ; R
     je .recovery
     jmp .wait_key
+.first:
+    mov byte [bm_selection], 0
+    jmp .redraw
+.last:
+    mov byte [bm_selection], BM_MENU_ENTRY_COUNT - 1
+    jmp .redraw
 
 .up:
     cmp byte [bm_selection], 0
@@ -1448,8 +1536,29 @@ boot_manager_run:
     cmp eax, BM_ACTION_RECOVERY
     je .recovery
     cmp eax, BM_ACTION_POWEROFF
-    je .poweroff
+    je .power_dialog
+    cmp eax, BM_ACTION_SETTINGS
+    je .settings
+    mov byte [bm_view], BM_VIEW_UNAVAILABLE
     call boot_manager_draw_unavailable
+    jmp .wait_key
+.back_to_main:
+    mov esi, bm_event_back
+    call bm_debug_write_string
+    cmp byte [bm_view], BM_VIEW_SELF_HEALING
+    je .back_to_recovery
+    cmp byte [bm_view], BM_VIEW_SNAPSHOTS
+    je .back_to_recovery
+    cmp byte [bm_view], BM_VIEW_MEMORY_TEST
+    je .back_to_recovery
+    cmp byte [bm_view], BM_VIEW_DISK_TOOLS
+    je .back_to_recovery
+    mov byte [bm_view], BM_VIEW_MAIN
+    call boot_manager_draw
+    jmp .wait_key
+.back_to_recovery:
+    mov byte [bm_view], BM_VIEW_RECOVERY
+    call boot_manager_draw_recovery_notice
     jmp .wait_key
 .poweroff:
     mov ax, 0x2000
@@ -1459,15 +1568,231 @@ boot_manager_run:
     out dx, ax
     jmp $
 
+.restart:
+    mov al, 0xFE
+    out 0x64, al
+    jmp $
+
+.details:
+    mov byte [bm_view], BM_VIEW_DETAILS
+    mov esi, bm_event_details
+    call bm_debug_write_string
+    call boot_manager_draw_details
+    jmp .wait_key
+.advanced:
+    mov byte [bm_subselection], 0
+    mov byte [bm_view], BM_VIEW_ADVANCED
+    mov esi, bm_event_advanced
+    call bm_debug_write_string
+    call boot_manager_draw_advanced
+    jmp .wait_key
+.power_dialog:
+    mov byte [bm_subselection], 0
+    mov byte [bm_view], BM_VIEW_POWER
+    mov esi, bm_event_power_dialog
+    call bm_debug_write_string
+    call boot_manager_draw_power_dialog
+    jmp .wait_key
+
+.handle_advanced_key:
+    cmp al, 0x01
+    je .back_to_main
+    cmp al, 0x0E
+    je .back_to_main
+    cmp al, 0x48
+    je .sub_up_advanced
+    cmp al, 0x50
+    je .sub_down_advanced
+    cmp al, 0x1C
+    jne .wait_key
+    cmp byte [bm_subselection], 0
+    je .start
+    cmp byte [bm_subselection], 1
+    je .recovery
+    mov byte [bm_view], BM_VIEW_UNAVAILABLE
+    call boot_manager_draw_unavailable
+    jmp .wait_key
+.sub_up_advanced:
+    cmp byte [bm_subselection], 0
+    jne .sub_adv_dec
+    mov byte [bm_subselection], 4
+    jmp .redraw_advanced
+.sub_adv_dec:
+    dec byte [bm_subselection]
+    jmp .redraw_advanced
+.sub_down_advanced:
+    inc byte [bm_subselection]
+    cmp byte [bm_subselection], 5
+    jb .redraw_advanced
+    mov byte [bm_subselection], 0
+.redraw_advanced:
+    call boot_manager_draw_advanced
+    jmp .wait_key
+
+.handle_details_key:
+    cmp al, 0x01
+    je .back_to_main
+    cmp al, 0x0E
+    je .back_to_main
+    cmp al, 0x1C
+    je .start
+    cmp al, 0x3D
+    je .advanced
+    jmp .wait_key
+
+.handle_power_key:
+    cmp al, 0x01
+    je .back_to_main
+    cmp al, 0x0E
+    je .back_to_main
+    cmp al, 0x48
+    je .sub_up_power
+    cmp al, 0x50
+    je .sub_down_power
+    cmp al, 0x1C
+    jne .wait_key
+    cmp byte [bm_subselection], 0
+    je .poweroff
+    cmp byte [bm_subselection], 1
+    je .restart
+    cmp byte [bm_subselection], 2
+    je .recovery
+    cmp byte [bm_subselection], 3
+    je .firmware
+    mov byte [bm_view], BM_VIEW_UNAVAILABLE
+    call boot_manager_draw_unavailable
+    jmp .wait_key
+.sub_up_power:
+    cmp byte [bm_subselection], 0
+    jne .sub_power_dec
+    mov byte [bm_subselection], 3
+    jmp .redraw_power
+.sub_power_dec:
+    dec byte [bm_subselection]
+    jmp .redraw_power
+.sub_down_power:
+    inc byte [bm_subselection]
+    cmp byte [bm_subselection], 4
+    jb .redraw_power
+    mov byte [bm_subselection], 0
+.redraw_power:
+    call boot_manager_draw_power_dialog
+    jmp .wait_key
+
+.handle_recovery_key:
+    cmp al, 0x01
+    je .back_to_main
+    cmp al, 0x0E
+    je .back_to_main
+    cmp al, 0x48
+    je .sub_up_recovery
+    cmp al, 0x50
+    je .sub_down_recovery
+    cmp al, 0x1C
+    jne .wait_key
+    cmp byte [bm_subselection], 0
+    je .self_healing
+    cmp byte [bm_subselection], 1
+    je .snapshots
+    cmp byte [bm_subselection], 2
+    je .memory_test
+    jmp .disk_tools
+.sub_up_recovery:
+    cmp byte [bm_subselection], 0
+    jne .sub_recovery_dec
+    mov byte [bm_subselection], 3
+    jmp .redraw_recovery
+.sub_recovery_dec:
+    dec byte [bm_subselection]
+    jmp .redraw_recovery
+.sub_down_recovery:
+    inc byte [bm_subselection]
+    cmp byte [bm_subselection], 4
+    jb .redraw_recovery
+    mov byte [bm_subselection], 0
+.redraw_recovery:
+    call boot_manager_draw_recovery_notice
+    jmp .wait_key
+.self_healing:
+    mov byte [bm_view], BM_VIEW_SELF_HEALING
+    mov esi, bm_event_self_healing
+    call bm_debug_write_string
+    call boot_manager_draw_self_healing
+    jmp .wait_key
+.snapshots:
+    mov byte [bm_view], BM_VIEW_SNAPSHOTS
+    mov esi, bm_event_snapshots
+    call bm_debug_write_string
+    call boot_manager_draw_snapshots
+    jmp .wait_key
+.memory_test:
+    mov byte [bm_memory_result], 0
+    mov byte [bm_view], BM_VIEW_MEMORY_TEST
+    mov esi, bm_event_memory_test
+    call bm_debug_write_string
+    call boot_manager_draw_memory_test
+    jmp .wait_key
+.disk_tools:
+    mov byte [bm_view], BM_VIEW_DISK_TOOLS
+    mov esi, bm_event_disk_tools
+    call bm_debug_write_string
+    call boot_manager_draw_disk_tools
+    jmp .wait_key
+
+.handle_memory_key:
+    cmp al, 0x01
+    je .back_to_main
+    cmp al, 0x0E
+    je .back_to_main
+    cmp al, 0x1C
+    jne .wait_key
+    call bm_run_memory_quick_test
+    call boot_manager_draw_memory_test
+    jmp .wait_key
+
+.network:
+    mov byte [bm_view], BM_VIEW_NETWORK
+    mov esi, bm_event_network
+    call bm_debug_write_string
+    call boot_manager_draw_network
+    jmp .wait_key
+.firmware:
+    mov byte [bm_view], BM_VIEW_FIRMWARE
+    mov esi, bm_event_firmware
+    call bm_debug_write_string
+    call boot_manager_draw_firmware
+    jmp .wait_key
+.encryption:
+    mov byte [bm_view], BM_VIEW_ENCRYPTION
+    mov esi, bm_event_encryption
+    call bm_debug_write_string
+    call boot_manager_draw_encryption
+    jmp .wait_key
+
 .diagnostics:
+    mov byte [bm_view], BM_VIEW_DIAGNOSTICS
     mov esi, bm_event_diagnostics
     call bm_debug_write_string
     call boot_manager_draw_diagnostics
     jmp .wait_key
 .recovery:
+    mov byte [bm_subselection], 0
+    mov byte [bm_view], BM_VIEW_RECOVERY
     mov esi, bm_event_recovery
     call bm_debug_write_string
     call boot_manager_draw_recovery_notice
+    jmp .wait_key
+.settings:
+    mov esi, bm_event_settings
+    call bm_debug_write_string
+    mov byte [bm_view], BM_VIEW_SETTINGS
+    call boot_manager_draw_settings
+    jmp .wait_key
+.help:
+    mov byte [bm_view], BM_VIEW_HELP
+    mov esi, bm_event_help
+    call bm_debug_write_string
+    call boot_manager_draw_help
     jmp .wait_key
 .start:
     mov esi, bm_event_start
@@ -1501,12 +1826,209 @@ bm_wait_tick_or_key:
     clc
     ret
 .key:
+    test al, 0x20
+    jnz .mouse_byte
     in al, 0x60
     stc
     ret
+.mouse_byte:
+    call bm_mouse_consume_byte
+    jnc .poll
+    xor eax, eax                    ; vollständiges Mausereignis pausiert
+    stc
+    ret
+
+; Einheitliches, pollingbasiertes Eingabeereignis.
+; EAX=1 Tastatur (BL=Scan-Code), EAX=2 Mausbewegung, EAX=3 Linksklick.
+bm_wait_input_event:
+.poll:
+    in al, 0x64
+    test al, 0x01
+    jz .poll
+    test al, 0x20
+    jnz .mouse
+    in al, 0x60
+    mov bl, al
+    mov eax, 1
+    ret
+.mouse:
+    call bm_mouse_consume_byte
+    jnc .poll
+    ret
+
+; Aktiviert das PS/2-Auxiliary-Gerät und den Standard-Streamingmodus. Alle
+; Wartevorgänge sind begrenzt, damit fehlende Hardware den Boot nie blockiert.
+bm_mouse_initialize:
+    mov dword [bm_mouse_x], 400
+    mov dword [bm_mouse_y], 300
+    mov byte [bm_mouse_phase], 0
+    mov byte [bm_mouse_buttons], 0
+    call bm_ps2_wait_input_clear
+    jc .unavailable
+    mov al, 0xA8
+    out 0x64, al
+    mov al, 0xF6                    ; Standardwerte
+    call bm_mouse_send_command
+    jc .unavailable
+    mov al, 0xF4                    ; Streaming aktivieren
+    call bm_mouse_send_command
+    jc .unavailable
+    mov byte [bm_mouse_available], 1
+    ret
+.unavailable:
+    mov byte [bm_mouse_available], 0
+    ret
+
+bm_mouse_send_command:
+    push eax
+    call bm_ps2_wait_input_clear
+    jc .failed_pop
+    mov al, 0xD4
+    out 0x64, al
+    call bm_ps2_wait_input_clear
+    jc .failed_pop
+    pop eax
+    out 0x60, al
+    call bm_ps2_wait_output
+    jc .failed
+    in al, 0x60
+    cmp al, 0xFA
+    jne .failed
+    clc
+    ret
+.failed_pop:
+    pop eax
+.failed:
+    stc
+    ret
+
+bm_ps2_wait_input_clear:
+    mov ecx, 0x20000
+.loop:
+    in al, 0x64
+    test al, 0x02
+    jz .ready
+    loop .loop
+    stc
+    ret
+.ready:
+    clc
+    ret
+
+bm_ps2_wait_output:
+    mov ecx, 0x20000
+.loop:
+    in al, 0x64
+    test al, 0x01
+    jnz .ready
+    loop .loop
+    stc
+    ret
+.ready:
+    clc
+    ret
+
+; Nimmt genau ein Byte aus Port 60 entgegen. CF=1 erst nach einem vollständigen
+; 3-Byte-Paket; EAX bezeichnet dann Bewegung oder Linksklick.
+bm_mouse_consume_byte:
+    in al, 0x60
+    movzx edx, byte [bm_mouse_phase]
+    test edx, edx
+    jnz .store
+    test al, 0x08                    ; Synchronisationsbit des ersten Bytes
+    jz .incomplete
+.store:
+    mov [bm_mouse_packet + edx], al
+    inc edx
+    cmp edx, 3
+    jb .save_phase
+    mov byte [bm_mouse_phase], 0
+    movsx edx, byte [bm_mouse_packet + 1]
+    add [bm_mouse_x], edx
+    movsx edx, byte [bm_mouse_packet + 2]
+    neg edx
+    add [bm_mouse_y], edx
+    cmp dword [bm_mouse_x], 0
+    jge .x_upper
+    mov dword [bm_mouse_x], 0
+.x_upper:
+    cmp dword [bm_mouse_x], 799
+    jle .y_lower
+    mov dword [bm_mouse_x], 799
+.y_lower:
+    cmp dword [bm_mouse_y], 0
+    jge .y_upper
+    mov dword [bm_mouse_y], 0
+.y_upper:
+    cmp dword [bm_mouse_y], 599
+    jle .buttons
+    mov dword [bm_mouse_y], 599
+.buttons:
+    mov dl, [bm_mouse_buttons]
+    mov al, [bm_mouse_packet]
+    and al, 0x07
+    mov [bm_mouse_buttons], al
+    test al, 0x01
+    jz .movement
+    test dl, 0x01
+    jnz .movement
+    mov eax, 3
+    stc
+    ret
+.movement:
+    mov eax, 2
+    stc
+    ret
+.save_phase:
+    mov [bm_mouse_phase], dl
+.incomplete:
+    clc
+    ret
+
+; Linksklick-Hit-Testing. CF=1 und AL=synthetischer Tastatur-Scan-Code.
+bm_mouse_hit_test:
+    cmp byte [bm_view], BM_VIEW_MAIN
+    jne .page
+    mov eax, [bm_mouse_x]
+    cmp eax, 204
+    jb .none
+    cmp eax, 727
+    ja .none
+    mov eax, [bm_mouse_y]
+    cmp eax, 77
+    jb .none
+    cmp eax, 485
+    ja .none
+    sub eax, 77
+    xor edx, edx
+    mov ecx, 68
+    div ecx
+    cmp eax, BM_MENU_ENTRY_COUNT
+    jae .none
+    mov [bm_selection], al
+    mov al, 0x1C                    ; Aktivierung entspricht Enter
+    stc
+    ret
+.page:
+    mov eax, [bm_mouse_x]
+    cmp eax, 190
+    jb .none
+    cmp eax, 520
+    ja .none
+    mov eax, [bm_mouse_y]
+    cmp eax, 470
+    jb .none
+    cmp eax, 525
+    ja .none
+    mov al, 0x01                    ; Zurück entspricht ESC
+    stc
+    ret
+.none:
+    clc
+    ret
 
 boot_manager_draw:
-    mov eax, BM_COLOR_BACKGROUND
+    mov eax, [bm_theme_background]
     xor ebx, ebx
     xor ecx, ecx
     mov edx, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 16]
@@ -1520,6 +2042,15 @@ boot_manager_draw:
     mov edx, 628
     mov esi, 13
     call bm_fill_rounded_rectangle
+
+    ; Seitentitel. Die Referenzauflösung verwendet 1 px = 1 DLU; spätere
+    ; Backends skalieren diese logischen Koordinaten vor der Ausgabe.
+    mov esi, bm_text_screen_title
+    mov ebx, 204
+    mov ecx, 27
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 2
+    call bm_draw_text
 
     ; Linke NovaOS-Marke
     mov dword [bm_logo_x], 32
@@ -1537,27 +2068,39 @@ boot_manager_draw:
 
     ; Menürahmen 184,55 bis 751,528
     mov eax, BM_COLOR_BLUE
-    mov ebx, 184
-    mov ecx, 55
-    mov edx, 567
-    mov esi, 473
+    mov ebx, NOVA_UI_PANEL_X
+    mov ecx, NOVA_UI_PANEL_Y
+    mov edx, NOVA_UI_PANEL_WIDTH
+    mov esi, NOVA_UI_PANEL_HEIGHT
     call bm_fill_rounded_rectangle
-    mov eax, BM_COLOR_BACKGROUND
-    mov ebx, 185
-    mov ecx, 56
-    mov edx, 565
-    mov esi, 471
+    mov eax, [bm_theme_background]
+    mov ebx, NOVA_UI_PANEL_X + 1
+    mov ecx, NOVA_UI_PANEL_Y + 1
+    mov edx, NOVA_UI_PANEL_WIDTH - 2
+    mov esi, NOVA_UI_PANEL_HEIGHT - 2
     call bm_fill_rounded_rectangle
 
     ; Aktuelle Auswahl
     movzx eax, byte [bm_selection]
-    imul eax, 68
-    add eax, 77
+    imul eax, NOVA_UI_MENU_ITEM_STRIDE
+    add eax, NOVA_UI_MENU_Y
     mov ecx, eax
-    mov eax, BM_COLOR_PANEL
-    mov ebx, 204
-    mov edx, 523
-    mov esi, 62
+    mov eax, [bm_theme_panel]
+    mov ebx, NOVA_UI_CONTENT_X
+    mov edx, NOVA_UI_CONTENT_RIGHT - NOVA_UI_CONTENT_X
+    mov esi, NOVA_UI_MENU_ITEM_HEIGHT
+    call bm_fill_rounded_rectangle
+
+    ; Der Fokus wird zusätzlich zur Flächenfarbe durch einen cyanfarbenen
+    ; Marker dargestellt. Damit hängt die Auswahl nicht ausschließlich von
+    ; einer Farbe beziehungsweise einem schwachen Kontrastunterschied ab.
+    mov eax, BM_COLOR_CYAN
+    mov ebx, NOVA_UI_CONTENT_X
+    movzx ecx, byte [bm_selection]
+    imul ecx, NOVA_UI_MENU_ITEM_STRIDE
+    add ecx, NOVA_UI_MENU_Y + 14
+    mov edx, NOVA_UI_SPACE_M
+    mov esi, 34
     call bm_fill_rounded_rectangle
 
     ; Beschriftung, Symbol und Aktion stammen aus derselben Eintragstabelle.
@@ -1568,11 +2111,16 @@ boot_manager_draw:
     mov eax, edi
     imul eax, BM_ENTRY_SIZE
     mov esi, [bm_menu_entries + eax + BM_ENTRY_LABEL]
-    mov ebx, 278
+    mov ebx, NOVA_UI_MENU_TEXT_X
     mov ecx, edi
-    imul ecx, 68
-    add ecx, 98
+    imul ecx, NOVA_UI_MENU_ITEM_STRIDE
+    add ecx, NOVA_UI_MENU_Y + 21
     mov edx, BM_COLOR_WHITE
+    movzx eax, byte [bm_selection]
+    cmp edi, eax
+    jne .entry_text_color_ready
+    mov edx, BM_COLOR_CYAN
+.entry_text_color_ready:
     mov ebp, 2
     push edi
     call bm_draw_text
@@ -1582,16 +2130,30 @@ boot_manager_draw:
     imul eax, BM_ENTRY_SIZE
     movzx edi, byte [bm_menu_entries + eax + BM_ENTRY_ICON]
     mov eax, BM_COLOR_WHITE
-    mov ebx, 228
+    mov edx, [bm_draw_entry_index]
+    movzx ebp, byte [bm_selection]
+    cmp edx, ebp
+    jne .entry_icon_color_ready
+    mov eax, BM_COLOR_CYAN
+.entry_icon_color_ready:
+    mov ebx, NOVA_UI_MENU_ICON_X
     mov ecx, [bm_draw_entry_index]
-    imul ecx, 68
-    add ecx, 101
+    imul ecx, NOVA_UI_MENU_ITEM_STRIDE
+    add ecx, NOVA_UI_MENU_Y + 24
     call bm_draw_menu_icon
     inc dword [bm_draw_entry_index]
     mov edi, [bm_draw_entry_index]
     jmp .draw_entry
 .entries_done:
     mov dword [bm_draw_entry_index], 0
+
+    ; Der Standard-Boot-Eintrag wird unabhängig vom Fokus textlich markiert.
+    mov esi, bm_text_default_badge
+    mov ebx, 640
+    mov ecx, 105
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 1
+    call bm_draw_text
 
     cmp byte [bm_countdown_active], 0
     je .done
@@ -1652,17 +2214,31 @@ bm_draw_menu_icon:
     ret
 
 boot_manager_draw_unavailable:
-    call bm_clear_status_line
+    mov esi, bm_page_installation
+    mov edi, 1
+    call bm_draw_page_base
+    mov esi, bm_text_unavailable_title
+    mov ebx, 228
+    mov ecx, 154
+    mov edx, BM_COLOR_WARNING
+    mov ebp, 2
+    call bm_draw_text
     mov esi, bm_text_unavailable
-    mov ebx, 40
-    mov ecx, 553
+    mov ebx, 228
+    mov ecx, 202
+    mov edx, [bm_theme_secondary]
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_text_unavailable_hint
+    mov ebx, 228
+    mov ecx, 232
     mov edx, BM_COLOR_WARNING
     mov ebp, 1
     call bm_draw_text
     ret
 
 bm_clear_status_line:
-    mov eax, BM_COLOR_BACKGROUND
+    mov eax, [bm_theme_background]
     xor ebx, ebx
     mov ecx, 540
     mov edx, 800
@@ -1675,38 +2251,774 @@ bm_draw_status_countdown:
     mov esi, bm_text_countdown
     mov ebx, 40
     mov ecx, 553
-    mov edx, BM_COLOR_SECONDARY
+    mov edx, [bm_theme_secondary]
     mov ebp, 2
     call bm_draw_text
+
+    ; Numerische Restzeit plus sichtbarer, deterministischer Fortschritt.
+    mov eax, [bm_theme_panel]
+    mov ebx, 520
+    mov ecx, 558
+    mov edx, 240
+    mov esi, 10
+    call bm_fill_rounded_rectangle
+    movzx edx, byte [bm_countdown_digit]
+    sub edx, '0'
+    imul edx, 48
+    test edx, edx
+    jz .done
+    mov eax, BM_COLOR_CYAN
+    mov ebx, 520
+    mov ecx, 558
+    mov esi, 10
+    call bm_fill_rounded_rectangle
+.done:
     ret
 
 boot_manager_draw_diagnostics:
-    call bm_clear_status_line
+    mov esi, bm_page_diagnostics
+    mov edi, 3
+    call bm_draw_page_base
+    mov esi, bm_diag_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_SUCCESS
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_diag_nbhp
+    mov ebx, 228
+    mov ecx, 190
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_diag_memory
+    mov ecx, 222
+    call bm_draw_text
+    mov esi, bm_diag_graphics
+    mov ecx, 254
+    call bm_draw_text
+    mov esi, bm_diag_kernel
+    mov ecx, 286
+    call bm_draw_text
+    mov esi, bm_diag_security
+    mov ecx, 334
+    mov edx, BM_COLOR_WARNING
+    call bm_draw_text
     mov esi, bm_text_diagnostics
-    mov ebx, 40
-    mov ecx, 553
-    mov edx, BM_COLOR_SECONDARY
+    mov ebx, 228
+    mov ecx, 392
+    mov edx, [bm_theme_secondary]
     mov ebp, 1
     call bm_draw_text
     ret
 
 boot_manager_draw_recovery_notice:
-    call bm_clear_status_line
-    mov esi, bm_text_recovery
-    mov ebx, 40
-    mov ecx, 553
+    mov esi, bm_page_recovery
+    mov edi, 4
+    call bm_draw_page_base
+    mov esi, bm_recovery_heading
+    mov ebx, 228
+    mov ecx, 140
     mov edx, BM_COLOR_WARNING
+    mov ebp, 2
+    call bm_draw_text
+    mov ecx, 184
+    mov edi, 4
+    call bm_draw_subselection_surface
+    mov esi, bm_recovery_action_auto
+    mov ebx, 250
+    mov ecx, 198
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_recovery_action_snapshot
+    mov ecx, 246
+    call bm_draw_text
+    mov esi, bm_recovery_action_memory
+    mov ecx, 294
+    call bm_draw_text
+    mov esi, bm_recovery_action_disk
+    mov ecx, 342
+    call bm_draw_text
+    mov esi, bm_recovery_status
+    mov ebx, 228
+    mov ecx, 410
+    mov edx, [bm_theme_secondary]
+    call bm_draw_text
+    ret
+
+boot_manager_draw_settings:
+    mov esi, bm_page_settings
+    mov edi, 2
+    call bm_draw_page_base
+    mov esi, bm_settings_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_settings_default
+    mov ebx, 228
+    mov ecx, 202
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_settings_countdown
+    mov ecx, 244
+    call bm_draw_text
+    mov esi, bm_settings_theme_prefix
+    mov ecx, 286
+    call bm_draw_text
+    cmp byte [bm_high_contrast], 0
+    jne .high_contrast
+    mov esi, bm_settings_theme_dark
+    jmp .theme_value
+.high_contrast:
+    mov esi, bm_settings_theme_high
+.theme_value:
+    mov ebx, 452
+    call bm_draw_text
+    mov esi, bm_settings_input
+    mov ecx, 328
+    call bm_draw_text
+    mov esi, bm_settings_note
+    mov ecx, 390
+    mov edx, [bm_theme_secondary]
+    mov ebp, 1
+    mov edi, NOVA_UI_CONTENT_RIGHT
+    call bm_draw_text_wrapped
+    ret
+
+boot_manager_draw_help:
+    mov esi, bm_page_help
+    mov edi, 3
+    call bm_draw_page_base
+    mov esi, bm_help_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_help_navigation
+    mov ecx, 202
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_help_actions
+    mov ecx, 244
+    call bm_draw_text
+    mov esi, bm_help_shortcuts
+    mov ecx, 286
+    call bm_draw_text
+    mov esi, bm_help_theme
+    mov ecx, 328
+    call bm_draw_text
+    mov esi, bm_help_escape
+    mov ecx, 390
+    mov edx, [bm_theme_secondary]
+    call bm_draw_text
+    ret
+
+boot_manager_draw_details:
+    mov esi, bm_page_details
+    xor edi, edi
+    call bm_draw_page_base
+    mov esi, bm_details_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_details_version
+    mov ecx, 194
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_details_kernel
+    mov ecx, 226
+    call bm_draw_text
+    mov esi, bm_details_arch
+    mov ecx, 258
+    call bm_draw_text
+    mov esi, bm_details_firmware
+    mov ecx, 290
+    call bm_draw_text
+    mov esi, bm_details_integrity
+    mov ecx, 338
+    mov edx, BM_COLOR_SUCCESS
+    call bm_draw_text
+    mov esi, bm_details_signature
+    mov ecx, 370
+    mov edx, BM_COLOR_WARNING
+    call bm_draw_text
+    mov esi, bm_details_actions
+    mov ecx, 424
+    mov edx, [bm_theme_secondary]
+    call bm_draw_text
+    ret
+
+boot_manager_draw_advanced:
+    mov esi, bm_page_advanced
+    xor edi, edi
+    call bm_draw_page_base
+    mov esi, bm_event_advanced_base
+    call bm_debug_write_string
+    mov esi, bm_advanced_heading
+    mov ebx, 228
+    mov ecx, 140
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 2
+    call bm_draw_text
+    mov ecx, 184
+    mov edi, 5
+    call bm_draw_subselection_surface
+    mov esi, bm_event_advanced_list
+    call bm_debug_write_string
+    mov esi, bm_advanced_normal
+    mov ebx, 250
+    mov ecx, 198
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_advanced_recovery
+    mov ecx, 246
+    call bm_draw_text
+    mov esi, bm_advanced_safe
+    mov ecx, 294
+    call bm_draw_text
+    mov esi, bm_advanced_network
+    mov ecx, 342
+    call bm_draw_text
+    mov esi, bm_advanced_logging
+    mov ecx, 390
+    call bm_draw_text
+    mov esi, bm_event_advanced_ready
+    call bm_debug_write_string
+    ret
+
+boot_manager_draw_power_dialog:
+    mov esi, bm_page_power
+    mov edi, 5
+    call bm_draw_page_base
+    mov esi, bm_power_heading
+    mov ebx, 228
+    mov ecx, 140
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 2
+    call bm_draw_text
+    mov ecx, 184
+    mov edi, 4
+    call bm_draw_subselection_surface
+    mov esi, bm_power_off
+    mov ebx, 250
+    mov ecx, 198
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_power_restart
+    mov ecx, 246
+    call bm_draw_text
+    mov esi, bm_power_recovery
+    mov ecx, 294
+    call bm_draw_text
+    mov esi, bm_power_firmware
+    mov ecx, 342
+    call bm_draw_text
+    mov esi, bm_power_note
+    mov ecx, 410
+    mov edx, [bm_theme_secondary]
+    call bm_draw_text
+    ret
+
+boot_manager_draw_self_healing:
+    mov esi, bm_page_self_healing
+    mov edi, 4
+    call bm_draw_page_base
+    mov esi, bm_heal_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_heal_integrity
+    mov ecx, 202
+    mov edx, BM_COLOR_SUCCESS
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_heal_kernel
+    mov ecx, 238
+    call bm_draw_text
+    mov esi, bm_heal_bootloader
+    mov ecx, 274
+    call bm_draw_text
+    mov esi, bm_heal_filesystem
+    mov ecx, 310
+    mov edx, BM_COLOR_WARNING
+    call bm_draw_text
+    mov esi, bm_heal_note
+    mov ecx, 374
+    mov edx, [bm_theme_secondary]
+    mov edi, NOVA_UI_CONTENT_RIGHT
+    call bm_draw_text_wrapped
+    ret
+
+boot_manager_draw_snapshots:
+    mov esi, bm_page_snapshots
+    mov edi, 4
+    call bm_draw_page_base
+    mov esi, bm_snap_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_WARNING
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_snap_count
+    mov ecx, 202
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_snap_reason
+    mov ecx, 250
+    mov edx, [bm_theme_secondary]
+    mov edi, NOVA_UI_CONTENT_RIGHT
+    call bm_draw_text_wrapped
+    ret
+
+boot_manager_draw_memory_test:
+    mov esi, bm_page_memory
+    mov edi, 3
+    call bm_draw_page_base
+    mov esi, bm_memory_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_memory_map
+    mov ecx, 202
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_memory_algorithm
+    mov ecx, 238
+    call bm_draw_text
+    cmp byte [bm_memory_result], 1
+    je .passed
+    cmp byte [bm_memory_result], 2
+    je .failed
+    mov esi, bm_memory_ready
+    mov edx, [bm_theme_secondary]
+    jmp .result
+.passed:
+    mov esi, bm_memory_passed
+    mov edx, BM_COLOR_SUCCESS
+    jmp .result
+.failed:
+    mov esi, bm_memory_failed
+    mov edx, BM_COLOR_ERROR
+.result:
+    mov ecx, 304
+    call bm_draw_text
+    mov eax, [bm_theme_panel]
+    mov ebx, 228
+    mov ecx, 354
+    mov edx, 480
+    mov esi, 12
+    call bm_fill_rounded_rectangle
+    cmp byte [bm_memory_result], 0
+    je .hint
+    mov eax, BM_COLOR_CYAN
+    mov edx, 480
+    call bm_fill_rounded_rectangle
+.hint:
+    mov esi, bm_memory_hint
+    mov ebx, 228
+    mov ecx, 402
+    mov edx, [bm_theme_secondary]
     mov ebp, 1
     call bm_draw_text
     ret
 
+boot_manager_draw_disk_tools:
+    mov esi, bm_page_disk
+    mov edi, 3
+    call bm_draw_page_base
+    mov esi, bm_disk_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_disk_device
+    mov ecx, 202
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_disk_layout
+    mov ecx, 238
+    call bm_draw_text
+    mov esi, bm_disk_health
+    mov ecx, 274
+    mov edx, BM_COLOR_SUCCESS
+    call bm_draw_text
+    mov esi, bm_disk_note
+    mov ecx, 338
+    mov edx, [bm_theme_secondary]
+    mov edi, NOVA_UI_CONTENT_RIGHT
+    call bm_draw_text_wrapped
+    ret
+
+boot_manager_draw_encryption:
+    mov esi, bm_page_encryption
+    mov edi, 2
+    call bm_draw_page_base
+    mov esi, bm_encryption_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_encryption_volume
+    mov ecx, 210
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_encryption_state
+    mov ecx, 250
+    mov edx, BM_COLOR_SUCCESS
+    call bm_draw_text
+    mov esi, bm_encryption_note
+    mov ecx, 320
+    mov edx, [bm_theme_secondary]
+    mov edi, NOVA_UI_CONTENT_RIGHT
+    call bm_draw_text_wrapped
+    ret
+
+boot_manager_draw_network:
+    mov esi, bm_page_network
+    mov edi, 3
+    call bm_draw_page_base
+    mov esi, bm_network_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_WARNING
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_network_adapter
+    mov ecx, 210
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_network_server
+    mov ecx, 250
+    call bm_draw_text
+    mov esi, bm_network_note
+    mov ecx, 320
+    mov edx, [bm_theme_secondary]
+    mov edi, NOVA_UI_CONTENT_RIGHT
+    call bm_draw_text_wrapped
+    ret
+
+boot_manager_draw_firmware:
+    mov esi, bm_page_firmware
+    mov edi, 2
+    call bm_draw_page_base
+    mov esi, bm_firmware_heading
+    mov ebx, 228
+    mov ecx, 144
+    mov edx, BM_COLOR_CYAN
+    mov ebp, 2
+    call bm_draw_text
+    mov esi, bm_firmware_mode
+    mov ecx, 210
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 1
+    call bm_draw_text
+    mov esi, bm_firmware_secure
+    mov ecx, 250
+    mov edx, BM_COLOR_WARNING
+    call bm_draw_text
+    mov esi, bm_firmware_note
+    mov ecx, 320
+    mov edx, [bm_theme_secondary]
+    mov edi, NOVA_UI_CONTENT_RIGHT
+    call bm_draw_text_wrapped
+    ret
+
+bm_run_memory_quick_test:
+    push eax
+    mov eax, [bm_memory_probe]
+    push eax
+    mov dword [bm_memory_probe], 0xAA55AA55
+    cmp dword [bm_memory_probe], 0xAA55AA55
+    jne .failed
+    mov dword [bm_memory_probe], 0x55AA55AA
+    cmp dword [bm_memory_probe], 0x55AA55AA
+    jne .failed
+    mov byte [bm_memory_result], 1
+    mov esi, bm_event_memory_passed
+    jmp .restore
+.failed:
+    mov byte [bm_memory_result], 2
+    mov esi, bm_event_memory_failed
+.restore:
+    pop eax
+    mov [bm_memory_probe], eax
+    call bm_debug_write_string
+    pop eax
+    ret
+
+; ECX=Start-y, EDI=Anzahl. Gemeinsame Focus/Selected-Flaeche fuer Listen.
+bm_draw_subselection_surface:
+    pushad
+    movzx eax, byte [bm_subselection]
+    cmp eax, edi
+    jb .valid
+    xor eax, eax
+.valid:
+    imul eax, 48
+    add ecx, eax
+    mov eax, [bm_theme_panel]
+    mov ebx, 228
+    mov edx, 480
+    mov esi, 42
+    call bm_fill_rounded_rectangle
+    mov eax, BM_COLOR_CYAN
+    mov ebx, 228
+    mov edx, NOVA_UI_SPACE_M
+    mov esi, 42
+    call bm_fill_rounded_rectangle
+    popad
+    ret
+
+; ESI=Seitentitel, EDI=Menüsymbol. Zeichnet eine gemeinsame, modal wirkende
+; Seitenbasis über den Hauptbildschirm und erhält dadurch Marke, Rahmen und
+; Design-Tokens auf allen Ansichten konsistent.
+bm_draw_page_base:
+    push esi
+    push edi
+    call bm_draw_page_shell
+    mov eax, [bm_theme_background]
+    mov ebx, 190
+    mov ecx, 61
+    mov edx, 555
+    mov esi, 460
+    call bm_fill_rectangle
+    pop edi
+    pop esi
+    mov ebx, 228
+    mov ecx, 84
+    mov edx, BM_COLOR_WHITE
+    mov ebp, 2
+    call bm_draw_text
+    mov eax, BM_COLOR_CYAN
+    mov ebx, 204
+    mov ecx, 87
+    call bm_draw_menu_icon
+    mov eax, BM_COLOR_BLUE
+    mov ebx, 204
+    mov ecx, 122
+    mov edx, 523
+    mov esi, 2
+    call bm_fill_rectangle
+    mov esi, bm_page_back_hint
+    cmp byte [bm_view], BM_VIEW_SELF_HEALING
+    je .recovery_hint
+    cmp byte [bm_view], BM_VIEW_SNAPSHOTS
+    je .recovery_hint
+    cmp byte [bm_view], BM_VIEW_MEMORY_TEST
+    je .recovery_hint
+    cmp byte [bm_view], BM_VIEW_DISK_TOOLS
+    jne .hint_ready
+.recovery_hint:
+    mov esi, bm_page_back_recovery_hint
+.hint_ready:
+    mov ebx, 204
+    mov ecx, 488
+    mov edx, [bm_theme_secondary]
+    mov ebp, 1
+    call bm_draw_text
+    ret
+
+; Gemeinsame statische Shell fuer Unterseiten. Sie zeichnet nur Hintergrund,
+; Marke, Kopfzeile und Panel statt zuerst das komplette Hauptmenue aufzubauen.
+bm_draw_page_shell:
+    mov eax, [bm_theme_background]
+    xor ebx, ebx
+    xor ecx, ecx
+    mov edx, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 16]
+    mov esi, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 20]
+    call bm_fill_rectangle
+    mov eax, BM_COLOR_BLUE
+    mov ebx, 102
+    xor ecx, ecx
+    mov edx, 628
+    mov esi, 13
+    call bm_fill_rounded_rectangle
+    mov dword [bm_logo_x], 32
+    mov dword [bm_logo_y], 38
+    mov dword [bm_logo_color], BM_COLOR_BLUE
+    mov byte [bm_logo_compact], 1
+    mov byte [bm_logo_mirror], 1
+    call bm_draw_nova_logo
+    mov esi, bm_text_brand
+    mov ebx, 32
+    mov ecx, 156
+    mov edx, BM_COLOR_BLUE
+    mov ebp, 3
+    call bm_draw_text
+    mov eax, BM_COLOR_BLUE
+    mov ebx, NOVA_UI_PANEL_X
+    mov ecx, NOVA_UI_PANEL_Y
+    mov edx, NOVA_UI_PANEL_WIDTH
+    mov esi, NOVA_UI_PANEL_HEIGHT
+    call bm_fill_rounded_rectangle
+    mov eax, [bm_theme_background]
+    mov ebx, NOVA_UI_PANEL_X + 1
+    mov ecx, NOVA_UI_PANEL_Y + 1
+    mov edx, NOVA_UI_PANEL_WIDTH - 2
+    mov esi, NOVA_UI_PANEL_HEIGHT - 2
+    call bm_fill_rounded_rectangle
+    ret
+
+bm_redraw_current_view:
+    cmp byte [bm_view], BM_VIEW_SETTINGS
+    je .settings
+    cmp byte [bm_view], BM_VIEW_DIAGNOSTICS
+    je .diagnostics
+    cmp byte [bm_view], BM_VIEW_RECOVERY
+    je .recovery
+    cmp byte [bm_view], BM_VIEW_UNAVAILABLE
+    je .unavailable
+    cmp byte [bm_view], BM_VIEW_HELP
+    je .help
+    cmp byte [bm_view], BM_VIEW_DETAILS
+    je .details
+    cmp byte [bm_view], BM_VIEW_ADVANCED
+    je .advanced
+    cmp byte [bm_view], BM_VIEW_POWER
+    je .power
+    cmp byte [bm_view], BM_VIEW_SELF_HEALING
+    je .self_healing
+    cmp byte [bm_view], BM_VIEW_SNAPSHOTS
+    je .snapshots
+    cmp byte [bm_view], BM_VIEW_MEMORY_TEST
+    je .memory
+    cmp byte [bm_view], BM_VIEW_DISK_TOOLS
+    je .disk
+    cmp byte [bm_view], BM_VIEW_ENCRYPTION
+    je .encryption
+    cmp byte [bm_view], BM_VIEW_NETWORK
+    je .network
+    cmp byte [bm_view], BM_VIEW_FIRMWARE
+    je .firmware
+    call boot_manager_draw
+    jmp .cursor
+.settings:
+    call boot_manager_draw_settings
+    jmp .cursor
+.diagnostics:
+    call boot_manager_draw_diagnostics
+    jmp .cursor
+.recovery:
+    call boot_manager_draw_recovery_notice
+    jmp .cursor
+.unavailable:
+    call boot_manager_draw_unavailable
+    jmp .cursor
+.help:
+    call boot_manager_draw_help
+    jmp .cursor
+.details:
+    call boot_manager_draw_details
+    jmp .cursor
+.advanced:
+    call boot_manager_draw_advanced
+    jmp .cursor
+.power:
+    call boot_manager_draw_power_dialog
+    jmp .cursor
+.self_healing:
+    call boot_manager_draw_self_healing
+    jmp .cursor
+.snapshots:
+    call boot_manager_draw_snapshots
+    jmp .cursor
+.memory:
+    call boot_manager_draw_memory_test
+    jmp .cursor
+.disk:
+    call boot_manager_draw_disk_tools
+    jmp .cursor
+.encryption:
+    call boot_manager_draw_encryption
+    jmp .cursor
+.network:
+    call boot_manager_draw_network
+    jmp .cursor
+.firmware:
+    call boot_manager_draw_firmware
+.cursor:
+    call bm_draw_mouse_cursor
+    ret
+
+; Kleiner, geglättet wirkender Nova-Cursor aus deterministischen Primitiven.
+; Er benötigt weder Bitmapressource noch dynamischen Speicher.
+bm_draw_mouse_cursor:
+    cmp byte [bm_mouse_available], 0
+    je .done
+    xor ebp, ebp
+.arrow_row:
+    cmp ebp, 12
+    jae .stem
+    mov eax, BM_COLOR_WHITE
+    mov ebx, [bm_mouse_x]
+    mov ecx, [bm_mouse_y]
+    add ecx, ebp
+    mov edx, ebp
+    shr edx, 1
+    add edx, 2
+    mov esi, 1
+    call bm_fill_rectangle
+    inc ebp
+    jmp .arrow_row
+.stem:
+    mov eax, BM_COLOR_CYAN
+    mov ebx, [bm_mouse_x]
+    add ebx, 4
+    mov ecx, [bm_mouse_y]
+    add ecx, 9
+    mov edx, 3
+    mov esi, 7
+    call bm_fill_rectangle
+.done:
+    ret
+
+bm_toggle_contrast_theme:
+    xor byte [bm_high_contrast], 1
+    cmp byte [bm_high_contrast], 0
+    je .dark
+    mov dword [bm_theme_background], 0x00000000
+    mov dword [bm_theme_panel], 0x00252525
+    mov dword [bm_theme_secondary], BM_COLOR_WHITE
+    mov esi, bm_event_high_contrast
+    call bm_debug_write_string
+    ret
+.dark:
+    mov dword [bm_theme_background], BM_COLOR_BACKGROUND
+    mov dword [bm_theme_panel], BM_COLOR_PANEL
+    mov dword [bm_theme_secondary], BM_COLOR_SECONDARY
+    mov esi, bm_event_dark_theme
+    call bm_debug_write_string
+    ret
+
 boot_manager_draw_starting:
-    mov eax, BM_COLOR_PANEL
+    mov eax, [bm_theme_panel]
     mov ebx, 64
     mov ecx, 448
     mov edx, 672
     mov esi, 76
-    call bm_fill_rectangle
+    call bm_fill_rounded_rectangle
     mov esi, bm_text_starting
     mov ebx, 96
     mov ecx, 474
@@ -1944,12 +3256,23 @@ bm_draw_error_mark:
 
 ; ESI=Text, EBX=x, ECX=y, EDX=Farbe, EBP=Skalierung
 bm_draw_text:
+    mov byte [bm_text_wrap], 0
+    jmp bm_draw_text_begin
+
+; ESI=Text, EBX=x, ECX=y, EDX=Farbe, EBP=Skalierung, EDI=rechte DLU-Grenze.
+; Der frühe Bootpfad verwendet deterministischen Zeichenumbruch ohne Heap.
+bm_draw_text_wrapped:
+    mov byte [bm_text_wrap], 1
+    mov [bm_text_max_x], edi
+bm_draw_text_begin:
     mov [bm_text_pointer], esi
     mov [bm_text_x], ebx
+    mov [bm_text_origin_x], ebx
     mov [bm_text_y], ecx
     mov [bm_text_color], edx
     mov [bm_text_scale], ebp
 .next:
+.load:
     mov esi, [bm_text_pointer]
     lodsb
     mov [bm_text_pointer], esi
@@ -1957,6 +3280,7 @@ bm_draw_text:
     jz .done
     cmp al, ' '
     je .space
+    mov byte [bm_character_advance], 8
     call bm_draw_character
 .advance:
     movzx eax, byte [bm_character_advance]
@@ -1964,9 +3288,108 @@ bm_draw_text:
     add [bm_text_x], eax
     jmp .next
 .space:
+    cmp byte [bm_text_wrap], 0
+    je .plain_space
+    mov esi, [bm_text_pointer]
+    call bm_measure_word
+    add eax, [bm_text_x]
+    cmp eax, [bm_text_max_x]
+    jae .new_line
+.plain_space:
     mov byte [bm_character_advance], 5
     jmp .advance
+.new_line:
+    mov eax, [bm_text_origin_x]
+    mov [bm_text_x], eax
+    mov eax, BM_FONT_HEIGHT + NOVA_UI_SPACE_S
+    imul eax, [bm_text_scale]
+    add [bm_text_y], eax
+    jmp .next
 .done:
+    ret
+
+; ESI zeigt auf das nächste Wort. Rückgabe EAX=Breite, Eingabezeiger bleibt
+; unverändert. Damit kann der Renderer vor dem Zeichnen wortweise umbrechen.
+bm_measure_word:
+    push esi
+    push ebx
+    push ecx
+    push edi
+    xor ebx, ebx
+.next:
+    lodsb
+    test al, al
+    jz .done
+    cmp al, ' '
+    je .done
+    mov edi, bm_font_characters
+    xor ecx, ecx
+.find:
+    mov dl, [edi + ecx]
+    test dl, dl
+    jz .fallback
+    cmp dl, al
+    je .found
+    inc ecx
+    jmp .find
+.found:
+    movzx eax, byte [bm_font_widths + ecx]
+    jmp .add
+.fallback:
+    mov eax, 8
+.add:
+    add eax, [bm_text_scale]
+    add ebx, eax
+    jmp .next
+.done:
+    mov eax, ebx
+    pop edi
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+
+; ESI=Text, EBP=Skalierung. Rückgabe: EAX=Breite in DLU, EDX=Zeilenhöhe.
+bm_measure_text:
+    push ebx
+    push ecx
+    push edi
+    xor ebx, ebx
+.character:
+    lodsb
+    test al, al
+    jz .measured
+    cmp al, ' '
+    je .space
+    mov edi, bm_font_characters
+    xor ecx, ecx
+.find:
+    mov dl, [edi + ecx]
+    test dl, dl
+    jz .fallback
+    cmp dl, al
+    je .found
+    inc ecx
+    jmp .find
+.found:
+    movzx eax, byte [bm_font_widths + ecx]
+    jmp .add
+.space:
+    mov eax, 5
+    jmp .add
+.fallback:
+    mov eax, 8
+.add:
+    add eax, ebp
+    add ebx, eax
+    jmp .character
+.measured:
+    mov eax, ebx
+    mov edx, BM_FONT_HEIGHT
+    imul edx, ebp
+    pop edi
+    pop ecx
+    pop ebx
     ret
 
 bm_draw_character:
@@ -2014,10 +3437,14 @@ bm_draw_character:
     push eax
     mov edi, [bm_text_y]
     add edi, ebp
+    cmp edi, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 20]
+    jae .next_column
     imul edi, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 12]
     add edi, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 8]
     mov edx, [bm_text_x]
     add edx, ecx
+    cmp edx, [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 16]
+    jae .next_column
     shl edx, 2
     add edi, edx
     pop eax
@@ -2125,8 +3552,11 @@ bm_rect_height:  dd 0
 bm_text_pointer: dd 0
 bm_text_x:       dd 0
 bm_text_y:       dd 0
+bm_text_origin_x: dd 0
+bm_text_max_x:   dd NOVA_UI_CONTENT_RIGHT
 bm_text_color:   dd 0
 bm_text_scale:   dd 1
+bm_text_wrap:    db 0
 bm_character_advance: db 0
 align 4
 bm_blend_alpha:  dd 0
@@ -2152,10 +3582,26 @@ bm_error_mark_y: dd 82
 bm_error_mark_color: dd BM_COLOR_WHITE
 bm_selection:    db 0
 bm_countdown_active: db 0
+bm_view:         db BM_VIEW_MAIN
+bm_subselection: db 0
+bm_memory_result: db 0
+bm_mouse_available: db 0
+bm_mouse_phase:     db 0
+bm_mouse_buttons:   db 0
+bm_mouse_packet:    times 3 db 0
+bm_high_contrast:   db 0
 align 4
 bm_draw_entry_index: dd 0
+bm_mouse_x:       dd 400
+bm_mouse_y:       dd 300
+bm_theme_background: dd BM_COLOR_BACKGROUND
+bm_theme_panel:      dd BM_COLOR_PANEL
+bm_theme_secondary:  dd BM_COLOR_SECONDARY
+bm_memory_probe:      dd 0x4E4F5641
 
 bm_text_brand:       db "NovaOS",0
+bm_text_screen_title: db "Startoptionen",0
+bm_text_default_badge: db "STANDARD",0
 bm_text_title:       db "BOOT MANAGER",0
 bm_text_os:          db "NOVA OS",0
 bm_text_kernel:      db "STANDARDKERNEL | NKI V1 | X86-32",0
@@ -2164,8 +3610,107 @@ bm_text_security:    db "SICHERHEIT NOCH NICHT VERIFIZIERT",0
 bm_text_enter:       db "ENTER  SYSTEM STARTEN",0
 bm_text_actions:     db "D  DIAGNOSE     R  RECOVERY-STATUS",0
 bm_text_diagnostics: db "CRC32 OK | NBHP/BIB 1.0 | MEMORY MAP OK | VBE OK",0
-bm_text_recovery:    db "RECOVERY IST IN DIESEM PROTOTYP NOCH NICHT VERFUEGBAR",0
+bm_text_recovery:    db "Recovery-Modul ist noch nicht verf",0x81,"gbar.",0
 bm_text_starting:    db "NOVA OS WIRD GESTARTET",0
+bm_page_settings:    db "Einstellungen",0
+bm_page_diagnostics: db "Systemdiagnose",0
+bm_page_recovery:    db "Wiederherstellung",0
+bm_page_installation: db "Installation",0
+bm_page_help:        db "Hilfe und Bedienung",0
+bm_page_details:     db "Details zum Starteintrag",0
+bm_page_advanced:    db "Erweiterte Startoptionen",0
+bm_page_power:       db "Ausschalten und Neustarten",0
+bm_page_self_healing: db "NovaOS Self-Healing",0
+bm_page_snapshots:   db "Snapshot-Auswahl",0
+bm_page_memory:      db "Speichertest",0
+bm_page_disk:        db "Datentr",0x84,"ger und Partitionen",0
+bm_page_encryption:  db "Verschl",0x81,"sselung und Entsperren",0
+bm_page_network:     db "Netzwerk-Boot",0
+bm_page_firmware:    db "Firmware-Einstellungen",0
+bm_page_back_hint:   db "ESC  Zur",0x81,"ck zum Hauptmen",0x81,0
+bm_page_back_recovery_hint: db "ESC  Zur",0x81,"ck zum Recovery-Men",0x81,0
+bm_help_heading:     db "Bootmanager bedienen",0
+bm_help_navigation:  db "Pfeiltasten / Maus       Auswahl bewegen",0
+bm_help_actions:     db "ENTER / Mausklick        Auswahl ausf",0x81,"hren",0
+bm_help_shortcuts:   db "D Diagnose   R Recovery   S Einstellungen",0
+bm_help_theme:       db "H Darstellung mit hohem Kontrast umschalten",0
+bm_help_escape:      db "ESC oder R",0x81,"cktaste bringt dich zur",0x81,"ck.",0
+bm_details_heading:  db "NovaOS",0
+bm_details_version:  db "Version                  Entwicklungsversion",0
+bm_details_kernel:   db "Kernel                   NKI v1 (ELF kompatibel)",0
+bm_details_arch:     db "Architektur              x86-32",0
+bm_details_firmware: db "Firmwaremodus            BIOS / VBE",0
+bm_details_integrity: db "Status                   Bootf",0x84,"hig, Integrit",0x84,"t gepr",0x81,"ft",0
+bm_details_signature: db "Signatur                 Noch nicht verifiziert",0
+bm_details_actions:  db "ENTER Starten   F3 Erweiterte Optionen   ESC Schlie",0xE1,"en",0
+bm_advanced_heading: db "NovaOS Startmodus ausw",0x84,"hlen",0
+bm_advanced_normal:  db "Normal starten",0
+bm_advanced_recovery: db "Recovery starten",0
+bm_advanced_safe:    db "Abgesicherter Modus",0
+bm_advanced_network: db "Abgesicherter Modus mit Netzwerk",0
+bm_advanced_logging: db "Boot-Protokollierung aktivieren",0
+bm_power_heading:    db "Was soll der Computer tun?",0
+bm_power_off:        db "Herunterfahren",0
+bm_power_restart:    db "Neu starten",0
+bm_power_recovery:   db "Neu starten in Recovery",0
+bm_power_firmware:   db "Neu starten in Firmware-Einstellungen",0
+bm_power_note:       db "ENTER best",0x84,"tigt die Auswahl. ESC bricht ab.",0
+bm_settings_heading: db "Bootmanager konfigurieren",0
+bm_settings_default: db "Standard-Bootziel        NovaOS",0
+bm_settings_countdown: db "Automatischer Start       5 Sekunden",0
+bm_settings_theme_prefix: db "Darstellung",0
+bm_settings_theme_dark:   db "Dunkles Nova-Theme",0
+bm_settings_theme_high:   db "Hoher Kontrast",0
+bm_settings_input:   db "Eingabe                   Tastatur aktiv",0
+bm_settings_note:    db "Speichern ist verf",0x81,"gbar, sobald NovaFS im Bootmanager eingebunden ist.",0
+bm_diag_heading:     db "Alle grundlegenden Pr",0x81,"fungen bestanden",0
+bm_diag_nbhp:        db "NBHP / BIB               Version 1.0 validiert",0
+bm_diag_memory:      db "Speicherkarte             Verf",0x81,"gbar",0
+bm_diag_graphics:    db "Grafikausgabe             VBE-Framebuffer aktiv",0
+bm_diag_kernel:      db "Kernelabbild              NKI / CRC32 g",0x81,"ltig",0
+bm_diag_security:    db "Sicherheitsstatus         Signatur noch nicht verifiziert",0
+bm_recovery_heading: db "NovaOS Wiederherstellung",0
+bm_recovery_explanation: db "Diagnose und Reparatur von Startproblemen. Es werden keine Benutzerdaten ver",0x84,"ndert.",0
+bm_recovery_action_auto: db "Automatische Reparatur    Noch nicht verf",0x81,"gbar",0
+bm_recovery_action_snapshot: db "Snapshot wiederherstellen Noch nicht verf",0x81,"gbar",0
+bm_recovery_action_memory: db "Speicher testen",0
+bm_recovery_action_disk: db "Datentr",0x84,"ger und Partitionen pr",0x81,"fen",0
+bm_recovery_status: db "NovaOS erkannt | Integrit",0x84,"t OK | Recovery v1",0
+bm_heal_heading: db "Systemzustand und Reparatur",0
+bm_heal_integrity: db "Integrit",0x84,"t              Gepr",0x81,"ft",0
+bm_heal_kernel: db "Kernelabbild             G",0x81,"ltig",0
+bm_heal_bootloader: db "Bootloader               Startbereit",0
+bm_heal_filesystem: db "Dateisystem              Offline-Pr",0x81,"fung erforderlich",0
+bm_heal_note: db "Schreibende Reparaturen bleiben gesperrt, bis NovaFS und ein validierter Recovery-Snapshot verf",0x81,"gbar sind.",0
+bm_snap_heading: db "Keine Snapshots gefunden",0
+bm_snap_count: db "Verf",0x81,"gbare Snapshots      0",0
+bm_snap_reason: db "Die Snapshotliste wird aktiviert, sobald das NovaFS-Recovery-Modul einen gepr",0x81,"ften Snapshot-Katalog bereitstellt.",0
+bm_memory_heading: db "Schneller Speichertest",0
+bm_memory_map: db "Speicherkarte            E820 erkannt",0
+bm_memory_algorithm: db "Pr",0x81,"fmuster               AA55 / 55AA",0
+bm_memory_ready: db "Status                   Bereit",0
+bm_memory_passed: db "Status                   Test ohne Fehler abgeschlossen",0
+bm_memory_failed: db "Status                   Speicherfehler erkannt",0
+bm_memory_hint: db "ENTER startet den sicheren Bootmanager-Schnelltest",0
+bm_disk_heading: db "Erkannter Startdatentr",0x84,"ger",0
+bm_disk_device: db "Ger",0x84,"t                    BIOS-Laufwerk 0x80",0
+bm_disk_layout: db "Startlayout              Nova BIOS Image",0
+bm_disk_health: db "Lesestatus               Bootsektoren lesbar",0
+bm_disk_note: db "Schreibende Partitionsaktionen sind gesperrt. GPT/MBR- und SMART-Details ben",0x94,"tigen das noch nicht eingebundene Storage-Modul.",0
+bm_encryption_heading: db "NovaOS Volume-Sicherheit",0
+bm_encryption_volume: db "Startvolume              NovaOS System",0
+bm_encryption_state: db "Verschl",0x81,"sselung           Nicht erforderlich",0
+bm_encryption_note: db "Es wurde kein verschl",0x81,"sseltes Startvolume angefordert. Passwort-, TPM- und Recovery-Key-Eingabe bleiben deshalb sicher deaktiviert.",0
+bm_network_heading: db "Kein Bootserver gefunden",0
+bm_network_adapter: db "Netzwerkadapter          Nicht initialisiert",0
+bm_network_server: db "PXE / HTTP Boot          Nicht verf",0x81,"gbar",0
+bm_network_note: db "Der BIOS-Pfad besitzt aktuell keinen PXE-UNDI-Treiber. Netzwerk-Boot wird erst nach validierter Adapter- und DHCP-Initialisierung freigegeben.",0
+bm_firmware_heading: db "Plattforminformationen",0
+bm_firmware_mode: db "Firmwaremodus            Legacy BIOS",0
+bm_firmware_secure: db "Secure Boot              Nicht verf",0x81,"gbar",0
+bm_firmware_note: db "Legacy BIOS bietet keinen standardisierten Neustart in das Setup. Verwende beim Einschalten die Setup-Taste des Ger",0x84,"teherstellers.",0
+bm_text_unavailable_title: db "Funktion noch nicht verf",0x81,"gbar",0
+bm_text_unavailable_hint: db "Diese Ansicht ist vorbereitet, ben",0x94,"tigt aber ein Installationsmodul.",0
 bm_menu_start:       db "NovaOS starten",0
 bm_menu_install:     db "NovaOS installieren",0
 bm_menu_settings:    db "Einstellungen",0
@@ -2181,7 +3726,7 @@ bm_menu_entries:
     db 1, BM_ACTION_UNAVAILABLE
     dw 0
     dd bm_menu_settings
-    db 2, BM_ACTION_UNAVAILABLE
+    db 2, BM_ACTION_SETTINGS
     dw 0
     dd bm_menu_diagnostics
     db 3, BM_ACTION_DIAGNOSTICS
@@ -2210,6 +3755,26 @@ bm_error_header_code:   db "FEHLERCODE: BOOT-1001 | Dateiformat Ung",0x81,"ltig"
 bm_event_diagnostics: db "BM:DIAGNOSTICS",10,0
 bm_event_recovery:    db "BM:RECOVERY-UNAVAILABLE",10,0
 bm_event_start:       db "BM:START",10,0
+bm_event_settings:    db "BM:SETTINGS",10,0
+bm_event_back:        db "BM:BACK",10,0
+bm_event_help:        db "BM:HELP",10,0
+bm_event_details:     db "BM:DETAILS",10,0
+bm_event_advanced:    db "BM:ADVANCED",10,0
+bm_event_advanced_base: db "BM:ADVANCED-BASE",10,0
+bm_event_advanced_list: db "BM:ADVANCED-LIST",10,0
+bm_event_advanced_ready: db "BM:ADVANCED-READY",10,0
+bm_event_power_dialog: db "BM:POWER-DIALOG",10,0
+bm_event_self_healing: db "BM:SELF-HEALING",10,0
+bm_event_snapshots: db "BM:SNAPSHOTS",10,0
+bm_event_memory_test: db "BM:MEMORY-TEST",10,0
+bm_event_memory_passed: db "BM:MEMORY-PASSED",10,0
+bm_event_memory_failed: db "BM:MEMORY-FAILED",10,0
+bm_event_disk_tools: db "BM:DISK-TOOLS",10,0
+bm_event_encryption: db "BM:ENCRYPTION",10,0
+bm_event_network: db "BM:NETWORK",10,0
+bm_event_firmware: db "BM:FIRMWARE",10,0
+bm_event_high_contrast: db "BM:THEME-HIGH-CONTRAST",10,0
+bm_event_dark_theme:    db "BM:THEME-DARK",10,0
 
 %include "boot-font-aa.inc"
 %include "nova-art.inc"

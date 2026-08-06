@@ -1,0 +1,223 @@
+# NovaOS Bootmanager NPSPEC-Abdeckung
+
+Erzeugt: 2026-08-06 19:38:23
+
+Dokumente: 215
+
+| NPSPEC | Status | Implementierungsnachweis | Datei |
+|---|---|---|---|
+| NPSPEC-BOOTMOTION-0001 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0001_Boot_Motion_System.md |
+| NPSPEC-BOOTMOTION-0002 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0002_Animation_Timeline.md |
+| NPSPEC-BOOTMOTION-0003 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0003_Animation_Scheduler.md |
+| NPSPEC-BOOTMOTION-0004 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0004_Animatable_Properties.md |
+| NPSPEC-BOOTMOTION-0005 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0005_Easing_Functions.md |
+| NPSPEC-BOOTMOTION-0006 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0006_Spring_Animations.md |
+| NPSPEC-BOOTMOTION-0007 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0007_Transition_System.md |
+| NPSPEC-BOOTMOTION-0008 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0008_Dialog_Enter_Exit.md |
+| NPSPEC-BOOTMOTION-0009 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0009_Menu_Navigation_Transitions.md |
+| NPSPEC-BOOTMOTION-0010 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0010_Focus_Selection_Motion.md |
+| NPSPEC-BOOTMOTION-0011 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0011_Progress_Animations.md |
+| NPSPEC-BOOTMOTION-0012 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0012_Interruptible_Animations.md |
+| NPSPEC-BOOTMOTION-0013 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0013_Reduced_Motion_Mode.md |
+| NPSPEC-BOOTMOTION-0014 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0014_Animation_Performance_Budget.md |
+| NPSPEC-BOOTMANAGER-UI-0001 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0001_Main_Boot_Selection_Screen.md |
+| NPSPEC-BOOTMANAGER-UI-0002 | Teilweise integriert | boot2.asm: BM_VIEW_DETAILS, F2, Eigenschaften-/Statusansicht und Start-/Erweitert-Aktionen; Motion und Touch fehlen | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0002_Boot_Entry_Details_Dialog.md |
+| NPSPEC-BOOTMANAGER-UI-0003 | Teilweise integriert | boot2.asm: BM_VIEW_ADVANCED, F3, fokussierbare Startmodusliste, Recovery-/Fallback-Aktionen; Kernelparametereditor fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0003_Advanced_Boot_Options.md |
+| NPSPEC-BOOTMANAGER-UI-0004 | Teilweise integriert | boot2.asm: navigierbares Recovery-MenÃ¼ mit Self-Healing, Snapshots, Speichertest und DatentrÃ¤gerdiagnose; schreibende Recovery-Module fehlen | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0004_Recovery_Menu.md |
+| NPSPEC-BOOTMANAGER-UI-0005 | Teilweise integriert | boot2.asm: Self-Healing-Systemstatus und sichere Sperre schreibender Reparaturen; NovaFS-Reparaturmodul fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0005_Self-Healing_Menu.md |
+| NPSPEC-BOOTMANAGER-UI-0006 | Teilweise integriert | boot2.asm: Snapshot-Ansicht mit leerem, erklÃ¤rtem Zustand; NovaFS-Snapshot-Katalog fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0006_Snapshot_Selection.md |
+| NPSPEC-BOOTMANAGER-UI-0007 | Teilweise integriert | boot2.asm: Speichertestansicht, AA55/55AA-Schnelltest, Ergebnis und Fortschritt; vollstÃ¤ndiger physischer RAM-Test fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0007_Memory_Test_Interface.md |
+| NPSPEC-BOOTMANAGER-UI-0008 | Teilweise integriert | boot2.asm: read-only BIOS-DatentrÃ¤gerstatus; GPT/MBR-, SMART- und Schreibmodule fehlen | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0008_Disk_and_Partition_Tools.md |
+| NPSPEC-BOOTMANAGER-UI-0009 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0009_Encryption_and_Unlock_Interface.md |
+| NPSPEC-BOOTMANAGER-UI-0010 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0010_Network_Boot_Interface.md |
+| NPSPEC-BOOTMANAGER-UI-0011 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0011_Firmware_Settings_Interface.md |
+| NPSPEC-BOOTMANAGER-UI-0012 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0012_Boot_Progress_Screen.md |
+| NPSPEC-BOOTMANAGER-UI-0013 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0013_Boot_Failure_Screen.md |
+| NPSPEC-BOOTMANAGER-UI-0014 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0014_Boot_Diagnostics_Screen.md |
+| NPSPEC-BOOTMANAGER-UI-0015 | Teilweise integriert | boot2.asm: BM_VIEW_POWER mit Herunterfahren, Neustart, Recovery/Firmware-Fallback und Abbrechen; Touch fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0015_Shutdown_and_Restart_Dialog.md |
+| NPSPEC-BOOTMANAGER-UI-0016 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0016_Automatic_Boot_Countdown.md |
+| NPSPEC-BOOTMANAGER-UI-0017 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0017_Default_Boot_Entry_Selection.md |
+| NPSPEC-BOOTMANAGER-UI-0018 | Teilweise integriert | boot2.asm: globale F1-Hilfe, Tastatur-/Maus-/Shortcut-Hinweise und ESC-Navigation; kontextspezifische Karten fehlen | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0018_Contextual_Help_Overlay.md |
+| NPSPEC-BOOTCOMPOSITOR-0001 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0001_Boot_Compositor.md |
+| NPSPEC-BOOTCOMPOSITOR-0002 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0002_Compositor_Layer_Model.md |
+| NPSPEC-BOOTCOMPOSITOR-0003 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0003_Overlay_Layer.md |
+| NPSPEC-BOOTCOMPOSITOR-0004 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0004_Modal_Layer.md |
+| NPSPEC-BOOTCOMPOSITOR-0005 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0005_Backdrop_Processing.md |
+| NPSPEC-BOOTCOMPOSITOR-0006 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0006_Glass_Material.md |
+| NPSPEC-BOOTCOMPOSITOR-0007 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0007_Acrylic_Material.md |
+| NPSPEC-BOOTCOMPOSITOR-0008 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0008_Transparency_Fallback.md |
+| NPSPEC-BOOTCOMPOSITOR-0009 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0009_Surface_Damage_Tracking.md |
+| NPSPEC-BOOTCOMPOSITOR-0010 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0010_Compositor_Performance_Limits.md |
+| NPSPEC-BOOTCONTROL-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-0001_Boot_Control_Framework.md |
+| NPSPEC-BOOTCONTROL-0002 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-0002_Control_State_Model.md |
+| NPSPEC-BOOTCONTROL-0003 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-0003_Control_Styling.md |
+| NPSPEC-BOOTCONTROL-0004 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-0004_Control_Templates.md |
+| NPSPEC-BOOTCONTROL-BREADCRUMB-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-BREADCRUMB-0001_Breadcrumb_Navigation.md |
+| NPSPEC-BOOTCONTROL-BUTTON-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-BUTTON-0001_Button.md |
+| NPSPEC-BOOTCONTROL-CARD-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-CARD-0001_Glass_Card.md |
+| NPSPEC-BOOTCONTROL-CHECKBOX-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-CHECKBOX-0001_Checkbox.md |
+| NPSPEC-BOOTCONTROL-CONTEXTMENU-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-CONTEXTMENU-0001_Context_Menu.md |
+| NPSPEC-BOOTCONTROL-ICON-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-ICON-0001_Icon.md |
+| NPSPEC-BOOTCONTROL-ICONBUTTON-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-ICONBUTTON-0001_Icon_Button.md |
+| NPSPEC-BOOTCONTROL-IMAGE-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-IMAGE-0001_Image.md |
+| NPSPEC-BOOTCONTROL-LABEL-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-LABEL-0001_Label.md |
+| NPSPEC-BOOTCONTROL-LIST-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-LIST-0001_List.md |
+| NPSPEC-BOOTCONTROL-LISTITEM-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-LISTITEM-0001_List_Item.md |
+| NPSPEC-BOOTCONTROL-MENUBUTTON-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-MENUBUTTON-0001_Menu_Button.md |
+| NPSPEC-BOOTCONTROL-PASSWORD-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-PASSWORD-0001_Password_Field.md |
+| NPSPEC-BOOTCONTROL-PROGRESS-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-PROGRESS-0001_Progress_Indicator.md |
+| NPSPEC-BOOTCONTROL-SCROLLBAR-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-SCROLLBAR-0001_Scrollbar.md |
+| NPSPEC-BOOTCONTROL-SCROLLVIEW-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-SCROLLVIEW-0001_Scroll_View.md |
+| NPSPEC-BOOTCONTROL-SEPARATOR-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-SEPARATOR-0001_Separator.md |
+| NPSPEC-BOOTCONTROL-SLIDER-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-SLIDER-0001_Slider.md |
+| NPSPEC-BOOTCONTROL-SPINNER-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-SPINNER-0001_Activity_Indicator.md |
+| NPSPEC-BOOTCONTROL-STATUSBADGE-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-STATUSBADGE-0001_Status_Badge.md |
+| NPSPEC-BOOTCONTROL-SWITCH-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-SWITCH-0001_Switch.md |
+| NPSPEC-BOOTCONTROL-TEXTFIELD-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-TEXTFIELD-0001_Text_Field.md |
+| NPSPEC-BOOTCONTROL-TILE-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-TILE-0001_Boot_Option_Tile.md |
+| NPSPEC-BOOTCONTROL-TOOLTIP-0001 | Teilweise integriert | boot2.asm: datengetriebene MenÃ¼eintrÃ¤ge, Fokusmarker, Icon-/Text-Control, Hit-Testing | Boot_Control/NPSPEC-BOOTCONTROL-TOOLTIP-0001_Tooltip.md |
+| NPSPEC-BOOTDESIGN-0001 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0001_Boot_Design_Language.md |
+| NPSPEC-BOOTDESIGN-0002 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0002_Boot_Design_Tokens.md |
+| NPSPEC-BOOTDESIGN-0003 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0003_Color_System.md |
+| NPSPEC-BOOTDESIGN-0004 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0004_Typography_System.md |
+| NPSPEC-BOOTDESIGN-0005 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0005_Spacing_System.md |
+| NPSPEC-BOOTDESIGN-0006 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0006_Corner_Radius_System.md |
+| NPSPEC-BOOTDESIGN-0007 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0007_Elevation_and_Shadow_System.md |
+| NPSPEC-BOOTDESIGN-0008 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0008_Glass_Material_System.md |
+| NPSPEC-BOOTDESIGN-0009 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0009_Iconography.md |
+| NPSPEC-BOOTDESIGN-0010 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0010_Motion_Tokens.md |
+| NPSPEC-BOOTDESIGN-0011 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0011_Interaction_States.md |
+| NPSPEC-BOOTDESIGN-0012 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0012_Dark_Theme.md |
+| NPSPEC-BOOTDESIGN-0013 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0013_Light_Theme.md |
+| NPSPEC-BOOTDESIGN-0014 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0014_High_Contrast_Theme.md |
+| NPSPEC-BOOTDESIGN-0015 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: Theme-Tokens und Hochkontrastmodus | Boot_Designsystem/NPSPEC-BOOTDESIGN-0015_NovaOS_Visual_Continuity.md |
+| NPSPEC-BOOTDIAG-0001 | Teilweise integriert | Debug-Port-Ereignisse und Diagnoseansicht; Statistikmodell fehlt | Boot_Diagnose/NPSPEC-BOOTDIAG-0001_Boot_UI_Diagnostics.md |
+| NPSPEC-BOOTDIAG-0002 | Teilweise integriert | Debug-Port-Ereignisse und Diagnoseansicht; Statistikmodell fehlt | Boot_Diagnose/NPSPEC-BOOTDIAG-0002_Rendering_Statistics.md |
+| NPSPEC-BOOTDIAG-0003 | Teilweise integriert | Debug-Port-Ereignisse und Diagnoseansicht; Statistikmodell fehlt | Boot_Diagnose/NPSPEC-BOOTDIAG-0003_Input_Event_Tracing.md |
+| NPSPEC-BOOTDIAG-0004 | Teilweise integriert | Debug-Port-Ereignisse und Diagnoseansicht; Statistikmodell fehlt | Boot_Diagnose/NPSPEC-BOOTDIAG-0004_Animation_Diagnostics.md |
+| NPSPEC-BOOTDIAG-0005 | Teilweise integriert | Debug-Port-Ereignisse und Diagnoseansicht; Statistikmodell fehlt | Boot_Diagnose/NPSPEC-BOOTDIAG-0005_Resource_Loading_Diagnostics.md |
+| NPSPEC-BOOTPERF-0001 | Teilweise integriert | Feste SpeichergrÃ¶ÃŸen und keine Laufzeitallokation; vollstÃ¤ndige Budgets fehlen | Boot_Diagnose/NPSPEC-BOOTPERF-0001_Boot_UI_Performance_Requirements.md |
+| NPSPEC-BOOTPERF-0002 | Teilweise integriert | Feste SpeichergrÃ¶ÃŸen und keine Laufzeitallokation; vollstÃ¤ndige Budgets fehlen | Boot_Diagnose/NPSPEC-BOOTPERF-0002_Frame-Time_Budget.md |
+| NPSPEC-BOOTPERF-0003 | Teilweise integriert | Feste SpeichergrÃ¶ÃŸen und keine Laufzeitallokation; vollstÃ¤ndige Budgets fehlen | Boot_Diagnose/NPSPEC-BOOTPERF-0003_Memory_Budget.md |
+| NPSPEC-BOOTPERF-0004 | Teilweise integriert | Feste SpeichergrÃ¶ÃŸen und keine Laufzeitallokation; vollstÃ¤ndige Budgets fehlen | Boot_Diagnose/NPSPEC-BOOTPERF-0004_Startup-Time_Budget.md |
+| NPSPEC-BOOTPERF-0005 | Teilweise integriert | Feste SpeichergrÃ¶ÃŸen und keine Laufzeitallokation; vollstÃ¤ndige Budgets fehlen | Boot_Diagnose/NPSPEC-BOOTPERF-0005_Adaptive_Quality.md |
+| NPSPEC-BOOTPERF-0006 | Teilweise integriert | Feste SpeichergrÃ¶ÃŸen und keine Laufzeitallokation; vollstÃ¤ndige Budgets fehlen | Boot_Diagnose/NPSPEC-BOOTPERF-0006_Low-End_Hardware_Profile.md |
+| NPSPEC-BOOTPERF-0007 | Teilweise integriert | Feste SpeichergrÃ¶ÃŸen und keine Laufzeitallokation; vollstÃ¤ndige Budgets fehlen | Boot_Diagnose/NPSPEC-BOOTPERF-0007_High-Quality_Hardware_Profile.md |
+| NPSPEC-BOOTTEST-0001 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0001_Boot_UI_Test_Architecture.md |
+| NPSPEC-BOOTTEST-0002 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0002_Rendering_Reference_Tests.md |
+| NPSPEC-BOOTTEST-0003 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0003_Control_Interaction_Tests.md |
+| NPSPEC-BOOTTEST-0004 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0004_Navigation_Tests.md |
+| NPSPEC-BOOTTEST-0005 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0005_Dialog_Tests.md |
+| NPSPEC-BOOTTEST-0006 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0006_Resolution_Compatibility_Tests.md |
+| NPSPEC-BOOTTEST-0007 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0007_BIOS_and_UEFI_Compatibility.md |
+| NPSPEC-BOOTTEST-0008 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0008_Performance_Regression_Tests.md |
+| NPSPEC-BOOTTEST-0009 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0009_Resource_Corruption_Tests.md |
+| NPSPEC-BOOTTEST-0010 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0010_Fallback_Mode_Tests.md |
+| NPSPEC-BOOTINPUT-0001 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0001_Boot_Input_Architecture.md |
+| NPSPEC-BOOTINPUT-0002 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0002_Unified_Input_Event_Model.md |
+| NPSPEC-BOOTINPUT-0003 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0003_Keyboard_Input.md |
+| NPSPEC-BOOTINPUT-0004 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0004_Mouse_Input.md |
+| NPSPEC-BOOTINPUT-0005 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0005_Touch_Input.md |
+| NPSPEC-BOOTINPUT-0006 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0006_Pointer_Model.md |
+| NPSPEC-BOOTINPUT-0007 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0007_Pointer_Capture.md |
+| NPSPEC-BOOTINPUT-0008 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0008_Focus_Management.md |
+| NPSPEC-BOOTINPUT-0009 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0009_Directional_Focus_Navigation.md |
+| NPSPEC-BOOTINPUT-0010 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0010_Keyboard_Shortcuts.md |
+| NPSPEC-BOOTINPUT-0011 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0011 – Input Repeat.md |
+| NPSPEC-BOOTINPUT-0012 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0012_Input_Device_Hot_Detection.md |
+| NPSPEC-BOOTLAYOUT-0001 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: DLU-Tokens, Safe Area, Wrapped Text | Boot_Layout/NPSPEC-BOOTLAYOUT-0001_Boot_Layout_Engine.md |
+| NPSPEC-BOOTLAYOUT-0002 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: DLU-Tokens, Safe Area, Wrapped Text | Boot_Layout/NPSPEC-BOOTLAYOUT-0002_Alignment_Spacing.md |
+| NPSPEC-BOOTLAYOUT-0003 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: DLU-Tokens, Safe Area, Wrapped Text | Boot_Layout/NPSPEC-BOOTLAYOUT-0003_Stack_Layout.md |
+| NPSPEC-BOOTLAYOUT-0004 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: DLU-Tokens, Safe Area, Wrapped Text | Boot_Layout/NPSPEC-BOOTLAYOUT-0004_Grid_Layout.md |
+| NPSPEC-BOOTLAYOUT-0005 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: DLU-Tokens, Safe Area, Wrapped Text | Boot_Layout/NPSPEC-BOOTLAYOUT-0005_Overlay_Layout.md |
+| NPSPEC-BOOTLAYOUT-0006 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: DLU-Tokens, Safe Area, Wrapped Text | Boot_Layout/NPSPEC-BOOTLAYOUT-0006_Constraint-Based_Sizing.md |
+| NPSPEC-BOOTLAYOUT-0007 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: DLU-Tokens, Safe Area, Wrapped Text | Boot_Layout/NPSPEC-BOOTLAYOUT-0007_Responsive_Boot_Layout.md |
+| NPSPEC-BOOTLAYOUT-0008 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: DLU-Tokens, Safe Area, Wrapped Text | Boot_Layout/NPSPEC-BOOTLAYOUT-0008_Safe_Display_Areas.md |
+| NPSPEC-BOOTLAYOUT-0009 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: DLU-Tokens, Safe Area, Wrapped Text | Boot_Layout/NPSPEC-BOOTLAYOUT-0009_DPI_Resolution_Scaling.md |
+| NPSPEC-BOOTLAYOUT-0010 | Teilweise integriert | boot-ui-tokens.inc; boot2.asm: DLU-Tokens, Safe Area, Wrapped Text | Boot_Layout/NPSPEC-BOOTLAYOUT-0010_Text-Aware_Layout.md |
+| NPSPEC-BOOTDIALOG-0001 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0001_Boot_Dialog_Architecture.md |
+| NPSPEC-BOOTDIALOG-0002 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0002_Modal_Dialog.md |
+| NPSPEC-BOOTDIALOG-0003 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0003_Glass_Dialog.md |
+| NPSPEC-BOOTDIALOG-0004 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0004_Confirmation_Dialog.md |
+| NPSPEC-BOOTDIALOG-0005 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0005_Warning_Dialog.md |
+| NPSPEC-BOOTDIALOG-0006 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0006_Error_Dialog.md |
+| NPSPEC-BOOTDIALOG-0007 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0007_Progress_Dialog.md |
+| NPSPEC-BOOTDIALOG-0008 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0008_Credential_Dialog.md |
+| NPSPEC-BOOTDIALOG-0009 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0009_Dialog_Focus_Management.md |
+| NPSPEC-BOOTDIALOG-0010 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0010_Dialog_Animation.md |
+| NPSPEC-BOOTDIALOG-0011 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0011_Dialog_Result_and_Cancellation.md |
+| NPSPEC-BOOTDIALOG-0012 | Teilweise integriert | boot2.asm: gemeinsame Seitenbasis und einheitliche ESC-/Backspace-Navigation | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0012_Destructive_Action_Confirmation.md |
+| NPSPEC-BOOTNAV-0001 | Teilweise integriert | boot2.asm: bm_view-Zustandsmodell und bm_redraw_current_view | Boot_Navigation_Dialoge/NPSPEC-BOOTNAV-0001_Boot_Navigation_Model.md |
+| NPSPEC-BOOTNAV-0002 | Teilweise integriert | boot2.asm: bm_view-Zustandsmodell und bm_redraw_current_view | Boot_Navigation_Dialoge/NPSPEC-BOOTNAV-0002_Navigation_Stack.md |
+| NPSPEC-BOOTNAV-0003 | Teilweise integriert | boot2.asm: bm_view-Zustandsmodell und bm_redraw_current_view | Boot_Navigation_Dialoge/NPSPEC-BOOTNAV-0003_Page_View_Model.md |
+| NPSPEC-BOOTNAV-0004 | Teilweise integriert | boot2.asm: bm_view-Zustandsmodell und bm_redraw_current_view | Boot_Navigation_Dialoge/NPSPEC-BOOTNAV-0004_Back_Navigation.md |
+| NPSPEC-BOOTNAV-0005 | Teilweise integriert | boot2.asm: bm_view-Zustandsmodell und bm_redraw_current_view | Boot_Navigation_Dialoge/NPSPEC-BOOTNAV-0005_Navigation_Transitions.md |
+| NPSPEC-BOOTRENDER-0001-2D-R | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0001-2D-Rendering-Engine.md |
+| NPSPEC-BOOTRENDER-0002 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0002_Render_Command.md |
+| NPSPEC-BOOTRENDER-0003 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0003_Scene_Graph.md |
+| NPSPEC-BOOTRENDER-0004 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0004_Layer_Surface_Management.md |
+| NPSPEC-BOOTRENDER-0005 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0005_Framebuffer_Backend.md |
+| NPSPEC-BOOTRENDER-0006 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0006_UEFI_GOP_Backend.md |
+| NPSPEC-BOOTRENDER-0007 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0007_BIOS_VBE_Backend.md |
+| NPSPEC-BOOTRENDER-0008 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0008_Buffering_Frame_Presentation.md |
+| NPSPEC-BOOTRENDER-0009 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0009_Dirty_Region_Rendering.md |
+| NPSPEC-BOOTRENDER-0010 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0010_Clipping_Masks.md |
+| NPSPEC-BOOTRENDER-0011 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0011_2D_Transformations.md |
+| NPSPEC-BOOTRENDER-0012 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0012_Alpha_Compositing.md |
+| NPSPEC-BOOTRENDER-0014 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0014_Rounded_Geometry.md |
+| NPSPEC-BOOTRENDER-0015 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0015_Shadows_Glows.md |
+| NPSPEC-BOOTRENDER-0016 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0016_Background_Blur.md |
+| NPSPEC-BOOTRENDER-0017 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0017_Image_Rendering.md |
+| NPSPEC-BOOTRENDER-0018 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0018_Rendering_Quality_Profiles.md |
+| NPSPEC-BOOTRENDER-0019 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0019_Software_Rendering_Fallback.md |
+| NPSPEC-BOOTRESOURCE-0001 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0001_Boot_Resource_Manager.md |
+| NPSPEC-BOOTRESOURCE-0002 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0002_Boot_Asset_Package.md |
+| NPSPEC-BOOTRESOURCE-0003 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0003_Resource_Index.md |
+| NPSPEC-BOOTRESOURCE-0004 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0004_Resource_Loading.md |
+| NPSPEC-BOOTRESOURCE-0005 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0005_Resource_Compression.md |
+| NPSPEC-BOOTRESOURCE-0006 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0006_Resource_Integrity_Verification.md |
+| NPSPEC-BOOTRESOURCE-0007 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0007_PNG_Decoder.md |
+| NPSPEC-BOOTRESOURCE-0008 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0008_SVG_Icon_Renderer.md |
+| NPSPEC-BOOTRESOURCE-0009 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0009_Font_Resources.md |
+| NPSPEC-BOOTRESOURCE-0010 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0010_Animation_Resources.md |
+| NPSPEC-BOOTRESOURCE-0011 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0011_Theme_Resources.md |
+| NPSPEC-BOOTRESOURCE-0012 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0012_Resource_Memory_Cache.md |
+| NPSPEC-BOOTRESOURCE-0013 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0013_Resource_Versioning.md |
+| NPSPEC-BOOTRESOURCE-0014 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0014_Asset_Build_Pipeline.md |
+| NPSPEC-BOOTTEXT-0001 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0001_Boot_Text_Engine.md |
+| NPSPEC-BOOTTEXT-0002 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0002_UTF-8_Text_Processing.md |
+| NPSPEC-BOOTTEXT-0003 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0003_Unicode_Character_Support.md |
+| NPSPEC-BOOTTEXT-0004 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0004_Font_Loading.md |
+| NPSPEC-BOOTTEXT-0005 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0005_Glyph_Rasterization.md |
+| NPSPEC-BOOTTEXT-0006 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0006_Glyph_Atlas.md |
+| NPSPEC-BOOTTEXT-0007 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0007_Text_Measurement.md |
+| NPSPEC-BOOTTEXT-0008 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0008_Text_Layout.md |
+| NPSPEC-BOOTTEXT-0009 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0009_Text_Wrapping_Ellipsis.md |
+| NPSPEC-BOOTTEXT-0010 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0010_Font_Fallback.md |
+| NPSPEC-BOOTTEXT-0011 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0011_Typography_Tokens.md |
+| NPSPEC-BOOTTEXT-0012 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0012_Localized_Text_Rendering.md |
+| NPSPEC-BOOT-0001-N | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOT-0001-Nova-Boot-Architecture.md |
+| NPSPEC-BOOTERROR-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTERROR-0001.md |
+| NPSPEC-BOOTFS-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTFS-0001.md |
+| NPSPEC-BOOTGRAPHICS-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTGRAPHICS-0001.md |
+| NPSPEC-BOOTHANDOFF-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTHANDOFF-0001.md |
+| NPSPEC-BOOTINPUT-0001 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Bootloader/NPSPEC-BOOTINPUT-0001.md |
+| NPSPEC-BOOTMANAGER-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTMANAGER-0001.md |
+| NPSPEC-BOOTMEMORY-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTMEMORY-0001.md |
+| NPSPEC-BOOTPLATFORM-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTPLATFORM-0001.md |
+| NPSPEC-BOOTSTAGE1-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTSTAGE1-0001.md |
+| NPSPEC-BOOTSTAGE2-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTSTAGE2-0001.md |
+| NPSPEC-BOOTUI-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTUI-0001.md |
+| NPSPEC-KERNELENTRY-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-KERNELENTRY-0001.md |
+| NPSPEC-KERNELLOADER-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-KERNELLOADER-0001.md |
+| NPSPEC-BOOTUI-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0001_Bootmanager_UI_Architecture.md |
+| NPSPEC-BOOTUI-0002 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0002_Boot_UI_Runtime.md |
+| NPSPEC-BOOTUI-0003 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0003_Boot_UI_Lifecycle.md |
+| NPSPEC-BOOTUI-0004 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0004_Boot_UI_State_Model.md |
+| NPSPEC-BOOTUI-0005 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0005_BIOS-UEFI_Graphics_Abstraction.md |
+| NPSPEC-BOOTUI-0006 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0006_Resolution_and_Scaling_System.md |
+| NPSPEC-BOOTUI-0007 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0007_Boot_UI_Memory_Model.md |
+| NPSPEC-BOOTUI-0008 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0008_Boot_UI_Error_Recovery.md |
+| NPSPEC-BOOTUI-0009 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0009_Boot_UI_Configuration.md |
+| NPSPEC-BOOTUI-0010 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0010_NovaOS_Design_Compatibility.md |
+|  | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/README.md |

@@ -15,6 +15,16 @@ KERNEL_IMAGE := $(BUILD_DIR)/kernel.nki
 DISK_IMAGE := $(BUILD_DIR)/nova-bios.img
 SERIAL_LOG := $(BUILD_DIR)/qemu-serial.log
 DEBUG_LOG := $(BUILD_DIR)/qemu-debug.log
+MOUSE_SERIAL_LOG := $(BUILD_DIR)/qemu-mouse-serial.log
+MOUSE_DEBUG_LOG := $(BUILD_DIR)/qemu-mouse-debug.log
+THEME_SERIAL_LOG := $(BUILD_DIR)/qemu-theme-serial.log
+THEME_DEBUG_LOG := $(BUILD_DIR)/qemu-theme-debug.log
+FLOWS_SERIAL_LOG := $(BUILD_DIR)/qemu-flows-serial.log
+FLOWS_DEBUG_LOG := $(BUILD_DIR)/qemu-flows-debug.log
+RECOVERY_SERIAL_LOG := $(BUILD_DIR)/qemu-recovery-serial.log
+RECOVERY_DEBUG_LOG := $(BUILD_DIR)/qemu-recovery-debug.log
+PLATFORM_SERIAL_LOG := $(BUILD_DIR)/qemu-platform-serial.log
+PLATFORM_DEBUG_LOG := $(BUILD_DIR)/qemu-platform-debug.log
 CORRUPT_IMAGE := $(BUILD_DIR)/nova-bios-corrupt.img
 CORRUPT_DEBUG_LOG := $(BUILD_DIR)/qemu-corrupt-debug.log
 DIRECT_ELF_IMAGE := $(BUILD_DIR)/nova-bios-direct-elf.img
@@ -30,9 +40,9 @@ ELF64_TEST_LOG := $(BUILD_DIR)/qemu-elf64-serial.log
 ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 
 IMAGE_SECTORS := 2880
-KERNEL_LBA := 49
+KERNEL_LBA := 65
 
-.PHONY: all abi-check artifact-check bootloader kernel image run test test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check artifact-check bootloader kernel image run test test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -93,9 +103,14 @@ run: image
 
 test: image
 	rm -f $(SERIAL_LOG) $(DEBUG_LOG)
-	status=0; (sleep 2; echo "sendkey d"; sleep 1; echo "sendkey r"; \
-		sleep 1; echo "sendkey ret"; sleep 3; echo "quit") | \
-		timeout 8s "$(QEMU)" \
+	status=0; (sleep 4; echo "sendkey f1"; sleep 0.8; echo "sendkey esc"; sleep 0.5; \
+		echo "sendkey down"; sleep 0.3; echo "sendkey down"; \
+		sleep 0.3; echo "sendkey ret"; sleep 1; echo "sendkey esc"; \
+		sleep 0.5; echo "sendkey d"; sleep 1; echo "sendkey r"; \
+		sleep 1; echo "sendkey esc"; sleep 0.3; echo "sendkey up"; \
+		sleep 0.3; echo "sendkey up"; sleep 0.3; echo "sendkey ret"; \
+		sleep 3; echo "quit") | \
+		timeout 16s "$(QEMU)" \
 		-drive format=raw,file=$(DISK_IMAGE),if=ide \
 		-vga std \
 		-display none \
@@ -122,8 +137,103 @@ test: image
 	grep -F "NOVA_KERNEL_READY" $(SERIAL_LOG)
 	grep -F "BM:DIAGNOSTICS" $(DEBUG_LOG)
 	grep -F "BM:RECOVERY-UNAVAILABLE" $(DEBUG_LOG)
+	grep -F "BM:SETTINGS" $(DEBUG_LOG)
+	grep -F "BM:HELP" $(DEBUG_LOG)
+	grep -F "BM:BACK" $(DEBUG_LOG)
 	grep -F "BM:START" $(DEBUG_LOG)
 	@echo "QEMU BIOS smoke test erfolgreich"
+
+test-mouse: image
+	rm -f $(MOUSE_SERIAL_LOG) $(MOUSE_DEBUG_LOG)
+	status=0; (sleep 4; echo "mouse_move -100 -60"; sleep 0.8; \
+		echo "mouse_button 1"; echo "mouse_button 0"; sleep 1; \
+		echo "sendkey esc"; sleep 0.7; echo "mouse_move 0 -136"; \
+		sleep 0.7; echo "mouse_button 1"; echo "mouse_button 0"; \
+		sleep 3; echo "quit") | timeout 12s "$(QEMU)" \
+		-drive format=raw,file=$(DISK_IMAGE),if=ide -vga std -display none \
+		-monitor stdio -serial file:$(MOUSE_SERIAL_LOG) \
+		-debugcon file:$(MOUSE_DEBUG_LOG) -no-reboot -no-shutdown || status=$$?; \
+		test "$$status" -eq 0 -o "$$status" -eq 124
+	grep -F "BM:SETTINGS" $(MOUSE_DEBUG_LOG)
+	grep -F "BM:BACK" $(MOUSE_DEBUG_LOG)
+	grep -F "BM:START" $(MOUSE_DEBUG_LOG)
+	grep -F "NOVA_KERNEL_READY" $(MOUSE_SERIAL_LOG)
+	@echo "QEMU PS/2 mouse GUI test erfolgreich"
+
+test-theme: image
+	rm -f $(THEME_SERIAL_LOG) $(THEME_DEBUG_LOG)
+	status=0; (sleep 4; echo "sendkey h"; sleep 0.8; echo "sendkey h"; \
+		sleep 0.8; echo "sendkey ret"; sleep 3; echo "quit") | \
+		timeout 9s "$(QEMU)" -drive format=raw,file=$(DISK_IMAGE),if=ide \
+		-vga std -display none -monitor stdio \
+		-serial file:$(THEME_SERIAL_LOG) -debugcon file:$(THEME_DEBUG_LOG) \
+		-no-reboot -no-shutdown || status=$$?; \
+		test "$$status" -eq 0 -o "$$status" -eq 124
+	grep -F "BM:THEME-HIGH-CONTRAST" $(THEME_DEBUG_LOG)
+	grep -F "BM:THEME-DARK" $(THEME_DEBUG_LOG)
+	grep -F "NOVA_KERNEL_READY" $(THEME_SERIAL_LOG)
+	@echo "QEMU Theme- und Accessibility-Test erfolgreich"
+
+test-ui-flows: image
+	rm -f $(FLOWS_SERIAL_LOG) $(FLOWS_DEBUG_LOG)
+	status=0; (sleep 4; echo "sendkey f2"; sleep 5; echo "sendkey esc"; \
+		sleep 4; echo "sendkey f3"; sleep 5; echo "sendkey esc"; \
+		sleep 4; echo "sendkey end"; sleep 4; echo "sendkey ret"; \
+		sleep 5; echo "sendkey esc"; sleep 4; echo "sendkey home"; \
+		sleep 4; echo "sendkey ret"; sleep 3; echo "quit") | \
+		timeout 52s "$(QEMU)" -drive format=raw,file=$(DISK_IMAGE),if=ide \
+		-vga std -display none -monitor stdio \
+		-serial file:$(FLOWS_SERIAL_LOG) -debugcon file:$(FLOWS_DEBUG_LOG) \
+		-no-reboot -no-shutdown || status=$$?; \
+		test "$$status" -eq 0 -o "$$status" -eq 124
+	grep -F "BM:DETAILS" $(FLOWS_DEBUG_LOG)
+	grep -F "BM:ADVANCED" $(FLOWS_DEBUG_LOG)
+	grep -F "BM:POWER-DIALOG" $(FLOWS_DEBUG_LOG)
+	grep -F "BM:START" $(FLOWS_DEBUG_LOG)
+	grep -F "NOVA_KERNEL_READY" $(FLOWS_SERIAL_LOG)
+	@echo "QEMU Bootmanager-Dialog- und Optionsfluss erfolgreich"
+
+test-recovery: image
+	rm -f $(RECOVERY_SERIAL_LOG) $(RECOVERY_DEBUG_LOG)
+	status=0; (sleep 4; echo "sendkey r"; sleep 3; echo "sendkey ret"; \
+		sleep 3; echo "sendkey esc"; sleep 3; echo "sendkey down"; sleep 2; \
+		echo "sendkey ret"; sleep 3; echo "sendkey esc"; sleep 3; \
+		echo "sendkey down"; sleep 2; echo "sendkey ret"; sleep 3; \
+		echo "sendkey ret"; sleep 3; echo "sendkey esc"; sleep 3; \
+		echo "sendkey down"; sleep 2; echo "sendkey ret"; sleep 3; \
+		echo "sendkey esc"; sleep 3; echo "sendkey esc"; sleep 3; \
+		echo "sendkey home"; sleep 2; echo "sendkey ret"; sleep 3; echo "quit") | \
+		timeout 58s "$(QEMU)" -drive format=raw,file=$(DISK_IMAGE),if=ide \
+		-vga std -display none -monitor stdio \
+		-serial file:$(RECOVERY_SERIAL_LOG) -debugcon file:$(RECOVERY_DEBUG_LOG) \
+		-no-reboot -no-shutdown || status=$$?; \
+		test "$$status" -eq 0 -o "$$status" -eq 124
+	grep -F "BM:SELF-HEALING" $(RECOVERY_DEBUG_LOG)
+	grep -F "BM:SNAPSHOTS" $(RECOVERY_DEBUG_LOG)
+	grep -F "BM:MEMORY-TEST" $(RECOVERY_DEBUG_LOG)
+	grep -F "BM:MEMORY-PASSED" $(RECOVERY_DEBUG_LOG)
+	grep -F "BM:DISK-TOOLS" $(RECOVERY_DEBUG_LOG)
+	grep -F "BM:START" $(RECOVERY_DEBUG_LOG)
+	grep -F "NOVA_KERNEL_READY" $(RECOVERY_SERIAL_LOG)
+	@echo "QEMU Recovery-, Snapshot-, Speicher- und Datentraegerfluss erfolgreich"
+
+test-platform: image
+	rm -f $(PLATFORM_SERIAL_LOG) $(PLATFORM_DEBUG_LOG)
+	status=0; (sleep 4; echo "sendkey f4"; sleep 2; echo "sendkey esc"; \
+		sleep 2; echo "sendkey f5"; sleep 2; echo "sendkey esc"; \
+		sleep 2; echo "sendkey f6"; sleep 2; echo "sendkey esc"; \
+		sleep 2; echo "sendkey home"; sleep 2; echo "sendkey ret"; sleep 3; echo "quit") | \
+		timeout 26s "$(QEMU)" -drive format=raw,file=$(DISK_IMAGE),if=ide \
+		-vga std -display none -monitor stdio \
+		-serial file:$(PLATFORM_SERIAL_LOG) -debugcon file:$(PLATFORM_DEBUG_LOG) \
+		-no-reboot -no-shutdown || status=$$?; \
+		test "$$status" -eq 0 -o "$$status" -eq 124
+	grep -F "BM:NETWORK" $(PLATFORM_DEBUG_LOG)
+	grep -F "BM:FIRMWARE" $(PLATFORM_DEBUG_LOG)
+	grep -F "BM:ENCRYPTION" $(PLATFORM_DEBUG_LOG)
+	grep -F "BM:START" $(PLATFORM_DEBUG_LOG)
+	grep -F "NOVA_KERNEL_READY" $(PLATFORM_SERIAL_LOG)
+	@echo "QEMU Netzwerk-, Firmware- und Verschluesselungsstatus erfolgreich"
 
 test-elf: image $(KERNEL_ELF)
 	cp $(DISK_IMAGE) $(DIRECT_ELF_IMAGE)
