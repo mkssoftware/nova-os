@@ -25,6 +25,12 @@ RECOVERY_SERIAL_LOG := $(BUILD_DIR)/qemu-recovery-serial.log
 RECOVERY_DEBUG_LOG := $(BUILD_DIR)/qemu-recovery-debug.log
 PLATFORM_SERIAL_LOG := $(BUILD_DIR)/qemu-platform-serial.log
 PLATFORM_DEBUG_LOG := $(BUILD_DIR)/qemu-platform-debug.log
+UEFI_DIR := $(BUILD_DIR)/uefi
+UEFI_APP := $(UEFI_DIR)/EFI/BOOT/BOOTX64.EFI
+UEFI_FIRMWARE := $(UEFI_DIR)/edk2-x86_64.fd
+UEFI_DEBUG_LOG := $(BUILD_DIR)/qemu-uefi-debug.log
+EDK2_CODE ?= C:/Program Files/qemu/share/edk2-x86_64-code.fd
+EDK2_VARS ?= C:/Program Files/qemu/share/edk2-i386-vars.fd
 CORRUPT_IMAGE := $(BUILD_DIR)/nova-bios-corrupt.img
 CORRUPT_DEBUG_LOG := $(BUILD_DIR)/qemu-corrupt-debug.log
 DIRECT_ELF_IMAGE := $(BUILD_DIR)/nova-bios-direct-elf.img
@@ -42,7 +48,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check artifact-check bootloader kernel image run test test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check artifact-check bootloader kernel image uefi run test test-uefi test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -58,6 +64,43 @@ kernel:
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
+
+$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c \
+		boot/bootloader/uefi/uefi_min.h boot/bootloader/bootmenu/ui.c \
+		boot/bootloader/uefi/startup.nsh | $(BUILD_DIR)
+	mkdir -p $(UEFI_DIR)/EFI/BOOT
+	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(UEFI_DIR)) TEMP=$(abspath $(UEFI_DIR)) \
+		"$(HOST_CC)" -O2 -std=c11 -Wall -Wextra -Werror -ffreestanding \
+		-fno-stack-protector -fno-asynchronous-unwind-tables -mno-red-zone \
+		-nostdlib -Iboot/bootloader/uefi boot/bootloader/uefi/main.c \
+		boot/bootloader/uefi/graphics.c boot/bootloader/bootmenu/ui.c \
+		-Wl,--subsystem,10 -Wl,--entry,efi_main -Wl,--image-base,0x400000 \
+		-Wl,--dynamicbase -o $(UEFI_APP)
+	cp boot/bootloader/uefi/startup.nsh $(UEFI_DIR)/startup.nsh
+
+$(UEFI_FIRMWARE): scripts/compose-edk2-firmware.ps1 | $(BUILD_DIR)
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/compose-edk2-firmware.ps1 \
+		-VariablesFile "$(EDK2_VARS)" -CodeFile "$(EDK2_CODE)" \
+		-OutputFile $(UEFI_FIRMWARE)
+
+uefi: $(UEFI_APP) $(UEFI_FIRMWARE)
+
+test-uefi: uefi
+	rm -f $(UEFI_DEBUG_LOG)
+	status=0; TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
+		timeout 45s "$(QEMU64)" -machine q35 \
+		-drive if=pflash,format=raw,file=$(UEFI_FIRMWARE) \
+		-drive format=raw,file=fat:rw:$(UEFI_DIR) \
+		-display none -monitor none -serial none \
+		-debugcon file:$(UEFI_DEBUG_LOG) -global isa-debugcon.iobase=0xe9 \
+		-no-reboot -no-shutdown || status=$$?; \
+		test "$$status" -eq 0 -o "$$status" -eq 124
+	grep -F "UEFI:NOVA-ENTRY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:GOP-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:MENU-DRAWN" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:START" $(UEFI_DEBUG_LOG)
+	@echo "QEMU UEFI Bootmanager- und Countdown-Test erfolgreich"
 
 $(KERNEL_ELF): $(KERNEL) scripts/build-elf32.ps1
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \
@@ -361,4 +404,6 @@ clean:
 		$(BUILD_DIR)/invalid-bounds.elf $(BUILD_DIR)/invalid-bounds.img $(BUILD_DIR)/invalid-bounds.log \
 		$(BUILD_DIR)/invalid-wx.elf $(BUILD_DIR)/invalid-wx.img $(BUILD_DIR)/invalid-wx.log \
 		$(BUILD_DIR)/invalid-note.elf $(BUILD_DIR)/invalid-note.img $(BUILD_DIR)/invalid-note.log \
-		$(BUILD_DIR)/invalid-cpu.elf $(BUILD_DIR)/invalid-cpu.img $(BUILD_DIR)/invalid-cpu.log
+		$(BUILD_DIR)/invalid-cpu.elf $(BUILD_DIR)/invalid-cpu.img $(BUILD_DIR)/invalid-cpu.log \
+		$(UEFI_DEBUG_LOG)
+	rm -rf $(UEFI_DIR)

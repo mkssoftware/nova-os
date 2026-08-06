@@ -1,98 +1,58 @@
-/**
- * Nova OS Bootloader - Grafikmodul (UEFI GOP)
- *
- * Aufgabe:
- * - Aktiviert den Grafikmodus über UEFI GOP
- * - Zugriff auf Framebuffer
- * - Pixel-Rendering
- * - einfache UI Primitive (Rechtecke)
- *
- * WICHTIG:
- * Kein GPU-Treiber! Nur direkter Framebuffer Zugriff.
- */
+#include "uefi_min.h"
 
-#include <efi.h>
-#include <efilib.h>
+static EFI_GRAPHICS_OUTPUT_PROTOCOL *gop;
+static uint32_t *framebuffer;
+static UINTN width;
+static UINTN height;
+static UINTN pixels_per_scanline;
+static UINTN framebuffer_pixels;
 
-// GOP (Graphics Output Protocol)
-static EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = NULL;
+static EFI_GUID gop_guid = {
+    0x9042a9de, 0x23dc, 0x4a38,
+    {0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a}
+};
 
-// Framebuffer Informationen
-static UINT32 *framebuffer = NULL;
-static UINTN width = 0;
-static UINTN height = 0;
-static UINTN pixels_per_scanline = 0;
-
-/**
- * Grafiksystem initialisieren
- */
-EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *SystemTable)
+EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *system_table)
 {
-    EFI_STATUS status;
-
-    Print(L"[NOVA] Initialisiere Grafikmodus...\n");
-
-    // GOP laden
-    status = SystemTable->BootServices->LocateProtocol(
-        &gEfiGraphicsOutputProtocolGuid,
-        NULL,
-        (VOID**)&gop
-    );
-
-    if (EFI_ERROR(status))
-    {
-        Print(L"[FEHLER] GOP nicht verfügbar!\n");
+    EFI_STATUS status = system_table->BootServices->LocateProtocol(
+        &gop_guid, 0, (VOID **)&gop);
+    if (EFI_ERROR(status) || !gop || !gop->Mode || !gop->Mode->Info)
         return status;
-    }
 
-    // Bildschirminformationen holen
     width = gop->Mode->Info->HorizontalResolution;
     height = gop->Mode->Info->VerticalResolution;
     pixels_per_scanline = gop->Mode->Info->PixelsPerScanLine;
-
-    framebuffer = (UINT32*)gop->Mode->FrameBufferBase;
-
-    Print(L"[NOVA] Grafikmodus aktiviert\n");
-    Print(L"[NOVA] Aufloesung geladen\n");
-
+    framebuffer = (uint32_t *)(UINTN)gop->Mode->FrameBufferBase;
+    framebuffer_pixels = gop->Mode->FrameBufferSize / sizeof(uint32_t);
+    if (!framebuffer || !width || !height || pixels_per_scanline < width ||
+        framebuffer_pixels < pixels_per_scanline * height)
+        return 1;
+    nova_debug_string("UEFI:GOP-READY\n");
     return EFI_SUCCESS;
 }
 
-/**
- * Einzelnen Pixel zeichnen
- */
-void pixel_set(UINTN x, UINTN y, UINT32 color)
-{
-    if (x >= width || y >= height)
-        return;
+UINTN grafik_width(void) { return width; }
+UINTN grafik_height(void) { return height; }
 
+void pixel_set(UINTN x, UINTN y, uint32_t color)
+{
+    if (!framebuffer || x >= width || y >= height) return;
     framebuffer[y * pixels_per_scanline + x] = color;
 }
 
-/**
- * Rechteck zeichnen (UI Basis)
- */
-void rect_draw(UINTN x, UINTN y, UINTN w, UINTN h, UINT32 color)
+void rect_draw(UINTN x, UINTN y, UINTN w, UINTN h, uint32_t color)
 {
-    for (UINTN iy = 0; iy < h; iy++)
-    {
-        for (UINTN ix = 0; ix < w; ix++)
-        {
-            pixel_set(x + ix, y + iy, color);
-        }
+    if (x >= width || y >= height) return;
+    if (w > width - x) w = width - x;
+    if (h > height - y) h = height - y;
+    for (UINTN iy = 0; iy < h; ++iy) {
+        uint32_t *row = framebuffer + (y + iy) * pixels_per_scanline + x;
+        for (UINTN ix = 0; ix < w; ++ix)
+            row[ix] = color;
     }
 }
 
-/**
- * Hintergrund löschen (dunkler Glass-Effekt Basis)
- */
-void screen_clear(UINT32 color)
+void screen_clear(uint32_t color)
 {
-    for (UINTN y = 0; y < height; y++)
-    {
-        for (UINTN x = 0; x < width; x++)
-        {
-            pixel_set(x, y, color);
-        }
-    }
+    rect_draw(0, 0, width, height, color);
 }

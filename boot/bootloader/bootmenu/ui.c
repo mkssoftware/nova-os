@@ -1,33 +1,24 @@
-/**
- * Nova OS Bootloader - UI Grundsystem
- *
- * Aufgabe:
- * - baut erste "Glass UI" Struktur
- * - nutzt Grafikprimitive
- * - vorbereitet für Animationen
- */
+#include "../uefi/uefi_min.h"
 
-#include <efi.h>
+void screen_clear(uint32_t color);
+void rect_draw(UINTN x, UINTN y, UINTN w, UINTN h, uint32_t color);
+UINTN grafik_width(void);
+UINTN grafik_height(void);
 
-// externe Grafikfunktionen
-void screen_clear(UINT32 color);
-void rect_draw(UINTN x, UINTN y, UINTN w, UINTN h, UINT32 color);
-
-/**
- * Boot-Menü zeichnen
- */
-void bootmenu_draw()
+static void rounded_panel(UINTN x, UINTN y, UINTN w, UINTN h, uint32_t color)
 {
-    // Dunkler Hintergrund (Fluent Dark Basis)
-    screen_clear(0x0A0A0A);
+    rect_draw(x + 6, y, w - 12, h, color);
+    rect_draw(x, y + 6, w, h - 12, color);
+}
 
-    // halbtransparente Panels (simuliert)
-    rect_draw(100, 80, 500, 400, 0x1A1A1A);
-    rect_draw(120, 120, 460, 60, 0x2A2A2A);
-
-    rect_draw(120, 200, 460, 50, 0x2A2A2A);
-    rect_draw(120, 260, 460, 50, 0x2A2A2A);
-    rect_draw(120, 320, 460, 50, 0x2A2A2A);
-
-    Print(L"[NOVA] Boot-Menue UI gerendert\n");
+void bootmenu_draw(UINTN selection)
+{
+    UINTN width = grafik_width();
+    UINTN panel_x = width > 800 ? (width - 800) / 2 + 184 : 184;
+    screen_clear(0x00101113);
+    rounded_panel(panel_x, 55, 567, 473, 0x00191b1e);
+    rounded_panel(panel_x + 20, 77 + selection * 68, 523, 62, 0x0022262a);
+    rounded_panel(panel_x + 20, 91 + selection * 68, 12, 34, 0x004cc2ff);
+    rounded_panel((width - 628) / 2, 0, 628, 13, 0x00267cc1);
+    nova_debug_string("UEFI:MENU-DRAWN\n");
 }

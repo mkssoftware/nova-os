@@ -1,8 +1,8 @@
 # NovaOS Bootmanager NPSPEC-Abdeckung
 
-Erzeugt: 2026-08-06 19:38:23
+Erzeugt: 2026-08-06 20:09:48
 
-Dokumente: 215
+Dokumente: 214
 
 | NPSPEC | Status | Implementierungsnachweis | Datei |
 |---|---|---|---|
@@ -20,7 +20,7 @@ Dokumente: 215
 | NPSPEC-BOOTMOTION-0012 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0012_Interruptible_Animations.md |
 | NPSPEC-BOOTMOTION-0013 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0013_Reduced_Motion_Mode.md |
 | NPSPEC-BOOTMOTION-0014 | Offen | Countdown ist zeitbasiert; allgemeiner Scheduler fehlt | Boot_Animation/NPSPEC-BOOTMOTION-0014_Animation_Performance_Budget.md |
-| NPSPEC-BOOTMANAGER-UI-0001 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0001_Main_Boot_Selection_Screen.md |
+| NPSPEC-BOOTMANAGER-UI-0001 | Teilweise integriert | boot2.asm: vollstÃ¤ndiger BIOS-GUI-Pfad; uefi/main.c und bootmenu/ui.c: getesteter GOP-MenÃ¼- und Countdown-Grundpfad | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0001_Main_Boot_Selection_Screen.md |
 | NPSPEC-BOOTMANAGER-UI-0002 | Teilweise integriert | boot2.asm: BM_VIEW_DETAILS, F2, Eigenschaften-/Statusansicht und Start-/Erweitert-Aktionen; Motion und Touch fehlen | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0002_Boot_Entry_Details_Dialog.md |
 | NPSPEC-BOOTMANAGER-UI-0003 | Teilweise integriert | boot2.asm: BM_VIEW_ADVANCED, F3, fokussierbare Startmodusliste, Recovery-/Fallback-Aktionen; Kernelparametereditor fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0003_Advanced_Boot_Options.md |
 | NPSPEC-BOOTMANAGER-UI-0004 | Teilweise integriert | boot2.asm: navigierbares Recovery-MenÃ¼ mit Self-Healing, Snapshots, Speichertest und DatentrÃ¤gerdiagnose; schreibende Recovery-Module fehlen | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0004_Recovery_Menu.md |
@@ -28,15 +28,15 @@ Dokumente: 215
 | NPSPEC-BOOTMANAGER-UI-0006 | Teilweise integriert | boot2.asm: Snapshot-Ansicht mit leerem, erklÃ¤rtem Zustand; NovaFS-Snapshot-Katalog fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0006_Snapshot_Selection.md |
 | NPSPEC-BOOTMANAGER-UI-0007 | Teilweise integriert | boot2.asm: Speichertestansicht, AA55/55AA-Schnelltest, Ergebnis und Fortschritt; vollstÃ¤ndiger physischer RAM-Test fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0007_Memory_Test_Interface.md |
 | NPSPEC-BOOTMANAGER-UI-0008 | Teilweise integriert | boot2.asm: read-only BIOS-DatentrÃ¤gerstatus; GPT/MBR-, SMART- und Schreibmodule fehlen | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0008_Disk_and_Partition_Tools.md |
-| NPSPEC-BOOTMANAGER-UI-0009 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0009_Encryption_and_Unlock_Interface.md |
-| NPSPEC-BOOTMANAGER-UI-0010 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0010_Network_Boot_Interface.md |
-| NPSPEC-BOOTMANAGER-UI-0011 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0011_Firmware_Settings_Interface.md |
-| NPSPEC-BOOTMANAGER-UI-0012 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0012_Boot_Progress_Screen.md |
-| NPSPEC-BOOTMANAGER-UI-0013 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0013_Boot_Failure_Screen.md |
-| NPSPEC-BOOTMANAGER-UI-0014 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0014_Boot_Diagnostics_Screen.md |
+| NPSPEC-BOOTMANAGER-UI-0009 | Teilweise integriert | boot2.asm: VerschlÃ¼sselungsstatus und sicher deaktivierte Authentifizierung ohne verschlÃ¼sseltes Volume; Crypto-/TPM-Backend fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0009_Encryption_and_Unlock_Interface.md |
+| NPSPEC-BOOTMANAGER-UI-0010 | Teilweise integriert | boot2.asm: Netzwerk-Boot-Status und erklÃ¤rter No-Adapter/No-Server-Zustand; PXE-UNDI-/DHCP-Backend fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0010_Network_Boot_Interface.md |
+| NPSPEC-BOOTMANAGER-UI-0011 | Teilweise integriert | boot2.asm: BIOS-Firmware- und Secure-Boot-Status; standardisierter Setup-Neustart ist nur unter UEFI mÃ¶glich | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0011_Firmware_Settings_Interface.md |
+| NPSPEC-BOOTMANAGER-UI-0012 | Teilweise integriert | boot2.asm: vollstÃ¤ndiger BIOS-GUI-Pfad; uefi/main.c und bootmenu/ui.c: getesteter GOP-MenÃ¼- und Countdown-Grundpfad | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0012_Boot_Progress_Screen.md |
+| NPSPEC-BOOTMANAGER-UI-0013 | Teilweise integriert | boot2.asm: vollstÃ¤ndiger BIOS-GUI-Pfad; uefi/main.c und bootmenu/ui.c: getesteter GOP-MenÃ¼- und Countdown-Grundpfad | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0013_Boot_Failure_Screen.md |
+| NPSPEC-BOOTMANAGER-UI-0014 | Teilweise integriert | boot2.asm: vollstÃ¤ndiger BIOS-GUI-Pfad; uefi/main.c und bootmenu/ui.c: getesteter GOP-MenÃ¼- und Countdown-Grundpfad | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0014_Boot_Diagnostics_Screen.md |
 | NPSPEC-BOOTMANAGER-UI-0015 | Teilweise integriert | boot2.asm: BM_VIEW_POWER mit Herunterfahren, Neustart, Recovery/Firmware-Fallback und Abbrechen; Touch fehlt | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0015_Shutdown_and_Restart_Dialog.md |
-| NPSPEC-BOOTMANAGER-UI-0016 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0016_Automatic_Boot_Countdown.md |
-| NPSPEC-BOOTMANAGER-UI-0017 | Teilweise integriert | boot2.asm: HauptmenÃ¼, Countdown, Einstellungen, Diagnose, Recovery, Fehler und Shutdown | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0017_Default_Boot_Entry_Selection.md |
+| NPSPEC-BOOTMANAGER-UI-0016 | Teilweise integriert | boot2.asm: vollstÃ¤ndiger BIOS-GUI-Pfad; uefi/main.c und bootmenu/ui.c: getesteter GOP-MenÃ¼- und Countdown-Grundpfad | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0016_Automatic_Boot_Countdown.md |
+| NPSPEC-BOOTMANAGER-UI-0017 | Teilweise integriert | boot2.asm: vollstÃ¤ndiger BIOS-GUI-Pfad; uefi/main.c und bootmenu/ui.c: getesteter GOP-MenÃ¼- und Countdown-Grundpfad | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0017_Default_Boot_Entry_Selection.md |
 | NPSPEC-BOOTMANAGER-UI-0018 | Teilweise integriert | boot2.asm: globale F1-Hilfe, Tastatur-/Maus-/Shortcut-Hinweise und ESC-Navigation; kontextspezifische Karten fehlen | Boot_Bootmanager_GUI/NPSPEC-BOOTMANAGER-UI-0018_Contextual_Help_Overlay.md |
 | NPSPEC-BOOTCOMPOSITOR-0001 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0001_Boot_Compositor.md |
 | NPSPEC-BOOTCOMPOSITOR-0002 | Offen | Noch kein separater Surface-/Layer-Compositor | Boot_Compositor/NPSPEC-BOOTCOMPOSITOR-0002_Compositor_Layer_Model.md |
@@ -103,16 +103,16 @@ Dokumente: 215
 | NPSPEC-BOOTPERF-0005 | Teilweise integriert | Feste SpeichergrÃ¶ÃŸen und keine Laufzeitallokation; vollstÃ¤ndige Budgets fehlen | Boot_Diagnose/NPSPEC-BOOTPERF-0005_Adaptive_Quality.md |
 | NPSPEC-BOOTPERF-0006 | Teilweise integriert | Feste SpeichergrÃ¶ÃŸen und keine Laufzeitallokation; vollstÃ¤ndige Budgets fehlen | Boot_Diagnose/NPSPEC-BOOTPERF-0006_Low-End_Hardware_Profile.md |
 | NPSPEC-BOOTPERF-0007 | Teilweise integriert | Feste SpeichergrÃ¶ÃŸen und keine Laufzeitallokation; vollstÃ¤ndige Budgets fehlen | Boot_Diagnose/NPSPEC-BOOTPERF-0007_High-Quality_Hardware_Profile.md |
-| NPSPEC-BOOTTEST-0001 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0001_Boot_UI_Test_Architecture.md |
-| NPSPEC-BOOTTEST-0002 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0002_Rendering_Reference_Tests.md |
-| NPSPEC-BOOTTEST-0003 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0003_Control_Interaction_Tests.md |
-| NPSPEC-BOOTTEST-0004 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0004_Navigation_Tests.md |
-| NPSPEC-BOOTTEST-0005 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0005_Dialog_Tests.md |
-| NPSPEC-BOOTTEST-0006 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0006_Resolution_Compatibility_Tests.md |
-| NPSPEC-BOOTTEST-0007 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0007_BIOS_and_UEFI_Compatibility.md |
-| NPSPEC-BOOTTEST-0008 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0008_Performance_Regression_Tests.md |
-| NPSPEC-BOOTTEST-0009 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0009_Resource_Corruption_Tests.md |
-| NPSPEC-BOOTTEST-0010 | Teilweise integriert | Makefile: test, test-mouse, test-theme, test-ui-flows sowie ELF-/Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0010_Fallback_Mode_Tests.md |
+| NPSPEC-BOOTTEST-0001 | Teilweise integriert | Makefile: BIOS-, Maus-, Theme-, UI-, Recovery-, Plattform-, UEFI-, ELF- und Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0001_Boot_UI_Test_Architecture.md |
+| NPSPEC-BOOTTEST-0002 | Teilweise integriert | Makefile: BIOS-, Maus-, Theme-, UI-, Recovery-, Plattform-, UEFI-, ELF- und Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0002_Rendering_Reference_Tests.md |
+| NPSPEC-BOOTTEST-0003 | Teilweise integriert | Makefile: BIOS-, Maus-, Theme-, UI-, Recovery-, Plattform-, UEFI-, ELF- und Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0003_Control_Interaction_Tests.md |
+| NPSPEC-BOOTTEST-0004 | Teilweise integriert | Makefile: BIOS-, Maus-, Theme-, UI-, Recovery-, Plattform-, UEFI-, ELF- und Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0004_Navigation_Tests.md |
+| NPSPEC-BOOTTEST-0005 | Teilweise integriert | Makefile: BIOS-, Maus-, Theme-, UI-, Recovery-, Plattform-, UEFI-, ELF- und Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0005_Dialog_Tests.md |
+| NPSPEC-BOOTTEST-0006 | Teilweise integriert | Makefile: BIOS-, Maus-, Theme-, UI-, Recovery-, Plattform-, UEFI-, ELF- und Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0006_Resolution_Compatibility_Tests.md |
+| NPSPEC-BOOTTEST-0007 | Teilweise integriert | Makefile: BIOS-, Maus-, Theme-, UI-, Recovery-, Plattform-, UEFI-, ELF- und Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0007_BIOS_and_UEFI_Compatibility.md |
+| NPSPEC-BOOTTEST-0008 | Teilweise integriert | Makefile: BIOS-, Maus-, Theme-, UI-, Recovery-, Plattform-, UEFI-, ELF- und Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0008_Performance_Regression_Tests.md |
+| NPSPEC-BOOTTEST-0009 | Teilweise integriert | Makefile: BIOS-, Maus-, Theme-, UI-, Recovery-, Plattform-, UEFI-, ELF- und Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0009_Resource_Corruption_Tests.md |
+| NPSPEC-BOOTTEST-0010 | Teilweise integriert | Makefile: BIOS-, Maus-, Theme-, UI-, Recovery-, Plattform-, UEFI-, ELF- und Fehlertests | Boot_Diagnose/NPSPEC-BOOTTEST-0010_Fallback_Mode_Tests.md |
 | NPSPEC-BOOTINPUT-0001 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0001_Boot_Input_Architecture.md |
 | NPSPEC-BOOTINPUT-0002 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0002_Unified_Input_Event_Model.md |
 | NPSPEC-BOOTINPUT-0003 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Boot_Input/NPSPEC-BOOTINPUT-0003_Keyboard_Input.md |
@@ -171,8 +171,8 @@ Dokumente: 215
 | NPSPEC-BOOTRENDER-0018 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0018_Rendering_Quality_Profiles.md |
 | NPSPEC-BOOTRENDER-0019 | Teilweise integriert | boot2.asm: Framebuffer-Primitiven, Alpha-Text, Rundungen und Clipping | Boot_Render/NPSPEC-BOOTRENDER-0019_Software_Rendering_Fallback.md |
 | NPSPEC-BOOTRESOURCE-0001 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0001_Boot_Resource_Manager.md |
-| NPSPEC-BOOTRESOURCE-0002 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0002_Boot_Asset_Package.md |
-| NPSPEC-BOOTRESOURCE-0003 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0003_Resource_Index.md |
+| NPSPEC-BOOTRESOURCE-0002 | Blockiert | BAP beschreibt Inhalte semantisch, definiert aber kein normatives Wire-Format: Magic-Wert, HeadergrÃ¶ÃŸe, Feldoffsets/Endianness und GesamtprÃ¼fsummenverfahren fehlen | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0002_Boot_Asset_Package.md |
+| NPSPEC-BOOTRESOURCE-0003 | Blockiert | Resource-Index-API ist beschrieben, aber binÃ¤re Packung, Hash-/ID-Ableitung, Tabellenheader und Kollisionsverfahren sind nicht normativ festgelegt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0003_Resource_Index.md |
 | NPSPEC-BOOTRESOURCE-0004 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0004_Resource_Loading.md |
 | NPSPEC-BOOTRESOURCE-0005 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0005_Resource_Compression.md |
 | NPSPEC-BOOTRESOURCE-0006 | Teilweise integriert | Statisch validierte Font-, Icon- und Logo-Ressourcen; BAP-Loader fehlt | Boot_Ressourcen_Assets/NPSPEC-BOOTRESOURCE-0006_Resource_Integrity_Verification.md |
@@ -196,28 +196,27 @@ Dokumente: 215
 | NPSPEC-BOOTTEXT-0010 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0010_Font_Fallback.md |
 | NPSPEC-BOOTTEXT-0011 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0011_Typography_Tokens.md |
 | NPSPEC-BOOTTEXT-0012 | Teilweise integriert | boot-font-aa.inc; boot2.asm: bm_draw_text, bm_draw_text_wrapped, bm_measure_text | Boot_Text_Font/NPSPEC-BOOTTEXT-0012_Localized_Text_Rendering.md |
-| NPSPEC-BOOT-0001-N | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOT-0001-Nova-Boot-Architecture.md |
-| NPSPEC-BOOTERROR-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTERROR-0001.md |
-| NPSPEC-BOOTFS-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTFS-0001.md |
-| NPSPEC-BOOTGRAPHICS-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTGRAPHICS-0001.md |
-| NPSPEC-BOOTHANDOFF-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTHANDOFF-0001.md |
+| NPSPEC-BOOT-0001-N | Teilweise integriert | BIOS Stage 1/2, versioniertes NBHP/BIB, NKI/ELF-Fallback, Fehlerpfade und erster UEFI-Plattformpfad | Bootloader/NPSPEC-BOOT-0001-Nova-Boot-Architecture.md |
+| NPSPEC-BOOTERROR-0001 | Teilweise integriert | Einheitlicher Nova-Fehlerbildschirm fÃ¼r Boot- und Kernel-Fehler; vollstÃ¤ndige Recovery-Backends fehlen | Bootloader/NPSPEC-BOOTERROR-0001.md |
+| NPSPEC-BOOTFS-0001 | Teilweise integriert | Sektorbasierter read-only Kernelzugriff vorhanden; Dateisystemtreiber-Registry und NovaFS fehlen | Bootloader/NPSPEC-BOOTFS-0001.md |
+| NPSPEC-BOOTGRAPHICS-0001 | Teilweise integriert | BIOS-Framebuffer-Renderer und UEFI-GOP-Grundpfad; gemeinsame plattformneutrale Runtime fehlt | Bootloader/NPSPEC-BOOTGRAPHICS-0001.md |
+| NPSPEC-BOOTHANDOFF-0001 | Teilweise integriert | TLV-basiertes NBHP/BIB wird im BIOS-Pfad aufgebaut und vom Kernel validiert; UEFI-Handoff fehlt | Bootloader/NPSPEC-BOOTHANDOFF-0001.md |
 | NPSPEC-BOOTINPUT-0001 | Teilweise integriert | boot2.asm: bm_wait_input_event, bm_mouse_initialize, bm_mouse_consume_byte, bm_mouse_hit_test | Bootloader/NPSPEC-BOOTINPUT-0001.md |
-| NPSPEC-BOOTMANAGER-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTMANAGER-0001.md |
-| NPSPEC-BOOTMEMORY-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTMEMORY-0001.md |
-| NPSPEC-BOOTPLATFORM-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTPLATFORM-0001.md |
-| NPSPEC-BOOTSTAGE1-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTSTAGE1-0001.md |
-| NPSPEC-BOOTSTAGE2-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTSTAGE2-0001.md |
-| NPSPEC-BOOTUI-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-BOOTUI-0001.md |
-| NPSPEC-KERNELENTRY-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-KERNELENTRY-0001.md |
-| NPSPEC-KERNELLOADER-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | Bootloader/NPSPEC-KERNELLOADER-0001.md |
-| NPSPEC-BOOTUI-0001 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0001_Bootmanager_UI_Architecture.md |
-| NPSPEC-BOOTUI-0002 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0002_Boot_UI_Runtime.md |
-| NPSPEC-BOOTUI-0003 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0003_Boot_UI_Lifecycle.md |
-| NPSPEC-BOOTUI-0004 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0004_Boot_UI_State_Model.md |
-| NPSPEC-BOOTUI-0005 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0005_BIOS-UEFI_Graphics_Abstraction.md |
-| NPSPEC-BOOTUI-0006 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0006_Resolution_and_Scaling_System.md |
-| NPSPEC-BOOTUI-0007 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0007_Boot_UI_Memory_Model.md |
-| NPSPEC-BOOTUI-0008 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0008_Boot_UI_Error_Recovery.md |
-| NPSPEC-BOOTUI-0009 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0009_Boot_UI_Configuration.md |
-| NPSPEC-BOOTUI-0010 | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0010_NovaOS_Design_Compatibility.md |
-|  | PrÃ¼fung offen | Noch keine explizite Implementierungszuordnung | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/README.md |
+| NPSPEC-BOOTMANAGER-0001 | Teilweise integriert | BIOS Bootmanager-Runtime, Entries, Auswahl und sichere Fallbacks; persistente Entry-Quellen fehlen | Bootloader/NPSPEC-BOOTMANAGER-0001.md |
+| NPSPEC-BOOTMEMORY-0001 | Teilweise integriert | Statische Speicherbereiche, Grenzen und lokaler Schreibtest; allgemeine Memory-Map-/Pool-Runtime fehlt | Bootloader/NPSPEC-BOOTMEMORY-0001.md |
+| NPSPEC-BOOTPLATFORM-0001 | Teilweise integriert | BIOS- und getesteter UEFI-GOP-Einstieg vorhanden; einheitliche Plattform-vtable fehlt | Bootloader/NPSPEC-BOOTPLATFORM-0001.md |
+| NPSPEC-BOOTSTAGE1-0001 | Integriert | boot1.asm: deterministischer 512-Byte-Stage-1-Lader mit Signatur, Fehlerpfad und fester Stage-2-Grenze | Bootloader/NPSPEC-BOOTSTAGE1-0001.md |
+| NPSPEC-BOOTSTAGE2-0001 | Teilweise integriert | boot2.asm: Loader, GUI, Diagnose und Handoff; modulare Ressourcenauslagerung ist durch BAP-Wire-Format blockiert | Bootloader/NPSPEC-BOOTSTAGE2-0001.md |
+| NPSPEC-BOOTUI-0001 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | Bootloader/NPSPEC-BOOTUI-0001.md |
+| NPSPEC-KERNELENTRY-0001 | Teilweise integriert | boot2.asm und kernel: definierter NBHP/BIB-RegisterÃ¼bergang und frÃ¼he Kernelvalidierung; UEFI-KernelÃ¼bergang fehlt | Bootloader/NPSPEC-KERNELENTRY-0001.md |
+| NPSPEC-KERNELLOADER-0001 | Integriert | boot2.asm: NKI-bevorzugte Erkennung sowie validiertes direktes ELF32-/ELF64-Laden; QEMU-Positiv- und Negativtests | Bootloader/NPSPEC-KERNELLOADER-0001.md |
+| NPSPEC-BOOTUI-0001 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0001_Bootmanager_UI_Architecture.md |
+| NPSPEC-BOOTUI-0002 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0002_Boot_UI_Runtime.md |
+| NPSPEC-BOOTUI-0003 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0003_Boot_UI_Lifecycle.md |
+| NPSPEC-BOOTUI-0004 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0004_Boot_UI_State_Model.md |
+| NPSPEC-BOOTUI-0005 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0005_BIOS-UEFI_Graphics_Abstraction.md |
+| NPSPEC-BOOTUI-0006 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0006_Resolution_and_Scaling_System.md |
+| NPSPEC-BOOTUI-0007 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0007_Boot_UI_Memory_Model.md |
+| NPSPEC-BOOTUI-0008 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0008_Boot_UI_Error_Recovery.md |
+| NPSPEC-BOOTUI-0009 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0009_Boot_UI_Configuration.md |
+| NPSPEC-BOOTUI-0010 | Teilweise integriert | BIOS-Runtime mit DLU, ZustÃ¤nden, Eingabe, Fehlerpfaden und Tokens sowie UEFI-GOP-Grundpfad; gemeinsame Runtime/Pools fehlen | BootUI/NovaOS_NPSPEC_BootUI_Gesamtarchitektur/NPSPEC-BOOTUI-0010_NovaOS_Design_Compatibility.md |
