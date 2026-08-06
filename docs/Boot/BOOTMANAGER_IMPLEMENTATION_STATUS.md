@@ -58,11 +58,28 @@ Damit ist die Laufzeit-Auslagerung der statischen Font-, Logo- und Icondaten
 in ein BAP blockiert, bis diese Felder spezifiziert sind. Ein proprietäres
 Zwischenformat wird ausdrücklich nicht als BAP ausgegeben.
 
+## Motion- und Compositor-Laufzeit
+
+Der UEFI-Pfad verwendet nun eine feste, heapfreie Motion- und
+Compositor-Laufzeit. Implementiert sind globale Millisekunden-Timeline,
+deterministischer O(n)-Scheduler, Property-Interpolation, Easing,
+Spring-Fallback, unterbrechbare Transitionen, Dialog-/Navigations-/Fokus- und
+Progress-Motion, Reduced Motion und automatische Budget-Degradation.
+
+Der Compositor besitzt feste Surface- und Layer-Pools, stabile Z-Sortierung,
+Alpha-Compositing, Overlay-/Modal-Semantik, modale Eingabesperre,
+Damage-Regionen, deterministisches Acrylic-Noise sowie Glass-, Acrylic-,
+Vollton- und Safe-Fallbacks. `boot-ui-runtime-check` prüft diese Invarianten
+außerhalb der Firmware; `test-uefi` weist die Integration in QEMU nach.
+
 ## Architekturarbeit mit noch offener Integration
 
-- Das allgemeine Motion-System und der Animation Scheduler sind noch nicht
-  vorhanden; Countdown und Fortschritt besitzen bislang eigene Zeitpfade.
-- Ein separater Surface-/Layer-Compositor mit Damage Tracking fehlt noch.
+- BIOS Stage 2 verwendet wegen des nahezu ausgeschöpften Real-Mode-Abbilds
+  weiterhin seinen direkten Renderer. Die gemeinsame C-Runtime ist dort noch
+  nicht angebunden; deshalb sind die Motion-/Compositor-NPSPECs trotz
+  vollständigem UEFI-Grundpfad nur teilweise integriert.
+- Der aktuelle Glass-Pfad besitzt Tint, Transparenz und sicheren Vollton-
+  Fallback, aber noch keinen separaten, gekachelten Backdrop-Blur-Cache.
 - Font-, Logo- und Icondaten sind noch statisch in Stage 2 eingebettet. Der
   BAP-Ressourcenlader ist erforderlich, bevor weitere größere GUI-Module
   integriert werden: Von 32768 Stage-2-Bytes sind aktuell nur rund 790 Bytes

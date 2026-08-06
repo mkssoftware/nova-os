@@ -6,6 +6,7 @@ static uint32_t surface_pixels[2][NOVA_SURFACE_WIDTH * NOVA_SURFACE_HEIGHT];
 static nova_surface_t surfaces[2];
 static bool surface_used[2];
 static nova_layer_t layers[NOVA_LAYER_CAPACITY];
+static uint32_t composed[NOVA_SURFACE_WIDTH * NOVA_SURFACE_HEIGHT];
 static uint8_t layer_count;
 static uint32_t output_width, output_height;
 static nova_compositor_diagnostics_t diagnostics;
@@ -146,25 +147,47 @@ static uint32_t blend(uint32_t background, uint32_t foreground, uint8_t opacity)
     return 0xff000000u | (rb & 0x00ff00ffu) | (g & 0x0000ff00u);
 }
 
+static uint32_t backdrop_blur(int32_t x, int32_t y)
+{
+    uint32_t red = 0, green = 0, blue = 0, samples = 0;
+    for (int32_t oy = -1; oy <= 1; ++oy) {
+        int32_t py = y + oy;
+        if (py < 0 || (uint32_t)py >= output_height) continue;
+        for (int32_t ox = -1; ox <= 1; ++ox) {
+            int32_t px = x + ox;
+            if (px < 0 || (uint32_t)px >= output_width) continue;
+            uint32_t pixel = composed[py * NOVA_SURFACE_WIDTH + px];
+            red += (pixel >> 16) & 0xffu;
+            green += (pixel >> 8) & 0xffu;
+            blue += pixel & 0xffu;
+            ++samples;
+        }
+    }
+    if (!samples) return 0xff000000u;
+    return 0xff000000u | ((red / samples) << 16) |
+           ((green / samples) << 8) | (blue / samples);
+}
+
 static uint32_t material_pixel(const nova_layer_t *layer, uint32_t source,
                                uint32_t backdrop, int32_t x, int32_t y)
 {
+    if ((source >> 24) == 0) return backdrop;
     if (diagnostics.fallback_level >= 2 || layer->material == NOVA_MATERIAL_SOLID)
         return source | 0xff000000u;
     if (layer->material == NOVA_MATERIAL_GLASS) {
         uint32_t tint = 0x80212a33u;
-        return blend(backdrop, tint, 210);
+        return blend(backdrop_blur(x, y), tint, 210);
     }
     if (layer->material == NOVA_MATERIAL_ACRYLIC) {
         uint32_t noise = (uint32_t)((x * 1103515245u + y * 12345u) >> 28) * 0x010101u;
-        return blend(blend(backdrop, 0xa0182028u, 220), 0x20000000u | noise, 64);
+        return blend(blend(backdrop_blur(x, y), 0xa0182028u, 220),
+                     0x20000000u | noise, 64);
     }
     return blend(backdrop, source, layer->opacity);
 }
 
 bool nova_compositor_compose(void)
 {
-    static uint32_t composed[NOVA_SURFACE_WIDTH * NOVA_SURFACE_HEIGHT];
     for (uint8_t index = 0; index < layer_count; ++index) {
         nova_layer_t *layer = &layers[index];
         nova_rect_t destination = clip(layer->destination, output_width, output_height);

@@ -48,13 +48,21 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check artifact-check bootloader kernel image uefi run test test-uefi test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check artifact-check bootloader kernel image uefi run test test-uefi test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
 abi-check:
 	PATH=/ucrt64/bin:/usr/bin "$(HOST_CC)" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
 		tests/boot_protocol_layout.c
+
+boot-ui-runtime-check: | $(BUILD_DIR)
+	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
+		"$(HOST_CC)" -O2 -std=c11 -Wall -Wextra -Werror \
+		-Iboot/bootloader/bootmenu tests/boot_ui_runtime.c \
+		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/compositor.c \
+		-o $(BUILD_DIR)/boot-ui-runtime-test.exe
+	$(BUILD_DIR)/boot-ui-runtime-test.exe
 
 bootloader:
 	$(MAKE) -C boot/bootloader NASM=$(NASM)
@@ -67,6 +75,8 @@ $(BUILD_DIR):
 
 $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c \
 		boot/bootloader/uefi/uefi_min.h boot/bootloader/bootmenu/ui.c \
+		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/motion.h \
+		boot/bootloader/bootmenu/compositor.c boot/bootloader/bootmenu/compositor.h \
 		boot/bootloader/uefi/startup.nsh | $(BUILD_DIR)
 	mkdir -p $(UEFI_DIR)/EFI/BOOT
 	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(UEFI_DIR)) TEMP=$(abspath $(UEFI_DIR)) \
@@ -74,6 +84,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c \
 		-fno-stack-protector -fno-asynchronous-unwind-tables -mno-red-zone \
 		-nostdlib -Iboot/bootloader/uefi boot/bootloader/uefi/main.c \
 		boot/bootloader/uefi/graphics.c boot/bootloader/bootmenu/ui.c \
+		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/compositor.c \
 		-Wl,--subsystem,10 -Wl,--entry,efi_main -Wl,--image-base,0x400000 \
 		-Wl,--dynamicbase -o $(UEFI_APP)
 	cp boot/bootloader/uefi/startup.nsh $(UEFI_DIR)/startup.nsh
@@ -86,7 +97,7 @@ $(UEFI_FIRMWARE): scripts/compose-edk2-firmware.ps1 | $(BUILD_DIR)
 
 uefi: $(UEFI_APP) $(UEFI_FIRMWARE)
 
-test-uefi: uefi
+test-uefi: boot-ui-runtime-check uefi
 	rm -f $(UEFI_DEBUG_LOG)
 	status=0; TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
 		timeout 45s "$(QEMU64)" -machine q35 \
@@ -99,6 +110,8 @@ test-uefi: uefi
 	grep -F "UEFI:NOVA-ENTRY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:GOP-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:MENU-DRAWN" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:COMPOSITOR-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:MOTION-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:START" $(UEFI_DEBUG_LOG)
 	@echo "QEMU UEFI Bootmanager- und Countdown-Test erfolgreich"
 

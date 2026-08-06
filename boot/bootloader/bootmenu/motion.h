@@ -68,6 +68,23 @@ typedef struct {
     uint8_t quality;
 } nova_motion_diagnostics_t;
 
+typedef struct {
+    uint32_t id;
+    int32_t value;
+    nova_animation_t *animation;
+} nova_transition_t;
+
+typedef struct { int32_t opacity, scale; bool visible, focused; } nova_dialog_motion_t;
+typedef struct { int32_t source_x, target_x; bool forward, running; } nova_navigation_motion_t;
+typedef struct { int32_t ring_opacity, highlight; bool focused, selected; } nova_focus_motion_t;
+typedef struct { int32_t displayed, requested; bool indeterminate, running, failed; } nova_progress_motion_t;
+typedef struct {
+    uint32_t frame_time_us;
+    uint32_t scheduler_time_us;
+    uint16_t violations;
+    uint8_t quality;
+} nova_motion_budget_t;
+
 void nova_motion_initialize(void);
 nova_animation_t *nova_motion_create(const nova_animation_t *description);
 void nova_motion_update(uint64_t current_ms);
@@ -82,5 +99,16 @@ void nova_motion_set_reduced(bool enabled);
 bool nova_motion_is_reduced(void);
 const nova_motion_diagnostics_t *nova_motion_diagnostics(void);
 int32_t nova_ease_apply(nova_easing_t easing, int32_t progress_16_16);
+bool nova_transition_begin(nova_transition_t *transition, int32_t from, int32_t to,
+                           uint32_t duration_ms, nova_easing_t easing);
+void nova_transition_cancel(nova_transition_t *transition);
+bool nova_dialog_enter(nova_dialog_motion_t *dialog);
+bool nova_dialog_exit(nova_dialog_motion_t *dialog);
+bool nova_navigation_begin(nova_navigation_motion_t *navigation, bool forward);
+bool nova_focus_set(nova_focus_motion_t *focus, bool focused, bool selected);
+bool nova_progress_set(nova_progress_motion_t *progress, int32_t value_per_mille);
+void nova_progress_set_indeterminate(nova_progress_motion_t *progress, bool enabled);
+void nova_motion_budget_update(uint32_t frame_time_us, uint32_t scheduler_time_us);
+const nova_motion_budget_t *nova_motion_budget(void);
 
 #endif

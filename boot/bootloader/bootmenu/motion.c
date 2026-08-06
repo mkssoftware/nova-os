@@ -6,6 +6,7 @@
 static nova_animation_t pool[NOVA_MOTION_CAPACITY];
 static bool used[NOVA_MOTION_CAPACITY];
 static nova_motion_diagnostics_t diagnostics;
+static nova_motion_budget_t budget;
 
 static int32_t clamp_fixed(int64_t value)
 {
@@ -40,6 +41,7 @@ void nova_motion_initialize(void)
 {
     for (uint32_t i = 0; i < NOVA_MOTION_CAPACITY; ++i) used[i] = false;
     diagnostics = (nova_motion_diagnostics_t){0};
+    budget = (nova_motion_budget_t){0, 0, 0, 2};
 }
 
 static bool valid(const nova_animation_t *a)
@@ -169,3 +171,102 @@ void nova_motion_pause_group(uint16_t group)
 void nova_motion_set_reduced(bool enabled) { diagnostics.reduced_motion = enabled; }
 bool nova_motion_is_reduced(void) { return diagnostics.reduced_motion; }
 const nova_motion_diagnostics_t *nova_motion_diagnostics(void) { return &diagnostics; }
+
+bool nova_transition_begin(nova_transition_t *transition, int32_t from, int32_t to,
+                           uint32_t duration_ms, nova_easing_t easing)
+{
+    if (!transition || !duration_ms || from == to || easing > NOVA_EASE_SPRING)
+        return false;
+    transition->value = from;
+    nova_animation_t description = {
+        &transition->value, from, to, diagnostics.current_ms, 0, duration_ms,
+        (uint16_t)transition->id, 2, 0, NOVA_PROPERTY_OPACITY, easing,
+        NOVA_MOTION_CREATED, false, false, true
+    };
+    transition->animation = nova_motion_create(&description);
+    return transition->animation != 0;
+}
+
+void nova_transition_cancel(nova_transition_t *transition)
+{
+    if (transition) nova_motion_cancel(transition->animation);
+}
+
+bool nova_dialog_enter(nova_dialog_motion_t *dialog)
+{
+    if (!dialog || dialog->visible) return false;
+    dialog->visible = true; dialog->focused = false; dialog->opacity = 0;
+    dialog->scale = diagnostics.reduced_motion ? 1000 : 960;
+    nova_animation_t fade = { &dialog->opacity, 0, 255, diagnostics.current_ms, 0,
+        diagnostics.reduced_motion ? 150u : 220u, 20, 3, 0, NOVA_PROPERTY_OPACITY,
+        NOVA_EASE_OUT_CUBIC, NOVA_MOTION_CREATED, false, false, true };
+    return nova_motion_create(&fade) != 0;
+}
+
+bool nova_dialog_exit(nova_dialog_motion_t *dialog)
+{
+    if (!dialog || !dialog->visible) return false;
+    nova_animation_t fade = { &dialog->opacity, dialog->opacity, 0,
+        diagnostics.current_ms, 0, diagnostics.reduced_motion ? 150u : 220u,
+        20, 3, 0, NOVA_PROPERTY_OPACITY, NOVA_EASE_OUT_CUBIC,
+        NOVA_MOTION_CREATED, false, false, true };
+    dialog->focused = false;
+    return nova_motion_create(&fade) != 0;
+}
+
+bool nova_navigation_begin(nova_navigation_motion_t *navigation, bool forward)
+{
+    if (!navigation || navigation->running) return false;
+    navigation->forward = forward; navigation->running = true;
+    navigation->source_x = 0;
+    navigation->target_x = diagnostics.reduced_motion ? 0 : (forward ? 1000 : -1000);
+    if (diagnostics.reduced_motion) return true;
+    nova_animation_t slide = { &navigation->source_x, 0, forward ? -1000 : 1000,
+        diagnostics.current_ms, 0, 180, 21, 2, 0, NOVA_PROPERTY_X,
+        NOVA_EASE_OUT_CUBIC, NOVA_MOTION_CREATED, false, false, true };
+    return nova_motion_create(&slide) != 0;
+}
+
+bool nova_focus_set(nova_focus_motion_t *focus, bool focused, bool selected)
+{
+    if (!focus || (focus->focused == focused && focus->selected == selected)) return false;
+    focus->focused = focused; focus->selected = selected;
+    int32_t destination = focused ? 255 : 0;
+    nova_animation_t ring = { &focus->ring_opacity, focus->ring_opacity, destination,
+        diagnostics.current_ms, 0, diagnostics.reduced_motion ? 100u : 120u,
+        22, 3, 0, NOVA_PROPERTY_BORDER, NOVA_EASE_OUT_CUBIC,
+        NOVA_MOTION_CREATED, false, false, true };
+    focus->highlight = selected ? 255 : 0;
+    return nova_motion_create(&ring) != 0;
+}
+
+bool nova_progress_set(nova_progress_motion_t *progress, int32_t value)
+{
+    if (!progress) return false;
+    if (value < 0 || value > 1000) {
+        progress->indeterminate = true; progress->failed = true; return false;
+    }
+    progress->requested = value; progress->indeterminate = false; progress->running = value < 1000;
+    nova_animation_t change = { &progress->displayed, progress->displayed, value,
+        diagnostics.current_ms, 0, 120, 23, 2, 0, NOVA_PROPERTY_WIDTH,
+        NOVA_EASE_LINEAR, NOVA_MOTION_CREATED, false, false, true };
+    return nova_motion_create(&change) != 0;
+}
+
+void nova_progress_set_indeterminate(nova_progress_motion_t *progress, bool enabled)
+{
+    if (progress) { progress->indeterminate = enabled; progress->running = enabled; }
+}
+
+void nova_motion_budget_update(uint32_t frame_us, uint32_t scheduler_us)
+{
+    budget.frame_time_us = frame_us;
+    budget.scheduler_time_us = scheduler_us;
+    if (frame_us > 16667u || scheduler_us > 1000u) {
+        ++budget.violations;
+        if (budget.quality < QUALITY_SAFE) ++budget.quality;
+        diagnostics.quality = budget.quality;
+    }
+}
+
+const nova_motion_budget_t *nova_motion_budget(void) { return &budget; }

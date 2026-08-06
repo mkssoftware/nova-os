@@ -1,7 +1,9 @@
 #include "uefi_min.h"
+#include "../bootmenu/motion.h"
 
 EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *system_table);
-void bootmenu_draw(UINTN selection);
+bool bootmenu_initialize(void);
+void bootmenu_draw(UINTN selection, uint8_t opacity);
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_table);
 
 /*
@@ -43,7 +45,24 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     }
 
     UINTN selection = 0;
-    bootmenu_draw(selection);
+    if (!bootmenu_initialize()) {
+        nova_debug_string("UEFI:COMPOSITOR-UNAVAILABLE\n");
+        return 1;
+    }
+    nova_motion_initialize();
+    int32_t entrance_opacity = 0;
+    nova_animation_t entrance = {
+        &entrance_opacity, 0, 255, 0, 0, 180, 1, 3, 0,
+        NOVA_PROPERTY_OPACITY, NOVA_EASE_OUT_CUBIC, NOVA_MOTION_CREATED,
+        false, false, true
+    };
+    if (!nova_motion_create(&entrance)) return 1;
+    for (uint64_t elapsed = 0; elapsed <= 180; elapsed += 20) {
+        nova_motion_update(elapsed);
+        bootmenu_draw(selection, (uint8_t)entrance_opacity);
+        system_table->BootServices->Stall(20000);
+    }
+    nova_debug_string("UEFI:MOTION-READY\n");
 
     /* Fuenf Sekunden; jede Taste beendet den automatischen Start. */
     EFI_INPUT_KEY key = {0, 0};
@@ -64,10 +83,10 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     for (;;) {
         if (key.ScanCode == 1) {
             selection = selection ? selection - 1 : 5;
-            bootmenu_draw(selection);
+            bootmenu_draw(selection, 255);
         } else if (key.ScanCode == 2) {
             selection = (selection + 1) % 6;
-            bootmenu_draw(selection);
+            bootmenu_draw(selection, 255);
         } else if (key.UnicodeChar == 13) {
             boot_selected(selection);
             return EFI_SUCCESS;
