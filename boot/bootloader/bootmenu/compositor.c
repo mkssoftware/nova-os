@@ -3,8 +3,9 @@
 void pixel_set(uint64_t x, uint64_t y, uint32_t color);
 
 static uint32_t surface_pixels[2][NOVA_SURFACE_WIDTH * NOVA_SURFACE_HEIGHT];
-static nova_surface_t surfaces[2];
-static bool surface_used[2];
+static uint32_t dialog_surface_pixels[NOVA_DIALOG_SURFACE_WIDTH * NOVA_DIALOG_SURFACE_HEIGHT];
+static nova_surface_t surfaces[3];
+static bool surface_used[3];
 static nova_layer_t layers[NOVA_LAYER_CAPACITY];
 static uint32_t composed[NOVA_SURFACE_WIDTH * NOVA_SURFACE_HEIGHT];
 static uint8_t layer_count;
@@ -38,12 +39,15 @@ bool nova_compositor_initialize(uint32_t width, uint32_t height)
         surface_used[i] = false;
         surfaces[i] = (nova_surface_t){surface_pixels[i], width, height, width, {{0}}, 0, true};
     }
+    surface_used[2]=false;
+    surfaces[2]=(nova_surface_t){dialog_surface_pixels,NOVA_DIALOG_SURFACE_WIDTH,
+        NOVA_DIALOG_SURFACE_HEIGHT,NOVA_DIALOG_SURFACE_WIDTH,{{0}},0,true};
     return true;
 }
 
 nova_surface_t *nova_surface_acquire(void)
 {
-    for (uint32_t i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < 3; ++i) {
         if (!surface_used[i]) { surface_used[i] = true; return &surfaces[i]; }
     }
     return 0;
@@ -140,11 +144,13 @@ static uint32_t blend(uint32_t background, uint32_t foreground, uint8_t opacity)
 {
     uint32_t a = ((foreground >> 24) & 0xffu) * opacity / 255u;
     uint32_t inverse = 255u - a;
-    uint32_t rb = (((foreground & 0x00ff00ffu) * a) +
-                  ((background & 0x00ff00ffu) * inverse)) / 255u;
-    uint32_t g = (((foreground & 0x0000ff00u) * a) +
-                 ((background & 0x0000ff00u) * inverse)) / 255u;
-    return 0xff000000u | (rb & 0x00ff00ffu) | (g & 0x0000ff00u);
+    uint32_t red = ((((foreground >> 16) & 0xffu) * a) +
+                    (((background >> 16) & 0xffu) * inverse)) / 255u;
+    uint32_t green = ((((foreground >> 8) & 0xffu) * a) +
+                      (((background >> 8) & 0xffu) * inverse)) / 255u;
+    uint32_t blue = (((foreground & 0xffu) * a) +
+                     ((background & 0xffu) * inverse)) / 255u;
+    return 0xff000000u | (red << 16) | (green << 8) | blue;
 }
 
 static uint32_t backdrop_blur(int32_t x, int32_t y)

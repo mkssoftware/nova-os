@@ -58,10 +58,23 @@ typedef struct {
 } EFI_GUID;
 
 typedef struct EFI_BOOT_SERVICES EFI_BOOT_SERVICES;
+typedef struct EFI_RUNTIME_SERVICES EFI_RUNTIME_SERVICES;
+typedef enum {
+    EfiResetCold, EfiResetWarm, EfiResetShutdown, EfiResetPlatformSpecific
+} EFI_RESET_TYPE;
+struct EFI_RUNTIME_SERVICES {
+    EFI_TABLE_HEADER Hdr;
+    VOID *GetTime, *SetTime, *GetWakeupTime, *SetWakeupTime;
+    VOID *SetVirtualAddressMap, *ConvertPointer;
+    VOID *GetVariable, *GetNextVariableName, *SetVariable;
+    VOID *GetNextHighMonotonicCount;
+    VOID (EFIAPI *ResetSystem)(EFI_RESET_TYPE, EFI_STATUS, UINTN, VOID *);
+};
 struct EFI_BOOT_SERVICES {
     EFI_TABLE_HEADER Hdr;
     VOID *RaiseTPL, *RestoreTPL;
-    VOID *AllocatePages, *FreePages, *GetMemoryMap, *AllocatePool, *FreePool;
+    VOID *AllocatePages, *FreePages, *GetMemoryMap, *AllocatePool;
+    EFI_STATUS (EFIAPI *FreePool)(VOID *);
     VOID *CreateEvent, *SetTimer, *WaitForEvent, *SignalEvent, *CloseEvent, *CheckEvent;
     VOID *InstallProtocolInterface, *ReinstallProtocolInterface, *UninstallProtocolInterface;
     VOID *HandleProtocol, *Reserved, *RegisterProtocolNotify, *LocateHandle, *LocateDevicePath;
@@ -85,7 +98,7 @@ typedef struct {
     EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *ConOut;
     EFI_HANDLE StandardErrorHandle;
     EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *StdErr;
-    VOID *RuntimeServices;
+    EFI_RUNTIME_SERVICES *RuntimeServices;
     EFI_BOOT_SERVICES *BootServices;
     UINTN NumberOfTableEntries;
     VOID *ConfigurationTable;
@@ -111,10 +124,35 @@ typedef struct {
 
 typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL EFI_GRAPHICS_OUTPUT_PROTOCOL;
 struct EFI_GRAPHICS_OUTPUT_PROTOCOL {
-    VOID *QueryMode;
-    VOID *SetMode;
+    EFI_STATUS (EFIAPI *QueryMode)(EFI_GRAPHICS_OUTPUT_PROTOCOL *, uint32_t,
+                                   UINTN *, EFI_GRAPHICS_OUTPUT_MODE_INFORMATION **);
+    EFI_STATUS (EFIAPI *SetMode)(EFI_GRAPHICS_OUTPUT_PROTOCOL *, uint32_t);
     VOID *Blt;
     EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE *Mode;
+};
+
+typedef struct {
+    int32_t RelativeMovementX;
+    int32_t RelativeMovementY;
+    int32_t RelativeMovementZ;
+    BOOLEAN LeftButton;
+    BOOLEAN RightButton;
+} EFI_SIMPLE_POINTER_STATE;
+
+typedef struct {
+    uint64_t ResolutionX;
+    uint64_t ResolutionY;
+    uint64_t ResolutionZ;
+    BOOLEAN LeftButton;
+    BOOLEAN RightButton;
+} EFI_SIMPLE_POINTER_MODE;
+
+typedef struct EFI_SIMPLE_POINTER_PROTOCOL EFI_SIMPLE_POINTER_PROTOCOL;
+struct EFI_SIMPLE_POINTER_PROTOCOL {
+    EFI_STATUS (EFIAPI *Reset)(EFI_SIMPLE_POINTER_PROTOCOL *, BOOLEAN);
+    EFI_STATUS (EFIAPI *GetState)(EFI_SIMPLE_POINTER_PROTOCOL *, EFI_SIMPLE_POINTER_STATE *);
+    EFI_EVENT WaitForInput;
+    EFI_SIMPLE_POINTER_MODE *Mode;
 };
 
 static inline void nova_debug_byte(uint8_t value) {

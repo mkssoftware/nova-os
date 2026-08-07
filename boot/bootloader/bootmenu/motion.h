@@ -104,6 +104,8 @@ bool nova_transition_begin(nova_transition_t *transition, int32_t from, int32_t 
 void nova_transition_cancel(nova_transition_t *transition);
 bool nova_dialog_enter(nova_dialog_motion_t *dialog);
 bool nova_dialog_exit(nova_dialog_motion_t *dialog);
+bool nova_dialog_motion_running(void);
+void nova_dialog_motion_cancel(nova_dialog_motion_t *dialog);
 bool nova_navigation_begin(nova_navigation_motion_t *navigation, bool forward);
 bool nova_focus_set(nova_focus_motion_t *focus, bool focused, bool selected);
 bool nova_progress_set(nova_progress_motion_t *progress, int32_t value_per_mille);

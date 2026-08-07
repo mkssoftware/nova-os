@@ -1,4 +1,5 @@
 #include "uefi_min.h"
+#include <stdbool.h>
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *gop;
 static uint32_t *framebuffer;
@@ -12,12 +13,43 @@ static EFI_GUID gop_guid = {
     {0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a}
 };
 
+#ifndef NOVA_GOP_PREFERRED_WIDTH
+#define NOVA_GOP_PREFERRED_WIDTH 0
+#endif
+#ifndef NOVA_GOP_PREFERRED_HEIGHT
+#define NOVA_GOP_PREFERRED_HEIGHT 0
+#endif
+
 EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *system_table)
 {
     EFI_STATUS status = system_table->BootServices->LocateProtocol(
         &gop_guid, 0, (VOID **)&gop);
     if (EFI_ERROR(status) || !gop || !gop->Mode || !gop->Mode->Info)
         return status;
+
+    if (NOVA_GOP_PREFERRED_WIDTH && NOVA_GOP_PREFERRED_HEIGHT &&
+        gop->QueryMode && gop->SetMode) {
+        bool selected = false;
+        for (uint32_t mode = 0; mode < gop->Mode->MaxMode; ++mode) {
+            EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info = 0;
+            UINTN info_size = 0;
+            status = gop->QueryMode(gop, mode, &info_size, &info);
+            if (!EFI_ERROR(status) && info) {
+                bool match = info->HorizontalResolution == NOVA_GOP_PREFERRED_WIDTH &&
+                             info->VerticalResolution == NOVA_GOP_PREFERRED_HEIGHT;
+                system_table->BootServices->FreePool(info);
+                if (match && !EFI_ERROR(gop->SetMode(gop, mode))) {
+                    selected = true;
+                    break;
+                }
+            }
+        }
+        if (!selected) {
+            nova_debug_string("UEFI:GOP-PREFERRED-UNAVAILABLE\n");
+            return 1;
+        }
+        nova_debug_string("UEFI:GOP-PREFERRED-READY\n");
+    }
 
     width = gop->Mode->Info->HorizontalResolution;
     height = gop->Mode->Info->VerticalResolution;

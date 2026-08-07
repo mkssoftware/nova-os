@@ -7,6 +7,8 @@ static nova_animation_t pool[NOVA_MOTION_CAPACITY];
 static bool used[NOVA_MOTION_CAPACITY];
 static nova_motion_diagnostics_t diagnostics;
 static nova_motion_budget_t budget;
+static nova_animation_t *dialog_fade_animation;
+static nova_animation_t *dialog_scale_animation;
 
 static int32_t clamp_fixed(int64_t value)
 {
@@ -42,6 +44,7 @@ void nova_motion_initialize(void)
     for (uint32_t i = 0; i < NOVA_MOTION_CAPACITY; ++i) used[i] = false;
     diagnostics = (nova_motion_diagnostics_t){0};
     budget = (nova_motion_budget_t){0, 0, 0, 2};
+    dialog_fade_animation=dialog_scale_animation=0;
 }
 
 static bool valid(const nova_animation_t *a)
@@ -196,22 +199,67 @@ bool nova_dialog_enter(nova_dialog_motion_t *dialog)
 {
     if (!dialog || dialog->visible) return false;
     dialog->visible = true; dialog->focused = false; dialog->opacity = 0;
-    dialog->scale = diagnostics.reduced_motion ? 1000 : 960;
+    dialog->scale = diagnostics.reduced_motion ? 1000 : 950;
     nova_animation_t fade = { &dialog->opacity, 0, 255, diagnostics.current_ms, 0,
-        diagnostics.reduced_motion ? 150u : 220u, 20, 3, 0, NOVA_PROPERTY_OPACITY,
+        diagnostics.reduced_motion ? 150u : 180u, 20, 3, 0, NOVA_PROPERTY_OPACITY,
         NOVA_EASE_OUT_CUBIC, NOVA_MOTION_CREATED, false, false, true };
-    return nova_motion_create(&fade) != 0;
+    dialog_fade_animation=nova_motion_create(&fade);
+    dialog_scale_animation=0;
+    if(!diagnostics.reduced_motion){
+        nova_animation_t scale={&dialog->scale,950,1000,diagnostics.current_ms,0,180,
+            20,3,0,NOVA_PROPERTY_SCALE,NOVA_EASE_OUT_CUBIC,NOVA_MOTION_CREATED,
+            false,false,true};
+        dialog_scale_animation=nova_motion_create(&scale);
+    }
+    if(!dialog_fade_animation||(!diagnostics.reduced_motion&&!dialog_scale_animation)){
+        if(dialog_fade_animation)nova_motion_cancel(dialog_fade_animation);
+        if(dialog_scale_animation)nova_motion_cancel(dialog_scale_animation);
+        dialog->opacity=255;dialog->scale=1000;dialog->focused=true;
+        return false;
+    }
+    return true;
 }
 
 bool nova_dialog_exit(nova_dialog_motion_t *dialog)
 {
     if (!dialog || !dialog->visible) return false;
     nova_animation_t fade = { &dialog->opacity, dialog->opacity, 0,
-        diagnostics.current_ms, 0, diagnostics.reduced_motion ? 150u : 220u,
+        diagnostics.current_ms, 0, diagnostics.reduced_motion ? 150u : 180u,
         20, 3, 0, NOVA_PROPERTY_OPACITY, NOVA_EASE_OUT_CUBIC,
         NOVA_MOTION_CREATED, false, false, true };
     dialog->focused = false;
-    return nova_motion_create(&fade) != 0;
+    dialog_fade_animation=nova_motion_create(&fade);
+    dialog_scale_animation=0;
+    if(!diagnostics.reduced_motion){
+        nova_animation_t scale={&dialog->scale,dialog->scale,950,diagnostics.current_ms,0,
+            180,20,3,0,NOVA_PROPERTY_SCALE,NOVA_EASE_OUT_CUBIC,
+            NOVA_MOTION_CREATED,false,false,true};
+        dialog_scale_animation=nova_motion_create(&scale);
+    }
+    if(!dialog_fade_animation||(!diagnostics.reduced_motion&&!dialog_scale_animation)){
+        if(dialog_fade_animation)nova_motion_cancel(dialog_fade_animation);
+        if(dialog_scale_animation)nova_motion_cancel(dialog_scale_animation);
+        dialog->opacity=0;dialog->scale=diagnostics.reduced_motion?1000:950;
+        return false;
+    }
+    return true;
+}
+
+bool nova_dialog_motion_running(void)
+{
+    return (dialog_fade_animation&&(dialog_fade_animation->state==NOVA_MOTION_WAITING||
+            dialog_fade_animation->state==NOVA_MOTION_RUNNING))||
+           (dialog_scale_animation&&(dialog_scale_animation->state==NOVA_MOTION_WAITING||
+            dialog_scale_animation->state==NOVA_MOTION_RUNNING));
+}
+
+void nova_dialog_motion_cancel(nova_dialog_motion_t *dialog)
+{
+    if(dialog_fade_animation)nova_motion_cancel(dialog_fade_animation);
+    if(dialog_scale_animation)nova_motion_cancel(dialog_scale_animation);
+    dialog_fade_animation=dialog_scale_animation=0;
+    if(dialog){dialog->opacity=dialog->visible?255:0;
+        dialog->scale=1000;dialog->focused=dialog->visible;}
 }
 
 bool nova_navigation_begin(nova_navigation_motion_t *navigation, bool forward)
