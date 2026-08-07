@@ -39,7 +39,7 @@ try {
             $writer.WriteLine($command)
             Start-Sleep -Milliseconds 600
         }
-        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        $deadline = [DateTime]::UtcNow.AddSeconds(45)
         while ([DateTime]::UtcNow -lt $deadline) {
             $content = Get-Content -LiteralPath $logPath -Raw -ErrorAction SilentlyContinue
             if ($content -like '*UEFI:POWER-CONFIRM*' -and

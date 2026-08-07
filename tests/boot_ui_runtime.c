@@ -17,10 +17,10 @@
 #include "../boot/bootloader/bootmenu/page.h"
 
 static uint32_t writes;
-static uint32_t captured[8][8];
+static uint32_t captured[480][640];
 void pixel_set(uint64_t x, uint64_t y, uint32_t color)
 {
-    if (x < 8 && y < 8) captured[y][x] = color;
+    if (x < 640 && y < 480) captured[y][x] = color;
     ++writes;
 }
 
@@ -249,14 +249,35 @@ int main(void)
     failed |= check(nova_motion_create(&reduced) == 0, "doppelte Property abweisen");
     nova_motion_update(1000);
 
+    nova_motion_initialize();
+    nova_motion_set_reduced(true);
     nova_dialog_motion_t dialog = {0};
     failed |= check(nova_dialog_enter(&dialog), "Dialog Enter Motion");
+    failed |= check(dialog.scale==1000,"Reduced Motion entfernt Dialog-Scale");
+    nova_motion_update(0);
+    failed |= check(nova_dialog_motion_running(),"Reduced-Motion-Fade laeuft");
     nova_motion_update(1200);
     failed |= check(dialog.opacity == 255 && dialog.visible, "Dialog eingeblendet");
     failed |= check(nova_dialog_exit(&dialog), "Dialog Exit Motion");
     nova_motion_update(1400);
     failed |= check(dialog.opacity == 0, "Dialog ausgeblendet");
+    nova_motion_set_reduced(false);
+    dialog=(nova_dialog_motion_t){0};
+    failed |= check(nova_dialog_enter(&dialog)&&dialog.scale==950,
+                    "Standarddialog startet mit Fade und Scale");
+    nova_dialog_motion_cancel(&dialog);
+    failed |= check(!nova_dialog_motion_running(),"Dialogmotion sicher abbrechen");
+    dialog=(nova_dialog_motion_t){0};
+    failed |= check(nova_dialog_enter(&dialog),"Dialogmotion nach Abbruch erneut starten");
+    nova_motion_update(1600);
+    failed |= check(dialog.opacity==255&&dialog.scale==1000,
+                    "Standarddialog beendet Enter fokussiert");
+    failed |= check(nova_dialog_exit(&dialog),"Standarddialog Exit Motion");
+    nova_motion_update(1800);
+    failed |= check(dialog.opacity==0&&dialog.scale==950,
+                    "Standarddialog beendet Exit verkleinert");
 
+    nova_motion_set_reduced(true);
     nova_navigation_motion_t navigation = {0};
     failed |= check(nova_navigation_begin(&navigation, true) && navigation.target_x == 0,
                     "Reduced-Motion-Navigation als Cross Fade");
@@ -308,6 +329,10 @@ int main(void)
                     "Font-, Icon- und Brandingressourcen zentral registrieren");
     failed |= check(nova_resource_find(nova_resource_id("boot://branding/novaos/logo")) != 0,
                     "NovaOS-Logo im Resource Manager");
+    bool all_icons=true;
+    for(uint32_t icon=0;icon<NOVA_ICON_COUNT;++icon)
+        if(!nova_icon_exists((nova_icon_token_t)icon))all_icons=false;
+    failed |= check(all_icons,"alle semantischen Icon-Tokens besitzen Ressourcen");
 
     nova_unicode_initialize();
     const char *unicode = "AΩЖאあ中";

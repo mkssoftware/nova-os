@@ -43,25 +43,41 @@ try {
         while ([DateTime]::UtcNow -lt $deadline) {
             $content = Get-Content -LiteralPath $logPath -Raw -ErrorAction SilentlyContinue
             if ($content -like '*UEFI:DIALOG-FRAME-READY*' -and
-                $content -like '*UEFI:DIALOG-ENTER-COMPLETE*') { break }
+                $content -like '*UEFI:DIALOG-ENTER-COMPLETE*' -and
+                $content -like '*UEFI:DIALOG-STABLE*') { break }
             Start-Sleep -Milliseconds 200
         }
         if ($content -notlike '*UEFI:DIALOG-FRAME-READY*' -or
-            $content -notlike '*UEFI:DIALOG-ENTER-COMPLETE*') {
+            $content -notlike '*UEFI:DIALOG-ENTER-COMPLETE*' -or
+            $content -notlike '*UEFI:DIALOG-STABLE*') {
             throw 'Der modale Dialogframe wurde nicht fertig.'
         }
         Start-Sleep -Milliseconds 300
         $writer.WriteLine('stop'); Start-Sleep -Milliseconds 100
         $writer.WriteLine("screendump $Screenshot")
-        $deadline = [DateTime]::UtcNow.AddSeconds(25)
-        while ([DateTime]::UtcNow -lt $deadline) {
-            if (Test-Path -LiteralPath $shotPath) { break }
-            Start-Sleep -Milliseconds 100
-        }
+        $deadline = [DateTime]::UtcNow.AddSeconds(8)
+        $previousLength=-1
+        do {
+            Start-Sleep -Milliseconds 150
+            $length=if(Test-Path -LiteralPath $shotPath){(Get-Item -LiteralPath $shotPath).Length}else{0}
+            $stable=$length -gt 0 -and $length -eq $previousLength
+            $previousLength=$length
+        } while(!$stable -and [DateTime]::UtcNow -lt $deadline)
         if (!(Test-Path -LiteralPath $shotPath)) { throw 'Kein Dialog-Screenshot erzeugt.' }
+        # QEMU legt die PPM-Datei bereits mit der Endgroesse an und schreibt die
+        # Pixel danach weiter. Erst mehrere identische Inhaltspruefsummen sind ein
+        # belastbares Fertigsignal.
+        $hashDeadline=[DateTime]::UtcNow.AddSeconds(12)
+        $lastHash='';$stableHashes=0
+        while($stableHashes -lt 4 -and [DateTime]::UtcNow -lt $hashDeadline){
+            Start-Sleep -Milliseconds 300
+            $hash=(Get-FileHash -LiteralPath $shotPath -Algorithm SHA256).Hash
+            if($hash -eq $lastHash){$stableHashes++}else{$lastHash=$hash;$stableHashes=0}
+        }
+        if($stableHashes -lt 4){throw 'Der Dialog-Screenshot wurde nicht stabil fertiggeschrieben.'}
         $writer.WriteLine('cont'); Start-Sleep -Milliseconds 100
         $writer.WriteLine('sendkey esc')
-        $deadline = [DateTime]::UtcNow.AddSeconds(8)
+        $deadline = [DateTime]::UtcNow.AddSeconds(25)
         while ([DateTime]::UtcNow -lt $deadline) {
             $content = Get-Content -LiteralPath $logPath -Raw -ErrorAction SilentlyContinue
             if ($content -like '*UEFI:DIALOG-EXIT-COMPLETE*' -and

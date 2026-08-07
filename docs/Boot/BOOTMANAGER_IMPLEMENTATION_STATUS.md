@@ -82,10 +82,14 @@ Referenzzählung, Release, Fallbackfeldern und Diagnosedaten.
 
 Der UTF-8-Decoder validiert ein- bis vierbyte Sequenzen, weist Overlong-
 Kodierungen, Surrogate und ungültige Codepoints sicher ab und verwendet
-U+FFFD/Missing-Glyph-Fallback. Die vorhandenen Segoe-UI-Glyphen und alle sechs
-Menüicons werden aus denselben 2-Bit-AA-Quelldaten wie im BIOS-Pfad generiert,
-zentral registriert und ausschließlich über semantische Icon-Tokens genutzt.
-Internationale Glyphatlanten und ein allgemeiner SVG-Renderer fehlen noch.
+U+FFFD/Missing-Glyph-Fallback. Die vorhandenen Segoe-UI-Glyphen und die sechs
+gemeinsamen BIOS-/UEFI-Menüicons werden aus denselben 2-Bit-AA-Quelldaten
+generiert. Der UEFI-Pfad ergänzt Back, Forward, Restart, Warning, Error,
+Information, Success, Lock und Search als statisch erzeugte, geglättete
+Ressourcen. Damit besitzen alle 15 semantischen Icon-Tokens eine eigene zentral
+registrierte Ressource; Unterseiten verwenden eigene Tokenzuordnungen statt
+des früheren Home-Fallbacks. Internationale Glyphatlanten, ein allgemeiner
+SVG-Renderer und die BIOS-Parität der neun erweiterten Symbole fehlen noch.
 
 ## Gemeinsame Eingabelaufzeit
 
@@ -210,8 +214,14 @@ prüft Darstellung und Escape-Abbruch, `test-uefi-input` vier Stack-
 Wiederherstellungen und `test-uefi-power` den vollständigen bestätigten
 Shutdown bis `ResetSystem`.
 
-Noch offen sind das Credential-Authentifizierungsbackend, ein allgemeiner
-Page/View-Baum und die zeitliche Kopplung der Dialog-Enter-/Exit-Motion.
+Enter und Exit sind inzwischen zeitlich an die UEFI-Dialoginstanz gekoppelt:
+der Standardpfad blendet die Karte in 180 ms ein und skaliert sie von 95 auf
+100 Prozent; Reduced Motion verwendet einen 150-ms-Fade ohne Skalierung. Der
+finale Frame wird vor der Eingabefreigabe vollstÃ¤ndig gezeichnet, Escape spielt
+die Exit-Motion vor dem Abbruch ab und der QEMU-Test wartet auf einen explizit
+stabilen Frame. Der modale Page/View-Baum suspendiert und restauriert dabei die
+vorherige Seite samt Fokus. Noch offen sind das Credential-
+Authentifizierungsbackend, nichtmodale Dialoge, Touch und BIOS-ParitÃ¤t.
 
 Der Progress-Teil ist inzwischen sichtbar angebunden: Die read-only
 Boot-Diagnose durchläuft Initialisierung, Firmware-, Grafik- und Eingabephase,
@@ -284,10 +294,14 @@ gesperrte, beschäftigte oder nur lesbare Controls lösen keine Aktion aus.
 Checkbox, Switch, Slider, Scrollbar, Progress und Separator besitzen eigene
 Renderer statt der bisherigen generischen Rechteckdarstellung. Die
 UEFI-Einstellungsseite verwendet davon sichtbar einen Theme-Status, einen
-echten Reduced-Motion-Switch sowie Tastatur- und Sprach-Badges. Der Switch
-folgt unmittelbar dem Laufzeitzustand und allen drei Themes. Hosttests decken
-Toggle, Sperre, Wertebereich, Schrittweite, Clamp und Diagnostik ab;
-`test-uefi-themes` weist den Zustandswechsel und die Darstellung in QEMU nach.
+echten Reduced-Motion-Switch, eine unabhängige Tooltip-Checkbox und einen
+diskreten Tooltip-Verzögerungs-Slider. Checkbox und Slider verändern das
+laufende Tooltip-System unmittelbar; der Slider bleibt zwischen 250 und
+1500 ms, rastet in 250-ms-Schritten und unterstützt Links/Rechts/Home/End,
+Enter/Space sowie Pointer-Drag. Alle Controls folgen dem Laufzeitzustand und
+allen drei Themes. Hosttests decken Toggle, Sperre, Wertebereich, Schrittweite,
+Clamp und Diagnostik ab; `test-uefi-settings-controls` prüft Checkbox,
+Slidernavigation, Grenzwerte und den stabilen visuellen Frame in QEMU.
 
 Das Context Menu ist inzwischen ebenfalls produktiv angebunden. F2 oder ein
 Rechtsklick öffnet genau ein Menü am aktuellen Ziel-Control; die Position wird
@@ -297,8 +311,8 @@ Pointer-Aktivierung und ein Klick außerhalb sind definiert. „Details“ und
 QEMU-Test `test-uefi-context` prüft den vollständigen F2-Pfad, den sichtbaren
 Frame, die Fokusnavigation und die ausgeführte Aktion.
 
-Noch offen sind insbesondere produktive TextField-/Slider-Flows,
-Pointer-Drag, Context-Untermenüs, anklickbare Breadcrumb-Eltern sowie die
+Noch offen sind insbesondere ein produktiver TextField-Flow,
+Context-Untermenüs, anklickbare Breadcrumb-Eltern sowie die
 gemeinsame BIOS-Anbindung. Diese NPSPECs bleiben daher korrekt als teilweise
 integriert markiert.
 
@@ -312,7 +326,8 @@ niemals als Klartext gezeichnet und der gesamte Puffer wird über volatile
 Schreibzugriffe gelöscht. Hosttests prüfen mehrbyte UTF-8, Filter,
 Selektion, ungültige Sequenzen, Maskierung und Löschung.
 
-Ein einzelner zentraler Tooltip erscheint nach 750 ms ruhendem Fokus und wird
+Ein einzelner zentraler Tooltip erscheint nach der konfigurierten Verzögerung
+von 250 bis 1500 ms bei ruhendem Fokus und wird
 bei jeder Eingabe, bei Dialogen oder beim Context Menu sofort ausgeblendet.
 Er fängt weder Fokus noch Eingaben und bleibt innerhalb der Safe Area. Auf
 Unterseiten ersetzt ein semantischer Breadcrumb den einfachen Titel durch

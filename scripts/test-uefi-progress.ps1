@@ -30,7 +30,9 @@ try{
                          'sendkey down','sendkey down','sendkey down','sendkey ret')){
    $writer.WriteLine($command);Start-Sleep -Milliseconds 500
   }
-  $deadline=[DateTime]::UtcNow.AddSeconds(20)
+  # Die pixelweise GOP-Referenzimplementierung ist in QEMU bewusst langsam;
+  # Enter-Motion und fuenf vollstaendige Progressframes brauchen Reserve.
+  $deadline=[DateTime]::UtcNow.AddSeconds(75)
   while([DateTime]::UtcNow-lt$deadline){
    $content=Get-Content $logPath -Raw -ErrorAction SilentlyContinue
    $completeIndex=$content.LastIndexOf('UEFI:PROGRESS-COMPLETE')
@@ -40,7 +42,7 @@ try{
   if($completeIndex-lt 0 -or $frameIndex-le$completeIndex){throw 'Progressdialog wurde nicht vollständig gezeichnet.'}
   Start-Sleep -Milliseconds 300;$writer.WriteLine('stop');Start-Sleep -Milliseconds 100
   $writer.WriteLine("screendump $Screenshot")
-  $deadline=[DateTime]::UtcNow.AddSeconds(8)
+  $deadline=[DateTime]::UtcNow.AddSeconds(30)
   while([DateTime]::UtcNow-lt$deadline){if(Test-Path $shotPath){break};Start-Sleep -Milliseconds 100}
   if(!(Test-Path $shotPath)){throw 'Kein Progress-Screenshot erzeugt.'}
   $writer.WriteLine('cont');Start-Sleep -Milliseconds 100;$writer.WriteLine('sendkey ret')

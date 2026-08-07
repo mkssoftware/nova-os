@@ -10,7 +10,8 @@ typedef enum {
     NOVA_VIEW_DIAGNOSTICS,
     NOVA_VIEW_RECOVERY,
     NOVA_VIEW_POWER,
-    NOVA_VIEW_HELP
+    NOVA_VIEW_HELP,
+    NOVA_VIEW_FIRMWARE
 } nova_bootmenu_view_t;
 
 bool bootmenu_initialize(void);
@@ -22,6 +23,12 @@ void bootmenu_draw(uint64_t selection, uint8_t opacity);
 void bootmenu_set_transition(int32_t offset_dlu, uint8_t opacity, bool input_locked);
 void bootmenu_set_dialog_motion(uint8_t opacity, uint16_t scale_per_mille);
 bool bootmenu_transition_input_locked(void);
+bool bootmenu_settings_toggle_tooltips(void);
+bool bootmenu_settings_adjust_tooltip_delay(int32_t steps);
+bool bootmenu_settings_set_tooltip_delay_edge(bool maximum);
+void bootmenu_set_firmware_info(const char *vendor,uint32_t revision,
+    bool secure_known,bool secure_boot,bool setup_known,bool setup_mode,
+    bool setup_supported);
 bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
                             uint64_t *selection, bool *activate);
 bool bootmenu_context_open(uint64_t selection);

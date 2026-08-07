@@ -3,9 +3,8 @@
 void pixel_set(uint64_t x, uint64_t y, uint32_t color);
 
 static uint32_t surface_pixels[2][NOVA_SURFACE_WIDTH * NOVA_SURFACE_HEIGHT];
-static uint32_t dialog_surface_pixels[NOVA_DIALOG_SURFACE_WIDTH * NOVA_DIALOG_SURFACE_HEIGHT];
-static nova_surface_t surfaces[3];
-static bool surface_used[3];
+static nova_surface_t surfaces[2];
+static bool surface_used[2];
 static nova_layer_t layers[NOVA_LAYER_CAPACITY];
 static uint32_t composed[NOVA_SURFACE_WIDTH * NOVA_SURFACE_HEIGHT];
 static uint8_t layer_count;
@@ -39,15 +38,12 @@ bool nova_compositor_initialize(uint32_t width, uint32_t height)
         surface_used[i] = false;
         surfaces[i] = (nova_surface_t){surface_pixels[i], width, height, width, {{0}}, 0, true};
     }
-    surface_used[2]=false;
-    surfaces[2]=(nova_surface_t){dialog_surface_pixels,NOVA_DIALOG_SURFACE_WIDTH,
-        NOVA_DIALOG_SURFACE_HEIGHT,NOVA_DIALOG_SURFACE_WIDTH,{{0}},0,true};
     return true;
 }
 
 nova_surface_t *nova_surface_acquire(void)
 {
-    for (uint32_t i = 0; i < 3; ++i) {
+    for (uint32_t i = 0; i < 2; ++i) {
         if (!surface_used[i]) { surface_used[i] = true; return &surfaces[i]; }
     }
     return 0;

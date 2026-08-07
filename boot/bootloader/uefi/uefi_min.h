@@ -59,6 +59,8 @@ typedef struct {
 
 typedef struct EFI_BOOT_SERVICES EFI_BOOT_SERVICES;
 typedef struct EFI_RUNTIME_SERVICES EFI_RUNTIME_SERVICES;
+typedef EFI_STATUS (EFIAPI *EFI_GET_VARIABLE)(CHAR16 *,EFI_GUID *,uint32_t *,UINTN *,VOID *);
+typedef EFI_STATUS (EFIAPI *EFI_SET_VARIABLE)(CHAR16 *,EFI_GUID *,uint32_t,UINTN,VOID *);
 typedef enum {
     EfiResetCold, EfiResetWarm, EfiResetShutdown, EfiResetPlatformSpecific
 } EFI_RESET_TYPE;
@@ -66,7 +68,9 @@ struct EFI_RUNTIME_SERVICES {
     EFI_TABLE_HEADER Hdr;
     VOID *GetTime, *SetTime, *GetWakeupTime, *SetWakeupTime;
     VOID *SetVirtualAddressMap, *ConvertPointer;
-    VOID *GetVariable, *GetNextVariableName, *SetVariable;
+    EFI_GET_VARIABLE GetVariable;
+    VOID *GetNextVariableName;
+    EFI_SET_VARIABLE SetVariable;
     VOID *GetNextHighMonotonicCount;
     VOID (EFIAPI *ResetSystem)(EFI_RESET_TYPE, EFI_STATUS, UINTN, VOID *);
 };

@@ -33,34 +33,25 @@ UEFI:INSTALL-UNAVAILABLE
 UEFI:DIALOG-OPEN
 UEFI:DIALOG-ENTER-START
 UEFI:DIALOG-PAGE-ACTIVE
-UEFI:DIALOG-TITLE=Installation nicht verfügbar
-UEFI:DIALOG-MESSAGE=Dieses Abbild enthält noch kein geprüftes Installationsmodul.
 UEFI:MENU-DRAWN
 UEFI:DIALOG-FRAME-READY
-UEFI:DIALOG-TITLE=Installation nicht verfügbar
-UEFI:DIALOG-MESSAGE=Dieses Abbild enthält noch kein geprüftes Installationsmodul.
 UEFI:MENU-DRAWN
 UEFI:DIALOG-FRAME-READY
-UEFI:DIALOG-TITLE=Installation nicht verfügbar
-UEFI:DIALOG-MESSAGE=Dieses Abbild enthält noch kein geprüftes Installationsmodul.
+UEFI:MENU-DRAWN
+UEFI:DIALOG-FRAME-READY
 UEFI:MENU-DRAWN
 UEFI:DIALOG-FRAME-READY
 UEFI:DIALOG-ENTER-COMPLETE
-UEFI:DIALOG-TITLE=Installation nicht verfügbar
-UEFI:DIALOG-MESSAGE=Dieses Abbild enthält noch kein geprüftes Installationsmodul.
 UEFI:MENU-DRAWN
 UEFI:DIALOG-FRAME-READY
+UEFI:DIALOG-STABLE
 UEFI:DIALOG-EXIT-START
-UEFI:DIALOG-TITLE=Installation nicht verfügbar
-UEFI:DIALOG-MESSAGE=Dieses Abbild enthält noch kein geprüftes Installationsmodul.
 UEFI:MENU-DRAWN
 UEFI:DIALOG-FRAME-READY
-UEFI:DIALOG-TITLE=Installation nicht verfügbar
-UEFI:DIALOG-MESSAGE=Dieses Abbild enthält noch kein geprüftes Installationsmodul.
 UEFI:MENU-DRAWN
 UEFI:DIALOG-FRAME-READY
-UEFI:DIALOG-TITLE=Installation nicht verfügbar
-UEFI:DIALOG-MESSAGE=Dieses Abbild enthält noch kein geprüftes Installationsmodul.
+UEFI:MENU-DRAWN
+UEFI:DIALOG-FRAME-READY
 UEFI:MENU-DRAWN
 UEFI:DIALOG-FRAME-READY
 UEFI:DIALOG-EXIT-COMPLETE

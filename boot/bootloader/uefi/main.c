@@ -6,6 +6,7 @@
 #include "../bootmenu/theme.h"
 #include "../bootmenu/navigation.h"
 #include "../bootmenu/dialog.h"
+#include "firmware.h"
 
 EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *system_table);
 bool uefi_pointer_initialize(EFI_SYSTEM_TABLE *system_table);
@@ -49,7 +50,7 @@ static void animate_dialog_motion(bool entering,UINTN selection)
         dialog_visual.focused=true;}
     else{dialog_visual.opacity=0;dialog_visual.scale=nova_motion_is_reduced()?1000:950;}
     bootmenu_set_dialog_motion((uint8_t)dialog_visual.opacity,(uint16_t)dialog_visual.scale);
-    if(!scheduled)bootmenu_draw(selection,255);
+    bootmenu_draw(selection,255);
     nova_debug_string(entering?"UEFI:DIALOG-ENTER-COMPLETE\n":
                                "UEFI:DIALOG-EXIT-COMPLETE\n");
 }
@@ -152,7 +153,11 @@ static void handle_dialog_result(nova_dialog_result_t result)
         UINTN action = pending_power;
         pending_power = (UINTN)-1;
         nova_debug_string("UEFI:DIALOG-RESULT-YES\n");
-        if (!uefi_power_execute(action == 0))
+        if(action==2){
+            if(!uefi_firmware_request_setup())
+                show_notice(NOVA_DIALOG_ERROR,"Firmware-Setup fehlgeschlagen",
+                    "Die Firmware konnte den sicheren Setup-Neustart nicht vorbereiten.");
+        }else if (!uefi_power_execute(action == 0))
             show_notice(NOVA_DIALOG_ERROR, "Energieaktion fehlgeschlagen",
                         "Die Firmware konnte die angeforderte Aktion nicht ausführen.");
     } else if (result == NOVA_DIALOG_RESULT_CANCEL) {
@@ -271,13 +276,38 @@ static bool handle_action(UINTN *selection_pointer)
                 "Barrierefreiheit: reduzierte Bewegung aktiv." :
                 "Barrierefreiheit: normale Bewegung aktiv.");
         } else if (selection == 2) {
-            bootmenu_set_status("Tastatur: Pfeile, Enter, Esc und F1 sind aktiv.");
+            bootmenu_settings_toggle_tooltips();
         } else if (selection == 3) {
-            bootmenu_set_status("Sprache: Deutsch (UTF-8) aktiv.");
+            bootmenu_settings_adjust_tooltip_delay(1);
         } else if (selection == 4) {
-            show_notice(NOVA_DIALOG_WARNING, "Firmware-Ziel nicht verfügbar",
-                        "Die Firmware bietet keinen geprüften Setup-Neustart an.");
+            uefi_firmware_refresh();
+            const nova_uefi_firmware_status_t *firmware=uefi_firmware_status();
+            bootmenu_set_firmware_info(firmware->vendor,firmware->revision,
+                firmware->secure_boot_known,firmware->secure_boot,
+                firmware->setup_mode_known,firmware->setup_mode,
+                firmware->firmware_setup_supported);
+            nova_debug_string("UEFI:FIRMWARE-VIEW\n");
+            navigate_to(NOVA_VIEW_FIRMWARE,selection_pointer,NOVA_NAV_PUSH);
         }
+    } else if(view==NOVA_VIEW_FIRMWARE){
+        const nova_uefi_firmware_status_t *firmware=uefi_firmware_status();
+        if(selection==5)navigate_back(selection_pointer);
+        else if(selection==4&&!firmware->firmware_setup_supported)
+            show_notice(NOVA_DIALOG_WARNING,"Firmware-Setup nicht verfügbar",
+                "Diese Firmware unterstützt keinen sicheren direkten Neustart in das Setup.");
+        else if(selection==4){
+            pending_power=2;
+            nova_debug_string("UEFI:FIRMWARE-SETUP-CONFIRM\n");
+            nova_dialog_t *dialog=nova_dialog_open(NOVA_DIALOG_CONFIRMATION,
+                "Firmware-Setup öffnen",
+                "Der Computer wird neu gestartet und öffnet danach die Firmware-Einstellungen.",
+                true,true,(uint16_t)selection);
+            if(dialog){
+                nova_dialog_add_button(dialog,"Abbrechen",NOVA_DIALOG_RESULT_CANCEL,false);
+                nova_dialog_add_button(dialog,"Neu starten",NOVA_DIALOG_RESULT_YES,true);
+                animate_dialog_motion(true,selection);
+            }
+        }else bootmenu_set_status("Firmwareinformationen werden ausschließlich lesend angezeigt.");
     } else if (view == NOVA_VIEW_DIAGNOSTICS) {
         if (selection == 5) navigate_back(selection_pointer);
         else if (selection == 0) bootmenu_set_status("Firmware, Grafik, Eingabe und Ressourcen: bereit.");
@@ -354,6 +384,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     nova_debug_string("UEFI:DIALOG-READY\n");
     nova_motion_initialize();
     uefi_power_initialize(system_table);
+    uefi_firmware_initialize(system_table);
     bool pointer_available = uefi_pointer_initialize(system_table);
     int32_t entrance_opacity = 0;
     nova_animation_t entrance = {
@@ -442,15 +473,29 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
                 if (close_dialog_animated(true,selection,&result)) handle_dialog_result(result);
             }
             bootmenu_draw(selection, 255);
+        } else if (bootmenu_view()==NOVA_VIEW_SETTINGS&&selection==3&&
+                   (key.ScanCode==3||key.ScanCode==4||key.ScanCode==5||key.ScanCode==6)) {
+            if(key.ScanCode==3)bootmenu_settings_adjust_tooltip_delay(1);
+            else if(key.ScanCode==4)bootmenu_settings_adjust_tooltip_delay(-1);
+            else bootmenu_settings_set_tooltip_delay_edge(key.ScanCode==6);
+            bootmenu_draw(selection,255);
+            nova_debug_string("UEFI:SETTINGS-CONTROLS-STABLE\n");
         } else if (key.ScanCode == 1) {
             selection = selection ? selection - 1 : (UINTN)bootmenu_item_count() - 1u;
             bootmenu_draw(selection, 255);
         } else if (key.ScanCode == 2) {
             selection = (selection + 1) % bootmenu_item_count();
             bootmenu_draw(selection, 255);
-        } else if (key.UnicodeChar == 13) {
+        } else if (key.UnicodeChar == 13 ||
+                   (key.UnicodeChar==32&&bootmenu_view()==NOVA_VIEW_SETTINGS&&
+                    (selection==2||selection==3))) {
             if (handle_action(&selection)) return EFI_SUCCESS;
             bootmenu_draw(selection, 255);
+            if(nova_dialog_active())nova_debug_string("UEFI:DIALOG-STABLE\n");
+            if(bootmenu_view()==NOVA_VIEW_SETTINGS&&(selection==2||selection==3))
+                nova_debug_string("UEFI:SETTINGS-CONTROLS-STABLE\n");
+            if(bootmenu_view()==NOVA_VIEW_FIRMWARE)
+                nova_debug_string("UEFI:FIRMWARE-VIEW-STABLE\n");
         } else if (key.ScanCode == 23) {
             nova_debug_string("UEFI:BACK\n");
             pending_power = (UINTN)-1;
@@ -487,6 +532,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
                             handle_context_action(selection);
                         } else if (handle_action(&selection)) return EFI_SUCCESS;
                         bootmenu_draw(selection, 255);
+                        if(nova_dialog_active())nova_debug_string("UEFI:DIALOG-STABLE\n");
                     }
                 }
             }

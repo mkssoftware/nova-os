@@ -56,7 +56,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check artifact-check bootloader kernel image uefi run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-progress test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check artifact-check bootloader kernel image uefi run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-firmware test-uefi-progress test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -104,7 +104,7 @@ kernel:
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c \
+$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c \
 		boot/bootloader/uefi/uefi_min.h boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/ui.h \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/motion.h \
@@ -131,7 +131,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		$(UEFI_EXTRA_CFLAGS) \
 		-nostdlib -Iboot/bootloader/uefi -I$(BUILD_DIR)/generated \
 		boot/bootloader/uefi/main.c \
-		boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c boot/bootloader/bootmenu/ui.c \
+		boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/compositor.c \
 		boot/bootloader/bootmenu/controls.c boot/bootloader/bootmenu/text.c \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/resources.c \
@@ -264,6 +264,30 @@ test-uefi-tooltip-breadcrumb: uefi
 	test -s build/uefi-tooltip.ppm
 	test -s build/uefi-breadcrumb.ppm
 	@echo "QEMU UEFI Tooltip- und Breadcrumb-Test erfolgreich"
+
+test-uefi-settings-controls: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/test-uefi-settings-controls.ps1 -Qemu "$(QEMU64)" \
+		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:SETTINGS-TOOLTIPS-OFF" build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:SETTINGS-SLIDER-UPDATED" build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:SETTINGS-SLIDER-HOME" build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:SETTINGS-SLIDER-END" build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:SETTINGS-CONTROLS-STABLE" build/qemu-uefi-settings-controls-debug.log
+	test -s build/uefi-settings-controls.ppm
+	@echo "QEMU UEFI Checkbox-, Slider- und Tastaturtest erfolgreich"
+
+test-uefi-firmware: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/test-uefi-firmware.ps1 -Qemu "$(QEMU64)" \
+		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-firmware-debug.log
+	grep -F "UEFI:FIRMWARE-READY" build/qemu-uefi-firmware-debug.log
+	grep -F "UEFI:FIRMWARE-VIEW" build/qemu-uefi-firmware-debug.log
+	grep -F "UEFI:FIRMWARE-VIEW-STABLE" build/qemu-uefi-firmware-debug.log
+	test -s build/uefi-firmware.ppm
+	@echo "QEMU UEFI Firmwarestatus- und Setup-Ziel-Test erfolgreich"
 
 test-uefi-progress: uefi
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \

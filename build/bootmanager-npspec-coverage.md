@@ -1,6 +1,6 @@
 # NovaOS Bootmanager NPSPEC-Abdeckung
 
-Erzeugt: 2026-08-07 17:02:55
+Erzeugt: 2026-08-07 18:34:30
 
 Dokumente: 214
 
@@ -144,7 +144,7 @@ Dokumente: 214
 | NPSPEC-BOOTDIALOG-0007 | Teilweise integriert | dialog.c/ui.c/main.c: sichtbarer bestimmter/unbestimmter Progress, Prozent, Statuswechsel, Abschluss und Close; Werte werden begrenzt, QEMU-Frame nachgewiesen; Task-/Restzeitbackend und BIOS-ParitÃ¤t fehlen | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0007_Progress_Dialog.md |
 | NPSPEC-BOOTDIALOG-0008 | Teilweise integriert | dialog.c/ui.c: statischer 128-Byte-Secret-Puffer, UTF-8-Eingabe, Maskierung, codepointweises Backspace, BoundsprÃ¼fung und volatile Nullung beim Close; kein Crypto-/TPM-Backend, daher sicher nicht im normalen Flow angefordert | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0008_Credential_Dialog.md |
 | NPSPEC-BOOTDIALOG-0009 | Teilweise integriert | dialog.c/ui.c: zyklischer interner Fokus, modale Pointer-Hit-Tests, gespeicherte Vorfokus-ID und Blockade des Hintergrunds; Screenreader/Touch fehlen | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0009_Dialog_Focus_Management.md |
-| NPSPEC-BOOTDIALOG-0010 | Teilweise integriert | motion.c: Dialog Fade/Scale und Reduced-Motion-Fallback hostgetestet; die neue UEFI-Dialoginstanz wird derzeit atomar statt zeitlich animiert geÃ¶ffnet | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0010_Dialog_Animation.md |
+| NPSPEC-BOOTDIALOG-0010 | Teilweise integriert | motion.c/main.c/ui.c: UEFI Enter/Exit mit 180-ms-Fade und 95-auf-100-Prozent-Scale, 150-ms-Reduced-Motion-Fade ohne Scale, finalem Fokus, sicherem Abbruch und stabil synchronisiertem QEMU-Frame; BIOS-Anbindung fehlt | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0010_Dialog_Animation.md |
 | NPSPEC-BOOTDIALOG-0011 | Teilweise integriert | dialog.c: genau ein typisiertes Resultat, O(1)-Close, Cancel-Regel und oberster-Dialog-PrioritÃ¤t; asynchroner Callback fehlt | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0011_Dialog_Result_and_Cancellation.md |
 | NPSPEC-BOOTDIALOG-0012 | Teilweise integriert | dialog.c/main.c: zerstÃ¶rerische Aktion erfordert nach Fokuswahl eine zweite explizite BestÃ¤tigung; QEMU weist Dialog-Arming und echtes ResetSystem-Shutdown nach | Boot_Navigation_Dialoge/NPSPEC-BOOTDIALOG-0012_Destructive_Action_Confirmation.md |
 | NPSPEC-BOOTNAV-0001 | Teilweise integriert | navigation.c/page.c/main.c: zentraler heapfreier Zustandscontroller, Navigation Tree, Stack, Fokus, Dialog-/Recovery-PrioritÃ¤t und Transitionen; alternative EingabegerÃ¤te und BIOS-Anbindung fehlen | Boot_Navigation_Dialoge/NPSPEC-BOOTNAV-0001_Boot_Navigation_Model.md |
