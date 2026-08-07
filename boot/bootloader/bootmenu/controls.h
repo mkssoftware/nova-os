@@ -30,6 +30,14 @@ typedef enum {
     NOVA_TEXT_INPUT_PASSWORD, NOVA_TEXT_INPUT_FILENAME, NOVA_TEXT_INPUT_SEARCH
 } nova_text_input_mode_t;
 
+typedef enum {
+    NOVA_ACTIVITY_SPINNER, NOVA_ACTIVITY_RING,
+    NOVA_ACTIVITY_DOTS, NOVA_ACTIVITY_ARC
+} nova_activity_style_t;
+
+typedef enum { NOVA_SCROLLBAR_HORIZONTAL, NOVA_SCROLLBAR_VERTICAL }
+nova_scrollbar_orientation_t;
+
 enum {
     NOVA_CONTROL_FLAG_VISIBLE = 1u, NOVA_CONTROL_FLAG_ENABLED = 2u,
     NOVA_CONTROL_FLAG_FOCUSED = 4u, NOVA_CONTROL_FLAG_DIRTY = 8u,
@@ -55,6 +63,7 @@ typedef struct {
     nova_rect_t bounds;
     nova_control_style_t style;
     int32_t value, minimum, maximum, step;
+    int32_t scroll_x,scroll_y,content_width,content_height,viewport_width,viewport_height;
     uint32_t action;
     uint16_t template_id;
     uint16_t accessibility_role;
@@ -98,6 +107,18 @@ bool nova_control_adjust(nova_control_t *control, int32_t steps);
 bool nova_control_set_flags(nova_control_t *control, uint32_t flags);
 bool nova_control_set_checked(nova_control_t *control, bool checked);
 bool nova_control_toggle(nova_control_t *control);
+bool nova_activity_start(nova_control_t *control);
+bool nova_activity_stop(nova_control_t *control);
+bool nova_activity_set_style(nova_control_t *control,nova_activity_style_t style);
+bool nova_activity_set_phase(nova_control_t *control,uint16_t phase_per_mille);
+bool nova_activity_running(const nova_control_t *control);
+bool nova_scroll_view_configure(nova_control_t *view,int32_t viewport_width,
+    int32_t viewport_height,int32_t content_width,int32_t content_height);
+bool nova_scroll_view_scroll_to(nova_control_t *view,int32_t x,int32_t y);
+bool nova_scroll_view_scroll_by(nova_control_t *view,int32_t dx,int32_t dy);
+bool nova_scroll_view_scroll_into_view(nova_control_t *view,const nova_rect_t *child);
+bool nova_scrollbar_attach(nova_control_t *scrollbar,nova_control_t *view,
+    nova_scrollbar_orientation_t orientation);
 bool nova_control_set_style(nova_control_t *control,
                             const nova_control_style_t *style);
 bool nova_control_invalidate(nova_control_t *control);

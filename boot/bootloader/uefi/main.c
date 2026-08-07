@@ -147,6 +147,21 @@ static bool navigate_back(UINTN *selection)
     return true;
 }
 
+static bool navigate_root(UINTN *selection)
+{
+    if(!selection||bootmenu_view()==NOVA_VIEW_MAIN)return false;
+    animate_navigation(NOVA_NAV_REPLACE,false,*selection);
+    if(!nova_navigation_reset())return false;
+    nova_navigation_transition_complete();
+    bootmenu_set_view(NOVA_VIEW_MAIN);
+    *selection=0;
+    animate_navigation(NOVA_NAV_REPLACE,true,*selection);
+    bootmenu_set_status("");
+    bootmenu_draw(*selection,255);
+    nova_debug_string("UEFI:BREADCRUMB-ROOT\n");
+    return true;
+}
+
 static void handle_dialog_result(nova_dialog_result_t result)
 {
     if (result == NOVA_DIALOG_RESULT_YES && pending_power != (UINTN)-1) {
@@ -185,7 +200,8 @@ static void run_diagnostic_progress(UINTN selection)
     for (uint8_t i=0;i<5;++i) {
         nova_dialog_progress_update(dialog,values[i],i==0,states[i]);
         bootmenu_draw(selection,255);
-        runtime_system_table->BootServices->Stall(150000);
+        if(i==0)nova_debug_string("UEFI:ACTIVITY-FRAME-READY\n");
+        runtime_system_table->BootServices->Stall(i==0?800000:150000);
     }
     dialog->cancelable=true;
     nova_dialog_add_button(dialog,"Schließen",NOVA_DIALOG_RESULT_OK,false);
@@ -308,6 +324,16 @@ static bool handle_action(UINTN *selection_pointer)
                 animate_dialog_motion(true,selection);
             }
         }else bootmenu_set_status("Firmwareinformationen werden ausschließlich lesend angezeigt.");
+    } else if(view==NOVA_VIEW_HELP){
+        if(selection==5)navigate_back(selection_pointer);
+        else if(selection==0)bootmenu_help_search_begin();
+        else{
+            const char *title=bootmenu_help_result_title((uint16_t)selection);
+            const char *details=bootmenu_help_result_details((uint16_t)selection);
+            if(title&&details){nova_debug_string("UEFI:HELP-RESULT-OPEN\n");
+                show_notice(NOVA_DIALOG_INFORMATION,title,details);}
+            else bootmenu_set_status("Für diese Suche wurde kein Hilfethema gefunden.");
+        }
     } else if (view == NOVA_VIEW_DIAGNOSTICS) {
         if (selection == 5) navigate_back(selection_pointer);
         else if (selection == 0) bootmenu_set_status("Firmware, Grafik, Eingabe und Ressourcen: bereit.");
@@ -434,7 +460,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
             int32_t dx, dy, wheel;
             bool left, right, activate = false;
             if (uefi_pointer_poll(&dx, &dy, &wheel, &left, &right)) {
-                (void)wheel;
+                bootmenu_scroll_wheel(wheel,&selection);
                 pointer_activity = bootmenu_pointer_event(dx, dy, left,
                                                           right,
                                                           &selection, &activate);
@@ -456,7 +482,11 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     }
 
     for (;;) {
-        if (bootmenu_context_active()) {
+        if(bootmenu_help_search_active()){
+            bootmenu_help_search_input(key.ScanCode,key.UnicodeChar);
+            bootmenu_draw(selection,255);
+            nova_debug_string("UEFI:HELP-SEARCH-STABLE\n");
+        } else if (bootmenu_context_active()) {
             if(key.ScanCode==1)bootmenu_context_move(-1);
             else if(key.ScanCode==2)bootmenu_context_move(1);
             else if(key.UnicodeChar==13)handle_context_action(selection);
@@ -480,11 +510,25 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
             else bootmenu_settings_set_tooltip_delay_edge(key.ScanCode==6);
             bootmenu_draw(selection,255);
             nova_debug_string("UEFI:SETTINGS-CONTROLS-STABLE\n");
+        } else if(key.UnicodeChar==9&&bootmenu_view()!=NOVA_VIEW_MAIN){
+            bootmenu_breadcrumb_focus(!bootmenu_breadcrumb_focused());
+            bootmenu_draw(selection,255);
+        } else if(bootmenu_breadcrumb_focused()&&
+                  (key.UnicodeChar==13||key.UnicodeChar==32)){
+            navigate_root(&selection);
+        } else if(bootmenu_scroll_key(key.ScanCode,&selection)){
+            bootmenu_draw(selection,255);
         } else if (key.ScanCode == 1) {
-            selection = selection ? selection - 1 : (UINTN)bootmenu_item_count() - 1u;
+            bootmenu_breadcrumb_focus(false);
+            do{selection=selection?selection-1:(UINTN)bootmenu_item_count()-1u;}
+            while(!bootmenu_item_available((uint16_t)selection));
+            bootmenu_scroll_selection_into_view(selection);
             bootmenu_draw(selection, 255);
         } else if (key.ScanCode == 2) {
-            selection = (selection + 1) % bootmenu_item_count();
+            bootmenu_breadcrumb_focus(false);
+            do{selection=(selection+1)%bootmenu_item_count();}
+            while(!bootmenu_item_available((uint16_t)selection));
+            bootmenu_scroll_selection_into_view(selection);
             bootmenu_draw(selection, 255);
         } else if (key.UnicodeChar == 13 ||
                    (key.UnicodeChar==32&&bootmenu_view()==NOVA_VIEW_SETTINGS&&
@@ -520,9 +564,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
                 int32_t dx, dy, wheel;
                 bool left, right, activate = false;
                 if (uefi_pointer_poll(&dx, &dy, &wheel, &left, &right)) {
-                    (void)wheel;
+                    bootmenu_scroll_wheel(wheel,&selection);
                     bootmenu_pointer_event(dx, dy, left, right, &selection, &activate);
                     bootmenu_draw(selection, 255);
+                    if(bootmenu_breadcrumb_take_root_request()){
+                        navigate_root(&selection);
+                        continue;
+                    }
                     if (activate) {
                         if (nova_dialog_active()) {
                             nova_dialog_result_t result = NOVA_DIALOG_RESULT_NONE;

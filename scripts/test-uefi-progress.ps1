@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory = $true)][string]$FatDirectory,
     [Parameter(Mandatory = $true)][string]$DebugLog,
     [string]$Screenshot = 'build/uefi-progress.ppm',
+    [string]$ActivityScreenshot = 'build/uefi-activity.ppm',
     [int]$MonitorPort = 45464
 )
 $ErrorActionPreference='Stop'
@@ -11,7 +12,8 @@ $root=(Get-Location).Path
 $env:TMP=[IO.Path]::GetFullPath((Join-Path $root 'build')); $env:TEMP=$env:TMP
 $logPath=[IO.Path]::GetFullPath((Join-Path $root $DebugLog))
 $shotPath=[IO.Path]::GetFullPath((Join-Path $root $Screenshot))
-foreach($path in @($logPath,$shotPath)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
+$activityPath=[IO.Path]::GetFullPath((Join-Path $root $ActivityScreenshot))
+foreach($path in @($logPath,$shotPath,$activityPath)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
 $arguments=@('-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
  '-drive',"format=raw,file=fat:rw:$FatDirectory",'-display','none','-serial','none',
  '-monitor',"tcp:127.0.0.1:$MonitorPort,server=on,wait=off",'-debugcon',"file:$DebugLog",
@@ -28,8 +30,21 @@ try{
   $writer=[IO.StreamWriter]::new($client.GetStream());$writer.AutoFlush=$true
   foreach($command in @('sendkey down','sendkey down','sendkey down','sendkey ret',
                          'sendkey down','sendkey down','sendkey down','sendkey ret')){
-   $writer.WriteLine($command);Start-Sleep -Milliseconds 500
+   $writer.WriteLine($command);Start-Sleep -Milliseconds 250
   }
+  $activityDeadline=[DateTime]::UtcNow.AddSeconds(30)
+  do{$content=Get-Content $logPath -Raw -ErrorAction SilentlyContinue;Start-Sleep -Milliseconds 50}
+  while($content-notlike'*UEFI:ACTIVITY-FRAME-READY*'-and[DateTime]::UtcNow-lt$activityDeadline)
+  if($content-notlike'*UEFI:ACTIVITY-FRAME-READY*'){throw 'Unbestimmter Activity-Frame wurde nicht erreicht.'}
+  Start-Sleep -Milliseconds 300
+  $writer.WriteLine('stop');Start-Sleep -Milliseconds 150;$writer.WriteLine("screendump $ActivityScreenshot")
+  $activityDeadline=[DateTime]::UtcNow.AddSeconds(10)
+  $previous=-1;$stable=0
+  while($stable-lt 3-and[DateTime]::UtcNow-lt$activityDeadline){Start-Sleep -Milliseconds 150
+   $length=if(Test-Path $activityPath){(Get-Item $activityPath).Length}else{0}
+   if($length-gt 0-and$length-eq$previous){$stable++}else{$stable=0};$previous=$length}
+  if($stable-lt 3){throw 'Kein stabiler Activity-Screenshot erzeugt.'}
+  $writer.WriteLine('cont')
   # Die pixelweise GOP-Referenzimplementierung ist in QEMU bewusst langsam;
   # Enter-Motion und fuenf vollstaendige Progressframes brauchen Reserve.
   $deadline=[DateTime]::UtcNow.AddSeconds(75)

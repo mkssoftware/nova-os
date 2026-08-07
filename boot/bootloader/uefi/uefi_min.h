@@ -159,9 +159,13 @@ struct EFI_SIMPLE_POINTER_PROTOCOL {
     EFI_SIMPLE_POINTER_MODE *Mode;
 };
 
+#ifdef NOVA_HOST_TEST
+static inline void nova_debug_byte(uint8_t value) { (void)value; }
+#else
 static inline void nova_debug_byte(uint8_t value) {
     __asm__ volatile ("outb %0, $0xe9" : : "a"(value));
 }
+#endif
 
 static inline void nova_debug_string(const char *text) {
     while (*text) nova_debug_byte((uint8_t)*text++);

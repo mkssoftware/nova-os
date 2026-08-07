@@ -135,6 +135,35 @@ int main(void)
                     nova_dialog_progress_update(progress_dialog,1000,false,"Abgeschlossen") &&
                     progress_dialog->progress_per_mille == 1000,
                     "Progress wird begrenzt und aktualisiert");
+    nova_control_t *activity=nova_control_create(NOVA_CONTROL_SPINNER);
+    failed |= check(activity&&nova_control_set_state(activity,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(activity,NOVA_CONTROL_VISIBLE)&&
+        nova_activity_start(activity)&&nova_activity_running(activity),"Activity Indicator startet");
+    for(uint8_t style=0;style<4;++style)
+        failed |= check(nova_activity_set_style(activity,(nova_activity_style_t)style)&&
+            nova_activity_set_phase(activity,(uint16_t)(style*250)),"Activity-Stil und Phase");
+    failed |= check(!nova_activity_set_style(activity,(nova_activity_style_t)4)&&
+        !nova_activity_set_phase(activity,1001)&&nova_activity_stop(activity)&&
+        !nova_activity_running(activity),"Activity-Validierung und Stop");
+    nova_control_t *scroll_view=nova_control_create(NOVA_CONTROL_SCROLL_VIEW);
+    nova_control_t *vertical_bar=nova_control_create(NOVA_CONTROL_SCROLLBAR);
+    nova_control_t *horizontal_bar=nova_control_create(NOVA_CONTROL_SCROLLBAR);
+    failed |= check(scroll_view&&vertical_bar&&horizontal_bar&&
+        nova_scroll_view_configure(scroll_view,200,100,500,400)&&
+        nova_scrollbar_attach(vertical_bar,scroll_view,NOVA_SCROLLBAR_VERTICAL)&&
+        nova_scrollbar_attach(horizontal_bar,scroll_view,NOVA_SCROLLBAR_HORIZONTAL),
+        "ScrollView und Scrollbars konfigurieren");
+    failed |= check(nova_scroll_view_scroll_to(scroll_view,999,999)&&
+        scroll_view->scroll_x==300&&scroll_view->scroll_y==300&&
+        vertical_bar->value==300&&horizontal_bar->value==300,
+        "Scrollposition und gekoppelte Scrollbars begrenzen");
+    nova_rect_t scroll_child={40,50,20,20};
+    failed |= check(nova_scroll_view_scroll_into_view(scroll_view,&scroll_child)&&
+        scroll_view->scroll_x==40&&scroll_view->scroll_y==50,
+        "Kind-Control automatisch sichtbar machen");
+    failed |= check(!nova_scroll_view_configure(scroll_view,200,100,199,400)&&
+        !nova_scrollbar_attach(vertical_bar,scroll_view,NOVA_SCROLLBAR_HORIZONTAL),
+        "ungültige Scrollkonfiguration und Mehrfachbindung ablehnen");
     nova_dialog_add_button(progress_dialog,"Schließen",NOVA_DIALOG_RESULT_OK,false);
     failed |= check(nova_dialog_activate(&dialog_result),"Progressdialog abschliessen");
     nova_dialog_t *credential = nova_dialog_open(NOVA_DIALOG_CREDENTIAL,

@@ -23,8 +23,10 @@ liegt.
 - verständliche Bootloader- und Kernel-Fehlerdarstellung
 
 Die zugehörigen QEMU-Nachweise sind die Make-Ziele `test`, `test-mouse`,
-`test-theme`, `test-ui-flows`, `test-recovery`, `test-platform` und
-`test-uefi`. Der UEFI-Test weist EFI-Einstieg, GOP-Initialisierung,
+`test-theme`, `test-ui-flows`, `test-recovery`, `test-platform`,
+`test-uefi`, `test-uefi-settings-controls`, `test-uefi-firmware`,
+`test-uefi-scrollview` und `test-uefi-image`.
+Der UEFI-Test weist EFI-Einstieg, GOP-Initialisierung,
 GUI-Zeichnung und die automatische Standardauswahl nach fünf Sekunden nach.
 
 ## Externe Funktionsblocker
@@ -37,8 +39,20 @@ GUI-Zeichnung und die automatische Standardauswahl nach fünf Sekunden nach.
 | GPT/MBR, SMART und Partitionsreparatur | Storage-, ATA/AHCI- und Partitionsmodule fehlen | Ausschließlich read-only BIOS-Bootlaufwerksstatus |
 | Volume-Entsperrung | Crypto-, TPM-, Smartcard- und Keyslot-Backend fehlen; kein verschlüsseltes Startvolume angefordert | Authentifizierung bleibt deaktiviert und es werden keine Geheimnisse abgefragt |
 | Netzwerk-Boot | PXE-UNDI-/NIC-, DHCP-, TFTP- und HTTP-Backend fehlen | No-Adapter/No-Server-Status; kein unsicherer Netzwerkzugriff |
-| Firmware-Setup | Legacy BIOS besitzt keinen standardisierten Setup-Reboot; der neue UEFI-Anwendungspfad besitzt noch keinen Runtime-Services-Setupwechsel | Hersteller-Setup-Taste wird erklärt; kein vorgetäuschter Firmwareübergang |
+| Firmware-Setup | Legacy BIOS besitzt keinen standardisierten Setup-Reboot; UEFI-Unterstützung hängt von `OsIndicationsSupported.BootToFwUi` ab | UEFI bietet den bestätigten Setup-Neustart nur bei gemeldeter Unterstützung an; sonst bleibt die Aktion deaktiviert und erklärt |
 | Secure Boot | Legacy-BIOS-Pfad besitzt keine UEFI Secure-Boot-Datenbanken | Status wird als nicht verfügbar angezeigt |
+
+## UEFI-Firmware-Einstellungen
+
+Die eigene Firmware-Seite liest Firmwarehersteller und Revision aus der
+System Table sowie `SecureBoot`, `SetupMode` und `OsIndicationsSupported` über
+typisierte Runtime Services. Fehlende Variablen werden ausdrücklich als nicht
+verfügbar dargestellt. Die Seite nimmt keine Firmwareparameteränderungen vor.
+Nur wenn `BootToFwUi` unterstützt wird, erscheint der Setup-Neustart aktiv;
+nach dem zweistufigen Bestätigungsdialog setzt NovaOS ausschließlich das
+standardisierte `OsIndications`-Bit und löst einen kalten Reset aus.
+`test-uefi-firmware` weist mit OVMF Statusseite, Hersteller, Capability,
+Bestätigung, gesetzte Anforderung und Resetpfad nach.
 
 ## Blocker durch unvollständige Spezifikationen
 
@@ -230,6 +244,15 @@ Statuswechsel sowie einen expliziten Abschlusszustand. Ungültige Werte werden
 auf 0 bis 1000 begrenzt. `test-uefi-progress` weist den vollständigen Frame,
 100 Prozent und das anschließende Schließen in QEMU nach.
 
+Die unbestimmte Initialisierungsphase verwendet zusätzlich einen echten
+heapfreien Activity Indicator statt einer scheinbar numerischen Teilfüllung.
+Die Control-Laufzeit unterstützt Spinner-, Ring-, Dots- und Arc-Templates,
+validierte Start-/Stop-Zustände und eine begrenzte Phase von 0 bis 1000.
+Hosttests prüfen alle vier Stile und ungültige Werte; der QEMU-Test hält den
+ersten Diagnoseframe gezielt an und erzeugt `build/uefi-activity.ppm` als
+visuellen Nachweis. Eine kontinuierliche Kopplung an die Motion-Timeline und
+die gemeinsame BIOS-Anbindung fehlen noch.
+
 Auch das sichere Credential-Control ist als inaktives Grundmodul vorhanden:
 ein statischer 128-Byte-Puffer nimmt validierte Unicode-Codepoints als UTF-8
 auf, zeigt ausschließlich Maskierungspunkte, löscht jeweils einen vollständigen
@@ -311,8 +334,31 @@ Pointer-Aktivierung und ein Klick außerhalb sind definiert. „Details“ und
 QEMU-Test `test-uefi-context` prüft den vollständigen F2-Pfad, den sichtbaren
 Frame, die Fokusnavigation und die ausgeführte Aktion.
 
-Noch offen sind insbesondere ein produktiver TextField-Flow,
-Context-Untermenüs, anklickbare Breadcrumb-Eltern sowie die
+ScrollView und Scrollbar sind nicht mehr bloße Typdeklarationen. Die gemeinsame
+Control-Laufzeit verwaltet Viewport und Contentgröße, X/Y-Position, Clamp und
+Scroll-Into-View in O(1). Horizontale und vertikale Scrollbars dürfen nur fest
+an eine ScrollView gebunden werden; ihr Thumb erhält eine proportionale Größe
+mit Mindestmaß. Die Diagnoseansicht zeigt produktiv vier von sechs vollständigen
+Zeilen, scrollt den Fokus automatisch ein und unterstützt Pfeile, Page Up/Down,
+Home/End, Mausrad, Track-Sprung und Pointer-Drag. `test-uefi-scrollview` weist
+Page Down, End/Home und den komponierten Frame `build/uefi-scrollview.ppm` nach.
+
+Der aktuelle UEFI-Entwicklungsstand wird zusätzlich als eigenständig bootbares
+64-MiB-GPT-Abbild mit FAT32-EFI-Systempartition und
+`EFI/BOOT/BOOTX64.EFI` erzeugt. `test-uefi-image` startet genau
+`build/nova-uefi.img` anstelle des QEMU-Verzeichnisbackends und wartet auf den
+vollständig gezeichneten Countdown-Frame. Damit ist das ausgegebene Image ein
+reproduzierbarer Nachweis des aktuellen UEFI-GUI-Stands.
+
+Der Breadcrumb zeigt auf jeder Unterseite den Pfad aus Start, Chevron und
+aktueller Seite. Der Elternknoten Start besitzt eigene themebasierte Hover- und
+Fokuszustände, präzises Pointer-Hit-Testing sowie Tab/Enter/Space-Bedienung.
+Seine Aktivierung wird an den zentralen Navigation-Controller gemeldet, der
+den Stack validiert in O(1) auf Root zurücksetzt und Hauptauswahl, Fokus und
+Statuszeile wiederherstellt. Der aktuelle Seiteneintrag bleibt passiv.
+
+Noch offen sind insbesondere Context-Untermenüs, tiefere Breadcrumb-Pfade,
+Pointer-Textselektion sowie die
 gemeinsame BIOS-Anbindung. Diese NPSPECs bleiben daher korrekt als teilweise
 integriert markiert.
 
@@ -325,6 +371,15 @@ Placeholder, Auswahl, Caret, Fokus und Fehlerzustand. Passwortzeichen werden
 niemals als Klartext gezeichnet und der gesamte Puffer wird über volatile
 Schreibzugriffe gelöscht. Hosttests prüfen mehrbyte UTF-8, Filter,
 Selektion, ungültige Sequenzen, Maskierung und Löschung.
+
+Das TextField ist nun außerdem produktiv in die UEFI-Hilfeseite eingebunden.
+F1 öffnet einen lokalen Index mit acht verständlichen Hilfethemen. Das
+Suchfeld filtert Titel und Schlüsselwörter unmittelbar; Backspace, Delete,
+Links/Rechts, Home/End, Enter, Escape und Pointer-Fokus sind angebunden.
+Leere Treffer werden ausgeblendet und von Fokus- sowie Mausnavigation
+übersprungen. Ein Treffer öffnet einen kontextbezogenen Detaildialog, ohne
+interne oder vertrauliche Diagnosedaten zu zeigen. `test-uefi-help-search`
+prüft Bearbeitung, Filterung, stabilen Frame und das Öffnen eines Treffers.
 
 Ein einzelner zentraler Tooltip erscheint nach der konfigurierten Verzögerung
 von 250 bis 1500 ms bei ruhendem Fokus und wird

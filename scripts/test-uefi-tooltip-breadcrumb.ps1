@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory=$true)][string]$DebugLog,
     [string]$Screenshot='build/uefi-tooltip.ppm',
     [string]$BreadcrumbScreenshot='build/uefi-breadcrumb.ppm',
+    [string]$BreadcrumbFocusScreenshot='build/uefi-breadcrumb-focus.ppm',
     [int]$MonitorPort=45468
 )
 $ErrorActionPreference='Stop'
@@ -13,7 +14,8 @@ $env:TMP=[IO.Path]::GetFullPath((Join-Path $root 'build'));$env:TEMP=$env:TMP
 $logPath=[IO.Path]::GetFullPath((Join-Path $root $DebugLog))
 $shotPath=[IO.Path]::GetFullPath((Join-Path $root $Screenshot))
 $breadcrumbPath=[IO.Path]::GetFullPath((Join-Path $root $BreadcrumbScreenshot))
-foreach($path in @($logPath,$shotPath,$breadcrumbPath)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
+$breadcrumbFocusPath=[IO.Path]::GetFullPath((Join-Path $root $BreadcrumbFocusScreenshot))
+foreach($path in @($logPath,$shotPath,$breadcrumbPath,$breadcrumbFocusPath)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
 $arguments=@('-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
  '-drive',"format=raw,file=fat:rw:$FatDirectory",'-display','none','-serial','none',
  '-monitor',"tcp:127.0.0.1:$MonitorPort,server=on,wait=off",'-debugcon',"file:$DebugLog",
@@ -54,5 +56,22 @@ try{
   $deadline=[DateTime]::UtcNow.AddSeconds(8)
   while(!(Test-Path $breadcrumbPath) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 100}
   if(!(Test-Path $breadcrumbPath)){throw 'Kein Breadcrumb-Screenshot erzeugt.'}
+  $writer.WriteLine('cont');Start-Sleep -Milliseconds 150
+  $writer.WriteLine('sendkey tab')
+  $deadline=[DateTime]::UtcNow.AddSeconds(10)
+  do{Start-Sleep -Milliseconds 150;[string]$content=Get-Content $logPath -Raw}
+  while($content -notlike '*UEFI:BREADCRUMB-FOCUS*' -and [DateTime]::UtcNow -lt $deadline)
+  if($content -notlike '*UEFI:BREADCRUMB-FOCUS*'){throw 'Breadcrumb-Elternknoten erhielt keinen Tastaturfokus.'}
+  $writer.WriteLine('stop');Start-Sleep -Milliseconds 150
+  $writer.WriteLine("screendump $BreadcrumbFocusScreenshot")
+  $deadline=[DateTime]::UtcNow.AddSeconds(8)
+  while(!(Test-Path $breadcrumbFocusPath) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 100}
+  if(!(Test-Path $breadcrumbFocusPath)){throw 'Kein fokussierter Breadcrumb-Screenshot erzeugt.'}
+  $writer.WriteLine('cont');Start-Sleep -Milliseconds 150
+  $writer.WriteLine('sendkey ret')
+  $deadline=[DateTime]::UtcNow.AddSeconds(15)
+  do{Start-Sleep -Milliseconds 150;[string]$content=Get-Content $logPath -Raw}
+  while($content -notlike '*UEFI:BREADCRUMB-ROOT*' -and [DateTime]::UtcNow -lt $deadline)
+  if($content -notlike '*UEFI:BREADCRUMB-ROOT*'){throw 'Breadcrumb-Aktivierung setzte die Navigation nicht auf Root zurück.'}
  }finally{$client.Dispose()}
 }finally{if(!$process.HasExited){Stop-Process -Id $process.Id -Force};$process.Dispose()}

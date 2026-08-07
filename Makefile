@@ -56,7 +56,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check artifact-check bootloader kernel image uefi run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-firmware test-uefi-progress test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -94,6 +94,13 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/page.c \
 		-o $(BUILD_DIR)/boot-ui-runtime-test.exe
 	$(BUILD_DIR)/boot-ui-runtime-test.exe
+
+uefi-firmware-runtime-check: | $(BUILD_DIR)
+	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
+		"$(HOST_CC)" -O2 -std=c11 -Wall -Wextra -Werror -DNOVA_HOST_TEST \
+		-Iboot/bootloader/uefi tests/uefi_firmware_runtime.c \
+		boot/bootloader/uefi/firmware.c -o $(BUILD_DIR)/uefi-firmware-runtime-test.exe
+	$(BUILD_DIR)/uefi-firmware-runtime-test.exe
 
 bootloader:
 	$(MAKE) -C boot/bootloader NASM=$(NASM)
@@ -155,6 +162,18 @@ $(UEFI_FIRMWARE): scripts/compose-edk2-firmware.ps1 | $(BUILD_DIR)
 		-OutputFile $(UEFI_FIRMWARE)
 
 uefi: $(UEFI_APP) $(UEFI_FIRMWARE)
+
+uefi-image: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-uefi-image.ps1 \
+		-EfiApplication $(UEFI_APP) -OutputImage build/nova-uefi.img
+
+test-uefi-image: uefi-image
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-uefi-image.ps1 \
+		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -Image build/nova-uefi.img \
+		-DebugLog build/qemu-uefi-image-debug.log
+	grep -F "UEFI:NOVA-ENTRY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:COUNTDOWN-FRAME-READY" build/qemu-uefi-image-debug.log
+	@echo "Aktuelles GPT/FAT32-UEFI-IMG bootet erfolgreich"
 
 test-uefi: boot-ui-runtime-check uefi
 	rm -f $(UEFI_DEBUG_LOG)
@@ -261,8 +280,11 @@ test-uefi-tooltip-breadcrumb: uefi
 	grep -F "UEFI:TOOLTIP-SHOW" build/qemu-uefi-tooltip-debug.log
 	grep -F "UEFI:TOOLTIP-FRAME-READY" build/qemu-uefi-tooltip-debug.log
 	grep -F "UEFI:BREADCRUMB-FRAME-READY" build/qemu-uefi-tooltip-debug.log
+	grep -F "UEFI:BREADCRUMB-FOCUS" build/qemu-uefi-tooltip-debug.log
+	grep -F "UEFI:BREADCRUMB-ROOT" build/qemu-uefi-tooltip-debug.log
 	test -s build/uefi-tooltip.ppm
 	test -s build/uefi-breadcrumb.ppm
+	test -s build/uefi-breadcrumb-focus.ppm
 	@echo "QEMU UEFI Tooltip- und Breadcrumb-Test erfolgreich"
 
 test-uefi-settings-controls: uefi
@@ -277,6 +299,18 @@ test-uefi-settings-controls: uefi
 	grep -F "UEFI:SETTINGS-CONTROLS-STABLE" build/qemu-uefi-settings-controls-debug.log
 	test -s build/uefi-settings-controls.ppm
 	@echo "QEMU UEFI Checkbox-, Slider- und Tastaturtest erfolgreich"
+
+test-uefi-help-search: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/test-uefi-help-search.ps1 -Qemu "$(QEMU64)" \
+		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-help-search-debug.log
+	grep -F "UEFI:HELP-SEARCH-FOCUS" build/qemu-uefi-help-search-debug.log
+	grep -F "UEFI:HELP-SEARCH-INPUT" build/qemu-uefi-help-search-debug.log
+	grep -F "UEFI:HELP-SEARCH-COMPLETE" build/qemu-uefi-help-search-debug.log
+	grep -F "UEFI:HELP-RESULT-OPEN" build/qemu-uefi-help-search-debug.log
+	test -s build/uefi-help-search.ppm
+	@echo "QEMU UEFI TextField-, Such- und Hilfetest erfolgreich"
 
 test-uefi-firmware: uefi
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \
@@ -295,10 +329,22 @@ test-uefi-progress: uefi
 		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
 		-DebugLog build/qemu-uefi-progress-debug.log
 	grep -F "UEFI:PROGRESS-OPEN" build/qemu-uefi-progress-debug.log
+	grep -F "UEFI:ACTIVITY-FRAME-READY" build/qemu-uefi-progress-debug.log
 	grep -F "UEFI:PROGRESS-COMPLETE" build/qemu-uefi-progress-debug.log
 	grep -F "UEFI:DIALOG-RESULT-OK" build/qemu-uefi-progress-debug.log
 	test -s build/uefi-progress.ppm
+	test -s build/uefi-activity.ppm
 	@echo "QEMU UEFI bestimmter/unbestimmter Progress- und Abschluss-Test erfolgreich"
+
+test-uefi-scrollview: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/test-uefi-scrollview.ps1 -Qemu "$(QEMU64)" \
+		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-scrollview-debug.log
+	grep -F "UEFI:SCROLL-KEY" build/qemu-uefi-scrollview-debug.log
+	grep -F "UEFI:SCROLLVIEW-FRAME-READY" build/qemu-uefi-scrollview-debug.log
+	test -s build/uefi-scrollview.ppm
+	@echo "QEMU UEFI ScrollView-, Scrollbar- und Tastaturtest erfolgreich"
 
 test-uefi-themes: uefi
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \

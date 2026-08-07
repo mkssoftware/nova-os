@@ -31,12 +31,13 @@ nova_control_t *nova_control_create(nova_control_type_t type)
     if (type > NOVA_CONTROL_BREADCRUMB) return 0;
     for (uint16_t i = 0; i < NOVA_CONTROL_CAPACITY; ++i) if (!used[i]) {
         used[i] = true;
-        controls[i] = (nova_control_t){
-            i, NOVA_CONTROL_NONE, NOVA_CONTROL_NONE, NOVA_CONTROL_NONE, type,
-            NOVA_CONTROL_CREATED, NOVA_CONTROL_FLAG_ENABLED | NOVA_CONTROL_FLAG_DIRTY,
-            {0}, default_style, 0, 0, 1000, 1, 0, (uint16_t)type, 0, false,
-            {0}, {0}, {0}, 0, 0, 0, 0, 0, NOVA_TEXT_INPUT_STANDARD
-        };
+        controls[i]=(nova_control_t){0};
+        controls[i].id=i;controls[i].parent=NOVA_CONTROL_NONE;
+        controls[i].first_child=NOVA_CONTROL_NONE;controls[i].next_sibling=NOVA_CONTROL_NONE;
+        controls[i].type=type;controls[i].state=NOVA_CONTROL_CREATED;
+        controls[i].flags=NOVA_CONTROL_FLAG_ENABLED|NOVA_CONTROL_FLAG_DIRTY;
+        controls[i].style=default_style;controls[i].maximum=1000;controls[i].step=1;
+        controls[i].template_id=(uint16_t)type;
         controls[i].maximum_length=NOVA_CONTROL_TEXT_CAPACITY-1;
         controls[i].input_mode=type==NOVA_CONTROL_PASSWORD_FIELD?
                                NOVA_TEXT_INPUT_PASSWORD:NOVA_TEXT_INPUT_STANDARD;
@@ -344,6 +345,96 @@ bool nova_control_toggle(nova_control_t *control)
         !(control->flags & NOVA_CONTROL_FLAG_CHECKED));
 }
 
+bool nova_activity_start(nova_control_t *control)
+{
+    if(!control||control->type!=NOVA_CONTROL_SPINNER||
+       (control->flags&(NOVA_CONTROL_FLAG_LOCKED|NOVA_CONTROL_FLAG_ERROR)))return false;
+    control->flags|=NOVA_CONTROL_FLAG_BUSY|NOVA_CONTROL_FLAG_DIRTY;return true;
+}
+bool nova_activity_stop(nova_control_t *control)
+{
+    if(!control||control->type!=NOVA_CONTROL_SPINNER)return false;
+    control->flags&=~NOVA_CONTROL_FLAG_BUSY;control->flags|=NOVA_CONTROL_FLAG_DIRTY;return true;
+}
+bool nova_activity_set_style(nova_control_t *control,nova_activity_style_t style)
+{
+    if(!control||control->type!=NOVA_CONTROL_SPINNER||style>NOVA_ACTIVITY_ARC)return false;
+    control->template_id=(uint16_t)style;control->flags|=NOVA_CONTROL_FLAG_DIRTY;return true;
+}
+bool nova_activity_set_phase(nova_control_t *control,uint16_t phase_per_mille)
+{
+    if(!control||control->type!=NOVA_CONTROL_SPINNER||phase_per_mille>1000)return false;
+    control->value=phase_per_mille;control->flags|=NOVA_CONTROL_FLAG_DIRTY;return true;
+}
+bool nova_activity_running(const nova_control_t *control)
+{
+    return control&&control->type==NOVA_CONTROL_SPINNER&&
+           (control->flags&NOVA_CONTROL_FLAG_BUSY)!=0;
+}
+
+static void sync_scrollbars(nova_control_t *view)
+{
+    for(uint16_t i=0;i<NOVA_CONTROL_CAPACITY;++i)if(used[i]&&controls[i].parent==view->id&&
+       controls[i].type==NOVA_CONTROL_SCROLLBAR){nova_control_t *bar=&controls[i];
+        bool vertical=bar->template_id==NOVA_SCROLLBAR_VERTICAL;
+        bar->minimum=0;bar->maximum=vertical?view->content_height-view->viewport_height:
+            view->content_width-view->viewport_width;
+        if(bar->maximum<0)bar->maximum=0;
+        bar->value=vertical?view->scroll_y:view->scroll_x;
+        bar->viewport_width=view->viewport_width;bar->viewport_height=view->viewport_height;
+        bar->content_width=view->content_width;bar->content_height=view->content_height;
+        bar->flags|=NOVA_CONTROL_FLAG_DIRTY;
+    }
+}
+
+bool nova_scroll_view_configure(nova_control_t *view,int32_t viewport_width,
+    int32_t viewport_height,int32_t content_width,int32_t content_height)
+{
+    if(!view||view->type!=NOVA_CONTROL_SCROLL_VIEW||viewport_width<=0||viewport_height<=0||
+       content_width<viewport_width||content_height<viewport_height)return false;
+    view->viewport_width=viewport_width;view->viewport_height=viewport_height;
+    view->content_width=content_width;view->content_height=content_height;
+    if(view->scroll_x>content_width-viewport_width)view->scroll_x=content_width-viewport_width;
+    if(view->scroll_y>content_height-viewport_height)view->scroll_y=content_height-viewport_height;
+    view->flags|=NOVA_CONTROL_FLAG_DIRTY;sync_scrollbars(view);return true;
+}
+
+bool nova_scroll_view_scroll_to(nova_control_t *view,int32_t x,int32_t y)
+{
+    if(!view||view->type!=NOVA_CONTROL_SCROLL_VIEW||view->viewport_width<=0)return false;
+    int32_t max_x=view->content_width-view->viewport_width;
+    int32_t max_y=view->content_height-view->viewport_height;
+    if(x<0)x=0;
+    if(y<0)y=0;
+    if(x>max_x)x=max_x;
+    if(y>max_y)y=max_y;
+    bool changed=x!=view->scroll_x||y!=view->scroll_y;
+    view->scroll_x=x;view->scroll_y=y;view->flags|=NOVA_CONTROL_FLAG_DIRTY;
+    sync_scrollbars(view);return changed;
+}
+bool nova_scroll_view_scroll_by(nova_control_t *view,int32_t dx,int32_t dy)
+{return view?nova_scroll_view_scroll_to(view,view->scroll_x+dx,view->scroll_y+dy):false;}
+
+bool nova_scroll_view_scroll_into_view(nova_control_t *view,const nova_rect_t *child)
+{
+    if(!view||!child||child->width<=0||child->height<=0)return false;
+    int32_t x=view->scroll_x,y=view->scroll_y;
+    if(child->x<x)x=child->x;else if(child->x+child->width>x+view->viewport_width)
+        x=child->x+child->width-view->viewport_width;
+    if(child->y<y)y=child->y;else if(child->y+child->height>y+view->viewport_height)
+        y=child->y+child->height-view->viewport_height;
+    return nova_scroll_view_scroll_to(view,x,y);
+}
+
+bool nova_scrollbar_attach(nova_control_t *scrollbar,nova_control_t *view,
+    nova_scrollbar_orientation_t orientation)
+{
+    if(!scrollbar||scrollbar->type!=NOVA_CONTROL_SCROLLBAR||!view||
+       view->type!=NOVA_CONTROL_SCROLL_VIEW||orientation>NOVA_SCROLLBAR_VERTICAL)return false;
+    if(scrollbar->parent!=NOVA_CONTROL_NONE||!nova_control_set_parent(scrollbar,view))return false;
+    scrollbar->template_id=(uint16_t)orientation;sync_scrollbars(view);return true;
+}
+
 bool nova_control_set_style(nova_control_t *control,
                             const nova_control_style_t *style)
 {
@@ -509,7 +600,6 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
         break;
     }
     case NOVA_CONTROL_SLIDER:
-    case NOVA_CONTROL_SCROLLBAR:
     case NOVA_CONTROL_PROGRESS: {
         int32_t track_h=b.height<8?b.height:8;
         int32_t track_y=b.y+(b.height-track_h)/2;
@@ -523,9 +613,50 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
         }
         break;
     }
+    case NOVA_CONTROL_SCROLLBAR: {
+        bool vertical=control->template_id==NOVA_SCROLLBAR_VERTICAL;
+        int32_t viewport=vertical?control->viewport_height:control->viewport_width;
+        int32_t content=vertical?control->content_height:control->content_width;
+        int32_t track=vertical?b.height:b.width;
+        int32_t thumb=content>0?(int32_t)((int64_t)track*viewport/content):track;
+        int32_t minimum_thumb=vertical?b.width*2:b.height*2;
+        if(thumb<minimum_thumb)thumb=minimum_thumb;
+        if(thumb>track)thumb=track;
+        int32_t travel=track-thumb;
+        int32_t offset=control->maximum>0?(int32_t)((int64_t)travel*control->value/control->maximum):0;
+        control_rounded_rect(surface,b,(uint16_t)((vertical?b.width:b.height)/2),color);
+        nova_rect_t thumb_rect=vertical?(nova_rect_t){b.x,b.y+offset,b.width,thumb}:
+            (nova_rect_t){b.x+offset,b.y,thumb,b.height};
+        control_rounded_rect(surface,thumb_rect,(uint16_t)((vertical?b.width:b.height)/2),
+                             control->style.accent);
+        break;
+    }
     case NOVA_CONTROL_SEPARATOR:
         nova_surface_rect(surface,(nova_rect_t){b.x,b.y+b.height/2,b.width,thickness},control->style.disabled);
         break;
+    case NOVA_CONTROL_SPINNER: {
+        if(!(control->flags&NOVA_CONTROL_FLAG_BUSY))break;
+        static const int8_t px[8]={0,5,7,5,0,-5,-7,-5};
+        static const int8_t py[8]={-7,-5,0,5,7,5,0,-5};
+        int32_t size=b.width<b.height?b.width:b.height;
+        int32_t dot=size/7;if(dot<2)dot=2;
+        int32_t cx=b.x+b.width/2,cy=b.y+b.height/2;
+        uint8_t head=(uint8_t)(((uint32_t)control->value*8u/1001u)&7u);
+        if(control->template_id==NOVA_ACTIVITY_DOTS){
+            for(uint8_t i=0;i<3;++i){bool active=(uint8_t)((head/3u)%3u)==i;
+                control_rounded_rect(surface,(nova_rect_t){cx+((int32_t)i-1)*dot*3-dot/2,
+                    cy-dot/2,dot,dot},(uint16_t)(dot/2),active?control->style.accent:color);}
+        }else for(uint8_t i=0;i<8;++i){
+            bool visible=control->template_id==NOVA_ACTIVITY_RING||
+                (control->template_id==NOVA_ACTIVITY_ARC?((i+8-head)&7u)<4u:((i+8-head)&7u)<6u);
+            if(!visible)continue;
+            bool active=i==head||control->template_id==NOVA_ACTIVITY_ARC;
+            int32_t x=cx+px[i]*size/18-dot/2,y=cy+py[i]*size/18-dot/2;
+            control_rounded_rect(surface,(nova_rect_t){x,y,dot,dot},(uint16_t)(dot/2),
+                                 active?control->style.accent:color);
+        }
+        break;
+    }
     case NOVA_CONTROL_LABEL:
     case NOVA_CONTROL_ICON:
     case NOVA_CONTROL_IMAGE:
