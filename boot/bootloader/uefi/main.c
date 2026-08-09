@@ -447,6 +447,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     if (!system_table || !system_table->BootServices) return 1;
     nova_runtime_create();
     if(!nova_runtime_begin_initialization())return 1;
+    nova_debug_string("UEFI:STATE-MODEL-READY\n");
     nova_memory_initialize();
     if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_MEMORY)||
        !nova_runtime_subsystem_ready(NOVA_RUNTIME_PLATFORM))return 1;

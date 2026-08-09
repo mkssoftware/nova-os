@@ -45,6 +45,8 @@ try{
   while($content-notlike'*UEFI:RUNTIME-LIFECYCLE-SELF-TEST-FRAME*'-and[DateTime]::UtcNow-lt$deadline)
   if($content-notlike'*UEFI:RUNTIME-LIFECYCLE-SELF-TEST*'){throw 'Runtime-Lifecycle-Selbsttest wurde nicht erreicht.'}
   if($content-notlike'*UEFI:RUNTIME-LIFECYCLE-SELF-TEST-FRAME*'){throw 'Runtime-Lifecycle-Statusframe wurde nicht vollstaendig gezeichnet.'}
+  if($content-notlike'*UEFI:STATE-MODEL-SELF-TEST*'){throw 'Hierarchischer State-Model-Selbsttest wurde nicht erreicht.'}
+  if($content-notlike'*UEFI:STATE-MODEL-SELF-TEST-FRAME*'){throw 'State-Model-Statusframe wurde nicht vollstaendig gezeichnet.'}
   $writer.WriteLine('stop');Start-Sleep -Milliseconds 150;$writer.WriteLine("screendump $RuntimeScreenshot")
   $deadline=[DateTime]::UtcNow.AddSeconds(15)
   while(!(Test-Path $runtimeShot)-and[DateTime]::UtcNow-lt$deadline){Start-Sleep -Milliseconds 250}

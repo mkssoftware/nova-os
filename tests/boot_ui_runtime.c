@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include "../boot/bootloader/bootmenu/motion.h"
 #include "../boot/bootloader/bootmenu/compositor.h"
+#include "../boot/bootloader/bootmenu/graphics.h"
 #include "../boot/bootloader/bootmenu/controls.h"
 #include "../boot/bootloader/bootmenu/text.h"
 #include "../boot/bootloader/bootmenu/unicode.h"
@@ -21,7 +22,6 @@
 #include "../boot/bootloader/bootmenu/dialog.h"
 #include "../boot/bootloader/bootmenu/page.h"
 
-static uint32_t writes;
 static uint32_t runtime_task_order[4],runtime_task_count;
 static uint32_t state_callback_count;
 static void runtime_task(uint32_t id,void *context)
@@ -29,12 +29,7 @@ static void runtime_task(uint32_t id,void *context)
 static void state_callback(const nova_state_object_t *object,uint8_t old_state,
                            uint8_t new_state,void *context)
 {(void)object;(void)old_state;(void)new_state;(void)context;++state_callback_count;}
-static uint32_t captured[480][640];
-void pixel_set(uint64_t x, uint64_t y, uint32_t color)
-{
-    if (x < 640 && y < 480) captured[y][x] = color;
-    ++writes;
-}
+static uint32_t graphics_frontbuffer[80];
 
 static int check(int condition, const char *message)
 {
@@ -666,6 +661,28 @@ int main(void)
     failed |= check(nova_motion_budget()->violations == 1 &&
                     nova_motion_budget()->quality == 3, "Budget-Degradation");
 
+    nova_graphics_context_t invalid_graphics={.width=8,.height=8,.pitch=28,
+        .bits_per_pixel=32,.pixel_format=NOVA_PIXEL_BGRA8888,
+        .firmware=NOVA_GRAPHICS_FIRMWARE_TEST,.framebuffer=graphics_frontbuffer,
+        .framebuffer_size=sizeof(graphics_frontbuffer)};
+    failed|=check(!nova_graphics_initialize(&invalid_graphics),
+                  "Graphics Context weist zu kleinen Pitch ab");
+    nova_graphics_context_t graphics={.width=8,.height=8,.pitch=40,
+        .bits_per_pixel=32,.pixel_format=NOVA_PIXEL_BGRA8888,
+        .firmware=NOVA_GRAPHICS_FIRMWARE_TEST,.framebuffer=graphics_frontbuffer,
+        .framebuffer_size=sizeof(graphics_frontbuffer),
+        .capabilities=NOVA_GRAPHICS_LINEAR_FRAMEBUFFER};
+    failed|=check(nova_graphics_initialize(&graphics)&&
+                  nova_graphics_context()->scale_milli==1000&&
+                  (nova_graphics_context()->capabilities&NOVA_GRAPHICS_DOUBLE_BUFFER),
+                  "Validierter gemeinsamer Graphics Context");
+    failed|=check(nova_graphics_convert_pixel(0xff112233,NOVA_PIXEL_RGBA8888,0,0,0,0)==0xff332211&&
+                  nova_graphics_convert_pixel(0xff112233,NOVA_PIXEL_BGRA8888,0,0,0,0)==0xff112233&&
+                  nova_graphics_convert_pixel(0xff112233,NOVA_PIXEL_RGB888,0,0,0,0)==0x00332211&&
+                  nova_graphics_convert_pixel(0xff112233,NOVA_PIXEL_BGR888,0,0,0,0)==0x00112233&&
+                  nova_graphics_convert_pixel(0xff112233,NOVA_PIXEL_RGB565,0,0,0,0)==0x1106&&
+                  nova_graphics_convert_pixel(0xff112233,NOVA_PIXEL_BIT_MASK,0xf800,0x07e0,0x001f,0)==0x1106,
+                  "RGBA-Konvertierung fuer RGB, BGR, RGB565 und Bitmask");
     failed |= check(nova_compositor_initialize(8, 8), "Compositor initialisieren");
     nova_surface_t *base = nova_surface_acquire();
     nova_surface_t *overlay = nova_surface_acquire();
@@ -878,7 +895,13 @@ int main(void)
     failed |= check(nova_compositor_submit_layer(&lower), "stabile Z-Sortierung");
     failed |= check(!nova_compositor_input_allowed(1) && nova_compositor_input_allowed(2),
                     "modale Eingabesperre");
-    failed |= check(nova_compositor_compose() && writes != 0, "Damage compositing");
+    failed |= check(nova_compositor_compose(), "Damage compositing im Offscreen-Buffer");
+    nova_state_set_phase(NOVA_STATE_PHASE_RENDER);
+    failed|=check(!nova_compositor_present(),"Present ausserhalb der Present-Phase sperren");
+    nova_state_set_phase(NOVA_STATE_PHASE_PRESENT);
+    failed|=check(nova_compositor_present()&&nova_graphics_diagnostics()->presents==1&&
+                  graphics_frontbuffer[2+2*10]!=0,
+                  "Pitch-sicheres Present am Frameende");
     nova_compositor_set_fallback(3);
     failed |= check(nova_compositor_diagnostics()->fallback_level == 3,
                     "Material-Fallback");
@@ -894,7 +917,9 @@ int main(void)
                     nova_compositor_submit_layer(&lower) &&
                     nova_compositor_submit_layer(&modal) &&
                     nova_compositor_compose(), "Alpha-Testframe");
-    failed |= check(captured[0][0] == 0xff800000u,
+    nova_state_set_phase(NOVA_STATE_PHASE_PRESENT);
+    failed|=check(nova_compositor_present(),"Alpha-Testframe praesentieren");
+    failed |= check(graphics_frontbuffer[0] == 0xff800000u,
                     "kanalgetreues Alpha-Compositing");
 
     if (!failed) puts("BOOT_UI_RUNTIME_OK");

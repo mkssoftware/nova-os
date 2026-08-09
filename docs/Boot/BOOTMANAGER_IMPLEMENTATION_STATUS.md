@@ -630,3 +630,34 @@ Shutdown/Destroy.
 
 Offen bleiben die gemeinsame BIOS-Anbindung, echte Firmware-Suspend-/Resume-
 Ereignisse, Touch-/Controllerprovider und hardwarebasierte Performancezeiten.
+
+## Boot-UI State Model
+
+`NPSPEC-BOOTUI-0004` besitzt nun einen gemeinsamen, statischen Zustandskern mit
+256 Objektplätzen. Er kennt die spezifizierten Domänen Runtime, Scene, Dialog,
+Overlay, Control, Focus, Pointer, Keyboard, Touch, Navigation, Page, Animation,
+Render, Resource, Theme und Error. Jede Domäne verwendet eine eigene feste
+Übergangsmatrix. Objekt-ID, Owner, Parent, aktueller und vorheriger Zustand,
+Zeitstempel, Transitionen und Fehler werden ohne Heap geführt.
+
+Jede Transition validiert Zustand und Elternhierarchie vor der atomaren
+Änderung. Anschließend entstehen geordnet OnExit-, OnTransition- und OnEnter-
+Ereignisse im 256er Ringlog; optionale Callbacks erhalten dieselbe Reihenfolge.
+Checkpoint, Rollback und Reset sind explizit. Ein versionierter interner
+Snapshot mit Magic, Größe und FNV-Prüfsumme kann einen Zustand sicher sichern
+und wiederherstellen; manipulierte Snapshots werden verworfen. Elternobjekte
+können nicht vor aktiven Kindern entfernt werden.
+
+Die Runtime verwendet diesen Kern als autoritative Transitionsebene. Ihre
+Framepipeline setzt zusätzlich die synchronisierten Phasen Input, Update,
+Animation, Layout, Render, Present und Idle. Der F6-Diagnosetest erzeugt einen
+Scene-Control-Baum, prüft Rollback und Snapshot-Restore, baut Kind vor Eltern
+ab und zeichnet erst danach den sichtbaren Erfolgsstatus. Hosttests prüfen
+zusätzlich verbotene Sprünge, die Control-Folge Focused, Pressed, Released,
+Focused, Callbackreihenfolge und Snapshotkorruption. QEMU bestätigt
+`UEFI:STATE-MODEL-SELF-TEST-FRAME`.
+
+Die bereits existierenden spezialisierten Dialog-, Page-, Navigation-, Motion-,
+Resource- und Input-Automaten sind funktional, aber noch nicht vollständig als
+Objekte dieses gemeinsamen Kerns registriert. Diese Migration sowie Touch,
+Controller und BIOS-Parität bleiben im Audit ausdrücklich teilweise offen.

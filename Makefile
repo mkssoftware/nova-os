@@ -81,6 +81,7 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		"$(HOST_CC)" -O2 -std=c11 -Wall -Wextra -Werror \
 		-Iboot/bootloader/bootmenu -I$(BUILD_DIR)/generated tests/boot_ui_runtime.c \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/compositor.c \
+		boot/bootloader/bootmenu/graphics.c \
 		boot/bootloader/bootmenu/controls.c boot/bootloader/bootmenu/text.c \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/resources.c \
 		boot/bootloader/bootmenu/icons.c \
@@ -121,6 +122,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/ui.h \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/motion.h \
 		boot/bootloader/bootmenu/compositor.c boot/bootloader/bootmenu/compositor.h \
+		boot/bootloader/bootmenu/graphics.c boot/bootloader/bootmenu/graphics.h \
 		boot/bootloader/bootmenu/controls.c boot/bootloader/bootmenu/controls.h \
 		boot/bootloader/bootmenu/text.c boot/bootloader/bootmenu/text.h \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/unicode.h \
@@ -150,6 +152,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/uefi/main.c \
 		boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/compositor.c \
+		boot/bootloader/bootmenu/graphics.c \
 		boot/bootloader/bootmenu/controls.c boot/bootloader/bootmenu/text.c \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/resources.c \
 		boot/bootloader/bootmenu/icons.c \
@@ -194,6 +197,8 @@ test-uefi-image: uefi
 	grep -F "UEFI:CONFIGURATION-MANAGER-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RUNTIME-RUNNING" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RUNTIME-FRAME-COMPLETE" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:GAL-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:GAL-PRESENT" build/qemu-uefi-image-debug.log
 	@echo "Aktuelles GPT/FAT32-UEFI-IMG bootet erfolgreich"
 
 test-uefi: boot-ui-runtime-check uefi
@@ -208,6 +213,8 @@ test-uefi: boot-ui-runtime-check uefi
 		test "$$status" -eq 0 -o "$$status" -eq 124
 	grep -F "UEFI:NOVA-ENTRY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:GOP-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:GAL-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:GAL-PRESENT" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:MENU-DRAWN" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:COMPOSITOR-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:MOTION-READY" $(UEFI_DEBUG_LOG)
@@ -406,9 +413,14 @@ test-uefi-ui-recovery: uefi
 	grep -F "UEFI:RECOVERY-MANAGER-READY" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-MANAGER-READY" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:RUNTIME-RUNNING" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:STATE-MODEL-READY" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:GAL-READY" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:GAL-PRESENT" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:RUNTIME-FRAME-COMPLETE" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:RUNTIME-LIFECYCLE-SELF-TEST" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:RUNTIME-LIFECYCLE-SELF-TEST-FRAME" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:STATE-MODEL-SELF-TEST" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:STATE-MODEL-SELF-TEST-FRAME" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-SELF-TEST" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-SELF-TEST-FRAME" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-FRAME-READY" build/qemu-uefi-ui-recovery-debug.log

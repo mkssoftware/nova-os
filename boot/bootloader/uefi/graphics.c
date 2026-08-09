@@ -1,12 +1,8 @@
 #include "uefi_min.h"
+#include "../bootmenu/graphics.h"
 #include <stdbool.h>
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *gop;
-static uint32_t *framebuffer;
-static UINTN width;
-static UINTN height;
-static UINTN pixels_per_scanline;
-static UINTN framebuffer_pixels;
 
 static EFI_GUID gop_guid = {
     0x9042a9de, 0x23dc, 0x4a38,
@@ -51,40 +47,27 @@ EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *system_table)
         nova_debug_string("UEFI:GOP-PREFERRED-READY\n");
     }
 
-    width = gop->Mode->Info->HorizontalResolution;
-    height = gop->Mode->Info->VerticalResolution;
-    pixels_per_scanline = gop->Mode->Info->PixelsPerScanLine;
-    framebuffer = (uint32_t *)(UINTN)gop->Mode->FrameBufferBase;
-    framebuffer_pixels = gop->Mode->FrameBufferSize / sizeof(uint32_t);
-    if (!framebuffer || !width || !height || pixels_per_scanline < width ||
-        framebuffer_pixels < pixels_per_scanline * height)
-        return 1;
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info=gop->Mode->Info;
+    nova_pixel_format_t format;
+    if(info->PixelFormat==0)format=NOVA_PIXEL_RGBA8888;
+    else if(info->PixelFormat==1)format=NOVA_PIXEL_BGRA8888;
+    else if(info->PixelFormat==2)format=NOVA_PIXEL_BIT_MASK;
+    else {nova_debug_string("UEFI:GOP-BLT-ONLY-UNSUPPORTED\n");return 1;}
+    nova_graphics_context_t context={
+        .width=info->HorizontalResolution,.height=info->VerticalResolution,
+        .pitch=info->PixelsPerScanLine*4u,.bits_per_pixel=32,.dpi=96,
+        .pixel_format=format,.firmware=NOVA_GRAPHICS_FIRMWARE_UEFI_GOP,
+        .framebuffer=(void *)(UINTN)gop->Mode->FrameBufferBase,
+        .framebuffer_size=gop->Mode->FrameBufferSize,
+        .framebuffer_address=gop->Mode->FrameBufferBase,
+        .capabilities=NOVA_GRAPHICS_ALPHA|NOVA_GRAPHICS_BLEND|
+            NOVA_GRAPHICS_DOUBLE_BUFFER|NOVA_GRAPHICS_LINEAR_FRAMEBUFFER|
+            NOVA_GRAPHICS_POINTER|NOVA_GRAPHICS_NATIVE_RESOLUTION,
+        .red_mask=info->PixelInformation[0],.green_mask=info->PixelInformation[1],
+        .blue_mask=info->PixelInformation[2],.alpha_mask=info->PixelInformation[3],
+        .vendor="UEFI",.device="Graphics Output Protocol"};
+    if(!nova_graphics_initialize(&context))return 1;
+    nova_debug_string("UEFI:GAL-READY\n");
     nova_debug_string("UEFI:GOP-READY\n");
     return EFI_SUCCESS;
-}
-
-UINTN grafik_width(void) { return width; }
-UINTN grafik_height(void) { return height; }
-
-void pixel_set(UINTN x, UINTN y, uint32_t color)
-{
-    if (!framebuffer || x >= width || y >= height) return;
-    framebuffer[y * pixels_per_scanline + x] = color;
-}
-
-void rect_draw(UINTN x, UINTN y, UINTN w, UINTN h, uint32_t color)
-{
-    if (x >= width || y >= height) return;
-    if (w > width - x) w = width - x;
-    if (h > height - y) h = height - y;
-    for (UINTN iy = 0; iy < h; ++iy) {
-        uint32_t *row = framebuffer + (y + iy) * pixels_per_scanline + x;
-        for (UINTN ix = 0; ix < w; ++ix)
-            row[ix] = color;
-    }
-}
-
-void screen_clear(uint32_t color)
-{
-    rect_draw(0, 0, width, height, color);
 }

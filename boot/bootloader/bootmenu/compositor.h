@@ -60,6 +60,7 @@ void nova_damage_clear(nova_surface_t *surface);
 bool nova_compositor_begin_frame(void);
 bool nova_compositor_submit_layer(const nova_layer_t *layer);
 bool nova_compositor_compose(void);
+bool nova_compositor_present(void);
 void nova_compositor_set_fallback(uint8_t level);
 bool nova_compositor_input_allowed(uint32_t layer_id);
 const nova_compositor_diagnostics_t *nova_compositor_diagnostics(void);

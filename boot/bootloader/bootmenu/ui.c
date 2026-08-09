@@ -1,5 +1,6 @@
 #include "../uefi/uefi_min.h"
 #include "compositor.h"
+#include "graphics.h"
 #include "controls.h"
 #include "text.h"
 #include "unicode.h"
@@ -11,6 +12,7 @@
 #include "memory.h"
 #include "configuration.h"
 #include "runtime.h"
+#include "state_model.h"
 #include "motion.h"
 #include "ui.h"
 #include "branding.h"
@@ -18,9 +20,6 @@
 #include "layout.h"
 #include "dialog.h"
 #include "page.h"
-
-UINTN grafik_width(void);
-UINTN grafik_height(void);
 
 static nova_surface_t *base_surface;
 static nova_surface_t *interaction_surface;
@@ -87,6 +86,7 @@ static nova_boot_layout_t current_layout;
 static const char *status_text = "";
 static bool memory_self_test_active;
 static bool runtime_self_test_active;
+static bool state_model_self_test_active;
 static int32_t transition_offset_dlu;
 static uint8_t transition_opacity = 255;
 static bool transition_input_locked;
@@ -268,8 +268,8 @@ static void sync_active_page(void)
 
 bool bootmenu_initialize(void)
 {
-    if (!nova_compositor_initialize((uint32_t)grafik_width(),
-                                    (uint32_t)grafik_height())) return false;
+    if (!nova_compositor_initialize(nova_graphics_width(),
+                                    nova_graphics_height())) return false;
     base_surface = nova_surface_acquire();
     interaction_surface = nova_surface_acquire();
     initialized = base_surface && interaction_surface;
@@ -283,7 +283,7 @@ bool bootmenu_initialize(void)
         tooltips_enabled=initial_configuration->tooltips;
         tooltip_delay_ms=initial_configuration->tooltip_delay_ms;
         nova_layout_initialize();
-        if (!nova_layout_compute((uint32_t)grafik_width(), (uint32_t)grafik_height(),
+        if (!nova_layout_compute(nova_graphics_width(),nova_graphics_height(),
                                  false, &current_layout)) return false;
         nova_unicode_initialize();
         if (!nova_text_register_font_resource() ||
@@ -868,8 +868,25 @@ bool bootmenu_runtime_self_test(void)
     if(!initialized||current_view!=NOVA_VIEW_DIAGNOSTICS||
        !nova_runtime_suspend()||nova_runtime_input_allowed()||
        !nova_runtime_resume()||!nova_runtime_input_allowed())return false;
-    bootmenu_set_status("Runtime-Lifecycle geprueft - Suspend und Resume bereit");
+    nova_state_object_t *scene=nova_state_create(0x7f00,NOVA_STATE_DOMAIN_SCENE,0,1,1);
+    if(!scene||!nova_state_transition(scene,1)||!nova_state_checkpoint(scene)||
+       !nova_state_transition(scene,2)||!nova_state_rollback(scene)||
+       !nova_state_transition(scene,2)||!nova_state_transition(scene,3)||
+       !nova_state_transition(scene,4))return false;
+    nova_state_object_t *control=nova_state_create(0x7f01,NOVA_STATE_DOMAIN_CONTROL,0,1,scene->id);
+    nova_state_snapshot_t snapshot;
+    if(!control||!nova_state_transition(control,1)||!nova_state_transition(control,2)||
+       !nova_state_transition(control,3)||!nova_state_transition(control,4)||
+       !nova_state_serialize(control,&snapshot)||!nova_state_transition(control,7)||
+       !nova_state_deserialize(control,&snapshot)||control->current!=4||
+       !nova_state_transition(control,7)||!nova_state_transition(control,2)||
+       !nova_state_transition(control,8)||!nova_state_destroy(control)||
+       !nova_state_transition(scene,5)||!nova_state_transition(scene,6)||
+       !nova_state_destroy(scene))return false;
+    bootmenu_set_status("State Model geprueft - Lifecycle, Rollback und Restore bereit");
     runtime_self_test_active=true;
+    state_model_self_test_active=true;
+    nova_debug_string("UEFI:STATE-MODEL-SELF-TEST\n");
     nova_debug_string("UEFI:RUNTIME-LIFECYCLE-SELF-TEST\n");return true;
 }
 
@@ -968,8 +985,8 @@ bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
     if (!initialized || !selection || !activate) return false;
     if (transition_input_locked) return false;
     bootmenu_tooltip_hide();
-    int32_t width = (int32_t)grafik_width();
-    int32_t height = (int32_t)grafik_height();
+    int32_t width = (int32_t)nova_graphics_width();
+    int32_t height = (int32_t)nova_graphics_height();
     int32_t step_x = dx / 8;
     int32_t step_y = dy / 8;
     if (dx && !step_x) step_x = dx < 0 ? -1 : 1;
@@ -1410,14 +1427,14 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
                               "Enter öffnet diese Option. Esc kehrt zurück.");
     }
     sync_active_page();
-    int32_t width = (int32_t)grafik_width();
+    int32_t width = (int32_t)nova_graphics_width();
     const nova_theme_tokens_t *theme = nova_theme_tokens();
     if(styled_theme!=nova_theme_active()&&!refresh_control_styles(theme)){
         if(runtime_frame)nova_runtime_frame_abort();
         return;
     }
     if(runtime_frame)nova_runtime_frame_step(NOVA_FRAME_LAYOUT);
-    if (!nova_layout_compute((uint32_t)width, (uint32_t)grafik_height(),
+    if (!nova_layout_compute((uint32_t)width,nova_graphics_height(),
                              theme->high_contrast, &current_layout)){
         if(runtime_frame)nova_runtime_frame_abort();
         return;
@@ -1743,20 +1760,20 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     if(nova_dialog_active()){
         nova_rect_t card=dialog_bounds();
         uint8_t backdrop=(uint8_t)((uint16_t)0x99u*dialog_opacity/255u);
-        alpha_over_rect(interaction_surface,(nova_rect_t){0,0,width,(int32_t)grafik_height()},
+        alpha_over_rect(interaction_surface,(nova_rect_t){0,0,width,(int32_t)nova_graphics_height()},
                         (uint32_t)backdrop<<24);
         draw_dialog(interaction_surface,card.x,card.y,card.width,card.height);
         draw_pointer(interaction_surface,0,0);
     }else draw_pointer(interaction_surface,0,0);
 
     nova_layer_t base = {
-        1, base_surface, {0, 0, width, (int32_t)grafik_height()},
-        {0, 0, width, (int32_t)grafik_height()}, 0, opacity,
+        1, base_surface, {0, 0, width, (int32_t)nova_graphics_height()},
+        {0, 0, width, (int32_t)nova_graphics_height()}, 0, opacity,
         NOVA_MATERIAL_NONE, true, false, false, true
     };
     nova_layer_t interaction = {
-        2, interaction_surface, {0, 0, width, (int32_t)grafik_height()},
-        {0, 0, width, (int32_t)grafik_height()}, 10,
+        2, interaction_surface, {0, 0, width, (int32_t)nova_graphics_height()},
+        {0, 0, width, (int32_t)nova_graphics_height()}, 10,
         (uint8_t)((uint16_t)opacity * transition_opacity / 255u),
         NOVA_MATERIAL_NONE, true, true, false, true
     };
@@ -1775,8 +1792,14 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     nova_compositor_submit_layer(&base);
     nova_compositor_submit_layer(&interaction);
     if(runtime_frame)nova_runtime_frame_step(NOVA_FRAME_COMPOSITOR);
-    nova_compositor_compose();
+    bool composed=nova_compositor_compose();
     if(runtime_frame)nova_runtime_frame_step(NOVA_FRAME_PRESENT);
+    if(!composed||!nova_compositor_present()){
+        if(runtime_frame)nova_runtime_frame_abort();
+        nova_debug_string("UEFI:GAL-PRESENT-FAILED\n");
+        nova_memory_reset_frame();return;
+    }
+    nova_debug_string("UEFI:GAL-PRESENT\n");
     nova_debug_string("UEFI:MENU-DRAWN\n");
     nova_debug_string("UEFI:IMAGE-CONTROL-FRAME-READY\n");
     nova_debug_string("UEFI:ICON-CONTROL-FRAME-READY\n");
@@ -1796,6 +1819,8 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     if(memory_self_test_active)nova_debug_string("UEFI:MEMORY-SELF-TEST-FRAME\n");
     if(runtime_self_test_active)
         nova_debug_string("UEFI:RUNTIME-LIFECYCLE-SELF-TEST-FRAME\n");
+    if(state_model_self_test_active)
+        nova_debug_string("UEFI:STATE-MODEL-SELF-TEST-FRAME\n");
     if(runtime_frame){nova_runtime_frame_step(NOVA_FRAME_DIAGNOSTICS);
         nova_diag_frame(16667,500,500,8000,4000);nova_diag_snapshot();
         if(nova_runtime_frame_end())nova_debug_string("UEFI:RUNTIME-FRAME-COMPLETE\n");}

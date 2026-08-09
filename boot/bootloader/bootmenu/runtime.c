@@ -120,25 +120,34 @@ bool nova_runtime_frame_begin(void)
     if(diagnostics.state!=NOVA_RUNTIME_RUNNING||diagnostics.frame_active){
         ++diagnostics.rejected_frames;return false;}
     diagnostics.frame_active=true;diagnostics.frame_stage=NOVA_FRAME_INPUT;
+    nova_state_set_phase(NOVA_STATE_PHASE_INPUT);
     ++diagnostics.frames;return true;
 }
 bool nova_runtime_frame_step(nova_runtime_frame_stage_t stage)
 {
     if(!diagnostics.frame_active||stage!=diagnostics.frame_stage||stage>=NOVA_FRAME_STAGE_COUNT){
         ++diagnostics.rejected_frames;return false;}
-    diagnostics.frame_stage=(nova_runtime_frame_stage_t)(stage+1u);return true;
+    diagnostics.frame_stage=(nova_runtime_frame_stage_t)(stage+1u);
+    nova_state_phase_t phase=NOVA_STATE_PHASE_UPDATE;
+    if(stage>=NOVA_FRAME_MOTION)phase=NOVA_STATE_PHASE_ANIMATION;
+    if(stage>=NOVA_FRAME_LAYOUT)phase=NOVA_STATE_PHASE_LAYOUT;
+    if(stage>=NOVA_FRAME_DIRTY_DETECTION)phase=NOVA_STATE_PHASE_RENDER;
+    if(stage>=NOVA_FRAME_PRESENT)phase=NOVA_STATE_PHASE_PRESENT;
+    nova_state_set_phase(phase);return true;
 }
 bool nova_runtime_frame_end(void)
 {
     if(!diagnostics.frame_active||diagnostics.frame_stage!=NOVA_FRAME_STAGE_COUNT){
         ++diagnostics.rejected_frames;return false;}
     diagnostics.frame_active=false;diagnostics.frame_stage=NOVA_FRAME_INPUT;
+    nova_state_set_phase(NOVA_STATE_PHASE_IDLE);
     ++diagnostics.completed_frames;return true;
 }
 bool nova_runtime_frame_abort(void)
 {
     if(!diagnostics.frame_active)return false;
     diagnostics.frame_active=false;diagnostics.frame_stage=NOVA_FRAME_INPUT;
+    nova_state_set_phase(NOVA_STATE_PHASE_IDLE);
     ++diagnostics.rejected_frames;return true;
 }
 

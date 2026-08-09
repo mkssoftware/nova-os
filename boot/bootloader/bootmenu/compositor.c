@@ -1,6 +1,6 @@
 #include "compositor.h"
 
-void pixel_set(uint64_t x, uint64_t y, uint32_t color);
+#include "graphics.h"
 
 static uint32_t surface_pixels[2][NOVA_SURFACE_WIDTH * NOVA_SURFACE_HEIGHT];
 static nova_surface_t surfaces[2];
@@ -217,7 +217,6 @@ bool nova_compositor_compose(void)
                 uint32_t back = composed[dy * NOVA_SURFACE_WIDTH + dx];
                 uint32_t result = material_pixel(layer, source, back, dx, dy);
                 composed[dy * NOVA_SURFACE_WIDTH + dx] = result;
-                pixel_set((uint64_t)dx, (uint64_t)dy, result);
             }
         }
         ++diagnostics.composed_regions;
@@ -226,6 +225,9 @@ bool nova_compositor_compose(void)
     ++diagnostics.frames;
     return true;
 }
+
+bool nova_compositor_present(void)
+{return nova_graphics_present(composed,output_width,output_height,NOVA_SURFACE_WIDTH);}
 
 void nova_compositor_set_fallback(uint8_t level)
 {
