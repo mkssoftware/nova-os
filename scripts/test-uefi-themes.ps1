@@ -12,7 +12,8 @@ $env:TEMP = $env:TMP
 $logPath = [IO.Path]::GetFullPath((Join-Path $root $DebugLog))
 $lightPath = Join-Path $root 'build/uefi-theme-light.ppm'
 $contrastPath = Join-Path $root 'build/uefi-theme-high-contrast.ppm'
-foreach ($path in @($logPath,$lightPath,$contrastPath)) {
+$menuPath = Join-Path $root 'build/uefi-menu-button.ppm'
+foreach ($path in @($logPath,$lightPath,$contrastPath,$menuPath)) {
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
 }
 $arguments = @(
@@ -48,15 +49,27 @@ try {
             throw "Marker $marker fehlt."
         }
         Send-Key 'down'; Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:SETTINGS'
-        Send-Key 'ret'; Wait-Marker 'UEFI:THEME-LIGHT'; Start-Sleep -Milliseconds 1000
+        Send-Key 'ret'; Wait-Marker 'UEFI:MENU-BUTTON-OPEN'
+        Wait-Marker 'UEFI:MENU-BUTTON-FRAME-READY'
+        $writer.WriteLine('screendump build/uefi-menu-button.ppm')
+        $shotDeadline=[DateTime]::UtcNow.AddSeconds(12);$lastHash='';$stable=0
+        while($stable-lt 4-and[DateTime]::UtcNow-lt$shotDeadline){
+            Start-Sleep -Milliseconds 250
+            if(!(Test-Path -LiteralPath $menuPath)){continue}
+            $hash=(Get-FileHash -LiteralPath $menuPath -Algorithm SHA256).Hash
+            if($hash-eq$lastHash){$stable++}else{$lastHash=$hash;$stable=0}
+        }
+        if($stable-lt 4){throw 'Offener Menu-Button-Frame wurde nicht stabil geschrieben.'}
+        Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:THEME-LIGHT'; Start-Sleep -Milliseconds 1000
         $writer.WriteLine('screendump build/uefi-theme-light.ppm'); Start-Sleep -Milliseconds 800
-        Send-Key 'ret'; Wait-Marker 'UEFI:THEME-HIGH-CONTRAST'; Start-Sleep -Milliseconds 1000
+        Send-Key 'ret'; Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:THEME-HIGH-CONTRAST'; Start-Sleep -Milliseconds 1000
         $writer.WriteLine('screendump build/uefi-theme-high-contrast.ppm'); Start-Sleep -Milliseconds 800
-        Send-Key 'ret'; Wait-Marker 'UEFI:THEME-DARK'
+        Send-Key 'ret'; Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:THEME-DARK'
         Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:REDUCED-MOTION-ON'
         Wait-Marker 'UEFI:SETTINGS-SWITCH-UPDATED'
         Send-Key 'esc'; Wait-Marker 'UEFI:NAV-REDUCED-FADE'
-        if (!(Test-Path -LiteralPath $lightPath) -or !(Test-Path -LiteralPath $contrastPath)) {
+        if (!(Test-Path -LiteralPath $lightPath) -or !(Test-Path -LiteralPath $contrastPath) -or
+            !(Test-Path -LiteralPath $menuPath)) {
             throw 'QEMU hat die Theme-Referenzframes nicht erzeugt.'
         }
     } finally { $client.Dispose() }

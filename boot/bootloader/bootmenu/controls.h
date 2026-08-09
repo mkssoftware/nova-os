@@ -8,6 +8,9 @@
 #define NOVA_CONTROL_CAPACITY 128u
 #define NOVA_CONTROL_TEXT_CAPACITY 96u
 #define NOVA_CONTROL_NONE 0xffffu
+#define NOVA_LIST_ITEM_CAPACITY 64u
+#define NOVA_STYLE_CAPACITY 32u
+#define NOVA_TEMPLATE_CAPACITY 64u
 
 typedef enum {
     NOVA_CONTROL_BUTTON, NOVA_CONTROL_ICON_BUTTON, NOVA_CONTROL_MENU_BUTTON,
@@ -37,6 +40,47 @@ typedef enum {
 
 typedef enum { NOVA_SCROLLBAR_HORIZONTAL, NOVA_SCROLLBAR_VERTICAL }
 nova_scrollbar_orientation_t;
+typedef enum { NOVA_CARD_STANDARD,NOVA_CARD_INFORMATION,NOVA_CARD_WARNING,
+    NOVA_CARD_ERROR,NOVA_CARD_SUCCESS,NOVA_CARD_INTERACTIVE,NOVA_CARD_CUSTOM }
+nova_card_type_t;
+typedef enum { NOVA_TILE_STANDARD,NOVA_TILE_PRIMARY,NOVA_TILE_RECOVERY,
+    NOVA_TILE_MAINTENANCE,NOVA_TILE_DIAGNOSTIC,NOVA_TILE_DESTRUCTIVE,NOVA_TILE_CUSTOM }
+nova_boot_tile_type_t;
+typedef enum { NOVA_BUTTON_STANDARD,NOVA_BUTTON_PRIMARY,NOVA_BUTTON_SECONDARY,
+    NOVA_BUTTON_DESTRUCTIVE,NOVA_BUTTON_ICON,NOVA_BUTTON_TEXT,NOVA_BUTTON_TOGGLE }
+nova_button_type_t;
+typedef enum { NOVA_LABEL_STANDARD,NOVA_LABEL_HEADER,NOVA_LABEL_SUBHEADER,
+    NOVA_LABEL_CAPTION,NOVA_LABEL_STATUS,NOVA_LABEL_ERROR,NOVA_LABEL_WARNING,
+    NOVA_LABEL_SUCCESS,NOVA_LABEL_INFORMATION } nova_label_type_t;
+typedef enum { NOVA_ALIGN_LEFT_TOP,NOVA_ALIGN_CENTER_TOP,NOVA_ALIGN_RIGHT_TOP,
+    NOVA_ALIGN_LEFT_MIDDLE,NOVA_ALIGN_CENTER_MIDDLE,NOVA_ALIGN_RIGHT_MIDDLE,
+    NOVA_ALIGN_LEFT_BOTTOM,NOVA_ALIGN_CENTER_BOTTOM,NOVA_ALIGN_RIGHT_BOTTOM }
+nova_control_alignment_t;
+typedef enum { NOVA_IMAGE_ORIGINAL,NOVA_IMAGE_STRETCH,NOVA_IMAGE_FIT,
+    NOVA_IMAGE_FILL,NOVA_IMAGE_CENTER } nova_image_scaling_mode_t;
+typedef enum { NOVA_IMAGE_BRANDING_LOGO } nova_image_resource_t;
+typedef enum { NOVA_SEPARATOR_HORIZONTAL,NOVA_SEPARATOR_VERTICAL }
+nova_separator_orientation_t;
+typedef enum { NOVA_LIST_SELECTION_NONE,NOVA_LIST_SELECTION_SINGLE,
+    NOVA_LIST_SELECTION_MULTIPLE } nova_list_selection_mode_t;
+typedef enum { NOVA_LIST_ITEM_NORMAL,NOVA_LIST_ITEM_HOVER,NOVA_LIST_ITEM_FOCUS,
+    NOVA_LIST_ITEM_SELECTED,NOVA_LIST_ITEM_DISABLED,NOVA_LIST_ITEM_ERROR }
+nova_list_item_state_t;
+typedef enum { NOVA_BADGE_INFORMATION,NOVA_BADGE_SUCCESS,NOVA_BADGE_WARNING,
+    NOVA_BADGE_ERROR,NOVA_BADGE_CRITICAL,NOVA_BADGE_NEUTRAL,NOVA_BADGE_CUSTOM }
+nova_badge_type_t;
+typedef enum { NOVA_CONTROL_MATERIAL_OPAQUE,NOVA_CONTROL_MATERIAL_GLASS,
+    NOVA_CONTROL_MATERIAL_ACRYLIC,NOVA_CONTROL_MATERIAL_TRANSPARENT }
+nova_control_material_t;
+enum { NOVA_STYLE_BACKGROUND=1u,NOVA_STYLE_FOREGROUND=2u,NOVA_STYLE_ACCENT=4u,
+    NOVA_STYLE_DISABLED=8u,NOVA_STYLE_BORDER=16u,NOVA_STYLE_INFORMATION=32u,
+    NOVA_STYLE_SUCCESS=64u,NOVA_STYLE_WARNING=128u,NOVA_STYLE_ERROR=256u,
+    NOVA_STYLE_GEOMETRY=512u,NOVA_STYLE_ALL=1023u };
+enum { NOVA_TEMPLATE_PART_BACKGROUND=1u,NOVA_TEMPLATE_PART_BORDER=2u,
+    NOVA_TEMPLATE_PART_ICON=4u,NOVA_TEMPLATE_PART_TEXT=8u,
+    NOVA_TEMPLATE_PART_CONTENT=16u,NOVA_TEMPLATE_PART_FOCUS=32u,
+    NOVA_TEMPLATE_PART_TRACK=64u,NOVA_TEMPLATE_PART_THUMB=128u,
+    NOVA_TEMPLATE_PART_STATUS=256u,NOVA_TEMPLATE_PART_IMAGE=512u };
 
 enum {
     NOVA_CONTROL_FLAG_VISIBLE = 1u, NOVA_CONTROL_FLAG_ENABLED = 2u,
@@ -52,8 +96,15 @@ enum {
 
 typedef struct {
     uint32_t background, foreground, accent, disabled;
+    uint32_t border, information, success, warning, error;
     uint16_t corner_dlu, border_dlu, padding_dlu;
 } nova_control_style_t;
+typedef struct {uint16_t id,parent;uint32_t override_mask;
+    nova_control_material_t material;nova_control_style_t resolved;bool valid;}
+nova_style_descriptor_t;
+typedef struct {uint16_t id,parent;nova_control_type_t control_type;
+    uint32_t own_parts,resolved_parts,required_parts;uint16_t visual_nodes;bool valid;}
+nova_control_template_t;
 
 typedef struct {
     uint16_t id, parent, first_child, next_sibling;
@@ -65,12 +116,13 @@ typedef struct {
     int32_t value, minimum, maximum, step;
     int32_t scroll_x,scroll_y,content_width,content_height,viewport_width,viewport_height;
     uint32_t action;
-    uint16_t template_id;
+    uint16_t template_id,visual_template_id,style_id;
     uint16_t accessibility_role;
     bool action_fired;
     char text[NOVA_CONTROL_TEXT_CAPACITY];
     char accessibility_name[NOVA_CONTROL_TEXT_CAPACITY];
     char placeholder[NOVA_CONTROL_TEXT_CAPACITY];
+    char status_text[NOVA_CONTROL_TEXT_CAPACITY];
     uint16_t text_length, caret, selection_start, selection_end, maximum_length;
     nova_text_input_mode_t input_mode;
 } nova_control_t;
@@ -119,6 +171,60 @@ bool nova_scroll_view_scroll_by(nova_control_t *view,int32_t dx,int32_t dy);
 bool nova_scroll_view_scroll_into_view(nova_control_t *view,const nova_rect_t *child);
 bool nova_scrollbar_attach(nova_control_t *scrollbar,nova_control_t *view,
     nova_scrollbar_orientation_t orientation);
+bool nova_card_set_type(nova_control_t *card,nova_card_type_t type);
+bool nova_card_add_child(nova_control_t *card,nova_control_t *child);
+bool nova_tile_set_type(nova_control_t *tile,nova_boot_tile_type_t type);
+bool nova_tile_set_description(nova_control_t *tile,const char *description);
+bool nova_tile_set_status(nova_control_t *tile,const char *status);
+bool nova_icon_button_set_icon(nova_control_t *button,uint16_t icon_id);
+bool nova_icon_button_set_tooltip(nova_control_t *button,const char *tooltip);
+bool nova_icon_button_set_action(nova_control_t *button,uint32_t action);
+bool nova_button_set_type(nova_control_t *button,nova_button_type_t type);
+bool nova_button_set_icon(nova_control_t *button,uint16_t icon_id);
+bool nova_button_set_action(nova_control_t *button,uint32_t action);
+bool nova_button_pressed(const nova_control_t *button);
+bool nova_menu_button_bind(nova_control_t *button,nova_control_t *menu);
+bool nova_menu_button_open(nova_control_t *button);
+bool nova_menu_button_close(nova_control_t *button);
+bool nova_menu_button_expanded(const nova_control_t *button);
+bool nova_label_set_type(nova_control_t *label,nova_label_type_t type);
+bool nova_label_set_alignment(nova_control_t *label,nova_control_alignment_t alignment);
+bool nova_label_set_scale(nova_control_t *label,uint16_t scale_milli);
+const char *nova_label_get_text(const nova_control_t *label);
+bool nova_icon_control_set(nova_control_t *icon,uint16_t icon_id);
+uint16_t nova_icon_control_get(const nova_control_t *icon);
+bool nova_image_set_resource(nova_control_t *image,nova_image_resource_t resource);
+bool nova_image_set_scaling(nova_control_t *image,nova_image_scaling_mode_t mode);
+bool nova_image_set_tint(nova_control_t *image,uint32_t color);
+bool nova_separator_set_orientation(nova_control_t *separator,
+                                    nova_separator_orientation_t orientation);
+bool nova_separator_set_title(nova_control_t *separator,const char *title);
+bool nova_list_add_item(nova_control_t *list,nova_control_t *item);
+bool nova_list_remove_item(nova_control_t *list,uint16_t index);
+bool nova_list_set_selection_mode(nova_control_t *list,nova_list_selection_mode_t mode);
+bool nova_list_select(nova_control_t *list,uint16_t index);
+uint16_t nova_list_selected_index(const nova_control_t *list);
+uint16_t nova_list_count(const nova_control_t *list);
+bool nova_list_set_virtual_window(nova_control_t *list,uint16_t first,uint16_t count);
+bool nova_list_item_visible(const nova_control_t *list,uint16_t index);
+bool nova_list_item_set_subtitle(nova_control_t *item,const char *subtitle);
+bool nova_list_item_set_status(nova_control_t *item,const char *status);
+bool nova_list_item_set_state(nova_control_t *item,nova_list_item_state_t state);
+bool nova_status_badge_set_type(nova_control_t *badge,nova_badge_type_t type);
+bool nova_status_badge_set_icon(nova_control_t *badge,uint16_t icon_id);
+bool nova_status_badge_set_visible(nova_control_t *badge,bool visible);
+bool nova_style_define(uint16_t id,uint16_t parent,const nova_control_style_t *style,
+    uint32_t override_mask,nova_control_material_t material);
+const nova_style_descriptor_t *nova_style_get(uint16_t id);
+bool nova_style_apply(nova_control_t *control,uint16_t style_id);
+void nova_style_theme_changed(void);
+bool nova_control_template_define(uint16_t id,uint16_t parent,
+    nova_control_type_t control_type,uint32_t parts,uint32_t required_parts,
+    uint16_t visual_nodes);
+const nova_control_template_t *nova_control_template_get(uint16_t id);
+bool nova_control_template_apply(nova_control_t *control,uint16_t template_id);
+bool nova_control_template_has_part(const nova_control_template_t *templ,
+                                    const char *part_name);
 bool nova_control_set_style(nova_control_t *control,
                             const nova_control_style_t *style);
 bool nova_control_invalidate(nova_control_t *control);

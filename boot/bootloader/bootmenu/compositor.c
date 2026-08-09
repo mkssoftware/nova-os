@@ -170,6 +170,11 @@ static uint32_t backdrop_blur(int32_t x, int32_t y)
            ((green / samples) << 8) | (blue / samples);
 }
 
+static uint32_t glass_material_tint=0x80212a33u;
+static uint32_t acrylic_material_tint=0xa0182028u;
+void nova_compositor_set_material_tokens(uint32_t glass_tint,uint32_t acrylic_tint)
+{glass_material_tint=glass_tint;acrylic_material_tint=acrylic_tint;}
+
 static uint32_t material_pixel(const nova_layer_t *layer, uint32_t source,
                                uint32_t backdrop, int32_t x, int32_t y)
 {
@@ -177,12 +182,11 @@ static uint32_t material_pixel(const nova_layer_t *layer, uint32_t source,
     if (diagnostics.fallback_level >= 2 || layer->material == NOVA_MATERIAL_SOLID)
         return source | 0xff000000u;
     if (layer->material == NOVA_MATERIAL_GLASS) {
-        uint32_t tint = 0x80212a33u;
-        return blend(backdrop_blur(x, y), tint, 210);
+        return blend(backdrop_blur(x, y), glass_material_tint, 210);
     }
     if (layer->material == NOVA_MATERIAL_ACRYLIC) {
         uint32_t noise = (uint32_t)((x * 1103515245u + y * 12345u) >> 28) * 0x010101u;
-        return blend(blend(backdrop_blur(x, y), 0xa0182028u, 220),
+        return blend(blend(backdrop_blur(x, y), acrylic_material_tint, 220),
                      0x20000000u | noise, 64);
     }
     return blend(backdrop, source, layer->opacity);

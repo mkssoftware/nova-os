@@ -3,6 +3,10 @@ param([Parameter(Mandatory=$true)][string]$Qemu,
       [Parameter(Mandatory=$true)][string]$Image,
       [Parameter(Mandatory=$true)][string]$DebugLog)
 $ErrorActionPreference='Stop';$root=(Get-Location).Path
+$processPath=$env:Path
+[Environment]::SetEnvironmentVariable('PATH',$null,'Process')
+[Environment]::SetEnvironmentVariable('Path',$processPath,'Process')
+$env:TMP=[IO.Path]::GetFullPath((Join-Path $root 'build'));$env:TEMP=$env:TMP
 $log=[IO.Path]::GetFullPath((Join-Path $root $DebugLog));if(Test-Path $log){Remove-Item $log -Force}
 $firmwarePath=[IO.Path]::GetFullPath((Join-Path $root $Firmware));$imagePath=[IO.Path]::GetFullPath((Join-Path $root $Image))
 $stderr=[IO.Path]::GetFullPath((Join-Path $root 'build/qemu-uefi-image-stderr.log'));if(Test-Path $stderr){Remove-Item $stderr -Force}

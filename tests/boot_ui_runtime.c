@@ -39,6 +39,7 @@ static bool page_event_handler(nova_view_t *view,uint32_t event,void *context)
 int main(void)
 {
     int failed = 0;
+    nova_controls_initialize(0);
     nova_page_model_initialize();
     nova_page_t *main_page=nova_page_create(1,"Bootmanager",11,false);
     nova_view_t *root_view=nova_view_create(main_page,100,NOVA_VIEW_ROOT,"Bootmanager",1,false);
@@ -164,6 +165,153 @@ int main(void)
     failed |= check(!nova_scroll_view_configure(scroll_view,200,100,199,400)&&
         !nova_scrollbar_attach(vertical_bar,scroll_view,NOVA_SCROLLBAR_HORIZONTAL),
         "ungültige Scrollkonfiguration und Mehrfachbindung ablehnen");
+    nova_control_t *card=nova_control_create(NOVA_CONTROL_CARD);
+    nova_control_t *card_child=nova_control_create(NOVA_CONTROL_LABEL);
+    failed |= check(card&&card_child&&nova_card_add_child(card,card_child),
+        "Glass Card gruppiert Kind-Control");
+    for(uint8_t type=0;type<=NOVA_CARD_CUSTOM;++type)
+        failed|=check(nova_card_set_type(card,(nova_card_type_t)type),"Glass-Card-Typen");
+    failed|=check(!nova_card_set_type(card,(nova_card_type_t)(NOVA_CARD_CUSTOM+1))&&
+        !nova_card_add_child(card,card),"Glass Card validiert Typ und verhindert Rekursion");
+    nova_control_t *tile=nova_control_create(NOVA_CONTROL_TILE);
+    failed|=check(tile&&nova_control_set_text(tile,"Recovery")&&
+        nova_tile_set_description(tile,"System sicher reparieren")&&
+        nova_tile_set_status(tile,"Backend fehlt"),"Boot Option Tile Metadaten");
+    for(uint8_t type=0;type<=NOVA_TILE_CUSTOM;++type)
+        failed|=check(nova_tile_set_type(tile,(nova_boot_tile_type_t)type),"Boot Option Tile Typen");
+    failed|=check(!nova_tile_set_type(tile,(nova_boot_tile_type_t)(NOVA_TILE_CUSTOM+1)),
+        "Boot Option Tile validiert Typ");
+    nova_control_t *icon_button=nova_control_create(NOVA_CONTROL_ICON_BUTTON);
+    failed|=check(icon_button&&nova_icon_button_set_icon(icon_button,NOVA_ICON_HOME)&&
+        nova_icon_button_set_tooltip(icon_button,"Zum Hauptmenü")&&
+        nova_icon_button_set_action(icon_button,77)&&
+        nova_control_set_accessibility(icon_button,4,"Zum Hauptmenü",false),
+        "Icon Button Icon, Tooltip, Aktion und Accessibility");
+    failed|=check(!nova_icon_button_set_icon(icon_button,NOVA_ICON_COUNT)&&
+        !nova_icon_button_set_tooltip(icon_button,""),"Icon Button validiert Icon und Tooltip");
+    nova_control_t *button=nova_control_create(NOVA_CONTROL_BUTTON);
+    failed|=check(button&&nova_control_set_state(button,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(button,NOVA_CONTROL_VISIBLE)&&
+        nova_button_set_action(button,91),"Button initialisieren und Aktion setzen");
+    for(uint8_t type=0;type<=NOVA_BUTTON_TOGGLE;++type)
+        failed|=check(nova_button_set_type(button,(nova_button_type_t)type),"Button-Typen");
+    uint32_t button_action=0;
+    failed|=check(nova_control_invoke(button,&button_action)&&button_action==91&&
+        (button->flags&NOVA_CONTROL_FLAG_CHECKED)&&
+        !nova_control_invoke(button,&button_action),"Toggle-Button genau einmal aktivieren");
+    nova_control_release(button);button->flags|=NOVA_CONTROL_FLAG_BUSY;
+    failed|=check(!nova_control_invoke(button,&button_action)&&
+        !nova_button_set_type(button,(nova_button_type_t)(NOVA_BUTTON_TOGGLE+1)),
+        "Busy- und Typvalidierung des Buttons");
+    nova_control_t *bound_menu=nova_control_create(NOVA_CONTROL_CONTEXT_MENU);
+    nova_control_t *menu_button=nova_control_create(NOVA_CONTROL_MENU_BUTTON);
+    failed|=check(bound_menu&&menu_button&&
+        nova_control_set_state(bound_menu,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(bound_menu,NOVA_CONTROL_VISIBLE)&&
+        nova_control_set_state(menu_button,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(menu_button,NOVA_CONTROL_VISIBLE)&&
+        nova_menu_button_bind(menu_button,bound_menu)&&
+        nova_menu_button_open(menu_button)&&nova_menu_button_expanded(menu_button)&&
+        !nova_menu_button_open(menu_button)&&nova_menu_button_close(menu_button)&&
+        !nova_menu_button_expanded(menu_button),"Menu Button Bindung und Expanded-Zustand");
+    failed|=check(!nova_menu_button_bind(menu_button,button)&&
+        !nova_menu_button_open(0)&&!nova_menu_button_expanded(0),
+        "Menu Button Fehlerfälle");
+    nova_control_t *label=nova_control_create(NOVA_CONTROL_LABEL);
+    failed|=check(label&&nova_control_set_state(label,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(label,NOVA_CONTROL_VISIBLE)&&nova_control_set_text(label,"Status bereit")&&
+        nova_label_set_alignment(label,NOVA_ALIGN_RIGHT_BOTTOM)&&
+        nova_label_set_scale(label,1500)&&nova_label_get_text(label)&&
+        !nova_label_set_alignment(label,(nova_control_alignment_t)9)&&
+        !nova_label_set_scale(label,499),"Label Text, Ausrichtung und DPI-Skalierung");
+    for(uint8_t type=0;type<=NOVA_LABEL_INFORMATION;++type)
+        failed|=check(nova_label_set_type(label,(nova_label_type_t)type),"Label-Typen");
+    nova_control_t *icon_control=nova_control_create(NOVA_CONTROL_ICON);
+    failed|=check(icon_control&&nova_control_set_state(icon_control,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(icon_control,NOVA_CONTROL_VISIBLE)&&
+        nova_icon_control_set(icon_control,NOVA_ICON_SUCCESS)&&
+        nova_icon_control_get(icon_control)==NOVA_ICON_SUCCESS&&
+        !nova_icon_control_set(icon_control,NOVA_ICON_COUNT),"Icon-Control und Tokenvalidierung");
+    nova_control_t *image_control=nova_control_create(NOVA_CONTROL_IMAGE);
+    failed|=check(image_control&&nova_control_set_state(image_control,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(image_control,NOVA_CONTROL_VISIBLE)&&
+        nova_image_set_resource(image_control,NOVA_IMAGE_BRANDING_LOGO)&&
+        nova_image_set_tint(image_control,0xff218bd1u),"Image-Control und zentrale Ressource");
+    for(uint8_t mode=0;mode<=NOVA_IMAGE_CENTER;++mode)
+        failed|=check(nova_image_set_scaling(image_control,(nova_image_scaling_mode_t)mode),
+                      "Image-Skalierungsmodi");
+    failed|=check(!nova_image_set_scaling(image_control,(nova_image_scaling_mode_t)5),
+                  "Image-Modusvalidierung");
+    nova_control_t *separator=nova_control_create(NOVA_CONTROL_SEPARATOR);
+    failed|=check(separator&&nova_control_set_state(separator,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(separator,NOVA_CONTROL_VISIBLE)&&
+        nova_separator_set_orientation(separator,NOVA_SEPARATOR_HORIZONTAL)&&
+        nova_separator_set_title(separator,"System")&&
+        nova_separator_set_orientation(separator,NOVA_SEPARATOR_VERTICAL)&&
+        !(separator->flags&NOVA_CONTROL_FLAG_ENABLED)&&
+        !nova_separator_set_orientation(separator,(nova_separator_orientation_t)2),
+        "Separator Ausrichtungen, Titel und Interaktionsfreiheit");
+    nova_control_t *badge=nova_control_create(NOVA_CONTROL_STATUS_BADGE);
+    failed|=check(badge&&nova_control_set_state(badge,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(badge,NOVA_CONTROL_VISIBLE)&&
+        nova_control_set_text(badge,"Bereit")&&
+        nova_status_badge_set_icon(badge,NOVA_ICON_SUCCESS)&&
+        nova_status_badge_set_visible(badge,false)&&
+        nova_status_badge_set_visible(badge,true)&&
+        !(badge->flags&NOVA_CONTROL_FLAG_ENABLED),"StatusBadge Inhalt und Interaktionsfreiheit");
+    for(uint8_t type=0;type<=NOVA_BADGE_CUSTOM;++type)
+        failed|=check(nova_status_badge_set_type(badge,(nova_badge_type_t)type),"StatusBadge-Typen");
+    failed|=check(!nova_status_badge_set_type(badge,(nova_badge_type_t)7)&&
+        !nova_status_badge_set_icon(badge,NOVA_ICON_COUNT),"StatusBadge-Validierung");
+    nova_control_style_t inherited_style=badge->style;
+    inherited_style.accent=0xff123456u;inherited_style.corner_dlu=12;
+    failed|=check(nova_style_define(10,0,&inherited_style,
+        NOVA_STYLE_ACCENT|NOVA_STYLE_GEOMETRY,NOVA_CONTROL_MATERIAL_GLASS)&&
+        nova_style_apply(badge,10)&&badge->style.accent==0xff123456u&&
+        badge->style.foreground==nova_style_get(0)->resolved.foreground&&
+        nova_style_get(10)->material==NOVA_CONTROL_MATERIAL_GLASS,
+        "Style-Vererbung, Material und O(1)-Bindung");
+    nova_style_theme_changed();
+    failed|=check(badge->style_id==10&&badge->style.corner_dlu==12&&
+        !nova_style_define(11,11,&inherited_style,NOVA_STYLE_ALL,NOVA_CONTROL_MATERIAL_OPAQUE),
+        "Style-Neubindung und Rekursionsschutz");
+    uint16_t badge_template=(uint16_t)(NOVA_CONTROL_STATUS_BADGE+1);
+    failed|=check(nova_control_template_define(40,badge_template,
+        NOVA_CONTROL_STATUS_BADGE,NOVA_TEMPLATE_PART_STATUS,
+        NOVA_TEMPLATE_PART_BACKGROUND|NOVA_TEMPLATE_PART_TEXT,5)&&
+        nova_control_template_apply(badge,40)&&
+        nova_control_template_has_part(nova_control_template_get(40),"Background")&&
+        nova_control_template_has_part(nova_control_template_get(40),"Status")&&
+        !nova_control_template_has_part(nova_control_template_get(40),"Thumb"),
+        "Template-Vererbung, Pflicht-Parts und Bindung");
+    failed|=check(!nova_control_template_define(41,41,NOVA_CONTROL_STATUS_BADGE,
+        NOVA_TEMPLATE_PART_TEXT,NOVA_TEMPLATE_PART_TEXT,1)&&
+        !nova_control_template_apply(label,40),"Template-Rekursion und TypkompatibilitÃ¤t");
+    nova_control_t *typed_list=nova_control_create(NOVA_CONTROL_LIST);
+    nova_control_t *typed_items[3];
+    failed|=check(typed_list&&nova_control_set_state(typed_list,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(typed_list,NOVA_CONTROL_VISIBLE),"List-Control initialisieren");
+    for(uint8_t i=0;i<3;++i){
+        typed_items[i]=nova_control_create(NOVA_CONTROL_LIST_ITEM);
+        failed|=check(typed_items[i]&&nova_control_set_state(typed_items[i],NOVA_CONTROL_INITIALIZED)&&
+            nova_control_set_state(typed_items[i],NOVA_CONTROL_VISIBLE)&&
+            nova_list_item_set_subtitle(typed_items[i],"Beschreibung")&&
+            nova_list_item_set_status(typed_items[i],"Bereit")&&
+            nova_list_add_item(typed_list,typed_items[i]),"List Item einfügen");
+    }
+    failed|=check(nova_list_count(typed_list)==3&&nova_list_select(typed_list,1)&&
+        nova_list_selected_index(typed_list)==1&&
+        (typed_items[1]->flags&NOVA_CONTROL_FLAG_SELECTED),"O(1)-Einzelauswahl");
+    failed|=check(nova_list_set_selection_mode(typed_list,NOVA_LIST_SELECTION_MULTIPLE)&&
+        nova_list_select(typed_list,2)&&(typed_items[1]->flags&NOVA_CONTROL_FLAG_SELECTED)&&
+        (typed_items[2]->flags&NOVA_CONTROL_FLAG_SELECTED),"Mehrfachauswahl");
+    failed|=check(nova_list_set_virtual_window(typed_list,1,2)&&
+        !nova_list_item_visible(typed_list,0)&&nova_list_item_visible(typed_list,1)&&
+        nova_list_item_visible(typed_list,2),"List-Virtualisierungsfenster");
+    failed|=check(nova_list_remove_item(typed_list,1)&&nova_list_count(typed_list)==2&&
+        !nova_list_remove_item(typed_list,5)&&
+        nova_list_item_set_state(typed_items[0],NOVA_LIST_ITEM_ERROR)&&
+        (typed_items[0]->flags&NOVA_CONTROL_FLAG_ERROR),"Entfernung und List-Item-Zustände");
     nova_dialog_add_button(progress_dialog,"Schließen",NOVA_DIALOG_RESULT_OK,false);
     failed |= check(nova_dialog_activate(&dialog_result),"Progressdialog abschliessen");
     nova_dialog_t *credential = nova_dialog_open(NOVA_DIALOG_CREDENTIAL,

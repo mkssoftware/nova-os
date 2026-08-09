@@ -56,7 +56,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -167,9 +167,11 @@ uefi-image: uefi
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-uefi-image.ps1 \
 		-EfiApplication $(UEFI_APP) -OutputImage build/nova-uefi.img
 
-test-uefi-image: uefi-image
+test-uefi-image: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-uefi-image.ps1 \
+		-EfiApplication $(UEFI_APP) -OutputImage build/nova-uefi-test.img
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-uefi-image.ps1 \
-		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -Image build/nova-uefi.img \
+		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -Image build/nova-uefi-test.img \
 		-DebugLog build/qemu-uefi-image-debug.log
 	grep -F "UEFI:NOVA-ENTRY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:COUNTDOWN-FRAME-READY" build/qemu-uefi-image-debug.log
@@ -282,6 +284,7 @@ test-uefi-tooltip-breadcrumb: uefi
 	grep -F "UEFI:BREADCRUMB-FRAME-READY" build/qemu-uefi-tooltip-debug.log
 	grep -F "UEFI:BREADCRUMB-FOCUS" build/qemu-uefi-tooltip-debug.log
 	grep -F "UEFI:BREADCRUMB-ROOT" build/qemu-uefi-tooltip-debug.log
+	grep -F "UEFI:ICONBUTTON-FRAME-READY" build/qemu-uefi-tooltip-debug.log
 	test -s build/uefi-tooltip.ppm
 	test -s build/uefi-breadcrumb.ppm
 	test -s build/uefi-breadcrumb-focus.ppm
@@ -297,8 +300,23 @@ test-uefi-settings-controls: uefi
 	grep -F "UEFI:SETTINGS-SLIDER-HOME" build/qemu-uefi-settings-controls-debug.log
 	grep -F "UEFI:SETTINGS-SLIDER-END" build/qemu-uefi-settings-controls-debug.log
 	grep -F "UEFI:SETTINGS-CONTROLS-STABLE" build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:LABEL-FRAME-READY" build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:ICON-CONTROL-FRAME-READY" build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:IMAGE-CONTROL-FRAME-READY" build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:SEPARATOR-FRAME-READY" build/qemu-uefi-settings-controls-debug.log
 	test -s build/uefi-settings-controls.ppm
 	@echo "QEMU UEFI Checkbox-, Slider- und Tastaturtest erfolgreich"
+
+test-uefi-list-controls: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-uefi-list-controls.ps1 \
+		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-list-controls-debug.log
+	grep -F "UEFI:LIST-CONTROL-FRAME-READY" build/qemu-uefi-list-controls-debug.log
+	grep -F "UEFI:LIST-HOME-END" build/qemu-uefi-list-controls-debug.log
+	grep -F "UEFI:LIST-PAGE-NAVIGATION" build/qemu-uefi-list-controls-debug.log
+	grep -F "UEFI:INSTALL-UNAVAILABLE" build/qemu-uefi-list-controls-debug.log
+	test -s build/uefi-list-controls.ppm
+	@echo "QEMU UEFI List-/ListItem-Navigation und Space-Aktivierung erfolgreich"
 
 test-uefi-help-search: uefi
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \
@@ -346,6 +364,16 @@ test-uefi-scrollview: uefi
 	test -s build/uefi-scrollview.ppm
 	@echo "QEMU UEFI ScrollView-, Scrollbar- und Tastaturtest erfolgreich"
 
+test-uefi-recovery-tiles: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-uefi-recovery-tiles.ps1 \
+		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-recovery-tiles-debug.log
+	grep -F "UEFI:TILE-FRAME-READY" build/qemu-uefi-recovery-tiles-debug.log
+	grep -F "UEFI:TILE-NAVIGATION" build/qemu-uefi-recovery-tiles-debug.log
+	grep -F "UEFI:STATUS-BADGE-FRAME-READY" build/qemu-uefi-recovery-tiles-debug.log
+	test -s build/uefi-recovery-tiles.ppm
+	@echo "QEMU UEFI Recovery-Tile-, Grid- und Space-Aktivierungstest erfolgreich"
+
 test-uefi-themes: uefi
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \
 		-File scripts/test-uefi-themes.ps1 -Qemu "$(QEMU64)" \
@@ -354,10 +382,13 @@ test-uefi-themes: uefi
 	grep -F "UEFI:THEME-LIGHT" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:THEME-HIGH-CONTRAST" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:THEME-DARK" $(UEFI_THEME_DEBUG_LOG)
+	grep -F "UEFI:MENU-BUTTON-OPEN" $(UEFI_THEME_DEBUG_LOG)
+	grep -F "UEFI:MENU-BUTTON-SELECTION" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:REDUCED-MOTION-ON" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:NAV-REDUCED-FADE" $(UEFI_THEME_DEBUG_LOG)
 	test -s build/uefi-theme-light.ppm
 	test -s build/uefi-theme-high-contrast.ppm
+	test -s build/uefi-menu-button.ppm
 	@echo "QEMU UEFI Theme- und Accessibility-Test erfolgreich"
 
 test-uefi-resolutions: $(UEFI_FIRMWARE)

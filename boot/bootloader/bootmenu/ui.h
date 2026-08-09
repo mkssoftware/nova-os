@@ -36,6 +36,7 @@ bool bootmenu_breadcrumb_take_root_request(void);
 bool bootmenu_scroll_selection_into_view(uint64_t selection);
 bool bootmenu_scroll_key(uint16_t scan_code,uint64_t *selection);
 bool bootmenu_scroll_wheel(int32_t wheel,uint64_t *selection);
+bool bootmenu_tile_move(uint16_t scan_code,uint64_t *selection);
 const char *bootmenu_help_result_title(uint16_t selection);
 const char *bootmenu_help_result_details(uint16_t selection);
 void bootmenu_set_firmware_info(const char *vendor,uint32_t revision,
@@ -44,8 +45,10 @@ void bootmenu_set_firmware_info(const char *vendor,uint32_t revision,
 bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
                             uint64_t *selection, bool *activate);
 bool bootmenu_context_open(uint64_t selection);
+bool bootmenu_theme_menu_open(void);
 bool bootmenu_context_active(void);
 bool bootmenu_context_move(int8_t direction);
+bool bootmenu_context_edge(bool end);
 bool bootmenu_context_activate(uint8_t *action);
 void bootmenu_context_close(void);
 bool bootmenu_tick(uint32_t elapsed_ms);

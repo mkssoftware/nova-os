@@ -50,6 +50,7 @@ typedef struct {
 } nova_compositor_diagnostics_t;
 
 bool nova_compositor_initialize(uint32_t width, uint32_t height);
+void nova_compositor_set_material_tokens(uint32_t glass_tint,uint32_t acrylic_tint);
 nova_surface_t *nova_surface_acquire(void);
 void nova_surface_clear(nova_surface_t *surface, uint32_t color);
 void nova_surface_rect(nova_surface_t *surface, nova_rect_t rect, uint32_t color);

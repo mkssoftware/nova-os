@@ -253,6 +253,52 @@ ersten Diagnoseframe gezielt an und erzeugt `build/uefi-activity.ppm` als
 visuellen Nachweis. Eine kontinuierliche Kopplung an die Motion-Timeline und
 die gemeinsame BIOS-Anbindung fehlen noch.
 
+Die Dialogaktionen sind nun echte Standard-Button-Controls statt manuell
+gezeichneter Flächen. Standard, Primary, Secondary, Destructive, Icon, Text
+und Toggle sind validierte statische Typen; Text und optionales Icon werden im
+Control gerendert. Pressed, Toggle, Busy, Fokus, Theme und exakt eine Aktion je
+vollständiger Aktivierung werden im Hosttest geprüft. Die produktiven
+Dialogpfade verwenden Primary, Secondary und Destructive und bleiben durch die
+vorhandenen QEMU-Dialog- und Power-Tests abgedeckt.
+
+Unter Einstellungen ist die Darstellungsauswahl jetzt ein echter Menu Button.
+Er ist fest an genau ein statisches Menü gebunden, zeigt einen eindeutigen
+Pfeil und verwaltet Collapsed/Expanded ohne Heap-Allokation. Das Overlay wird
+unterhalb des Buttons linksbündig und innerhalb der Safe Area platziert. Maus,
+Enter, Space, Pfeile, Home, End, Escape und Links sind angebunden; nach Auswahl
+oder Abbruch kehrt der Fokus zum Menu Button zurück. Dark, Light und Hoher
+Kontrast werden erst durch die Menü-Auswahl aktiviert. `test-uefi-themes`
+belegt Öffnung, drei Aktionen und stabile Framebuffer-Ausgaben; der offene
+Zustand wird als `build/uefi-menu-button.ppm` festgehalten.
+
+Label, Icon, Image und Separator sind jetzt eigenstÃ¤ndige typisierte Controls.
+Labels besitzen neun Darstellungsrollen, kombinierte horizontale und vertikale
+Ausrichtung, Wrap/Ellipsis, dynamischen UTF-8-Text sowie DLU-/DPI-Skalierung.
+Die NovaOS-Wortmarke und die dynamische Statuszeile verwenden sie produktiv.
+Alle sechs sichtbaren Eintrags- und Tile-Symbole werden über validierte
+Icon-Controls aus der zentralen Tokenbibliothek gerendert. Das NovaOS-Logo ist
+ein Image-Control mit Original, Stretch, Fit, Fill und Center, proportionalem
+Clipping, Alpha-Coverage und Theme-Tint. Ein nicht interaktiver horizontaler
+Separator gliedert die allgemeinen und Firmware-Einstellungen; vertikale und
+beschriftete Varianten sind ebenfalls implementiert und hostgetestet.
+`test-uefi-settings-controls` belegt alle vier produktiven Renderer nach dem
+Compositor-Commit; `build/uefi-basic-controls.png` wurde visuell geprüft.
+Weitere Bildformate bleiben bis zur normativen Definition von BAP und
+Resource-Index bewusst blockiert.
+
+List und ListItem besitzen nun eine feste indexierbare Collection mit bis zu
+64 EintrÃ¤gen je Liste innerhalb des zentralen 128-Control-Pools. EinfÃ¼gen und
+Entfernen bewahren die Reihenfolge; None-, Single- und Multi-Auswahl sowie die
+direkte Auswahl laufen ohne Heap-Allokation, die direkte Indexauswahl in O(1).
+Ein explizites sichtbares Fenster virtualisiert die DiagnoseeintrÃ¤ge zusammen
+mit der vorhandenen ScrollView. ListItems besitzen typisierte ZustÃ¤nde,
+Subtitle und Status sowie den bestehenden Theme-, Icon-, Label-, Fokus- und
+Accessibility-Pfad. Pfeile, Home/End, Page Up/Down, Enter, Space, Maus und
+KontextmenÃ¼ arbeiten auf denselben produktiven Controls. Der neue
+`test-uefi-list-controls` prÃ¼ft die zusÃ¤tzlichen Navigationstasten und die
+Space-Aktivierung bis zum stabilen Dialogframe; der Frame liegt als
+`build/uefi-list-controls.png` vor.
+
 Auch das sichere Credential-Control ist als inaktives Grundmodul vorhanden:
 ein statischer 128-Byte-Puffer nimmt validierte Unicode-Codepoints als UTF-8
 auf, zeigt ausschließlich Maskierungspunkte, löscht jeweils einen vollständigen
@@ -342,6 +388,40 @@ mit Mindestmaß. Die Diagnoseansicht zeigt produktiv vier von sechs vollständig
 Zeilen, scrollt den Fokus automatisch ein und unterstützt Pfeile, Page Up/Down,
 Home/End, Mausrad, Track-Sprung und Pointer-Drag. `test-uefi-scrollview` weist
 Page Down, End/Home und den komponierten Frame `build/uefi-scrollview.ppm` nach.
+
+Auch die große Inhaltsfläche ist nun ein echtes Card-Container-Control statt
+eines direkt im UI-Code gezeichneten Panels. Unterstützt werden Standard,
+Information, Warning, Error, Success, Interactive und Custom mit validiertem
+Typwechsel, statischer Child-Gruppierung, Rekursionsschutz, Theme-Rahmen,
+Radien und semantischen Akzenten. Glass- und Acrylic-Tints werden nicht mehr im
+Compositor fest codiert, sondern aus den aktiven Theme-Tokens gesetzt. Die
+produktive Seitenkarte bleibt innerhalb des 32-MiB-Low-End-Budgets auf der
+stabilen Basissurface; eine separate Materialebene benötigt künftig gekachelte
+Surfaces und wird ausdrücklich nicht durch eine dritte Full-HD-Surface erkauft.
+Hosttests prüfen alle sieben Typen, die QEMU-Theme-Suite Dark, Light und den
+opaken High-Contrast-Fallback.
+
+Die Recovery-Seite verwendet nun produktive Boot Option Tiles statt einer
+zweiten gewöhnlichen Liste. Sechs Kacheln bilden Reparatur, Integritätsprüfung,
+Snapshot, Speicherdiagnose, Datenträgerdiagnose und Zurück jeweils mit zentralem
+Icon, Titel, zweizeiliger Beschreibung und verständlichem Status ab. Standard,
+Primary, Recovery, Maintenance, Diagnostic, Destructive und Custom sind als
+validierte statische Templates vorhanden. Das responsive 2x3-Grid besitzt
+semantische Typmarkierungen sowie einen davon klar getrennten vollständigen
+Fokusrahmen. Maus, Enter, Space und zweidimensionale Pfeilnavigation arbeiten
+auf denselben Tile-Aktionen; unsichere Recovery-Aktionen bleiben hinter dem
+bestehenden modalen Hinweis gesperrt. `test-uefi-recovery-tiles` prüft beide
+Gridachsen, Space-Aktivierung und `build/uefi-recovery-tiles.ppm` in QEMU.
+
+Der klickbare Breadcrumb-Elternknoten „Start“ ist jetzt zugleich ein echter
+Icon Button mit zentralem Home-Token. Das spezialisierte Control validiert
+Icon-ID, nichtleeren Tooltip und Aktion und besitzt einen verpflichtenden
+Accessibility-Namen. Icon und Text übernehmen Themefarben; Hover und Fokus
+verwenden die Card-/Focus-Tokens. Pointer sowie Tab mit Enter oder Space lösen
+weiterhin ausschließlich den zentralen Root-Reset aus. Der vorhandene
+Breadcrumb-QEMU-Test prüft Fokusframe, Aktivierung und `UEFI:ICONBUTTON-FRAME-READY`.
+Eine bevorzugte allgemeine SVG-Quelle, Touch/Controller, Icon-Button-Motion und
+die gemeinsame BIOS-Anbindung fehlen noch.
 
 Der aktuelle UEFI-Entwicklungsstand wird zusätzlich als eigenständig bootbares
 64-MiB-GPT-Abbild mit FAT32-EFI-Systempartition und

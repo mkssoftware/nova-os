@@ -270,19 +270,7 @@ static bool handle_action(UINTN *selection_pointer)
     } else if (view == NOVA_VIEW_SETTINGS) {
         if (selection == 5) navigate_back(selection_pointer);
         else if (selection == 0) {
-            nova_theme_id_t next = (nova_theme_id_t)((nova_theme_active() + 1) % NOVA_THEME_COUNT);
-            if (nova_theme_activate(next)) {
-                if (next == NOVA_THEME_LIGHT) {
-                    nova_debug_string("UEFI:THEME-LIGHT\n");
-                    bootmenu_set_status("Darstellung: Light Theme aktiv.");
-                } else if (next == NOVA_THEME_HIGH_CONTRAST) {
-                    nova_debug_string("UEFI:THEME-HIGH-CONTRAST\n");
-                    bootmenu_set_status("Darstellung: Hoher Kontrast und reduzierte Effekte aktiv.");
-                } else {
-                    nova_debug_string("UEFI:THEME-DARK\n");
-                    bootmenu_set_status("Darstellung: Dark Theme aktiv.");
-                }
-            }
+            bootmenu_theme_menu_open();
         } else if (selection == 1) {
             nova_theme_set_reduced_motion(!nova_theme_reduced_motion());
             nova_debug_string("UEFI:SETTINGS-SWITCH-UPDATED\n");
@@ -376,6 +364,20 @@ static void handle_context_action(UINTN selection)
 {
     uint8_t action;
     if(!bootmenu_context_activate(&action))return;
+    if(action&0x80u){
+        nova_theme_id_t theme=(nova_theme_id_t)(action&0x7fu);
+        if(nova_theme_activate(theme)){
+            if(theme==NOVA_THEME_LIGHT){nova_debug_string("UEFI:THEME-LIGHT\n");
+                bootmenu_set_status("Darstellung: Light Theme aktiv.");}
+            else if(theme==NOVA_THEME_HIGH_CONTRAST){
+                nova_debug_string("UEFI:THEME-HIGH-CONTRAST\n");
+                bootmenu_set_status("Darstellung: Hoher Kontrast und reduzierte Effekte aktiv.");}
+            else{nova_debug_string("UEFI:THEME-DARK\n");
+                bootmenu_set_status("Darstellung: Dark Theme aktiv.");}
+            nova_debug_string("UEFI:MENU-BUTTON-SELECTION\n");
+        }
+        return;
+    }
     if(action==0){
         nova_debug_string("UEFI:CONTEXT-DETAILS\n");
         show_notice(NOVA_DIALOG_INFORMATION,"Eintragsdetails",
@@ -489,8 +491,10 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
         } else if (bootmenu_context_active()) {
             if(key.ScanCode==1)bootmenu_context_move(-1);
             else if(key.ScanCode==2)bootmenu_context_move(1);
-            else if(key.UnicodeChar==13)handle_context_action(selection);
-            else if(key.ScanCode==23)bootmenu_context_close();
+            else if(key.ScanCode==5)bootmenu_context_edge(false);
+            else if(key.ScanCode==6)bootmenu_context_edge(true);
+            else if(key.UnicodeChar==13||key.UnicodeChar==32)handle_context_action(selection);
+            else if(key.ScanCode==23||key.ScanCode==4)bootmenu_context_close();
             bootmenu_draw(selection,255);
         } else if (nova_dialog_active()) {
             nova_dialog_result_t result = NOVA_DIALOG_RESULT_NONE;
@@ -516,8 +520,24 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
         } else if(bootmenu_breadcrumb_focused()&&
                   (key.UnicodeChar==13||key.UnicodeChar==32)){
             navigate_root(&selection);
+        } else if(bootmenu_tile_move(key.ScanCode,&selection)){
+            bootmenu_draw(selection,255);
         } else if(bootmenu_scroll_key(key.ScanCode,&selection)){
             bootmenu_draw(selection,255);
+        } else if(key.ScanCode==5||key.ScanCode==6){
+            selection=key.ScanCode==5?0:(UINTN)bootmenu_item_count()-1u;
+            while(!bootmenu_item_available((uint16_t)selection))
+                selection=key.ScanCode==5?selection+1:selection-1;
+            bootmenu_draw(selection,255);nova_debug_string("UEFI:LIST-HOME-END\n");
+        } else if(key.ScanCode==9||key.ScanCode==10){
+            UINTN step=4;
+            if(key.ScanCode==9)selection=selection>step?selection-step:0;
+            else selection=selection+step<bootmenu_item_count()?selection+step:
+                           bootmenu_item_count()-1u;
+            while(!bootmenu_item_available((uint16_t)selection))
+                selection=key.ScanCode==9?(selection?selection-1:0):
+                          (selection+1<bootmenu_item_count()?selection+1:selection);
+            bootmenu_draw(selection,255);nova_debug_string("UEFI:LIST-PAGE-NAVIGATION\n");
         } else if (key.ScanCode == 1) {
             bootmenu_breadcrumb_focus(false);
             do{selection=selection?selection-1:(UINTN)bootmenu_item_count()-1u;}
@@ -531,8 +551,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
             bootmenu_scroll_selection_into_view(selection);
             bootmenu_draw(selection, 255);
         } else if (key.UnicodeChar == 13 ||
-                   (key.UnicodeChar==32&&bootmenu_view()==NOVA_VIEW_SETTINGS&&
-                    (selection==2||selection==3))) {
+                   (key.UnicodeChar==32&&bootmenu_view()!=NOVA_VIEW_HELP)) {
             if (handle_action(&selection)) return EFI_SUCCESS;
             bootmenu_draw(selection, 255);
             if(nova_dialog_active())nova_debug_string("UEFI:DIALOG-STABLE\n");
