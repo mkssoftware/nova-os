@@ -11,6 +11,7 @@
 #include "../boot/bootloader/bootmenu/diagnostics.h"
 #include "../boot/bootloader/bootmenu/recovery.h"
 #include "../boot/bootloader/bootmenu/memory.h"
+#include "../boot/bootloader/bootmenu/configuration.h"
 #include "../boot/bootloader/bootmenu/branding.h"
 #include "../boot/bootloader/bootmenu/theme.h"
 #include "../boot/bootloader/bootmenu/layout.h"
@@ -107,6 +108,46 @@ int main(void)
                     nova_memory_statistics()->recovery_requests==1&&
                     nova_recovery_safe_mode()&&nova_recovery_continue_boot(),
                     "Pool-Overflow aktiviert Recovery statt Speicher zu ueberschreiben");
+    nova_configuration_initialize();
+    const nova_boot_configuration_t *configuration=nova_configuration_get();
+    failed |= check(configuration->theme==NOVA_THEME_DARK&&configuration->tooltips&&
+                    configuration->tooltip_delay_ms==750&&
+                    nova_configuration_validate(configuration)&&
+                    configuration->checksum==nova_configuration_checksum(configuration),
+                    "Versionierte sichere Konfigurationsdefaults");
+    failed |= check(nova_configuration_begin()&&
+                    nova_configuration_set(NOVA_CONFIG_THEME,NOVA_THEME_LIGHT)&&
+                    nova_configuration_set(NOVA_CONFIG_TOOLTIP_DELAY,1000)&&
+                    !nova_configuration_begin()&&nova_configuration_commit()&&
+                    nova_configuration_get()->theme==NOVA_THEME_LIGHT&&
+                    nova_configuration_get()->tooltip_delay_ms==1000&&
+                    nova_configuration_diagnostics()->generation==2,
+                    "Atomarer Konfigurationscommit und Benachrichtigung");
+    failed |= check(nova_configuration_begin()&&
+                    nova_configuration_set(NOVA_CONFIG_TOOLTIP_DELAY,333)&&
+                    !nova_configuration_commit()&&
+                    nova_configuration_get()->tooltip_delay_ms==1000&&
+                    nova_configuration_diagnostics()->validation_errors==1,
+                    "Ungueltige Transaktion wird vollstaendig verworfen");
+    failed |= check(nova_configuration_begin()&&
+                    nova_configuration_set(NOVA_CONFIG_TOOLTIPS,0)&&
+                    nova_configuration_rollback()&&nova_configuration_get()->tooltips,
+                    "Expliziter Konfigurationsrollback");
+    failed |= check(nova_configuration_override(NOVA_CONFIG_SAFE_MODE,1)&&
+                    nova_configuration_effective()->safe_mode&&
+                    !nova_configuration_get()->safe_mode&&
+                    nova_configuration_clear_overrides()&&
+                    !nova_configuration_effective()->safe_mode,
+                    "Temporaerer Runtime-Override bleibt von gespeicherten Werten getrennt");
+    failed |= check(nova_configuration_reset_defaults()&&
+                    nova_configuration_get()->theme==NOVA_THEME_DARK&&
+                    nova_configuration_get()->tooltip_delay_ms==750&&
+                    nova_configuration_diagnostics()->resets==1,
+                    "Konfiguration sicher auf Defaults zuruecksetzen");
+    nova_boot_configuration_t corrupt=*nova_configuration_get();
+    corrupt.theme=NOVA_THEME_LIGHT;
+    failed |= check(!nova_configuration_validate(&corrupt),
+                    "Beschaedigte Runtime-Pruefsumme erkennen");
     nova_page_model_initialize();
     nova_page_t *main_page=nova_page_create(1,"Bootmanager",11,false);
     nova_view_t *root_view=nova_view_create(main_page,100,NOVA_VIEW_ROOT,"Bootmanager",1,false);

@@ -91,6 +91,7 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/diagnostics.c \
 		boot/bootloader/bootmenu/recovery.c \
 		boot/bootloader/bootmenu/memory.c \
+		boot/bootloader/bootmenu/configuration.c \
 		boot/bootloader/bootmenu/navigation.c \
 		boot/bootloader/bootmenu/dialog.c \
 		boot/bootloader/bootmenu/page.c \
@@ -130,6 +131,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/diagnostics.c boot/bootloader/bootmenu/diagnostics.h \
 		boot/bootloader/bootmenu/recovery.c boot/bootloader/bootmenu/recovery.h \
 		boot/bootloader/bootmenu/memory.c boot/bootloader/bootmenu/memory.h \
+		boot/bootloader/bootmenu/configuration.c boot/bootloader/bootmenu/configuration.h \
 		boot/bootloader/bootmenu/navigation.c boot/bootloader/bootmenu/navigation.h \
 		boot/bootloader/bootmenu/dialog.c boot/bootloader/bootmenu/dialog.h \
 		boot/bootloader/bootmenu/page.c boot/bootloader/bootmenu/page.h \
@@ -154,6 +156,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/diagnostics.c \
 		boot/bootloader/bootmenu/recovery.c \
 		boot/bootloader/bootmenu/memory.c \
+		boot/bootloader/bootmenu/configuration.c \
 		boot/bootloader/bootmenu/navigation.c \
 		boot/bootloader/bootmenu/dialog.c \
 		boot/bootloader/bootmenu/page.c \
@@ -182,6 +185,7 @@ test-uefi-image: uefi
 	grep -F "UEFI:NOVA-ENTRY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:COUNTDOWN-FRAME-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:STYLE-TEMPLATE-FRAME-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:CONFIGURATION-MANAGER-READY" build/qemu-uefi-image-debug.log
 	@echo "Aktuelles GPT/FAT32-UEFI-IMG bootet erfolgreich"
 
 test-uefi: boot-ui-runtime-check uefi
@@ -303,6 +307,8 @@ test-uefi-settings-controls: uefi
 		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
 		-DebugLog build/qemu-uefi-settings-controls-debug.log
 	grep -F "UEFI:SETTINGS-TOOLTIPS-OFF" build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:CONFIGURATION-MANAGER-READY" build/qemu-uefi-settings-controls-debug.log
+	grep -F "UEFI:CONFIGURATION-COMMIT" build/qemu-uefi-settings-controls-debug.log
 	grep -F "UEFI:SETTINGS-SLIDER-UPDATED" build/qemu-uefi-settings-controls-debug.log
 	grep -F "UEFI:SETTINGS-SLIDER-HOME" build/qemu-uefi-settings-controls-debug.log
 	grep -F "UEFI:SETTINGS-SLIDER-END" build/qemu-uefi-settings-controls-debug.log
@@ -411,6 +417,7 @@ test-uefi-themes: uefi
 	grep -F "UEFI:MENU-BUTTON-OPEN" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:MENU-BUTTON-SELECTION" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:REDUCED-MOTION-ON" $(UEFI_THEME_DEBUG_LOG)
+	grep -F "UEFI:CONFIGURATION-COMMIT" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:NAV-REDUCED-FADE" $(UEFI_THEME_DEBUG_LOG)
 	test -s build/uefi-theme-light.ppm
 	test -s build/uefi-theme-high-contrast.ppm

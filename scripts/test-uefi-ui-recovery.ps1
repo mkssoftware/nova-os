@@ -30,8 +30,14 @@ try{
   do{Start-Sleep -Milliseconds 200;[string]$content=Get-Content $log -Raw -ErrorAction SilentlyContinue}
   while($content-notlike'*UEFI:COUNTDOWN-CANCELLED*'-and[DateTime]::UtcNow-lt$deadline)
   if($content-notlike'*UEFI:COUNTDOWN-CANCELLED*'){throw 'Countdown wurde vor der Testnavigation nicht beendet.'}
-  foreach($command in @('sendkey down','sendkey down','sendkey down','sendkey ret','sendkey f8')){
+  foreach($command in @('sendkey down','sendkey down','sendkey down')){
    $writer.WriteLine($command);Start-Sleep -Milliseconds 850}
+  $writer.WriteLine('sendkey ret')
+  $deadline=[DateTime]::UtcNow.AddSeconds(20)
+  do{Start-Sleep -Milliseconds 200;[string]$content=Get-Content $log -Raw -ErrorAction SilentlyContinue}
+  while($content-notlike'*UEFI:NAV-ENTER-COMPLETE*'-and[DateTime]::UtcNow-lt$deadline)
+  if($content-notlike'*UEFI:NAV-ENTER-COMPLETE*'){throw 'Diagnose-Navigation wurde nicht abgeschlossen.'}
+  $writer.WriteLine('sendkey f8')
   $deadline=[DateTime]::UtcNow.AddSeconds(20)
   do{Start-Sleep -Milliseconds 200;[string]$content=Get-Content $log -Raw -ErrorAction SilentlyContinue}
   while($content-notlike'*UEFI:MEMORY-SELF-TEST-FRAME*'-and[DateTime]::UtcNow-lt$deadline)

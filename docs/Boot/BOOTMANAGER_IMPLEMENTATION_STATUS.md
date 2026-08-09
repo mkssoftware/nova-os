@@ -545,3 +545,58 @@ validierte Einstellungen existieren, das geforderte externe Binärformat nennt
 aber weder Magic, Header/Feldoffsets und Endianness noch Section-Codes,
 Prüfsummenalgorithmus oder Migrationsabbildungen. Bis diese Wire-Definition
 vorliegt, wird bewusst kein vermeintlich kompatibles Dateiformat erfunden.
+
+## Boot-UI Memory Model
+
+`NPSPEC-BOOTUI-0007` besitzt nun einen zentralen statischen Memory Manager für
+Permanent-, Runtime-, Scene-, Animation-, Frame-, Render-, Cache- und
+Diagnoseobjekte. Die normativen Einzelbudgets ergeben exakt die geforderte
+64-MiB-Obergrenze; tatsächlich reserviert werden nur kleinere getrennte
+Arenen. Allokationen sind deterministische Bump-Operationen und mindestens 16,
+für Renderdaten 64 Byte ausgerichtet. Eine feste 256er Metadatentabelle führt
+ID, Größe, Owner, Pool, Referenzzähler, Alignment und Zustand.
+
+Pointervalidierung, ungültige Freigaben, Double Free, Alignmentfehler,
+Metadaten- und Poolüberlauf werden gezählt. Ein Poolüberlauf schreibt niemals
+über seine Arena hinaus, sondern fordert beim Recovery Manager den Safe Mode
+an. Der Frame-Pool benötigt keine Einzelfreigaben und wird nach jedem Bild
+atomar geleert. Der produktive UEFI-Renderer reserviert seine Frame-Metadaten
+über diesen Pfad und validiert sie vor dem Reset.
+
+Auf der Diagnose-Seite führt F8 einen sichtbaren Alignment- und Frame-Reset-
+Selbsttest aus. `test-uefi-ui-recovery` wartet auf den vollständig gezeichneten
+Statusframe und erzeugt `build/uefi-memory-self-test.ppm`. Die Hosttests decken
+zusätzlich Referenzzählung, statische Permanentobjekte, Double Free und einen
+erzwungenen Cache-Overflow mit Recovery ab. Noch offen sind die Migration aller
+älteren statischen Subsystemspeicher, die Reservierung der Arenen über echte
+UEFI-Seiten und die gemeinsame BIOS-Anbindung.
+
+## Boot-UI Runtime Configuration
+
+Der technisch eindeutig definierte Runtime-Anteil von `NPSPEC-BOOTUI-0009`
+ist jetzt zentral implementiert. Die feste Konfiguration trägt Version 1.0.0,
+Theme, Qualitätsprofil, Skalierung, Motion, Tooltips, Tooltip-Verzögerung,
+Recovery-, Watchdog-, Eingabe- und Debugwerte. Sichere Defaults funktionieren
+ohne externe Datei; jeder Wert besitzt einen geprüften Bereich und die
+Runtime-Struktur eine deterministische interne Integritätsprüfsumme.
+
+Änderungen laufen ausschließlich über Begin, Set und Commit. Erst eine
+vollständig gültige Staging-Konfiguration ersetzt atomar den aktuellen Stand;
+andernfalls bleibt dieser unverändert und die Transaktion wird als Rollback
+gezählt. Explizites Rollback, Default-Reset, Generation, Änderungsmeldungen und
+temporäre Overrides sind heapfrei implementiert. Overrides verändern die
+Basiswerte nicht und können gemeinsam entfernt werden.
+
+Themeauswahl, Reduced Motion, Tooltip-Schalter und Tooltip-Verzögerung sind an
+diesen Manager angebunden. Die bestehenden QEMU-Tests für Settings und Themes
+weisen jeden produktiven Commit mit `UEFI:CONFIGURATION-COMMIT` nach und zeigen
+den finalen Zustand in `build/uefi-settings-controls.ppm`. Hosttests prüfen
+zusätzlich verschachtelte Transaktionen, ungültige Werte, Rollback, Reset,
+Override-Isolation und eine beschädigte Prüfsumme.
+
+Nicht umgesetzt ist weiterhin die externe binäre Persistenz. Die Spezifikation
+nennt keine Magic/Formatkennung, Headergröße, Feldoffsets, Endianness,
+Section-Codes, externen Prüfsummenalgorithmus oder konkrete Migrationstabellen.
+Die interne Runtime-Prüfsumme wird ausdrücklich nicht als erfundenes
+Dateiformat ausgegeben; dieser Teil bleibt bis zu einer normativen Wire-
+Definition blockiert dokumentiert.

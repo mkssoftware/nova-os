@@ -313,7 +313,7 @@ static bool handle_action(UINTN *selection_pointer)
         else if (selection == 0) {
             bootmenu_theme_menu_open();
         } else if (selection == 1) {
-            nova_theme_set_reduced_motion(!nova_theme_reduced_motion());
+            bootmenu_settings_toggle_reduced_motion();
             nova_debug_string("UEFI:SETTINGS-SWITCH-UPDATED\n");
             nova_debug_string(nova_theme_reduced_motion() ?
                               "UEFI:REDUCED-MOTION-ON\n" : "UEFI:REDUCED-MOTION-OFF\n");
@@ -407,7 +407,7 @@ static void handle_context_action(UINTN selection)
     if(!bootmenu_context_activate(&action))return;
     if(action&0x80u){
         nova_theme_id_t theme=(nova_theme_id_t)(action&0x7fu);
-        if(nova_theme_activate(theme)){
+        if(bootmenu_configuration_select_theme((uint8_t)theme)){
             if(theme==NOVA_THEME_LIGHT){nova_debug_string("UEFI:THEME-LIGHT\n");
                 bootmenu_set_status("Darstellung: Light Theme aktiv.");}
             else if(theme==NOVA_THEME_HIGH_CONTRAST){

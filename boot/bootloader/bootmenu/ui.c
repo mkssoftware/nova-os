@@ -9,6 +9,7 @@
 #include "diagnostics.h"
 #include "recovery.h"
 #include "memory.h"
+#include "configuration.h"
 #include "ui.h"
 #include "branding.h"
 #include "theme.h"
@@ -272,6 +273,13 @@ bool bootmenu_initialize(void)
     if (initialized) {
         nova_resource_manager_initialize();
         if (!nova_theme_initialize()) return false;
+        nova_configuration_initialize();
+        const nova_boot_configuration_t *initial_configuration=
+            nova_configuration_effective();
+        if(!nova_theme_activate(initial_configuration->theme))return false;
+        nova_theme_set_reduced_motion(initial_configuration->reduced_motion);
+        tooltips_enabled=initial_configuration->tooltips;
+        tooltip_delay_ms=initial_configuration->tooltip_delay_ms;
         nova_layout_initialize();
         if (!nova_layout_compute((uint32_t)grafik_width(), (uint32_t)grafik_height(),
                                  false, &current_layout)) return false;
@@ -494,6 +502,7 @@ bool bootmenu_initialize(void)
         nova_memory_initialize();
         nova_debug_string("UEFI:RECOVERY-MANAGER-READY\n");
         nova_debug_string("UEFI:MEMORY-MANAGER-READY\n");
+        nova_debug_string("UEFI:CONFIGURATION-MANAGER-READY\n");
         nova_debug_string("UEFI:INPUT-READY\n");
         nova_debug_string("UEFI:CONTROLS-READY\n");
     }
@@ -599,10 +608,34 @@ static void tooltip_delay_status(void)
     bootmenu_set_status(text);
 }
 
+static bool configuration_commit(nova_configuration_key_t key,uint32_t value)
+{
+    if(!nova_configuration_begin()||!nova_configuration_set(key,value)||
+       !nova_configuration_commit())return false;
+    nova_debug_string("UEFI:CONFIGURATION-COMMIT\n");return true;
+}
+
+bool bootmenu_configuration_select_theme(uint8_t theme)
+{
+    if(!initialized||theme>=NOVA_THEME_COUNT||
+       !configuration_commit(NOVA_CONFIG_THEME,theme))return false;
+    return nova_theme_activate((nova_theme_id_t)theme);
+}
+
+bool bootmenu_settings_toggle_reduced_motion(void)
+{
+    if(!initialized)return false;
+    bool reduced=!nova_configuration_effective()->reduced_motion;
+    if(!configuration_commit(NOVA_CONFIG_REDUCED_MOTION,reduced))return false;
+    nova_theme_set_reduced_motion(reduced);return true;
+}
+
 bool bootmenu_settings_toggle_tooltips(void)
 {
     if(!initialized)return false;
-    tooltips_enabled=!tooltips_enabled;
+    bool enabled=!nova_configuration_effective()->tooltips;
+    if(!configuration_commit(NOVA_CONFIG_TOOLTIPS,enabled))return false;
+    tooltips_enabled=enabled;
     nova_control_set_checked(settings_accessories[2],tooltips_enabled);
     bootmenu_tooltip_hide();
     bootmenu_set_status(tooltips_enabled?"Tooltips sind aktiviert.":"Tooltips sind deaktiviert.");
@@ -615,7 +648,9 @@ bool bootmenu_settings_adjust_tooltip_delay(int32_t steps)
 {
     if(!initialized||!steps)return false;
     if(!nova_control_adjust(settings_accessories[3],steps))return false;
-    tooltip_delay_ms=(uint32_t)settings_accessories[3]->value;
+    uint32_t delay=(uint32_t)settings_accessories[3]->value;
+    if(!configuration_commit(NOVA_CONFIG_TOOLTIP_DELAY,delay))return false;
+    tooltip_delay_ms=delay;
     bootmenu_tooltip_hide();tooltip_delay_status();
     nova_debug_string("UEFI:SETTINGS-SLIDER-UPDATED\n");
     return true;
@@ -625,7 +660,9 @@ bool bootmenu_settings_set_tooltip_delay_edge(bool maximum)
 {
     if(!initialized)return false;
     if(!nova_control_set_value(settings_accessories[3],maximum?1500:250))return false;
-    tooltip_delay_ms=(uint32_t)settings_accessories[3]->value;
+    uint32_t delay=(uint32_t)settings_accessories[3]->value;
+    if(!configuration_commit(NOVA_CONFIG_TOOLTIP_DELAY,delay))return false;
+    tooltip_delay_ms=delay;
     bootmenu_tooltip_hide();tooltip_delay_status();
     nova_debug_string(maximum?"UEFI:SETTINGS-SLIDER-END\n":"UEFI:SETTINGS-SLIDER-HOME\n");
     return true;
@@ -1035,7 +1072,8 @@ bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
             int32_t raw=250+(local*1250+slider.width/2)/slider.width;
             int32_t snapped=250+((raw-250+125)/250)*250;
             if(snapped>1500)snapped=1500;
-            if(nova_control_set_value(settings_accessories[3],snapped)){
+            if(nova_control_set_value(settings_accessories[3],snapped)&&
+               configuration_commit(NOVA_CONFIG_TOOLTIP_DELAY,(uint32_t)snapped)){
                 tooltip_delay_ms=(uint32_t)snapped;tooltip_delay_status();
                 nova_debug_string("UEFI:SETTINGS-SLIDER-POINTER\n");
             }

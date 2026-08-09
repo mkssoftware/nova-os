@@ -4,6 +4,7 @@
 #include "motion.h"
 #include "resources.h"
 #include "icons.h"
+#include "memory.h"
 
 static nova_diag_event_t events[NOVA_DIAG_CAPACITY];
 static uint16_t event_head, event_count;
@@ -17,7 +18,7 @@ void nova_diag_initialize(void)
 {
     event_head=event_count=0;render_stats=(nova_render_statistics_t){0};
     frame_budget=(nova_frame_budget_t){0};stats=(nova_diag_statistics_t){0};
-    memory_budget=(nova_memory_budget_t){32ull*1024*1024,
+    memory_budget=(nova_memory_budget_t){64ull*1024*1024,
         3ull*NOVA_SURFACE_WIDTH*NOVA_SURFACE_HEIGHT*4ull,0,0,0,0};
     memory_budget.free_memory=memory_budget.total_budget-memory_budget.used_memory;
     memory_budget.pool_memory=memory_budget.used_memory;memory_budget.peak_memory=memory_budget.used_memory;
@@ -60,6 +61,14 @@ void nova_diag_snapshot(void)
     render_stats.draw_calls=c->submitted;render_stats.dirty_regions=c->composed_regions;
     render_stats.rendered_icons=icons->renders;
     memory_budget.cache_memory=r->cached_bytes;
+    const nova_memory_statistics_t *memory=nova_memory_statistics();
+    memory_budget.pool_memory=memory->total_used;
+    memory_budget.used_memory=3ull*NOVA_SURFACE_WIDTH*NOVA_SURFACE_HEIGHT*4ull+
+                              memory->total_used+r->cached_bytes;
+    memory_budget.free_memory=memory_budget.used_memory<memory_budget.total_budget?
+        memory_budget.total_budget-memory_budget.used_memory:0;
+    if(memory_budget.used_memory>memory_budget.peak_memory)
+        memory_budget.peak_memory=memory_budget.used_memory;
     stats.input_events=i->dispatched;stats.animation_events=m->completed+m->cancelled;
     stats.resource_events=r->loaded+r->releases+r->integrity_errors;
 }

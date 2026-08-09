@@ -25,6 +25,8 @@ void bootmenu_set_transition(int32_t offset_dlu, uint8_t opacity, bool input_loc
 void bootmenu_set_dialog_motion(uint8_t opacity, uint16_t scale_per_mille);
 bool bootmenu_transition_input_locked(void);
 bool bootmenu_settings_toggle_tooltips(void);
+bool bootmenu_settings_toggle_reduced_motion(void);
+bool bootmenu_configuration_select_theme(uint8_t theme);
 bool bootmenu_settings_adjust_tooltip_delay(int32_t steps);
 bool bootmenu_settings_set_tooltip_delay_edge(bool maximum);
 bool bootmenu_help_search_begin(void);
