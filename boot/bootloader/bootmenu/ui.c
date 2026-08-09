@@ -7,6 +7,8 @@
 #include "icons.h"
 #include "input.h"
 #include "diagnostics.h"
+#include "recovery.h"
+#include "memory.h"
 #include "ui.h"
 #include "branding.h"
 #include "theme.h"
@@ -487,6 +489,10 @@ bool bootmenu_initialize(void)
         pointer_x = current_layout.list.x + current_layout.list.width / 2;
         pointer_y = current_layout.list.y + current_layout.item_height / 2;
         nova_diag_initialize();
+        nova_recovery_initialize();
+        nova_memory_initialize();
+        nova_debug_string("UEFI:RECOVERY-MANAGER-READY\n");
+        nova_debug_string("UEFI:MEMORY-MANAGER-READY\n");
         nova_debug_string("UEFI:INPUT-READY\n");
         nova_debug_string("UEFI:CONTROLS-READY\n");
     }
@@ -783,6 +789,31 @@ void bootmenu_context_close(void)
 void bootmenu_tooltip_hide(void)
 {
     tooltip_visible=false;tooltip_elapsed_ms=0;
+}
+
+bool bootmenu_recovery_self_test(void)
+{
+    if(!initialized||current_view!=NOVA_VIEW_DIAGNOSTICS)return false;
+    if(!nova_recovery_report(0x80010001u,NOVA_UI_SUBSYSTEM_RENDERING,
+        NOVA_UI_ERROR_CRITICAL,NOVA_RECOVERY_SAFE_MODE,0))return false;
+    bootmenu_set_status("UI-Fehler behoben - sicherer Darstellungsmodus aktiv");
+    nova_debug_string("UEFI:RECOVERY-SAFE-MODE\n");
+    return nova_recovery_safe_mode()&&nova_recovery_continue_boot();
+}
+
+bool bootmenu_memory_self_test(void)
+{
+    if(!initialized||current_view!=NOVA_VIEW_DIAGNOSTICS)return false;
+    nova_memory_reset_frame();
+    void *normal=nova_memory_allocate(NOVA_MEMORY_FRAME,48,0x55495354u,16);
+    void *render=nova_memory_allocate(NOVA_MEMORY_FRAME,96,0x55495354u,64);
+    bool valid=normal&&render&&
+        nova_memory_validate_pointer(normal,NOVA_MEMORY_FRAME,48)&&
+        nova_memory_validate_pointer(render,NOVA_MEMORY_FRAME,96)&&
+        nova_memory_reset_frame();
+    if(!valid)return false;
+    bootmenu_set_status("Speicherpools geprueft - Alignment und Frame-Reset bereit");
+    nova_debug_string("UEFI:MEMORY-SELF-TEST\n");return true;
 }
 
 bool bootmenu_tick(uint32_t elapsed_ms)
@@ -1322,6 +1353,10 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     if(styled_theme!=nova_theme_active()&&!refresh_control_styles(theme))return;
     if (!nova_layout_compute((uint32_t)width, (uint32_t)grafik_height(),
                              theme->high_contrast, &current_layout)) return;
+    nova_memory_reset_frame();
+    nova_rect_t *frame_safe=(nova_rect_t *)nova_memory_allocate(NOVA_MEMORY_FRAME,
+        sizeof(nova_rect_t),0x4652414du,64);
+    if(frame_safe)*frame_safe=current_layout.safe;
     nova_page_t *active_page=nova_page_active();
     if(active_page){
         nova_view_t *root=nova_page_root_view(active_page);
@@ -1672,7 +1707,9 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     nova_debug_string("UEFI:IMAGE-CONTROL-FRAME-READY\n");
     nova_debug_string("UEFI:ICON-CONTROL-FRAME-READY\n");
     nova_debug_string("UEFI:LIST-CONTROL-FRAME-READY\n");
+    nova_debug_string("UEFI:STYLE-TEMPLATE-FRAME-READY\n");
     if(status_text[0])nova_debug_string("UEFI:LABEL-FRAME-READY\n");
+    if(nova_recovery_safe_mode())nova_debug_string("UEFI:RECOVERY-FRAME-READY\n");
     if(current_view==NOVA_VIEW_SETTINGS)
         nova_debug_string("UEFI:SEPARATOR-FRAME-READY\n");
     if(current_view==NOVA_VIEW_RECOVERY)
@@ -1680,4 +1717,7 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     if(context_visible&&context_kind==NOVA_CONTEXT_THEMES)
         nova_debug_string("UEFI:MENU-BUTTON-FRAME-READY\n");
     if (nova_dialog_active()) nova_debug_string("UEFI:DIALOG-FRAME-READY\n");
+    if(frame_safe&&nova_memory_validate_pointer(frame_safe,NOVA_MEMORY_FRAME,
+       sizeof(nova_rect_t)))nova_debug_string("UEFI:MEMORY-FRAME-READY\n");
+    nova_memory_reset_frame();
 }

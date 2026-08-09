@@ -9,6 +9,8 @@
 #include "../boot/bootloader/bootmenu/icons.h"
 #include "../boot/bootloader/bootmenu/input.h"
 #include "../boot/bootloader/bootmenu/diagnostics.h"
+#include "../boot/bootloader/bootmenu/recovery.h"
+#include "../boot/bootloader/bootmenu/memory.h"
 #include "../boot/bootloader/bootmenu/branding.h"
 #include "../boot/bootloader/bootmenu/theme.h"
 #include "../boot/bootloader/bootmenu/layout.h"
@@ -40,6 +42,71 @@ int main(void)
 {
     int failed = 0;
     nova_controls_initialize(0);
+    nova_diag_initialize();
+    nova_recovery_initialize();
+    failed |= check(!nova_recovery_report(0,NOVA_UI_SUBSYSTEM_RENDERING,
+                    NOVA_UI_ERROR_WARNING,NOVA_RECOVERY_RETRY,0),
+                    "Recovery weist ungueltigen Fehlercode ab");
+    failed |= check(nova_recovery_report(0x80010010u,NOVA_UI_SUBSYSTEM_LAYOUT,
+                    NOVA_UI_ERROR_RECOVERABLE,NOVA_RECOVERY_RETRY,1)&&
+                    nova_recovery_diagnostics()->state==NOVA_RECOVERY_VALIDATING&&
+                    nova_recovery_validate(false,2)&&
+                    nova_recovery_diagnostics()->level==NOVA_RECOVERY_LOCAL_FALLBACK&&
+                    nova_recovery_diagnostics()->state==NOVA_RECOVERY_HEALTHY,
+                    "Recovery eskaliert Retry deterministisch zum lokalen Fallback");
+    nova_recovery_initialize();
+    failed |= check(nova_recovery_report(0x80010011u,NOVA_UI_SUBSYSTEM_RENDERING,
+                    NOVA_UI_ERROR_CRITICAL,NOVA_RECOVERY_SAFE_MODE,3)&&
+                    nova_recovery_safe_mode()&&nova_recovery_continue_boot()&&
+                    !nova_recovery_feature_enabled(NOVA_RECOVERY_FEATURE_MOTION)&&
+                    !nova_recovery_feature_enabled(NOVA_RECOVERY_FEATURE_GLASS)&&
+                    nova_diag_quality()->quality==NOVA_QUALITY_SAFE,
+                    "Safe Mode deaktiviert Effekte und setzt sicheres Qualitaetsprofil");
+    nova_recovery_initialize();
+    failed |= check(nova_recovery_watchdog_configure(NOVA_UI_SUBSYSTEM_INPUT,10,100)&&
+                    nova_recovery_watchdog_check(109)&&
+                    !nova_recovery_watchdog_check(110)&&
+                    nova_recovery_diagnostics()->watchdog_timeouts==1&&
+                    nova_recovery_diagnostics()->level==NOVA_RECOVERY_DISABLE_SUBSYSTEM,
+                    "Watchdog erkennt Timeout genau einmal und isoliert Subsystem");
+    failed |= check(nova_recovery_report(0x8001ffffu,NOVA_UI_SUBSYSTEM_RESOURCES,
+                    NOVA_UI_ERROR_FATAL,NOVA_RECOVERY_RETRY,120)&&
+                    nova_recovery_text_mode()&&nova_recovery_continue_boot()&&
+                    nova_recovery_record_count()>=2&&nova_recovery_record(0)!=0&&
+                    nova_recovery_record(nova_recovery_record_count())==0,
+                    "Fataler UI-Fehler wechselt in Textmodus und laesst Boot weiterlaufen");
+    nova_recovery_initialize();nova_memory_initialize();
+    void *memory16=nova_memory_allocate(NOVA_MEMORY_RUNTIME,33,0x101u,16);
+    void *memory64=nova_memory_allocate(NOVA_MEMORY_RENDER,65,0x202u,64);
+    failed |= check(memory16&&memory64&&((uintptr_t)memory16&15u)==0&&
+                    ((uintptr_t)memory64&63u)==0&&
+                    nova_memory_validate_pointer(memory16,NOVA_MEMORY_RUNTIME,33)&&
+                    nova_memory_validate_pointer(memory64,NOVA_MEMORY_RENDER,65)&&
+                    nova_memory_object(memory64)->owner==0x202u,
+                    "Memory Manager allokiert und validiert 16/64-Byte ausgerichtet");
+    failed |= check(nova_memory_retain(memory16)&&nova_memory_release(memory16)&&
+                    nova_memory_object(memory16)->references==1&&
+                    nova_memory_release(memory16)&&!nova_memory_release(memory16)&&
+                    nova_memory_statistics()->double_frees==1,
+                    "Referenzzaehlung und Double-Free-Erkennung");
+    void *frame_a=nova_memory_allocate(NOVA_MEMORY_FRAME,31,0x303u,16);
+    void *frame_b=nova_memory_allocate(NOVA_MEMORY_FRAME,77,0x303u,64);
+    failed |= check(frame_a&&frame_b&&nova_memory_reset_frame()&&
+                    nova_memory_pool_statistics(NOVA_MEMORY_FRAME)->used==0&&
+                    !nova_memory_validate_pointer(frame_a,NOVA_MEMORY_FRAME,1)&&
+                    nova_memory_statistics()->frame_resets==1,
+                    "Frame-Arena wird atomar und ohne Einzelfreigaben geleert");
+    _Alignas(64) static uint8_t tracked_static[128];
+    failed |= check(nova_memory_track_static(NOVA_MEMORY_PERMANENT,tracked_static,
+                    sizeof(tracked_static),0x404u,64)&&
+                    nova_memory_object(tracked_static)->state==NOVA_MEMORY_OBJECT_STATIC&&
+                    !nova_memory_release(tracked_static),
+                    "Statische Permanent-Ressource wird zentral bilanziert");
+    failed |= check(!nova_memory_allocate(NOVA_MEMORY_CACHE,600u*1024u,0x505u,64)&&
+                    nova_memory_pool_statistics(NOVA_MEMORY_CACHE)->overflows==1&&
+                    nova_memory_statistics()->recovery_requests==1&&
+                    nova_recovery_safe_mode()&&nova_recovery_continue_boot(),
+                    "Pool-Overflow aktiviert Recovery statt Speicher zu ueberschreiben");
     nova_page_model_initialize();
     nova_page_t *main_page=nova_page_create(1,"Bootmanager",11,false);
     nova_view_t *root_view=nova_view_create(main_page,100,NOVA_VIEW_ROOT,"Bootmanager",1,false);
@@ -286,7 +353,7 @@ int main(void)
         "Template-Vererbung, Pflicht-Parts und Bindung");
     failed|=check(!nova_control_template_define(41,41,NOVA_CONTROL_STATUS_BADGE,
         NOVA_TEMPLATE_PART_TEXT,NOVA_TEMPLATE_PART_TEXT,1)&&
-        !nova_control_template_apply(label,40),"Template-Rekursion und TypkompatibilitÃ¤t");
+        !nova_control_template_apply(label,40),"Template-Rekursion und Typkompatibilitaet");
     nova_control_t *typed_list=nova_control_create(NOVA_CONTROL_LIST);
     nova_control_t *typed_items[3];
     failed|=check(typed_list&&nova_control_set_state(typed_list,NOVA_CONTROL_INITIALIZED)&&

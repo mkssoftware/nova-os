@@ -56,7 +56,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -89,6 +89,8 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/layout.c \
 		boot/bootloader/bootmenu/input.c \
 		boot/bootloader/bootmenu/diagnostics.c \
+		boot/bootloader/bootmenu/recovery.c \
+		boot/bootloader/bootmenu/memory.c \
 		boot/bootloader/bootmenu/navigation.c \
 		boot/bootloader/bootmenu/dialog.c \
 		boot/bootloader/bootmenu/page.c \
@@ -126,6 +128,8 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/layout.c boot/bootloader/bootmenu/layout.h \
 		boot/bootloader/bootmenu/input.c boot/bootloader/bootmenu/input.h \
 		boot/bootloader/bootmenu/diagnostics.c boot/bootloader/bootmenu/diagnostics.h \
+		boot/bootloader/bootmenu/recovery.c boot/bootloader/bootmenu/recovery.h \
+		boot/bootloader/bootmenu/memory.c boot/bootloader/bootmenu/memory.h \
 		boot/bootloader/bootmenu/navigation.c boot/bootloader/bootmenu/navigation.h \
 		boot/bootloader/bootmenu/dialog.c boot/bootloader/bootmenu/dialog.h \
 		boot/bootloader/bootmenu/page.c boot/bootloader/bootmenu/page.h \
@@ -148,6 +152,8 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/layout.c \
 		boot/bootloader/bootmenu/input.c \
 		boot/bootloader/bootmenu/diagnostics.c \
+		boot/bootloader/bootmenu/recovery.c \
+		boot/bootloader/bootmenu/memory.c \
 		boot/bootloader/bootmenu/navigation.c \
 		boot/bootloader/bootmenu/dialog.c \
 		boot/bootloader/bootmenu/page.c \
@@ -175,6 +181,7 @@ test-uefi-image: uefi
 		-DebugLog build/qemu-uefi-image-debug.log
 	grep -F "UEFI:NOVA-ENTRY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:COUNTDOWN-FRAME-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:STYLE-TEMPLATE-FRAME-READY" build/qemu-uefi-image-debug.log
 	@echo "Aktuelles GPT/FAT32-UEFI-IMG bootet erfolgreich"
 
 test-uefi: boot-ui-runtime-check uefi
@@ -373,6 +380,23 @@ test-uefi-recovery-tiles: uefi
 	grep -F "UEFI:STATUS-BADGE-FRAME-READY" build/qemu-uefi-recovery-tiles-debug.log
 	test -s build/uefi-recovery-tiles.ppm
 	@echo "QEMU UEFI Recovery-Tile-, Grid- und Space-Aktivierungstest erfolgreich"
+
+test-uefi-ui-recovery: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-uefi-ui-recovery.ps1 \
+		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:RECOVERY-MANAGER-READY" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:MEMORY-MANAGER-READY" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:MEMORY-SELF-TEST" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:MEMORY-FRAME-READY" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:RECOVERY-SAFE-MODE" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:RECOVERY-FRAME-READY" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:TEXT-FALLBACK-SELF-TEST" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:TEXT-FALLBACK" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:TEXT-CONTINUE" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:MENU-DRAWN" build/qemu-uefi-ui-recovery-debug.log
+	test -s build/uefi-ui-recovery.ppm
+	@echo "QEMU UEFI Error-Recovery-, Safe-Mode- und Continue-Boot-Test erfolgreich"
 
 test-uefi-themes: uefi
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \

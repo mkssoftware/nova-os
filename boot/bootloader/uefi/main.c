@@ -242,6 +242,47 @@ static void boot_selected(UINTN selection)
     else nova_debug_string("UEFI:POWEROFF\n");
 }
 
+static void console_write_ascii(EFI_SYSTEM_TABLE *system_table,const char *text)
+{
+    if(!system_table||!system_table->ConOut||!system_table->ConOut->OutputString||!text)return;
+    CHAR16 buffer[160];UINTN index=0;
+    while(text[index]&&index+1<sizeof(buffer)/sizeof(buffer[0])){
+        buffer[index]=(CHAR16)(uint8_t)text[index];++index;
+    }
+    buffer[index]=0;system_table->ConOut->OutputString(system_table->ConOut,buffer);
+}
+
+static EFI_STATUS text_fallback(EFI_SYSTEM_TABLE *system_table,const char *reason)
+{
+    nova_debug_string("UEFI:TEXT-FALLBACK\n");
+    console_write_ascii(system_table,"\r\nNovaOS Boot Manager\r\n\r\n");
+    console_write_ascii(system_table,"Die grafische Oberflaeche ist nicht verfuegbar.\r\n");
+    console_write_ascii(system_table,reason);
+    console_write_ascii(system_table,"\r\nDer Start wird im sicheren Textmodus fortgesetzt.\r\n");
+    console_write_ascii(system_table,"Enter: NovaOS jetzt starten\r\n");
+    console_write_ascii(system_table,"R: Recovery-Status  M: Speicherdiagnose-Status\r\n");
+    console_write_ascii(system_table,"Automatischer Start in 5 Sekunden.\r\n");
+    for(uint32_t tick=0;tick<50;++tick){
+        EFI_INPUT_KEY key={0};
+        if(system_table->ConIn&&system_table->ConIn->ReadKeyStroke&&
+           !EFI_ERROR(system_table->ConIn->ReadKeyStroke(system_table->ConIn,&key))){
+            if(key.UnicodeChar==13){boot_selected(0);nova_debug_string("UEFI:TEXT-CONTINUE\n");
+                return EFI_SUCCESS;}
+            if(key.UnicodeChar=='r'||key.UnicodeChar=='R'){
+                nova_debug_string("UEFI:TEXT-RECOVERY-STATUS\n");
+                console_write_ascii(system_table,"Recovery-Backend nicht verfuegbar; Start bleibt sicher.\r\n");
+            }
+            if(key.UnicodeChar=='m'||key.UnicodeChar=='M'){
+                nova_debug_string("UEFI:TEXT-MEMORY-STATUS\n");
+                console_write_ascii(system_table,"Speicherdiagnose-Backend nicht verfuegbar; Start bleibt sicher.\r\n");
+            }
+        }
+        if(system_table->BootServices&&system_table->BootServices->Stall)
+            system_table->BootServices->Stall(100000);
+    }
+    boot_selected(0);nova_debug_string("UEFI:TEXT-CONTINUE\n");return EFI_SUCCESS;
+}
+
 static bool handle_action(UINTN *selection_pointer)
 {
     UINTN selection = *selection_pointer;
@@ -395,16 +436,16 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     (void)image_handle;
     runtime_system_table = system_table;
     nova_debug_string("UEFI:NOVA-ENTRY\n");
-    if (!system_table || !system_table->BootServices ||
-        EFI_ERROR(grafik_init(system_table))) {
+    if (!system_table || !system_table->BootServices) return 1;
+    if (EFI_ERROR(grafik_init(system_table))) {
         nova_debug_string("UEFI:GOP-UNAVAILABLE\n");
-        return 1;
+        return text_fallback(system_table,"Grafikinitialisierung fehlgeschlagen.");
     }
 
     UINTN selection = 0;
     if (!bootmenu_initialize()) {
         nova_debug_string("UEFI:COMPOSITOR-UNAVAILABLE\n");
-        return 1;
+        return text_fallback(system_table,"Bootoberflaeche konnte nicht initialisiert werden.");
     }
     nova_navigation_initialize((nova_navigation_entry_t){NOVA_VIEW_MAIN,0,0,0,0});
     nova_dialog_initialize();
@@ -565,6 +606,16 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
             if (!navigate_back(&selection)) return EFI_SUCCESS;
             bootmenu_set_status("");
             bootmenu_draw(selection, 255);
+        } else if (key.ScanCode == 18 &&
+                   bootmenu_view()==NOVA_VIEW_DIAGNOSTICS) {
+            if(bootmenu_memory_self_test())bootmenu_draw(selection,255);
+        } else if (key.ScanCode == 19 &&
+                   bootmenu_view()==NOVA_VIEW_DIAGNOSTICS) {
+            nova_debug_string("UEFI:TEXT-FALLBACK-SELF-TEST\n");
+            return text_fallback(system_table,"Diagnose hat einen fatalen UI-Fehler simuliert.");
+        } else if (key.ScanCode == 20 &&
+                   bootmenu_view()==NOVA_VIEW_DIAGNOSTICS) {
+            if(bootmenu_recovery_self_test())bootmenu_draw(selection,255);
         } else if (key.ScanCode == 11) {
             nova_debug_string("UEFI:HELP-VIEW\n");
             navigate_to(NOVA_VIEW_HELP, &selection, NOVA_NAV_PUSH);

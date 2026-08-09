@@ -53,5 +53,7 @@ bool bootmenu_context_activate(uint8_t *action);
 void bootmenu_context_close(void);
 bool bootmenu_tick(uint32_t elapsed_ms);
 void bootmenu_tooltip_hide(void);
+bool bootmenu_recovery_self_test(void);
+bool bootmenu_memory_self_test(void);
 
 #endif

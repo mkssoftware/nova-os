@@ -491,3 +491,57 @@ prüft beide Zustände und erzeugt getrennte visuelle Referenzframes.
 Diese Punkte sind keine Freigabe für vereinfachte oder erfundene Backends.
 Die Oberfläche muss bis zur Bereitstellung der jeweiligen Abhängigkeit einen
 eindeutigen, sicheren und verständlichen Nicht-verfügbar-Zustand anzeigen.
+
+## Zentrale Styles, Templates und StatusBadges
+
+Die UEFI-Control-Laufzeit besitzt jetzt zentrale, statische Style- und
+Template-Registries. Styles werden per ID in O(1) gebunden, lösen ihre
+Vererbung bereits beim Definieren auf und beziehen Hintergrund, Text, Fokus,
+Rahmen sowie Information-, Erfolg-, Warn- und Fehlerfarben aus dem aktiven
+Theme. Opaque, Glass, Acrylic und Transparent werden als validierte
+Materialtypen geführt. Ein Themewechsel bindet alle registrierten Controls
+ohne Heap-Allokation neu; Dark, Light und High Contrast sind in QEMU geprüft.
+
+Für jeden Control-Typ wird bei der Initialisierung ein statisches
+Standardtemplate mit benannten Parts angelegt. Alternative Templates dürfen
+nur an typkompatible Controls gebunden werden und müssen alle Pflicht-Parts
+enthalten; Selbstvererbung, fehlende Eltern und inkompatible Bindungen werden
+abgewiesen. Die aktuelle Stufe beschreibt und validiert die Struktur zentral,
+der Renderer verarbeitet jedoch noch nicht einen vollständig materialisierten
+Visual Tree. Diese Grenze sowie die fehlende BIOS-Parität bleiben im Audit
+ausdrücklich sichtbar.
+
+Die sechs Recovery-Kacheln zeigen ihren Zustand nun über echte semantische
+StatusBadge-Controls. Information, Erfolg, Warnung und Neutral verwenden die
+Themefarben, ein optionales Icon und einen lesbaren Textfallback. Die Badges
+sind absichtlich nicht fokussierbar und lösen keine Aktion aus. Hosttests
+prüfen alle sieben Typen und Fehlerfälle; `test-uefi-recovery-tiles` bestätigt
+den produktiven Frame in QEMU.
+
+## Boot-UI Error Recovery
+
+`NPSPEC-BOOTUI-0008` besitzt nun einen zentralen heapfreien Recovery Manager.
+Er klassifiziert UI-Fehler als Information, Warnung, wiederherstellbar,
+kritisch oder fatal und führt sie deterministisch durch Logging, Retry, lokalen
+Fallback, Reinitialisierung, Subsystem-Isolation, Safe Mode oder Textmodus.
+Eine feste 32er Historie hält Code, Subsystem, Schweregrad, Maßnahme, Zeitpunkt
+und Ergebnis; sechs unabhängige Watchdogs überwachen Rendering, Layout, Input,
+Motion, Navigation und Ressourcen ohne Endlosschleifen.
+
+Im Safe Mode werden Motion, Glass, Blur, Schatten und Vector-Filter zentral
+deaktiviert und das bestehende sichere Qualitätsprofil aktiviert. Die
+Diagnose-Seite stellt mit F10 einen reproduzierbaren Selbsttest bereit und
+zeigt anschließend verständlich „UI-Fehler behoben - sicherer
+Darstellungsmodus aktiv“. F9 simuliert dort einen fatalen GUI-Ausfall: Der
+Bootmanager wechselt in einen funktionalen UEFI-Textfallback und setzt den
+Standardstart spätestens nach fünf Sekunden fort. Der QEMU-Test
+`test-uefi-ui-recovery` belegt Managerinitialisierung, Safe-Mode-Frame,
+Textfallback und `UEFI:TEXT-CONTINUE`.
+
+Noch nicht vollständig angebunden sind Fehlerinjektionen an jedem einzelnen
+Renderer-, Layout- und Ressourcenaufruf sowie die identische BIOS-Runtime.
+Auch `NPSPEC-BOOTUI-0009` bleibt teilweise: Sichere Runtime-Defaults und
+validierte Einstellungen existieren, das geforderte externe Binärformat nennt
+aber weder Magic, Header/Feldoffsets und Endianness noch Section-Codes,
+Prüfsummenalgorithmus oder Migrationsabbildungen. Bis diese Wire-Definition
+vorliegt, wird bewusst kein vermeintlich kompatibles Dateiformat erfunden.
