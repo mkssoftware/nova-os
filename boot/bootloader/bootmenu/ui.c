@@ -82,6 +82,7 @@ static const char *const main_tooltips[6]={
 static nova_bootmenu_view_t current_view;
 static nova_boot_layout_t current_layout;
 static const char *status_text = "";
+static bool memory_self_test_active;
 static int32_t transition_offset_dlu;
 static uint8_t transition_opacity = 255;
 static bool transition_input_locked;
@@ -813,6 +814,7 @@ bool bootmenu_memory_self_test(void)
         nova_memory_reset_frame();
     if(!valid)return false;
     bootmenu_set_status("Speicherpools geprueft - Alignment und Frame-Reset bereit");
+    memory_self_test_active=true;
     nova_debug_string("UEFI:MEMORY-SELF-TEST\n");return true;
 }
 
@@ -1719,5 +1721,6 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     if (nova_dialog_active()) nova_debug_string("UEFI:DIALOG-FRAME-READY\n");
     if(frame_safe&&nova_memory_validate_pointer(frame_safe,NOVA_MEMORY_FRAME,
        sizeof(nova_rect_t)))nova_debug_string("UEFI:MEMORY-FRAME-READY\n");
+    if(memory_self_test_active)nova_debug_string("UEFI:MEMORY-SELF-TEST-FRAME\n");
     nova_memory_reset_frame();
 }

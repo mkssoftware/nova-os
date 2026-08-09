@@ -4,12 +4,14 @@ param(
  [Parameter(Mandatory=$true)][string]$FatDirectory,
  [Parameter(Mandatory=$true)][string]$DebugLog,
  [string]$Screenshot='build/uefi-ui-recovery.ppm',
+ [string]$MemoryScreenshot='build/uefi-memory-self-test.ppm',
  [int]$MonitorPort=45475
 )
 $ErrorActionPreference='Stop';$root=(Get-Location).Path
 $env:TMP=[IO.Path]::GetFullPath((Join-Path $root 'build'));$env:TEMP=$env:TMP
 $log=[IO.Path]::GetFullPath((Join-Path $root $DebugLog));$shot=[IO.Path]::GetFullPath((Join-Path $root $Screenshot))
-foreach($path in @($log,$shot)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
+$memoryShot=[IO.Path]::GetFullPath((Join-Path $root $MemoryScreenshot))
+foreach($path in @($log,$shot,$memoryShot)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
 $arguments=@('-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
  '-drive',"format=raw,file=fat:rw:$FatDirectory",'-display','none','-serial','none',
  '-monitor',"tcp:127.0.0.1:$MonitorPort,server=on,wait=off",'-debugcon',"file:$DebugLog",
@@ -23,8 +25,23 @@ try{
  if($content-notlike'*UEFI:RECOVERY-MANAGER-READY*'){throw 'Recovery Manager wurde nicht initialisiert.'}
  $client=[Net.Sockets.TcpClient]::new('127.0.0.1',$MonitorPort)
  try{$writer=[IO.StreamWriter]::new($client.GetStream());$writer.AutoFlush=$true
-  foreach($command in @('sendkey down','sendkey down','sendkey down','sendkey ret','sendkey f8','sendkey f10')){
-   $writer.WriteLine($command);Start-Sleep -Milliseconds 700}
+  $writer.WriteLine('sendkey home')
+  $deadline=[DateTime]::UtcNow.AddSeconds(15)
+  do{Start-Sleep -Milliseconds 200;[string]$content=Get-Content $log -Raw -ErrorAction SilentlyContinue}
+  while($content-notlike'*UEFI:COUNTDOWN-CANCELLED*'-and[DateTime]::UtcNow-lt$deadline)
+  if($content-notlike'*UEFI:COUNTDOWN-CANCELLED*'){throw 'Countdown wurde vor der Testnavigation nicht beendet.'}
+  foreach($command in @('sendkey down','sendkey down','sendkey down','sendkey ret','sendkey f8')){
+   $writer.WriteLine($command);Start-Sleep -Milliseconds 850}
+  $deadline=[DateTime]::UtcNow.AddSeconds(20)
+  do{Start-Sleep -Milliseconds 200;[string]$content=Get-Content $log -Raw -ErrorAction SilentlyContinue}
+  while($content-notlike'*UEFI:MEMORY-SELF-TEST-FRAME*'-and[DateTime]::UtcNow-lt$deadline)
+  if($content-notlike'*UEFI:MEMORY-SELF-TEST*'){throw 'Memory-Selbsttest wurde nicht erreicht.'}
+  if($content-notlike'*UEFI:MEMORY-SELF-TEST-FRAME*'){throw 'Memory-Statusframe wurde nicht vollständig gezeichnet.'}
+  $writer.WriteLine('stop');Start-Sleep -Milliseconds 150;$writer.WriteLine("screendump $MemoryScreenshot")
+  $deadline=[DateTime]::UtcNow.AddSeconds(15)
+  while(!(Test-Path $memoryShot)-and[DateTime]::UtcNow-lt$deadline){Start-Sleep -Milliseconds 250}
+  if(!(Test-Path $memoryShot)){throw 'Memory-Screenshot fehlt.'}
+  $writer.WriteLine('cont');Start-Sleep -Milliseconds 250;$writer.WriteLine('sendkey f10')
   $deadline=[DateTime]::UtcNow.AddSeconds(30)
   do{Start-Sleep -Milliseconds 200;[string]$content=Get-Content $log -Raw -ErrorAction SilentlyContinue}
   while($content-notlike'*UEFI:RECOVERY-FRAME-READY*'-and[DateTime]::UtcNow-lt$deadline)

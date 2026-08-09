@@ -388,6 +388,7 @@ test-uefi-ui-recovery: uefi
 	grep -F "UEFI:RECOVERY-MANAGER-READY" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-MANAGER-READY" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-SELF-TEST" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:MEMORY-SELF-TEST-FRAME" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-FRAME-READY" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:RECOVERY-SAFE-MODE" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:RECOVERY-FRAME-READY" build/qemu-uefi-ui-recovery-debug.log
@@ -396,6 +397,7 @@ test-uefi-ui-recovery: uefi
 	grep -F "UEFI:TEXT-CONTINUE" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MENU-DRAWN" build/qemu-uefi-ui-recovery-debug.log
 	test -s build/uefi-ui-recovery.ppm
+	test -s build/uefi-memory-self-test.ppm
 	@echo "QEMU UEFI Error-Recovery-, Safe-Mode- und Continue-Boot-Test erfolgreich"
 
 test-uefi-themes: uefi
