@@ -5,13 +5,15 @@ param(
  [Parameter(Mandatory=$true)][string]$DebugLog,
  [string]$Screenshot='build/uefi-ui-recovery.ppm',
  [string]$MemoryScreenshot='build/uefi-memory-self-test.ppm',
+ [string]$RuntimeScreenshot='build/uefi-runtime-lifecycle.ppm',
  [int]$MonitorPort=45475
 )
 $ErrorActionPreference='Stop';$root=(Get-Location).Path
 $env:TMP=[IO.Path]::GetFullPath((Join-Path $root 'build'));$env:TEMP=$env:TMP
 $log=[IO.Path]::GetFullPath((Join-Path $root $DebugLog));$shot=[IO.Path]::GetFullPath((Join-Path $root $Screenshot))
 $memoryShot=[IO.Path]::GetFullPath((Join-Path $root $MemoryScreenshot))
-foreach($path in @($log,$shot,$memoryShot)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
+$runtimeShot=[IO.Path]::GetFullPath((Join-Path $root $RuntimeScreenshot))
+foreach($path in @($log,$shot,$memoryShot,$runtimeShot)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
 $arguments=@('-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
  '-drive',"format=raw,file=fat:rw:$FatDirectory",'-display','none','-serial','none',
  '-monitor',"tcp:127.0.0.1:$MonitorPort,server=on,wait=off",'-debugcon',"file:$DebugLog",
@@ -37,6 +39,17 @@ try{
   do{Start-Sleep -Milliseconds 200;[string]$content=Get-Content $log -Raw -ErrorAction SilentlyContinue}
   while($content-notlike'*UEFI:NAV-ENTER-COMPLETE*'-and[DateTime]::UtcNow-lt$deadline)
   if($content-notlike'*UEFI:NAV-ENTER-COMPLETE*'){throw 'Diagnose-Navigation wurde nicht abgeschlossen.'}
+  $writer.WriteLine('sendkey f6')
+  $deadline=[DateTime]::UtcNow.AddSeconds(20)
+  do{Start-Sleep -Milliseconds 200;[string]$content=Get-Content $log -Raw -ErrorAction SilentlyContinue}
+  while($content-notlike'*UEFI:RUNTIME-LIFECYCLE-SELF-TEST-FRAME*'-and[DateTime]::UtcNow-lt$deadline)
+  if($content-notlike'*UEFI:RUNTIME-LIFECYCLE-SELF-TEST*'){throw 'Runtime-Lifecycle-Selbsttest wurde nicht erreicht.'}
+  if($content-notlike'*UEFI:RUNTIME-LIFECYCLE-SELF-TEST-FRAME*'){throw 'Runtime-Lifecycle-Statusframe wurde nicht vollstaendig gezeichnet.'}
+  $writer.WriteLine('stop');Start-Sleep -Milliseconds 150;$writer.WriteLine("screendump $RuntimeScreenshot")
+  $deadline=[DateTime]::UtcNow.AddSeconds(15)
+  while(!(Test-Path $runtimeShot)-and[DateTime]::UtcNow-lt$deadline){Start-Sleep -Milliseconds 250}
+  if(!(Test-Path $runtimeShot)){throw 'Runtime-Lifecycle-Screenshot fehlt.'}
+  $writer.WriteLine('cont');Start-Sleep -Milliseconds 250
   $writer.WriteLine('sendkey f8')
   $deadline=[DateTime]::UtcNow.AddSeconds(20)
   do{Start-Sleep -Milliseconds 200;[string]$content=Get-Content $log -Raw -ErrorAction SilentlyContinue}

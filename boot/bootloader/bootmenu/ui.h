@@ -57,5 +57,6 @@ bool bootmenu_tick(uint32_t elapsed_ms);
 void bootmenu_tooltip_hide(void);
 bool bootmenu_recovery_self_test(void);
 bool bootmenu_memory_self_test(void);
+bool bootmenu_runtime_self_test(void);
 
 #endif

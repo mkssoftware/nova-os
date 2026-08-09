@@ -600,3 +600,33 @@ Section-Codes, externen Prüfsummenalgorithmus oder konkrete Migrationstabellen.
 Die interne Runtime-Prüfsumme wird ausdrücklich nicht als erfundenes
 Dateiformat ausgegeben; dieser Teil bleibt bis zu einer normativen Wire-
 Definition blockiert dokumentiert.
+
+## Boot-UI Runtime und Lifecycle
+
+`NPSPEC-BOOTUI-0002` und `NPSPEC-BOOTUI-0003` besitzen jetzt einen zentralen,
+heapfreien Runtime-Core. Die Initialisierung erzwingt die spezifizierte
+Abhängigkeitsfolge von Memory und Platform bis Input und Renderer. Ungültige
+Subsystemreihenfolgen und Lifecycle-Transitionen werden abgewiesen und in den
+Diagnosedaten gezählt. Eine feste 32er Scheduler-Queue verarbeitet fällige
+Aufgaben deterministisch von Critical bis Idle und verhindert rekursiven
+Wiedereintritt.
+
+Der produktive UEFI-Zeichenpfad ist in den Runtime-Frame eingebunden. Jeder
+vollständige Frame durchläuft Input, Event Queue, Control Update, Application,
+Motion, Layout, Dirty Detection, Render Queue, Rendering, Compositor, Present
+und Diagnostics in genau dieser Reihenfolge. Eine ausgelassene oder doppelte
+Phase verwirft den Frame sicher. Initialisierungsfehler von GOP oder GUI führen
+den Runtime-Zustand vor dem vorhandenen Textfallback in Recovery.
+
+Der Lifecycle umfasst Created, Initializing, Loading Resources, Building Scene,
+Layout, Ready, Running, Suspended, Recovery, Shutdown und Destroyed. Suspend und
+Recovery sperren Eingaben. Der normale Standardstart durchläuft Shutdown und
+Destroyed, bevor die Startaktion fortgesetzt wird. Auf der Diagnose-Seite löst
+F6 einen sichtbaren Suspend-/Resume-Selbsttest aus. Der QEMU-Test
+`test-uefi-ui-recovery` wartet auf den vollständig präsentierten Statusframe und
+erzeugt `build/uefi-runtime-lifecycle.ppm`; der Hosttest prüft zusätzlich
+Initialisierungsreihenfolge, Framefehler, Schedulerpriorität, Recovery sowie
+Shutdown/Destroy.
+
+Offen bleiben die gemeinsame BIOS-Anbindung, echte Firmware-Suspend-/Resume-
+Ereignisse, Touch-/Controllerprovider und hardwarebasierte Performancezeiten.

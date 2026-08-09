@@ -12,6 +12,8 @@
 #include "../boot/bootloader/bootmenu/recovery.h"
 #include "../boot/bootloader/bootmenu/memory.h"
 #include "../boot/bootloader/bootmenu/configuration.h"
+#include "../boot/bootloader/bootmenu/runtime.h"
+#include "../boot/bootloader/bootmenu/state_model.h"
 #include "../boot/bootloader/bootmenu/branding.h"
 #include "../boot/bootloader/bootmenu/theme.h"
 #include "../boot/bootloader/bootmenu/layout.h"
@@ -20,6 +22,13 @@
 #include "../boot/bootloader/bootmenu/page.h"
 
 static uint32_t writes;
+static uint32_t runtime_task_order[4],runtime_task_count;
+static uint32_t state_callback_count;
+static void runtime_task(uint32_t id,void *context)
+{(void)context;if(runtime_task_count<4)runtime_task_order[runtime_task_count++]=id;}
+static void state_callback(const nova_state_object_t *object,uint8_t old_state,
+                           uint8_t new_state,void *context)
+{(void)object;(void)old_state;(void)new_state;(void)context;++state_callback_count;}
 static uint32_t captured[480][640];
 void pixel_set(uint64_t x, uint64_t y, uint32_t color)
 {
@@ -148,6 +157,87 @@ int main(void)
     corrupt.theme=NOVA_THEME_LIGHT;
     failed |= check(!nova_configuration_validate(&corrupt),
                     "Beschaedigte Runtime-Pruefsumme erkennen");
+    nova_runtime_create();
+    failed |= check(!nova_runtime_run()&&nova_runtime_begin_initialization()&&
+                    !nova_runtime_subsystem_ready(NOVA_RUNTIME_GRAPHICS)&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_MEMORY)&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_PLATFORM)&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_GRAPHICS)&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_DIAGNOSTICS)&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_CONFIGURATION)&&
+                    nova_runtime_loading()&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_RESOURCES)&&
+                    nova_runtime_building_scene()&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_SCENE)&&
+                    nova_runtime_layout()&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_LAYOUT_ENGINE)&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_MOTION)&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_INPUT)&&
+                    nova_runtime_subsystem_ready(NOVA_RUNTIME_RENDERER)&&
+                    nova_runtime_ready()&&nova_runtime_run()&&
+                    nova_runtime_input_allowed(),
+                    "Runtime initialisiert Subsysteme und Lifecycle strikt geordnet");
+    failed |= check(nova_runtime_frame_begin()&&
+                    nova_runtime_frame_step(NOVA_FRAME_INPUT)&&
+                    !nova_runtime_frame_step(NOVA_FRAME_CONTROL_UPDATE)&&
+                    nova_runtime_frame_abort(),
+                    "Frame-Pipeline weist uebersprungene Phase ab");
+    failed |= check(nova_runtime_frame_begin(),"Vollstaendigen Runtime-Frame beginnen");
+    for(uint8_t stage=0;stage<NOVA_FRAME_STAGE_COUNT;++stage)
+        failed|=check(nova_runtime_frame_step((nova_runtime_frame_stage_t)stage),
+                      "Runtime-Framephase in fester Reihenfolge");
+    failed|=check(nova_runtime_frame_end()&&
+                  nova_runtime_diagnostics()->completed_frames==1,
+                  "Runtime-Frame atomar abschliessen");
+    runtime_task_count=0;
+    nova_runtime_task_t idle={1,0,0,runtime_task,0,NOVA_TASK_IDLE,true,false,false};
+    nova_runtime_task_t critical={2,0,0,runtime_task,0,NOVA_TASK_CRITICAL,true,false,false};
+    failed|=check(nova_runtime_schedule(&idle)&&nova_runtime_schedule(&critical),
+                  "Priorisierte Runtime-Aufgaben registrieren");
+    nova_runtime_tick(1);
+    failed|=check(runtime_task_count==2&&runtime_task_order[0]==2&&runtime_task_order[1]==1,
+                  "Scheduler fuehrt Critical vor Idle deterministisch aus");
+    state_callback_count=0;
+    nova_state_object_t *scene=nova_state_create(100,NOVA_STATE_DOMAIN_SCENE,0,1,1);
+    failed|=check(scene&&nova_state_set_callbacks(scene,state_callback,state_callback,
+                  state_callback,0)&&nova_state_transition(scene,1)&&
+                  nova_state_checkpoint(scene)&&nova_state_transition(scene,2)&&
+                  nova_state_rollback(scene)&&scene->current==1&&
+                  nova_state_transition(scene,2)&&nova_state_transition(scene,3)&&
+                  nova_state_transition(scene,4),
+                  "Hierarchischer Scene-Automat mit Events und Rollback");
+    nova_state_object_t *state_control=nova_state_create(101,NOVA_STATE_DOMAIN_CONTROL,0,1,100);
+    failed|=check(state_control&&nova_state_transition(state_control,1)&&
+                  nova_state_transition(state_control,2)&&nova_state_transition(state_control,3)&&
+                  !nova_state_transition(state_control,5)&&nova_state_transition(state_control,4)&&
+                  nova_state_transition(state_control,5)&&nova_state_transition(state_control,6)&&
+                  nova_state_transition(state_control,4),
+                  "Control-Automat verwirft Spruenge und folgt Press/Release");
+    nova_state_snapshot_t snapshot;
+    failed|=check(nova_state_serialize(state_control,&snapshot),
+                  "Versionierten State-Snapshot serialisieren");
+    failed|=check(nova_state_transition(state_control,7),
+                  "Control vor Snapshot-Restore veraendern");
+    failed|=check(nova_state_deserialize(state_control,&snapshot)&&state_control->current==4,
+                  "Versionierten State-Snapshot wiederherstellen");
+    nova_state_snapshot_t corrupt_snapshot=snapshot;corrupt_snapshot.current=15;
+    failed|=check(!nova_state_deserialize(state_control,&corrupt_snapshot)&&
+                  state_callback_count>=15&&nova_state_diagnostics()->invalid_transitions>=1&&
+                  nova_state_event(0)!=0,
+                  "Korrupte Snapshots, Transitionsevents und Diagnostik");
+    failed|=check(nova_state_transition(state_control,7)&&
+                  nova_state_transition(state_control,2)&&
+                  nova_state_transition(state_control,8)&&nova_state_destroy(state_control)&&
+                  nova_state_transition(scene,5)&&nova_state_transition(scene,6)&&
+                  nova_state_destroy(scene),
+                  "Kind vor Elternteil deterministisch zerstoeren");
+    failed|=check(nova_runtime_suspend()&&!nova_runtime_input_allowed()&&
+                  nova_runtime_resume()&&nova_runtime_input_allowed()&&
+                  nova_runtime_enter_recovery()&&!nova_runtime_input_allowed()&&
+                  nova_runtime_leave_recovery(true)&&nova_runtime_input_allowed()&&
+                  nova_runtime_shutdown()&&nova_runtime_destroy()&&
+                  nova_runtime_state()==NOVA_RUNTIME_DESTROYED&&!nova_runtime_run(),
+                  "Suspend, Recovery, Shutdown und Destroy Lifecycle");
     nova_page_model_initialize();
     nova_page_t *main_page=nova_page_create(1,"Bootmanager",11,false);
     nova_view_t *root_view=nova_view_create(main_page,100,NOVA_VIEW_ROOT,"Bootmanager",1,false);

@@ -92,6 +92,8 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/recovery.c \
 		boot/bootloader/bootmenu/memory.c \
 		boot/bootloader/bootmenu/configuration.c \
+		boot/bootloader/bootmenu/runtime.c \
+		boot/bootloader/bootmenu/state_model.c \
 		boot/bootloader/bootmenu/navigation.c \
 		boot/bootloader/bootmenu/dialog.c \
 		boot/bootloader/bootmenu/page.c \
@@ -132,6 +134,8 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/recovery.c boot/bootloader/bootmenu/recovery.h \
 		boot/bootloader/bootmenu/memory.c boot/bootloader/bootmenu/memory.h \
 		boot/bootloader/bootmenu/configuration.c boot/bootloader/bootmenu/configuration.h \
+		boot/bootloader/bootmenu/runtime.c boot/bootloader/bootmenu/runtime.h \
+		boot/bootloader/bootmenu/state_model.c boot/bootloader/bootmenu/state_model.h \
 		boot/bootloader/bootmenu/navigation.c boot/bootloader/bootmenu/navigation.h \
 		boot/bootloader/bootmenu/dialog.c boot/bootloader/bootmenu/dialog.h \
 		boot/bootloader/bootmenu/page.c boot/bootloader/bootmenu/page.h \
@@ -157,6 +161,8 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/recovery.c \
 		boot/bootloader/bootmenu/memory.c \
 		boot/bootloader/bootmenu/configuration.c \
+		boot/bootloader/bootmenu/runtime.c \
+		boot/bootloader/bootmenu/state_model.c \
 		boot/bootloader/bootmenu/navigation.c \
 		boot/bootloader/bootmenu/dialog.c \
 		boot/bootloader/bootmenu/page.c \
@@ -186,6 +192,8 @@ test-uefi-image: uefi
 	grep -F "UEFI:COUNTDOWN-FRAME-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:STYLE-TEMPLATE-FRAME-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:CONFIGURATION-MANAGER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RUNTIME-RUNNING" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RUNTIME-FRAME-COMPLETE" build/qemu-uefi-image-debug.log
 	@echo "Aktuelles GPT/FAT32-UEFI-IMG bootet erfolgreich"
 
 test-uefi: boot-ui-runtime-check uefi
@@ -213,12 +221,16 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:NAVIGATION-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:DIALOG-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:PAGES-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RUNTIME-RUNNING" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RUNTIME-FRAME-COMPLETE" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:COUNTDOWN-5" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:COUNTDOWN-4" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:COUNTDOWN-3" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:COUNTDOWN-2" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:COUNTDOWN-1" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:START" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RUNTIME-SHUTDOWN" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RUNTIME-DESTROYED" $(UEFI_DEBUG_LOG)
 	@echo "QEMU UEFI Bootmanager- und Countdown-Test erfolgreich"
 
 test-uefi-input: uefi
@@ -393,6 +405,10 @@ test-uefi-ui-recovery: uefi
 		-DebugLog build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:RECOVERY-MANAGER-READY" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-MANAGER-READY" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:RUNTIME-RUNNING" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:RUNTIME-FRAME-COMPLETE" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:RUNTIME-LIFECYCLE-SELF-TEST" build/qemu-uefi-ui-recovery-debug.log
+	grep -F "UEFI:RUNTIME-LIFECYCLE-SELF-TEST-FRAME" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-SELF-TEST" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-SELF-TEST-FRAME" build/qemu-uefi-ui-recovery-debug.log
 	grep -F "UEFI:MEMORY-FRAME-READY" build/qemu-uefi-ui-recovery-debug.log
@@ -404,6 +420,7 @@ test-uefi-ui-recovery: uefi
 	grep -F "UEFI:MENU-DRAWN" build/qemu-uefi-ui-recovery-debug.log
 	test -s build/uefi-ui-recovery.ppm
 	test -s build/uefi-memory-self-test.ppm
+	test -s build/uefi-runtime-lifecycle.ppm
 	@echo "QEMU UEFI Error-Recovery-, Safe-Mode- und Continue-Boot-Test erfolgreich"
 
 test-uefi-themes: uefi

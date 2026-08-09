@@ -6,6 +6,10 @@
 #include "../bootmenu/theme.h"
 #include "../bootmenu/navigation.h"
 #include "../bootmenu/dialog.h"
+#include "../bootmenu/runtime.h"
+#include "../bootmenu/memory.h"
+#include "../bootmenu/recovery.h"
+#include "../bootmenu/configuration.h"
 #include "firmware.h"
 
 EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *system_table);
@@ -234,7 +238,11 @@ static EFI_INPUT_KEY read_key(EFI_SYSTEM_TABLE *system_table)
 
 static void boot_selected(UINTN selection)
 {
-    if (selection == 0) nova_debug_string("UEFI:START\n");
+    if (selection == 0) {
+        nova_runtime_shutdown();nova_debug_string("UEFI:RUNTIME-SHUTDOWN\n");
+        nova_runtime_destroy();nova_debug_string("UEFI:RUNTIME-DESTROYED\n");
+        nova_debug_string("UEFI:START\n");
+    }
     else if (selection == 1) nova_debug_string("UEFI:INSTALL-UNAVAILABLE\n");
     else if (selection == 2) nova_debug_string("UEFI:SETTINGS\n");
     else if (selection == 3) nova_debug_string("UEFI:DIAGNOSTICS\n");
@@ -437,21 +445,35 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     runtime_system_table = system_table;
     nova_debug_string("UEFI:NOVA-ENTRY\n");
     if (!system_table || !system_table->BootServices) return 1;
+    nova_runtime_create();
+    if(!nova_runtime_begin_initialization())return 1;
+    nova_memory_initialize();
+    if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_MEMORY)||
+       !nova_runtime_subsystem_ready(NOVA_RUNTIME_PLATFORM))return 1;
     if (EFI_ERROR(grafik_init(system_table))) {
         nova_debug_string("UEFI:GOP-UNAVAILABLE\n");
+        nova_runtime_enter_recovery();
         return text_fallback(system_table,"Grafikinitialisierung fehlgeschlagen.");
     }
+    if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_GRAPHICS))return 1;
+    nova_diag_initialize();nova_recovery_initialize();
+    if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_DIAGNOSTICS))return 1;
+    nova_configuration_initialize();
+    if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_CONFIGURATION)||
+       !nova_runtime_loading())return 1;
 
     UINTN selection = 0;
     if (!bootmenu_initialize()) {
         nova_debug_string("UEFI:COMPOSITOR-UNAVAILABLE\n");
+        nova_runtime_enter_recovery();
         return text_fallback(system_table,"Bootoberflaeche konnte nicht initialisiert werden.");
     }
     nova_navigation_initialize((nova_navigation_entry_t){NOVA_VIEW_MAIN,0,0,0,0});
     nova_dialog_initialize();
+    if(!nova_runtime_ready()||!nova_runtime_run())return 1;
+    nova_debug_string("UEFI:RUNTIME-RUNNING\n");
     nova_debug_string("UEFI:NAVIGATION-READY\n");
     nova_debug_string("UEFI:DIALOG-READY\n");
-    nova_motion_initialize();
     uefi_power_initialize(system_table);
     uefi_firmware_initialize(system_table);
     bool pointer_available = uefi_pointer_initialize(system_table);
@@ -606,6 +628,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
             if (!navigate_back(&selection)) return EFI_SUCCESS;
             bootmenu_set_status("");
             bootmenu_draw(selection, 255);
+        } else if (key.ScanCode == 16 &&
+                   bootmenu_view()==NOVA_VIEW_DIAGNOSTICS) {
+            if(bootmenu_runtime_self_test())bootmenu_draw(selection,255);
         } else if (key.ScanCode == 18 &&
                    bootmenu_view()==NOVA_VIEW_DIAGNOSTICS) {
             if(bootmenu_memory_self_test())bootmenu_draw(selection,255);

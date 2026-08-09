@@ -10,6 +10,8 @@
 #include "recovery.h"
 #include "memory.h"
 #include "configuration.h"
+#include "runtime.h"
+#include "motion.h"
 #include "ui.h"
 #include "branding.h"
 #include "theme.h"
@@ -84,6 +86,7 @@ static nova_bootmenu_view_t current_view;
 static nova_boot_layout_t current_layout;
 static const char *status_text = "";
 static bool memory_self_test_active;
+static bool runtime_self_test_active;
 static int32_t transition_offset_dlu;
 static uint8_t transition_opacity = 255;
 static bool transition_input_locked;
@@ -273,7 +276,6 @@ bool bootmenu_initialize(void)
     if (initialized) {
         nova_resource_manager_initialize();
         if (!nova_theme_initialize()) return false;
-        nova_configuration_initialize();
         const nova_boot_configuration_t *initial_configuration=
             nova_configuration_effective();
         if(!nova_theme_activate(initial_configuration->theme))return false;
@@ -283,6 +285,16 @@ bool bootmenu_initialize(void)
         nova_layout_initialize();
         if (!nova_layout_compute((uint32_t)grafik_width(), (uint32_t)grafik_height(),
                                  false, &current_layout)) return false;
+        nova_unicode_initialize();
+        if (!nova_text_register_font_resource() ||
+            !nova_resource_load(nova_resource_id("boot://fonts/segoe-ui/semibold/15")))
+            return false;
+        if (!nova_icons_initialize()) return false;
+        if (!nova_branding_initialize()) return false;
+        if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_RESOURCES)||
+           !nova_runtime_building_scene())return false;
+        nova_debug_string("UEFI:BRANDING-READY\n");
+        nova_debug_string("UEFI:RESOURCES-READY\n");
         nova_page_model_initialize();
         static const char *const page_titles[7]={"NovaOS Bootmanager","Einstellungen",
             "Boot-Diagnose","Recovery","Ausschalten / Neustarten","Hilfe",
@@ -291,7 +303,6 @@ bool bootmenu_initialize(void)
         if(!nova_page_activate(view_pages[NOVA_VIEW_MAIN])||
            !nova_page_set_focus(view_pages[NOVA_VIEW_MAIN],view_content[NOVA_VIEW_MAIN]))return false;
         nova_debug_string("UEFI:PAGES-READY\n");
-        nova_debug_string("UEFI:LAYOUT-READY\n");
         const nova_theme_tokens_t *initial_theme = nova_theme_tokens();
         nova_control_style_t style = {
             .background=0x00000000u,.foreground=initial_theme->text_primary,
@@ -303,14 +314,6 @@ bool bootmenu_initialize(void)
         };
         nova_controls_initialize(&style);
         if(!refresh_control_styles(initial_theme))return false;
-        nova_unicode_initialize();
-        if (!nova_text_register_font_resource() ||
-            !nova_resource_load(nova_resource_id("boot://fonts/segoe-ui/semibold/15")))
-            return false;
-        if (!nova_icons_initialize()) return false;
-        if (!nova_branding_initialize()) return false;
-        nova_debug_string("UEFI:BRANDING-READY\n");
-        nova_debug_string("UEFI:RESOURCES-READY\n");
         menu_list = nova_control_create(NOVA_CONTROL_LIST);
         if (!menu_list) return false;
         nova_control_set_state(menu_list, NOVA_CONTROL_INITIALIZED);
@@ -485,6 +488,12 @@ bool bootmenu_initialize(void)
         nova_control_set_flags(page_card,NOVA_CONTROL_FLAG_VISIBLE|NOVA_CONTROL_FLAG_ENABLED);
         nova_control_set_accessibility(page_card,11,"Bootmanager-Inhaltsbereich",false);
         nova_card_set_type(page_card,NOVA_CARD_STANDARD);
+        if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_SCENE)||
+           !nova_runtime_layout()||
+           !nova_runtime_subsystem_ready(NOVA_RUNTIME_LAYOUT_ENGINE))return false;
+        nova_debug_string("UEFI:LAYOUT-READY\n");
+        nova_motion_initialize();
+        if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_MOTION))return false;
         nova_input_initialize();
         nova_input_device_set(1, NOVA_DEVICE_KEYBOARD, true);
         nova_input_device_set(2, NOVA_DEVICE_MOUSE, true);
@@ -497,9 +506,8 @@ bool bootmenu_initialize(void)
         nova_input_focus_set(menu_items[0]);
         pointer_x = current_layout.list.x + current_layout.list.width / 2;
         pointer_y = current_layout.list.y + current_layout.item_height / 2;
-        nova_diag_initialize();
-        nova_recovery_initialize();
-        nova_memory_initialize();
+        if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_INPUT)||
+           !nova_runtime_subsystem_ready(NOVA_RUNTIME_RENDERER))return false;
         nova_debug_string("UEFI:RECOVERY-MANAGER-READY\n");
         nova_debug_string("UEFI:MEMORY-MANAGER-READY\n");
         nova_debug_string("UEFI:CONFIGURATION-MANAGER-READY\n");
@@ -855,8 +863,19 @@ bool bootmenu_memory_self_test(void)
     nova_debug_string("UEFI:MEMORY-SELF-TEST\n");return true;
 }
 
+bool bootmenu_runtime_self_test(void)
+{
+    if(!initialized||current_view!=NOVA_VIEW_DIAGNOSTICS||
+       !nova_runtime_suspend()||nova_runtime_input_allowed()||
+       !nova_runtime_resume()||!nova_runtime_input_allowed())return false;
+    bootmenu_set_status("Runtime-Lifecycle geprueft - Suspend und Resume bereit");
+    runtime_self_test_active=true;
+    nova_debug_string("UEFI:RUNTIME-LIFECYCLE-SELF-TEST\n");return true;
+}
+
 bool bootmenu_tick(uint32_t elapsed_ms)
 {
+    nova_runtime_tick(elapsed_ms);
     if(!initialized||!tooltips_enabled||context_visible||nova_dialog_active()||transition_input_locked||
        tooltip_selection>=bootmenu_item_count())return false;
     if(tooltip_visible)return false;
@@ -1379,6 +1398,9 @@ static void draw_dialog(nova_surface_t *surface,int32_t x,int32_t y,
 void bootmenu_draw(UINTN selection, uint8_t opacity)
 {
     if (!initialized) return;
+    bool runtime_frame=nova_runtime_frame_begin();
+    if(runtime_frame)for(uint8_t stage=NOVA_FRAME_INPUT;stage<=NOVA_FRAME_MOTION;++stage)
+        nova_runtime_frame_step((nova_runtime_frame_stage_t)stage);
     if(selection<bootmenu_item_count()&&
        (tooltip_selection!=(uint16_t)selection||tooltip_view!=current_view)){
         tooltip_selection=(uint16_t)selection;tooltip_view=current_view;
@@ -1390,9 +1412,19 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     sync_active_page();
     int32_t width = (int32_t)grafik_width();
     const nova_theme_tokens_t *theme = nova_theme_tokens();
-    if(styled_theme!=nova_theme_active()&&!refresh_control_styles(theme))return;
+    if(styled_theme!=nova_theme_active()&&!refresh_control_styles(theme)){
+        if(runtime_frame)nova_runtime_frame_abort();
+        return;
+    }
+    if(runtime_frame)nova_runtime_frame_step(NOVA_FRAME_LAYOUT);
     if (!nova_layout_compute((uint32_t)width, (uint32_t)grafik_height(),
-                             theme->high_contrast, &current_layout)) return;
+                             theme->high_contrast, &current_layout)){
+        if(runtime_frame)nova_runtime_frame_abort();
+        return;
+    }
+    if(runtime_frame){nova_runtime_frame_step(NOVA_FRAME_DIRTY_DETECTION);
+        nova_runtime_frame_step(NOVA_FRAME_RENDER_QUEUE);
+        nova_runtime_frame_step(NOVA_FRAME_RENDERING);}
     nova_memory_reset_frame();
     nova_rect_t *frame_safe=(nova_rect_t *)nova_memory_allocate(NOVA_MEMORY_FRAME,
         sizeof(nova_rect_t),0x4652414du,64);
@@ -1742,7 +1774,9 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     nova_compositor_begin_frame();
     nova_compositor_submit_layer(&base);
     nova_compositor_submit_layer(&interaction);
+    if(runtime_frame)nova_runtime_frame_step(NOVA_FRAME_COMPOSITOR);
     nova_compositor_compose();
+    if(runtime_frame)nova_runtime_frame_step(NOVA_FRAME_PRESENT);
     nova_debug_string("UEFI:MENU-DRAWN\n");
     nova_debug_string("UEFI:IMAGE-CONTROL-FRAME-READY\n");
     nova_debug_string("UEFI:ICON-CONTROL-FRAME-READY\n");
@@ -1760,5 +1794,10 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     if(frame_safe&&nova_memory_validate_pointer(frame_safe,NOVA_MEMORY_FRAME,
        sizeof(nova_rect_t)))nova_debug_string("UEFI:MEMORY-FRAME-READY\n");
     if(memory_self_test_active)nova_debug_string("UEFI:MEMORY-SELF-TEST-FRAME\n");
+    if(runtime_self_test_active)
+        nova_debug_string("UEFI:RUNTIME-LIFECYCLE-SELF-TEST-FRAME\n");
+    if(runtime_frame){nova_runtime_frame_step(NOVA_FRAME_DIAGNOSTICS);
+        nova_diag_frame(16667,500,500,8000,4000);nova_diag_snapshot();
+        if(nova_runtime_frame_end())nova_debug_string("UEFI:RUNTIME-FRAME-COMPLETE\n");}
     nova_memory_reset_frame();
 }
