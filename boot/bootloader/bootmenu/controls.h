@@ -233,6 +233,7 @@ nova_control_t *nova_control_hit_test(int32_t x, int32_t y);
 bool nova_control_invoke(nova_control_t *control, uint32_t *action);
 void nova_control_release(nova_control_t *control);
 void nova_control_render(nova_control_t *control, nova_surface_t *surface);
+bool nova_controls_sync_scene(void);
 const nova_control_diagnostics_t *nova_control_diagnostics(void);
 
 #endif

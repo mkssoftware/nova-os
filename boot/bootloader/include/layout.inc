@@ -26,6 +26,7 @@ MEMORY_MAP_ADDRESS         equ 0x00005800
 MEMORY_MAP_ENTRY_SIZE      equ 24
 MEMORY_MAP_MAX_ENTRIES     equ 64
 VBE_MODE_INFO_ADDRESS      equ 0x00006000
+VBE_CONTROLLER_INFO_ADDRESS equ 0x00006100
 STAGE2_STACK_TOP           equ 0x00007800
 STAGE1_STACK_TOP           equ 0x00007C00
 STAGE2_LOAD_ADDRESS        equ 0x00007E00
@@ -47,10 +48,8 @@ LONG_MODE_PDPT             equ 0x00071000
 LONG_MODE_PD               equ 0x00072000
 
 ; Grafik
-; QEMU/Bochs VBE: 800 x 600 x 32 Bit mit linearem Framebuffer.
-; Der klassische Modus 0x118 besitzt nur 24 Bit und darf nicht als
-; BGRX8888 an den Kernel übergeben werden.
-VBE_REQUESTED_MODE         equ 0x0143
+; Der Modus wird aus der VBE-Modusliste nach der in BOOTRENDER-0007
+; definierten Auflösungspräferenz ausgewählt.
 NOVA_PIXEL_FORMAT_BGRX8888 equ 1
 
 ; Nova Kernel Image v1 (NKI)

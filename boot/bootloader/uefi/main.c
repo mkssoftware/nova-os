@@ -11,6 +11,8 @@
 #include "../bootmenu/recovery.h"
 #include "../bootmenu/configuration.h"
 #include "../bootmenu/graphics.h"
+#include "../bootmenu/framebuffer_backend.h"
+#include "../bootmenu/gop_backend.h"
 #include "../bootmenu/resolution.h"
 #include "firmware.h"
 
@@ -243,6 +245,8 @@ static void boot_selected(UINTN selection)
       if (selection == 0) {
           nova_runtime_shutdown();nova_debug_string("UEFI:RUNTIME-SHUTDOWN\n");
           nova_runtime_destroy();nova_debug_string("UEFI:RUNTIME-DESTROYED\n");
+          nova_framebuffer_shutdown();nova_debug_string("UEFI:FRAMEBUFFER-BACKEND-SHUTDOWN\n");
+          nova_gop_shutdown();nova_debug_string("UEFI:GOP-SHUTDOWN\n");
           nova_graphics_shutdown();nova_debug_string("UEFI:GAL-SHUTDOWN\n");
           nova_debug_string("UEFI:START\n");
     }

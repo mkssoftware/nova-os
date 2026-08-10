@@ -26,6 +26,8 @@ RECOVERY_SERIAL_LOG := $(BUILD_DIR)/qemu-recovery-serial.log
 RECOVERY_DEBUG_LOG := $(BUILD_DIR)/qemu-recovery-debug.log
 PLATFORM_SERIAL_LOG := $(BUILD_DIR)/qemu-platform-serial.log
 PLATFORM_DEBUG_LOG := $(BUILD_DIR)/qemu-platform-debug.log
+VBE_FALLBACK_SERIAL_LOG := $(BUILD_DIR)/qemu-vbe-fallback-serial.log
+VBE_FALLBACK_DEBUG_LOG := $(BUILD_DIR)/qemu-vbe-fallback-debug.log
 UEFI_DIR := $(BUILD_DIR)/uefi
 UEFI_APP := $(UEFI_DIR)/EFI/BOOT/BOOTX64.EFI
 UEFI_FIRMWARE := $(UEFI_DIR)/edk2-x86_64.fd
@@ -56,7 +58,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -90,6 +92,11 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/design.c \
 		boot/bootloader/bootmenu/architecture.c \
 		boot/bootloader/bootmenu/scene_graph.c \
+		boot/bootloader/bootmenu/render_queue.c \
+		boot/bootloader/bootmenu/surface_manager.c \
+		boot/bootloader/bootmenu/layer_manager.c \
+		boot/bootloader/bootmenu/framebuffer_backend.c \
+		boot/bootloader/bootmenu/gop_backend.c \
 		boot/bootloader/bootmenu/theme.c \
 		boot/bootloader/bootmenu/layout.c \
 		boot/bootloader/bootmenu/input.c \
@@ -137,6 +144,11 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/design.c boot/bootloader/bootmenu/design.h \
 		boot/bootloader/bootmenu/architecture.c boot/bootloader/bootmenu/architecture.h \
 		boot/bootloader/bootmenu/scene_graph.c boot/bootloader/bootmenu/scene_graph.h \
+		boot/bootloader/bootmenu/render_queue.c boot/bootloader/bootmenu/render_queue.h \
+		boot/bootloader/bootmenu/surface_manager.c boot/bootloader/bootmenu/surface_manager.h \
+		boot/bootloader/bootmenu/layer_manager.c boot/bootloader/bootmenu/layer_manager.h \
+		boot/bootloader/bootmenu/framebuffer_backend.c boot/bootloader/bootmenu/framebuffer_backend.h \
+		boot/bootloader/bootmenu/gop_backend.c boot/bootloader/bootmenu/gop_backend.h \
 		boot/bootloader/bootmenu/theme.c boot/bootloader/bootmenu/theme.h \
 		boot/bootloader/bootmenu/layout.c boot/bootloader/bootmenu/layout.h \
 		boot/bootloader/bootmenu/input.c boot/bootloader/bootmenu/input.h \
@@ -169,6 +181,11 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/design.c \
 		boot/bootloader/bootmenu/architecture.c \
 		boot/bootloader/bootmenu/scene_graph.c \
+		boot/bootloader/bootmenu/render_queue.c \
+		boot/bootloader/bootmenu/surface_manager.c \
+		boot/bootloader/bootmenu/layer_manager.c \
+		boot/bootloader/bootmenu/framebuffer_backend.c \
+		boot/bootloader/bootmenu/gop_backend.c \
 		boot/bootloader/bootmenu/theme.c \
 		boot/bootloader/bootmenu/layout.c \
 		boot/bootloader/bootmenu/input.c \
@@ -214,6 +231,13 @@ test-uefi-image: uefi
 	grep -F "UEFI:SCALING-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:DESIGN-COMPATIBILITY-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:UI-ARCHITECTURE-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:SCENE-GRAPH-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RENDER-COMMANDS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:SURFACE-MANAGER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:LAYER-MANAGER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:FRAMEBUFFER-BACKEND-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:GOP-MODES-VALIDATED" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:GOP-DESCRIPTOR-READY" build/qemu-uefi-image-debug.log
 	@echo "Aktuelles GPT/FAT32-UEFI-IMG bootet erfolgreich"
 
 test-uefi: boot-ui-runtime-check uefi
@@ -233,6 +257,13 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:SCALING-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:DESIGN-COMPATIBILITY-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:UI-ARCHITECTURE-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:SCENE-GRAPH-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RENDER-COMMANDS-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:SURFACE-MANAGER-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:LAYER-MANAGER-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:FRAMEBUFFER-BACKEND-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:GOP-MODES-VALIDATED" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:GOP-DESCRIPTOR-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:MENU-DRAWN" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:COMPOSITOR-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:MOTION-READY" $(UEFI_DEBUG_LOG)
@@ -481,6 +512,7 @@ test-uefi-resolutions: $(UEFI_FIRMWARE)
 		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -FatDirectory build/uefi-800 \
 		-DebugLog $(UEFI_RESOLUTION_DEBUG_LOG) -Screenshot build/uefi-800x600.ppm
 	grep -F "UEFI:GOP-PREFERRED-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:GOP-MODES-VALIDATED" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:LAYOUT-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:SCALING-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:GAL-PRESENT" $(UEFI_RESOLUTION_DEBUG_LOG)
@@ -491,6 +523,7 @@ test-uefi-resolutions: $(UEFI_FIRMWARE)
 		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -FatDirectory build/uefi-1280 \
 		-DebugLog $(UEFI_RESOLUTION_DEBUG_LOG) -Screenshot build/uefi-1280x720.ppm
 	grep -F "UEFI:GOP-PREFERRED-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:GOP-MODES-VALIDATED" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:LAYOUT-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:SCALING-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:GAL-PRESENT" $(UEFI_RESOLUTION_DEBUG_LOG)
@@ -501,6 +534,7 @@ test-uefi-resolutions: $(UEFI_FIRMWARE)
 		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -FatDirectory build/uefi-1920 \
 		-DebugLog $(UEFI_RESOLUTION_DEBUG_LOG) -Screenshot build/uefi-1920x1080.ppm
 	grep -F "UEFI:GOP-PREFERRED-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:GOP-MODES-VALIDATED" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:LAYOUT-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:SCALING-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:GAL-PRESENT" $(UEFI_RESOLUTION_DEBUG_LOG)
@@ -679,9 +713,23 @@ test-platform: image
 	grep -F "BM:NETWORK" $(PLATFORM_DEBUG_LOG)
 	grep -F "BM:FIRMWARE" $(PLATFORM_DEBUG_LOG)
 	grep -F "BM:ENCRYPTION" $(PLATFORM_DEBUG_LOG)
+	grep -F "BIOS:VBE-BACKEND-READY" $(PLATFORM_DEBUG_LOG)
+	grep -F "BIOS:VBE-MODE-RANK-" $(PLATFORM_DEBUG_LOG)
 	grep -F "BM:START" $(PLATFORM_DEBUG_LOG)
 	grep -F "NOVA_KERNEL_READY" $(PLATFORM_SERIAL_LOG)
 	@echo "QEMU Netzwerk-, Firmware- und Verschluesselungsstatus erfolgreich"
+
+test-bios-vbe-fallback: image
+	rm -f $(VBE_FALLBACK_SERIAL_LOG) $(VBE_FALLBACK_DEBUG_LOG)
+	status=0; (sleep 12; echo "quit") | \
+		timeout 16s "$(QEMU)" -drive format=raw,file=$(DISK_IMAGE),if=ide \
+		-vga none -display none -monitor stdio \
+		-serial file:$(VBE_FALLBACK_SERIAL_LOG) -debugcon file:$(VBE_FALLBACK_DEBUG_LOG) \
+		-no-reboot -no-shutdown || status=$$?; \
+		test "$$status" -eq 0 -o "$$status" -eq 124
+	grep -F "BIOS:VBE-TEXT-FALLBACK" $(VBE_FALLBACK_DEBUG_LOG)
+	grep -F "NOVA_KERNEL_READY" $(VBE_FALLBACK_SERIAL_LOG)
+	@echo "QEMU BIOS-VBE-Textmodus-Fallback erfolgreich"
 
 test-elf: image $(KERNEL_ELF)
 	cp $(DISK_IMAGE) $(DIRECT_ELF_IMAGE)

@@ -1,6 +1,7 @@
 #include "compositor.h"
 
 #include "graphics.h"
+#include "framebuffer_backend.h"
 
 static uint32_t surface_pixels[2][NOVA_SURFACE_WIDTH * NOVA_SURFACE_HEIGHT];
 static nova_surface_t surfaces[2];
@@ -8,6 +9,9 @@ static bool surface_used[2];
 static nova_layer_t layers[NOVA_LAYER_CAPACITY];
 static uint32_t composed[NOVA_SURFACE_WIDTH * NOVA_SURFACE_HEIGHT];
 static uint8_t layer_count;
+static nova_rect_t present_damage[NOVA_DAMAGE_CAPACITY];
+static uint8_t present_damage_count;
+static bool present_full_damage;
 static uint32_t output_width, output_height;
 static nova_compositor_diagnostics_t diagnostics;
 
@@ -111,6 +115,7 @@ void nova_surface_clear(nova_surface_t *surface, uint32_t color)
 bool nova_compositor_begin_frame(void)
 {
     layer_count = 0;
+    present_damage_count=0;present_full_damage=false;
     diagnostics.modal_active = false;
     return output_width && output_height;
 }
@@ -220,6 +225,10 @@ bool nova_compositor_compose(void)
             }
         }
         ++diagnostics.composed_regions;
+        if(layer->surface->full_damage)present_full_damage=true;
+        else if(rect_valid(damage)&&present_damage_count<NOVA_DAMAGE_CAPACITY)
+            present_damage[present_damage_count++]=damage;
+        else if(rect_valid(damage))present_full_damage=true;
         nova_damage_clear(layer->surface);
     }
     ++diagnostics.frames;
@@ -227,7 +236,13 @@ bool nova_compositor_compose(void)
 }
 
 bool nova_compositor_present(void)
-{return nova_graphics_present(composed,output_width,output_height,NOVA_SURFACE_WIDTH);}
+{
+    if(nova_framebuffer_begin_frame()!=NOVA_FB_OK)return false;
+    if(!present_full_damage)for(uint8_t i=0;i<present_damage_count;++i)
+        if(nova_framebuffer_damage(present_damage[i])!=NOVA_FB_OK)return false;
+    return nova_framebuffer_present(composed,output_width,output_height,
+        NOVA_SURFACE_WIDTH)==NOVA_FB_OK;
+}
 
 void nova_compositor_set_fallback(uint8_t level)
 {

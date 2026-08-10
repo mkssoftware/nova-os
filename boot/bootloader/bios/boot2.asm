@@ -250,11 +250,16 @@ collect_memory_map:
 ; ---------------------------------------------------------------------------
 
 initialize_vbe:
-    mov ax, 0x4F01
-    mov cx, VBE_REQUESTED_MODE
-    xor bx, bx
-    mov es, bx
-    mov di, VBE_MODE_INFO_ADDRESS
+    mov word [vbe_best_mode], 0xFFFF
+    mov byte [vbe_best_rank], 0xFF
+
+    ; VBE 2 ControllerInfo anfordern. Das vorinitialisierte "VBE2" bittet
+    ; die Firmware, die erweiterte 512-Byte-Struktur zurückzugeben.
+    xor ax, ax
+    mov es, ax
+    mov di, VBE_CONTROLLER_INFO_ADDRESS
+    mov dword [es:di], 0x32454256       ; "VBE2"
+    mov ax, 0x4F00
     int 0x10
     cmp ax, 0x004F
     jne .fallback
@@ -262,18 +267,89 @@ initialize_vbe:
     xor ax, ax
     mov ds, ax
     mov es, ax
-    mov ax, [VBE_MODE_INFO_ADDRESS]
-    test ax, 0x0001
-    jz .fallback
-    test ax, 0x0080
-    jz .fallback
-    cmp byte [VBE_MODE_INFO_ADDRESS + 25], 32
+    cmp dword [VBE_CONTROLLER_INFO_ADDRESS], 0x41534556 ; "VESA"
     jne .fallback
-    cmp dword [VBE_MODE_INFO_ADDRESS + 40], 0
+    cmp word [VBE_CONTROLLER_INFO_ADDRESS + 4], 0x0200
+    jb .fallback
+
+    mov si, [VBE_CONTROLLER_INFO_ADDRESS + 0x0E]
+    mov ax, [VBE_CONTROLLER_INFO_ADDRESS + 0x10]
+    mov fs, ax
+    mov dx, ax
+    or dx, si
+    jz .fallback
+
+    ; Die Firmwareliste ist nicht vertrauenswürdig. Eine harte Obergrenze
+    ; verhindert endloses Lesen bei fehlendem 0xFFFF-Abschluss.
+    mov bp, 256
+.mode_loop:
+    mov dx, [fs:si]
+    cmp dx, 0xFFFF
+    je .mode_scan_done
+    mov [vbe_candidate_mode], dx
+
+    push fs
+    push si
+    push bp
+    mov cx, dx
+    xor ax, ax
+    mov es, ax
+    mov di, VBE_MODE_INFO_ADDRESS
+    mov ax, 0x4F01
+    int 0x10
+    mov bx, ax
+    pop bp
+    pop si
+    pop fs
+
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    cmp bx, 0x004F
+    jne .next_mode
+    call validate_vbe_mode_info
+    jc .next_mode
+    call vbe_mode_rank
+    cmp al, [vbe_best_rank]
+    jae .next_mode
+    mov [vbe_best_rank], al
+    mov dx, [vbe_candidate_mode]
+    mov [vbe_best_mode], dx
+    test al, al
+    jz .mode_scan_done                 ; höchste Präferenz erreicht
+
+.next_mode:
+    add si, 2
+    jnc .mode_pointer_ready
+    mov ax, fs
+    add ax, 0x1000
+    mov fs, ax
+.mode_pointer_ready:
+    dec bp
+    jnz .mode_loop
+
+.mode_scan_done:
+    cmp word [vbe_best_mode], 0xFFFF
     je .fallback
 
+    ; Gewählten Descriptor unmittelbar vor und nach SetMode erneut prüfen.
+    mov cx, [vbe_best_mode]
+    xor ax, ax
+    mov es, ax
+    mov di, VBE_MODE_INFO_ADDRESS
+    mov ax, 0x4F01
+    int 0x10
+    cmp ax, 0x004F
+    jne .fallback
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    call validate_vbe_mode_info
+    jc .fallback
+
     mov ax, 0x4F02
-    mov bx, VBE_REQUESTED_MODE | 0x4000
+    mov bx, [vbe_best_mode]
+    or bx, 0x4000
     int 0x10
     cmp ax, 0x004F
     jne .fallback
@@ -281,6 +357,18 @@ initialize_vbe:
     xor ax, ax
     mov ds, ax
     mov es, ax
+    mov cx, [vbe_best_mode]
+    mov di, VBE_MODE_INFO_ADDRESS
+    mov ax, 0x4F01
+    int 0x10
+    cmp ax, 0x004F
+    jne .fallback
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    call validate_vbe_mode_info
+    jc .fallback
+
     or dword [BOOT_INFO_ADDRESS + BIB_OFF_FLAGS], NOVA_BOOT_FLAG_FRAMEBUFFER
 
     mov eax, [VBE_MODE_INFO_ADDRESS + 40]
@@ -298,16 +386,152 @@ initialize_vbe:
     mov al, [VBE_MODE_INFO_ADDRESS + 25]
     mov dword [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 24], eax
     mov dword [BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 28], NOVA_PIXEL_FORMAT_BGRX8888
+    mov si, message_vbe_ready
+    call bios_debug_write_string
+    mov al, [vbe_best_rank]
+    add al, '0'
+    mov [message_vbe_rank_digit], al
+    mov si, message_vbe_rank
+    call bios_debug_write_string
     ret
 
 .fallback:
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    and dword [BOOT_INFO_ADDRESS + BIB_OFF_FLAGS], ~NOVA_BOOT_FLAG_FRAMEBUFFER
+    mov di, BOOT_INFO_ADDRESS + BIB_GRAPHICS_OFFSET + 8
+    mov cx, 6
+    xor eax, eax
+    rep stosd
     mov ax, 0x0003
     int 0x10
     xor ax, ax
     mov ds, ax
     mov es, ax
+    mov si, message_vbe_text_fallback
+    call bios_debug_write_string
     mov si, message_vbe_fallback
     call print_string
+    ret
+
+; CF=0 genau dann, wenn die ModeInfo als 32-Bit-BGRX-LFB sicher nutzbar ist.
+validate_vbe_mode_info:
+    mov ax, [VBE_MODE_INFO_ADDRESS]
+    test ax, 0x0001                    ; Modus unterstützt
+    jz .invalid
+    test ax, 0x0010                    ; Grafikmodus
+    jz .invalid
+    test ax, 0x0080                    ; Linear Framebuffer
+    jz .invalid
+    cmp byte [VBE_MODE_INFO_ADDRESS + 25], 32
+    jne .invalid
+    cmp byte [VBE_MODE_INFO_ADDRESS + 27], 6 ; Direct Color
+    jne .invalid
+    cmp dword [VBE_MODE_INFO_ADDRESS + 40], 0
+    je .invalid
+    cmp word [VBE_MODE_INFO_ADDRESS + 18], 0
+    je .invalid
+    cmp word [VBE_MODE_INFO_ADDRESS + 20], 0
+    je .invalid
+
+    movzx eax, word [VBE_MODE_INFO_ADDRESS + 18]
+    shl eax, 2
+    movzx edx, word [VBE_MODE_INFO_ADDRESS + 16]
+    cmp edx, eax
+    jb .invalid
+
+    ; Pitch * Höhe sowie PhysBasePtr + Größe müssen in 32 Bit passen.
+    mov eax, edx
+    movzx ecx, word [VBE_MODE_INFO_ADDRESS + 20]
+    mul ecx
+    test edx, edx
+    jnz .invalid
+    add eax, [VBE_MODE_INFO_ADDRESS + 40]
+    jc .invalid
+
+    cmp byte [VBE_MODE_INFO_ADDRESS + 31], 8
+    jne .invalid
+    cmp byte [VBE_MODE_INFO_ADDRESS + 32], 16
+    jne .invalid
+    cmp byte [VBE_MODE_INFO_ADDRESS + 33], 8
+    jne .invalid
+    cmp byte [VBE_MODE_INFO_ADDRESS + 34], 8
+    jne .invalid
+    cmp byte [VBE_MODE_INFO_ADDRESS + 35], 8
+    jne .invalid
+    cmp byte [VBE_MODE_INFO_ADDRESS + 36], 0
+    jne .invalid
+    cmp byte [VBE_MODE_INFO_ADDRESS + 37], 0
+    je .valid
+    cmp byte [VBE_MODE_INFO_ADDRESS + 37], 8
+    jne .invalid
+    cmp byte [VBE_MODE_INFO_ADDRESS + 38], 24
+    jne .invalid
+.valid:
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; AL: 0 = beste definierte Auflösung, 6 = sonstiger kompatibler Modus.
+vbe_mode_rank:
+    mov al, 0
+    cmp word [VBE_MODE_INFO_ADDRESS + 18], 1920
+    jne .rank_1600
+    cmp word [VBE_MODE_INFO_ADDRESS + 20], 1080
+    je .done
+.rank_1600:
+    inc al
+    cmp word [VBE_MODE_INFO_ADDRESS + 18], 1600
+    jne .rank_1366
+    cmp word [VBE_MODE_INFO_ADDRESS + 20], 900
+    je .done
+.rank_1366:
+    inc al
+    cmp word [VBE_MODE_INFO_ADDRESS + 18], 1366
+    jne .rank_1280
+    cmp word [VBE_MODE_INFO_ADDRESS + 20], 768
+    je .done
+.rank_1280:
+    inc al
+    cmp word [VBE_MODE_INFO_ADDRESS + 18], 1280
+    jne .rank_1024
+    cmp word [VBE_MODE_INFO_ADDRESS + 20], 720
+    je .done
+.rank_1024:
+    inc al
+    cmp word [VBE_MODE_INFO_ADDRESS + 18], 1024
+    jne .rank_800
+    cmp word [VBE_MODE_INFO_ADDRESS + 20], 768
+    je .done
+.rank_800:
+    inc al
+    cmp word [VBE_MODE_INFO_ADDRESS + 18], 800
+    jne .other
+    cmp word [VBE_MODE_INFO_ADDRESS + 20], 600
+    je .done
+.other:
+    mov al, 6
+.done:
+    ret
+
+; Real-Mode-Debugausgabe. bm_debug_write_string ist als 32-Bit-Routine
+; assembliert und darf vor dem Protected-Mode-Wechsel nicht aufgerufen werden.
+bios_debug_write_string:
+    push ax
+    push dx
+    mov dx, 0x00E9
+.next:
+    lodsb
+    test al, al
+    jz .done
+    out dx, al
+    jmp .next
+.done:
+    pop dx
+    pop ax
     ret
 
 ; ---------------------------------------------------------------------------
@@ -3823,6 +4047,9 @@ boot_drive:                 db 0
 boot_error_code:            db 0
 kernel_payload_format:      db 0
 retry_count:                db 0
+vbe_best_rank:              db 0xFF
+vbe_best_mode:              dw 0xFFFF
+vbe_candidate_mode:         dw 0xFFFF
 kernel_destination_offset: dw 0
 kernel_cylinder:            db 0
 kernel_head:                db 0
@@ -3868,6 +4095,14 @@ message_start:
     db "Nova Stage 2 / NBHP v1", 13, 10, 0
 message_vbe_fallback:
     db "BOOT-W001: VBE nicht verfuegbar, Textmodus aktiv", 13, 10, 0
+message_vbe_ready:
+    db "BIOS:VBE-BACKEND-READY", 13, 10, 0
+message_vbe_text_fallback:
+    db "BIOS:VBE-TEXT-FALLBACK", 13, 10, 0
+message_vbe_rank:
+    db "BIOS:VBE-MODE-RANK-"
+message_vbe_rank_digit:
+    db "0", 13, 10, 0
 message_memory_error:
     db "BOOT-2001: Speicherkarte nicht verfuegbar", 13, 10, 0
 message_kernel_load_error:

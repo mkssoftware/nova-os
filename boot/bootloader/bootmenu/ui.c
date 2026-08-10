@@ -18,6 +18,10 @@
 #include "branding.h"
 #include "design.h"
 #include "architecture.h"
+#include "scene_graph.h"
+#include "render_queue.h"
+#include "surface_manager.h"
+#include "layer_manager.h"
 #include "theme.h"
 #include "layout.h"
 #include "dialog.h"
@@ -25,6 +29,8 @@
 
 static nova_surface_t *base_surface;
 static nova_surface_t *interaction_surface;
+static nova_surface_handle_t base_surface_handle,interaction_surface_handle;
+static nova_layer_handle_t managed_layers[NOVA_LAYER_CUSTOM];
 static bool initialized;
 static nova_control_t *menu_list;
 static nova_control_t *menu_items[6];
@@ -275,10 +281,41 @@ bool bootmenu_initialize(void)
         if(!nova_architecture_register((nova_architecture_subsystem_t)subsystem))return false;
     if (!nova_compositor_initialize(nova_graphics_width(),
                                     nova_graphics_height())) return false;
+    nova_render_initialize();
+    nova_surface_manager_initialize();
+    nova_layer_manager_initialize();
     base_surface = nova_surface_acquire();
     interaction_surface = nova_surface_acquire();
     initialized = base_surface && interaction_surface;
     if (initialized) {
+        if(nova_managed_surface_import(base_surface,NOVA_SURFACE_BACKBUFFER,
+                NOVA_SURFACE_POOL_PERSISTENT,1,&base_surface_handle)!=NOVA_SURFACE_OK||
+           nova_managed_surface_import(interaction_surface,NOVA_SURFACE_LAYER,
+                NOVA_SURFACE_POOL_SCENE,2,&interaction_surface_handle)!=NOVA_SURFACE_OK||
+           !nova_managed_surface_native(nova_surface_manager_emergency()))return false;
+        static const nova_managed_layer_type_t layer_types[]={NOVA_LAYER_BACKGROUND,
+            NOVA_LAYER_CONTENT,NOVA_LAYER_CONTROL,NOVA_LAYER_DIALOG,NOVA_LAYER_OVERLAY,
+            NOVA_LAYER_CURSOR,NOVA_LAYER_EMERGENCY};
+        for(uint8_t i=0;i<sizeof(layer_types)/sizeof(layer_types[0]);++i){
+            nova_layer_descriptor_t descriptor={.type=layer_types[i],
+                .parent=nova_layer_manager_root(),.z_index=0,
+                .bounds={0,0,(int32_t)nova_graphics_width(),(int32_t)nova_graphics_height()},
+                .clip={0,0,(int32_t)nova_graphics_width(),(int32_t)nova_graphics_height()},
+                .opacity=1000,.transform={65536,0,0,65536,0,0},
+                .flags=NOVA_LAYER_ENABLED|NOVA_LAYER_VISIBLE,
+                .surface_policy=layer_types[i]==NOVA_LAYER_BACKGROUND||
+                    layer_types[i]==NOVA_LAYER_OVERLAY||layer_types[i]==NOVA_LAYER_EMERGENCY?
+                    NOVA_LAYER_SURFACE_REQUIRED:NOVA_LAYER_SURFACE_NONE};
+            if(layer_types[i]==NOVA_LAYER_DIALOG||layer_types[i]==NOVA_LAYER_EMERGENCY)
+                descriptor.flags&=~NOVA_LAYER_VISIBLE;
+            if(!nova_managed_layer_create(&descriptor,&managed_layers[layer_types[i]]))return false;
+        }
+        if(!nova_managed_layer_bind_surface(managed_layers[NOVA_LAYER_BACKGROUND],base_surface_handle)||
+           !nova_managed_layer_bind_surface(managed_layers[NOVA_LAYER_OVERLAY],interaction_surface_handle)||
+           !nova_managed_layer_bind_surface(managed_layers[NOVA_LAYER_EMERGENCY],
+                nova_surface_manager_emergency()))return false;
+        nova_debug_string("UEFI:SURFACE-MANAGER-READY\n");
+        nova_debug_string("UEFI:LAYER-MANAGER-READY\n");
         nova_resource_manager_initialize();
         if (!nova_theme_initialize()) return false;
         const nova_boot_configuration_t *initial_configuration=
@@ -520,6 +557,9 @@ bool bootmenu_initialize(void)
         nova_debug_string("UEFI:CONFIGURATION-MANAGER-READY\n");
         nova_debug_string("UEFI:INPUT-READY\n");
         nova_debug_string("UEFI:CONTROLS-READY\n");
+        if(!nova_scene_traverse(0,0,false)||nova_scene_diagnostics()->visited<2)return false;
+        nova_debug_string("UEFI:SCENE-GRAPH-READY\n");
+        nova_debug_string("UEFI:RENDER-COMMANDS-READY\n");
         static const nova_architecture_subsystem_t architecture_order[]={
             NOVA_ARCH_PLATFORM,NOVA_ARCH_RESOURCE,NOVA_ARCH_GRAPHICS,
             NOVA_ARCH_RENDERER,NOVA_ARCH_SCENE,NOVA_ARCH_LAYOUT,NOVA_ARCH_MOTION,
@@ -1469,7 +1509,12 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
         if(!dialog_page&&view_content[current_view])
             nova_view_set_layout(view_content[current_view],current_layout.panel);
     }
-    nova_surface_clear(base_surface, theme->background);
+    if(!nova_render_begin_frame()||
+       !nova_render_clear(base_surface,theme->background,NOVA_RENDER_BACKGROUND)||
+       !nova_render_execute()){
+        if(runtime_frame)nova_runtime_frame_abort();
+        return;
+    }
     nova_control_set_bounds(page_card,current_layout.panel);
     page_card->style.background=theme->surface;
     page_card->style.foreground=theme->text_primary;
@@ -1782,6 +1827,33 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
         draw_pointer(interaction_surface,0,0);
     }else draw_pointer(interaction_surface,0,0);
 
+    if(!nova_controls_sync_scene()||!nova_scene_traverse(0,0,true)){
+        if(runtime_frame)nova_runtime_frame_abort();
+        return;
+    }
+    nova_layer_manager_set_phase(NOVA_LAYER_PHASE_STATE_UPDATE);
+    nova_rect_t viewport={0,0,width,(int32_t)nova_graphics_height()};
+    if(!nova_managed_layer_set_bounds(managed_layers[NOVA_LAYER_BACKGROUND],viewport)||
+       !nova_managed_layer_set_bounds(managed_layers[NOVA_LAYER_CONTENT],viewport)||
+       !nova_managed_layer_set_bounds(managed_layers[NOVA_LAYER_CONTROL],viewport)||
+       !nova_managed_layer_set_bounds(managed_layers[NOVA_LAYER_DIALOG],dialog_bounds())||
+       !nova_managed_layer_set_bounds(managed_layers[NOVA_LAYER_OVERLAY],viewport)||
+       !nova_managed_layer_set_bounds(managed_layers[NOVA_LAYER_CURSOR],
+            (nova_rect_t){pointer_x,pointer_y,18,24})||
+       !nova_managed_layer_set_visible(managed_layers[NOVA_LAYER_DIALOG],nova_dialog_active())||
+       !nova_managed_layer_set_opacity(managed_layers[NOVA_LAYER_BACKGROUND],
+            (uint16_t)((uint32_t)opacity*1000u/255u))||
+       !nova_managed_layer_set_opacity(managed_layers[NOVA_LAYER_OVERLAY],
+            (uint16_t)((uint32_t)opacity*transition_opacity*1000u/(255u*255u)))){
+        if(runtime_frame)nova_runtime_frame_abort();
+        return;
+    }
+    nova_layer_handle_t layer_order[16];
+    if(nova_layer_manager_build_order(layer_order,16)<5){
+        if(runtime_frame)nova_runtime_frame_abort();
+        return;
+    }
+
     nova_layer_t base = {
         1, base_surface, {0, 0, width, (int32_t)nova_graphics_height()},
         {0, 0, width, (int32_t)nova_graphics_height()}, 0, opacity,
@@ -1804,17 +1876,28 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
         interaction.source.width=width+offset_px;
         interaction.destination.width=width+offset_px;
     }
+    if(!nova_render_end_frame()){
+        if(runtime_frame)nova_runtime_frame_abort();
+        return;
+    }
+    if(!nova_surface_manager_reset_frame()){
+        if(runtime_frame)nova_runtime_frame_abort();
+        return;
+    }
+    nova_layer_manager_set_phase(NOVA_LAYER_PHASE_COMPOSITING);
     nova_compositor_begin_frame();
     nova_compositor_submit_layer(&base);
     nova_compositor_submit_layer(&interaction);
     if(runtime_frame)nova_runtime_frame_step(NOVA_FRAME_COMPOSITOR);
     bool composed=nova_compositor_compose();
     if(runtime_frame)nova_runtime_frame_step(NOVA_FRAME_PRESENT);
+    nova_layer_manager_set_phase(NOVA_LAYER_PHASE_PRESENT);
     if(!composed||!nova_compositor_present()){
         if(runtime_frame)nova_runtime_frame_abort();
         nova_debug_string("UEFI:GAL-PRESENT-FAILED\n");
         nova_memory_reset_frame();return;
     }
+    nova_layer_manager_set_phase(NOVA_LAYER_PHASE_STATE_UPDATE);
     nova_debug_string("UEFI:GAL-PRESENT\n");
     nova_debug_string("UEFI:MENU-DRAWN\n");
     nova_debug_string("UEFI:IMAGE-CONTROL-FRAME-READY\n");

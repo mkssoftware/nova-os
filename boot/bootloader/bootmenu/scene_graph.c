@@ -80,6 +80,8 @@ bool nova_scene_mark_dirty(nova_scene_node_t *node,uint32_t flags)
 bool nova_scene_set_bounds(nova_scene_node_t *node,nova_rect_t bounds)
 {
     if(!valid(node)||bounds.width<0||bounds.height<0)return false;
+    if(node->bounds.x==bounds.x&&node->bounds.y==bounds.y&&node->bounds.width==bounds.width&&
+       node->bounds.height==bounds.height)return true;
     node->bounds=bounds;return nova_scene_mark_dirty(node,NOVA_SCENE_DIRTY_LAYOUT|NOVA_SCENE_DIRTY_RENDER);
 }
 bool nova_scene_set_transform(nova_scene_node_t *node,nova_scene_matrix_t transform)
@@ -90,16 +92,19 @@ bool nova_scene_set_transform(nova_scene_node_t *node,nova_scene_matrix_t transf
 bool nova_scene_set_opacity(nova_scene_node_t *node,uint16_t opacity)
 {
     if(!valid(node)||opacity>1000)return false;
+    if(node->opacity==opacity)return true;
     node->opacity=opacity;return nova_scene_mark_dirty(node,NOVA_SCENE_DIRTY_STATE|NOVA_SCENE_DIRTY_RENDER);
 }
 bool nova_scene_set_visibility(nova_scene_node_t *node,nova_scene_visibility_t visibility)
 {
     if(!valid(node)||visibility>NOVA_SCENE_COLLAPSED)return false;
+    if(node->visibility==visibility)return true;
     node->visibility=visibility;return nova_scene_mark_dirty(node,NOVA_SCENE_DIRTY_STATE|
         NOVA_SCENE_DIRTY_LAYOUT|NOVA_SCENE_DIRTY_RENDER);
 }
 bool nova_scene_set_enabled(nova_scene_node_t *node,bool enabled)
-{if(!valid(node))return false;node->enabled=enabled;return nova_scene_mark_dirty(node,NOVA_SCENE_DIRTY_STATE);}
+{if(!valid(node))return false;if(node->enabled==enabled)return true;node->enabled=enabled;
+ return nova_scene_mark_dirty(node,NOVA_SCENE_DIRTY_STATE);}
 static nova_scene_matrix_t multiply(nova_scene_matrix_t a,nova_scene_matrix_t b)
 {
     return (nova_scene_matrix_t){

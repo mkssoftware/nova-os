@@ -20,6 +20,11 @@
 #include "../boot/bootloader/bootmenu/design.h"
 #include "../boot/bootloader/bootmenu/architecture.h"
 #include "../boot/bootloader/bootmenu/scene_graph.h"
+#include "../boot/bootloader/bootmenu/render_queue.h"
+#include "../boot/bootloader/bootmenu/surface_manager.h"
+#include "../boot/bootloader/bootmenu/layer_manager.h"
+#include "../boot/bootloader/bootmenu/framebuffer_backend.h"
+#include "../boot/bootloader/bootmenu/gop_backend.h"
 #include "../boot/bootloader/bootmenu/theme.h"
 #include "../boot/bootloader/bootmenu/layout.h"
 #include "../boot/bootloader/bootmenu/navigation.h"
@@ -28,6 +33,7 @@
 
 static uint32_t runtime_task_order[4],runtime_task_count;
 static uint32_t state_callback_count;
+static uint16_t scene_visit_order[8],scene_visit_count;
 static void runtime_task(uint32_t id,void *context)
 {(void)context;if(runtime_task_count<4)runtime_task_order[runtime_task_count++]=id;}
 static void state_callback(const nova_state_object_t *object,uint8_t old_state,
@@ -46,11 +52,39 @@ static bool page_event_handler(nova_view_t *view,uint32_t event,void *context)
     uint32_t *visits=(uint32_t *)context;++*visits;
     return event==77 && view->type==NOVA_VIEW_CONTENT;
 }
+static bool scene_visit(nova_scene_node_t *node,void *context)
+{
+    (void)context;
+    if(scene_visit_count<8)scene_visit_order[scene_visit_count++]=node->id;
+    return true;
+}
 
 int main(void)
 {
     int failed = 0;
     nova_controls_initialize(0);
+    nova_scene_node_t *scene_parent=nova_scene_create(NOVA_SCENE_CONTAINER);
+    nova_scene_node_t *scene_child=nova_scene_create(NOVA_SCENE_CONTROL);
+    nova_scene_matrix_t translated=nova_scene_identity();translated.tx=5*65536;
+    failed|=check(scene_parent&&scene_child&&
+        nova_scene_attach(nova_scene_root(),scene_parent)&&
+        nova_scene_attach(scene_parent,scene_child)&&
+        nova_scene_set_bounds(scene_parent,(nova_rect_t){10,20,100,80})&&
+        nova_scene_set_bounds(scene_child,(nova_rect_t){3,4,20,10})&&
+        nova_scene_set_transform(scene_child,translated)&&
+        nova_scene_set_opacity(scene_parent,500)&&nova_scene_set_opacity(scene_child,500),
+        "Retained Scene Graph mit Hierarchie und Eigenschaften");
+    failed|=check(!nova_scene_attach(scene_child,scene_parent)&&
+        nova_scene_diagnostics()->rejected_cycles==1,
+        "Scene Graph verhindert Zyklen");
+    scene_visit_count=0;
+    failed|=check(nova_scene_traverse(scene_visit,0,false)&&scene_visit_count==3&&
+        scene_visit_order[0]==NOVA_SCENE_ROOT&&scene_visit_order[1]==scene_parent->id&&
+        scene_visit_order[2]==scene_child->id&&scene_child->world_bounds.x==18&&
+        scene_child->world_bounds.y==24&&scene_child->world_opacity==250,
+        "Scene Graph traversiert deterministisch und vererbt Transform/Opacity");
+    failed|=check(!nova_scene_destroy(scene_parent)&&nova_scene_destroy(scene_child)&&
+        nova_scene_destroy(scene_parent),"Scene Graph zerstoert Kind vor Eltern");
     nova_diag_initialize();
     nova_recovery_initialize();
     failed |= check(!nova_recovery_report(0,NOVA_UI_SUBSYSTEM_RENDERING,
@@ -691,6 +725,28 @@ int main(void)
     failed |= check(nova_motion_budget()->violations == 1 &&
                     nova_motion_budget()->quality == 3, "Budget-Degradation");
 
+    nova_gop_reset();
+    nova_gop_mode_candidate_t gop_modes[]={
+        {0,800,600,832,NOVA_GOP_PIXEL_RGB_RESERVED,0,0,0,0},
+        {1,1920,1080,1920,NOVA_GOP_PIXEL_BLT_ONLY,0,0,0,0},
+        {2,1280,720,1280,NOVA_GOP_PIXEL_BGR_RESERVED,0,0,0,0},
+        {3,1024,768,1024,NOVA_GOP_PIXEL_BIT_MASK,0x00ff0000u,0x0000ff00u,0x000000ffu,0xff000000u}};
+    uint32_t selected_gop=99;
+    failed|=check(nova_gop_select_mode(gop_modes,4,0,0,0,&selected_gop)==NOVA_GOP_OK&&
+        selected_gop==0&&nova_gop_select_mode(gop_modes,4,0,1280,720,&selected_gop)==NOVA_GOP_OK&&
+        selected_gop==2&&nova_gop_select_mode(gop_modes,4,1,0,0,&selected_gop)==NOVA_GOP_OK&&
+        selected_gop==2&&nova_gop_select_mode(gop_modes,4,0,1366,768,&selected_gop)==NOVA_GOP_INVALID_MODE,
+        "GOP-Modus deterministisch aktuell, bevorzugt oder als Fallback waehlen");
+    nova_gop_descriptor_t gop_descriptor;
+    failed|=check(!nova_gop_validate_candidate(&gop_modes[1])&&
+        nova_gop_initialize(&gop_modes[2],4,0x100000u,1280u*4u*720u)==NOVA_GOP_OK&&
+        nova_gop_is_available()&&nova_gop_get_descriptor(&gop_descriptor)==NOVA_GOP_OK&&
+        gop_descriptor.width==1280&&gop_descriptor.pitch==5120&&
+        gop_descriptor.pixel_format==NOVA_PIXEL_BGRA8888,
+        "GOP-Framebufferdescriptor validieren und bereitstellen");
+    failed|=check(nova_gop_shutdown()==NOVA_GOP_OK&&!nova_gop_is_available(),
+        "GOP-Backend kontrolliert herunterfahren");
+
     nova_graphics_context_t invalid_graphics={.width=8,.height=8,.pitch=28,
         .bits_per_pixel=32,.pixel_format=NOVA_PIXEL_BGRA8888,
         .firmware=NOVA_GRAPHICS_FIRMWARE_TEST,.framebuffer=graphics_frontbuffer,
@@ -713,10 +769,128 @@ int main(void)
                   nova_graphics_convert_pixel(0xff112233,NOVA_PIXEL_RGB565,0,0,0,0)==0x1106&&
                   nova_graphics_convert_pixel(0xff112233,NOVA_PIXEL_BIT_MASK,0xf800,0x07e0,0x001f,0)==0x1106,
                   "RGBA-Konvertierung fuer RGB, BGR, RGB565 und Bitmask");
+    failed|=check(nova_framebuffer_initialize()==NOVA_FB_OK&&
+        nova_framebuffer_info()->backend==NOVA_FB_BACKEND_TEST&&
+        nova_framebuffer_info()->pitch==40&&nova_framebuffer_info()->mapped,
+        "Einheitliches Framebuffer Backend initialisieren und mappen");
+    uint32_t read_color=0,copy_pixels[4]={0xff010203u,0xff112233u,0xff445566u,0xff778899u};
+    failed|=check(nova_framebuffer_write_pixel(1,1,0xff267cc1u)==NOVA_FB_OK&&
+        nova_framebuffer_read_pixel(1,1,&read_color)==NOVA_FB_OK&&read_color==0xff267cc1u&&
+        nova_framebuffer_horizontal_line(0,2,4,0xffabcdefu)==NOVA_FB_OK&&
+        nova_framebuffer_vertical_line(4,0,4,0xff123456u)==NOVA_FB_OK&&
+        nova_framebuffer_rectangle((nova_rect_t){5,1,2,2},0xff654321u)==NOVA_FB_OK&&
+        nova_framebuffer_copy((nova_rect_t){0,4,2,2},copy_pixels,2)==NOVA_FB_OK&&
+        nova_framebuffer_write_pixel(8,0,0)==NOVA_FB_BOUNDS_ERROR,
+        "Pitch-sichere Pixel-, Linien-, Rechteck- und Blockzugriffe");
+    static uint32_t partial_frame[64];
+    for(uint8_t i=0;i<64;++i)partial_frame[i]=0xff010101u+i;
+    for(uint8_t i=0;i<80;++i)graphics_frontbuffer[i]=0xdeadbeefu;
+    nova_state_set_phase(NOVA_STATE_PHASE_PRESENT);
+    failed|=check(nova_framebuffer_begin_frame()==NOVA_FB_OK&&
+        nova_framebuffer_damage((nova_rect_t){2,2,2,2})==NOVA_FB_OK&&
+        nova_framebuffer_present(partial_frame,8,8,8)==NOVA_FB_OK&&
+        graphics_frontbuffer[2+2*10]==partial_frame[2+2*8]&&
+        graphics_frontbuffer[0]==0xdeadbeefu&&
+        nova_framebuffer_diagnostics()->partial_presents==1,
+        "Dirty Region atomar und ohne fremde Pixel praesentieren");
+    uint32_t presents_before_compositor=nova_graphics_diagnostics()->presents;
+    nova_surface_manager_initialize();
+    nova_surface_descriptor_t surface_description={NOVA_SURFACE_OFFSCREEN,8,8,
+        NOVA_PIXEL_BGRA8888,0,NOVA_SURFACE_CLEAR_TRANSPARENT,0,77,
+        NOVA_SURFACE_POOL_SCENE,4096};
+    nova_surface_handle_t surface_handle=0,reused_handle=0,frame_handle=0;
+    nova_surface_mapping_t surface_mapping;
+    failed|=check(nova_managed_surface_create(&surface_description,&surface_handle)==NOVA_SURFACE_OK&&
+        surface_handle&&nova_managed_surface_lock(surface_handle,&surface_mapping)==NOVA_SURFACE_OK&&
+        surface_mapping.width==8&&surface_mapping.pitch>=32&&
+        nova_managed_surface_lock(surface_handle,&surface_mapping)==NOVA_SURFACE_ERR_LOCKED&&
+        nova_managed_surface_release(surface_handle)==NOVA_SURFACE_ERR_LOCKED&&
+        nova_managed_surface_unlock(surface_handle,&(nova_rect_t){1,1,2,2})==NOVA_SURFACE_OK,
+        "Surface Manager validiert Create, Pitch, Lock und Damage");
+    failed|=check(nova_managed_surface_retain(surface_handle)==NOVA_SURFACE_OK&&
+        nova_managed_surface_release(surface_handle)==NOVA_SURFACE_OK&&
+        nova_managed_surface_release(surface_handle)==NOVA_SURFACE_OK,
+        "Surface Referenzzaehlung fuehrt kontrolliert zu Recycling");
+    surface_description.width=4;surface_description.height=4;
+    failed|=check(nova_managed_surface_create(&surface_description,&reused_handle)==NOVA_SURFACE_OK&&
+        reused_handle!=surface_handle&&nova_managed_surface_native(surface_handle)==0&&
+        nova_surface_manager_diagnostics()->reuses==1,
+        "Generation Handle erkennt recycelte veraltete Surface-ID");
+    nova_surface_descriptor_t too_large=surface_description;too_large.width=8193;
+    failed|=check(nova_managed_surface_create(&too_large,&frame_handle)==NOVA_SURFACE_ERR_SIZE_OVERFLOW,
+        "Surface-Dimension und Groessenoverflow abweisen");
+    too_large=surface_description;too_large.width=1024;too_large.height=1024;
+    too_large.maximum_size=NOVA_MANAGED_SURFACE_DEFAULT_MAX_SIZE;
+    failed|=check(nova_managed_surface_create(&too_large,&frame_handle)==NOVA_SURFACE_ERR_BUDGET_EXCEEDED,
+        "Surface-Poolbudget hart begrenzen");
+    surface_description.pool=NOVA_SURFACE_POOL_FRAME;
+    failed|=check(nova_managed_surface_create(&surface_description,&frame_handle)==NOVA_SURFACE_OK&&
+        nova_surface_manager_reset_frame()&&nova_managed_surface_retain(frame_handle)==NOVA_SURFACE_ERR_INVALID_STATE&&
+        nova_surface_manager_emergency()!=0,"Frame-Pool resetten und Emergency-Surface vorhalten");
+
     failed |= check(nova_compositor_initialize(8, 8), "Compositor initialisieren");
     nova_surface_t *base = nova_surface_acquire();
     nova_surface_t *overlay = nova_surface_acquire();
     failed |= check(base && overlay, "feste Surface-Pools");
+    nova_surface_handle_t imported=0;
+    failed|=check(nova_managed_surface_import(base,NOVA_SURFACE_BACKBUFFER,
+        NOVA_SURFACE_POOL_PERSISTENT,1,&imported)==NOVA_SURFACE_OK&&
+        nova_managed_surface_native(imported)->pixels==base->pixels,
+        "Firmware-/Compositor-Surface validiert importieren");
+    nova_layer_manager_initialize();
+    nova_layer_descriptor_t layer_description={.type=NOVA_LAYER_CONTENT,
+        .parent=nova_layer_manager_root(),.z_index=2,.bounds={0,0,8,8},
+        .clip={0,0,8,8},.opacity=1000,.transform={65536,0,0,65536,0,0},
+        .flags=NOVA_LAYER_VISIBLE|NOVA_LAYER_ENABLED,
+        .surface_policy=NOVA_LAYER_SURFACE_NONE};
+    nova_layer_handle_t content_layer=0,dialog_layer=0,cursor_layer=0;
+    failed|=check(nova_managed_layer_create(&layer_description,&content_layer),
+        "Generation-sicheren Content-Layer erzeugen");
+    layer_description.type=NOVA_LAYER_DIALOG;layer_description.parent=content_layer;
+    layer_description.opacity=700;layer_description.surface_policy=NOVA_LAYER_SURFACE_AUTO;
+    failed|=check(nova_managed_layer_create(&layer_description,&dialog_layer)&&
+        (nova_managed_layer_get(dialog_layer)->flags&NOVA_LAYER_ISOLATED)&&
+        !nova_managed_layer_attach(dialog_layer,content_layer),
+        "Layerhierarchie verhindert Zyklus und isoliert Gruppenopacity");
+    layer_description.type=NOVA_LAYER_CURSOR;layer_description.parent=nova_layer_manager_root();
+    layer_description.opacity=1000;layer_description.surface_policy=NOVA_LAYER_SURFACE_NONE;
+    failed|=check(nova_managed_layer_create(&layer_description,&cursor_layer)&&
+        nova_managed_layer_bind_surface(dialog_layer,reused_handle)&&
+        nova_managed_layer_mark_dirty(dialog_layer,(nova_rect_t){1,1,2,2})&&
+        nova_layer_manager_diagnostics()->damage_propagations>=2,
+        "Layer-Surface-Bindung und Damage-Propagation");
+    nova_layer_handle_t ordered_layers[8];
+    uint16_t ordered_count=nova_layer_manager_build_order(ordered_layers,8);
+    failed|=check(ordered_count==3&&ordered_layers[0]==content_layer&&
+        ordered_layers[1]==dialog_layer&&ordered_layers[2]==cursor_layer&&
+        nova_managed_layer_get(dialog_layer)->effective_opacity==700,
+        "Layer stabil nach Klasse, Z, Creation und ID sortieren");
+    nova_layer_manager_set_phase(NOVA_LAYER_PHASE_COMPOSITING);
+    failed|=check(!nova_managed_layer_set_visible(content_layer,false)&&
+        nova_layer_manager_diagnostics()->rejected_mutations==1,
+        "Layer-Mutation waehrend Compositing sperren");
+    nova_layer_manager_set_phase(NOVA_LAYER_PHASE_STATE_UPDATE);
+    failed|=check(nova_managed_layer_destroy(dialog_layer)&&
+        nova_managed_layer_destroy(content_layer)&&nova_managed_layer_destroy(cursor_layer),
+        "Layer kontrolliert Kind vor Parent abbauen");
+    nova_render_initialize();
+    failed|=check(nova_render_begin_frame()&&
+        nova_render_clear(base,0xff000000u,NOVA_RENDER_BACKGROUND)&&
+        nova_render_rect(base,(nova_rect_t){0,1,2,1},0xff112233u,NOVA_RENDER_SHAPE,2)&&
+        nova_render_rect(base,(nova_rect_t){2,1,2,1},0xff112233u,NOVA_RENDER_SHAPE,2)&&
+        nova_render_push_clip((nova_rect_t){2,2,4,4})&&
+        nova_render_line(base,0,0,7,7,0xffffffffu,NOVA_RENDER_OVERLAY,0)&&
+        nova_render_circle(base,4,4,1,0xff267cc1u,NOVA_RENDER_OVERLAY,1)&&
+        nova_render_pop_clip(),"Unveraenderliche Render Commands erfassen");
+    failed|=check(!nova_render_rect(base,(nova_rect_t){0,0,0,1},0,
+        NOVA_RENDER_SHAPE,0),"Ungueltigen Render Command verwerfen");
+    failed|=check(nova_render_validate()&&nova_render_sort_optimize()&&
+        nova_render_command_count()==4&&nova_render_diagnostics()->batches==1&&
+        nova_render_execute()&&nova_render_end_frame()&&
+        base->pixels[1*base->stride+1]==0xff112233u&&
+        base->pixels[2*base->stride+2]==0xffffffffu&&
+        base->pixels[4*base->stride+4]==0xff267cc1u,
+        "Render Queue sortiert, batcht, clippt und rastert deterministisch");
 
     nova_resource_manager_initialize();
     failed |= check(nova_theme_initialize() &&
@@ -967,7 +1141,8 @@ int main(void)
     nova_state_set_phase(NOVA_STATE_PHASE_RENDER);
     failed|=check(!nova_compositor_present(),"Present ausserhalb der Present-Phase sperren");
     nova_state_set_phase(NOVA_STATE_PHASE_PRESENT);
-    failed|=check(nova_compositor_present()&&nova_graphics_diagnostics()->presents==1&&
+    failed|=check(nova_compositor_present()&&
+                  nova_graphics_diagnostics()->presents==presents_before_compositor+1&&
                   graphics_frontbuffer[2+2*10]!=0,
                   "Pitch-sicheres Present am Frameende");
     nova_compositor_set_fallback(3);

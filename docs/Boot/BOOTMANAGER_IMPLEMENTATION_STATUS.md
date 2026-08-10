@@ -774,3 +774,189 @@ Teilweise offen bleiben die gemeinsame BIOS-Anbindung, das vollständige
 Retained-Window-System, Touch, SVG/Blur, reale Firmware-Performancewerte und
 Tests auf VMware, Hyper-V, VirtualBox und Bare Metal. Diese Punkte werden nicht
 durch einen QEMU-Erfolg als erledigt ausgegeben.
+
+## Retained Scene Graph und Render Commands
+
+Der erste Block aus `NPSPEC-BOOTRENDER-0001` bis `0003` ist nun als eigene,
+plattformneutrale Laufzeit vorhanden. Der Scene Graph verwendet einen festen
+Pool mit 256 Nodes und genau einem unsichtbaren Root. Nodes besitzen stabile
+IDs, Parent/Child/Sibling-Beziehungen, Typ, Visibility/Hidden/Collapsed,
+Enabled, Bounds, lokale und akkumulierte 16.16-Matrizen, lokale und vererbte
+Opacity, Layer, Z-Index, Ressourcenhandle sowie getrennte Layout-, Render-,
+State-, Animation- und Transform-Dirtybits.
+
+Attach, Detach und Destroy validieren sämtliche Handles, verhindern Zyklen und
+Mehrfacheltern und erzwingen Kind-vor-Eltern-Abbau. Die lineare Traversierung
+ist in Einfügereihenfolge deterministisch und akkumuliert Transformation,
+Opacity und Sichtbarkeit. Jedes erzeugte Control wird automatisch als Node
+registriert. Elternbeziehungen werden gespiegelt; Bounds, Sichtbarkeit,
+Aktivierung und Dirtyzustand werden vor jedem produktiven UEFI-Compositing
+synchronisiert und der Baum anschließend traversiert.
+
+Der neue heapfreie Render Command Buffer besitzt 1024 Plätze pro Frame.
+Commands sind nach Submit unveränderliche Kopien und enthalten ID, Typ, Layer,
+Z-Index, Erzeugungsreihenfolge, Clip-ID, Opacity, Ressourcenhandle, Ziel-Surface
+und Geometrie. Die Queue validiert vor der Ausführung, sortiert stabil nach
+Layer, Z und Creation Order, bildet angrenzende Rechteck-Batches, verwaltet
+verschachtelte Clips und rastert Clear, Rechteck, Bresenham-Linie und gefüllten
+Kreis. Der produktive Bootframe erzeugt seinen Hintergrund bereits über diese
+Queue; Compositor und GAL bleiben davon getrennte nachfolgende Phasen.
+
+Hosttests prüfen Zyklenschutz, Transform-/Opacity-Vererbung, Traversal,
+Lebensdauer, ungültige Commands, Sortierung, Batchbildung, Clipping und Pixel-
+Resultate. Das reale GPT/FAT32-Image unter OVMF protokolliert
+`UEFI:SCENE-GRAPH-READY` und `UEFI:RENDER-COMMANDS-READY` und präsentiert elf
+vollständige Frames.
+
+Noch offen sind die vollständige Migration aller Text-, Icon- und Control-
+Primitive auf Commands, Command-Erzeugung ausschließlich aus dem Scene-
+Traversal, weitere Primitive und State-Tabellen, PNG/SVG sowie die identische
+BIOS-Anbindung. Deshalb bleiben alle drei NPSPECs ehrlich als teilweise
+integriert gekennzeichnet.
+
+## Layer and Surface Management
+
+`NPSPEC-BOOTRENDER-0004` besitzt jetzt getrennte zentrale Manager für Surface-
+und Layer-Lebensdauer. Der Surface Manager stellt 256 generationensichere
+Handles bereit. Größen- und Pitchberechnung sind overflow-fest, Pitch wird auf
+64 Byte ausgerichtet und Breite, Höhe, Einzelgröße sowie Poolbudget werden vor
+jeder Reservierung geprüft. Feste Segmente trennen Persistent, Scene, Effect,
+Frame und Emergency; Recycling verwendet nur format-, pool- und
+kapazitätskompatible Slots und erhöht dabei die Handle-Generation.
+
+Referenzzählung erkennt Überlauf und Double Release. Exklusive Locks verhindern
+Freigabe oder konkurrierenden Zugriff; Unlock übernimmt eine konkrete Damage-
+Region oder Full Damage. Der Framepool wird atomar zurückgesetzt. Eine kleine,
+bereits beim Start reservierte Emergency-Surface bleibt normalen Pfaden
+entzogen. Die beiden großen vorhandenen Compositorflächen werden ohne Kopie als
+validierte externe Backbuffer-/Layer-Surfaces importiert.
+
+Der Layer Manager verwaltet bis zu 512 Layer bei höchstens 32 Ebenen Tiefe. Er
+kennt Root, Background, Content, Control, Popup, Dialog, Overlay, Notification,
+Diagnostic, Cursor, Emergency und Custom sowie alle fünf Surface-Policies.
+Generation Handles, Eltern-/Kindlisten und Zyklenschutz sichern die
+Lebensdauer. AUTO isoliert Gruppen mit Opacity, Transform, Blur, Maske oder
+Cache; REQUIRED, CACHED und TRANSIENT isolieren zwingend. Traversal akkumuliert
+Worldtransform, Opacity und Clip und sortiert stabil nach Standardklasse,
+Z-Index, Creation Order und ID. Damage propagiert bis zum Root. Mutationen
+während Traversal, Compositing und Present werden abgewiesen.
+
+Der produktive UEFI-Pfad bildet Background, Content, Controls, Dialog,
+Overlay, Cursor und Emergency als verwaltete Layer ab, synchronisiert Bounds,
+Opacity und Dialogsichtbarkeit in der Updatephase und sperrt die Struktur für
+Compositing und Present. Hosttests decken Erzeugung, Recycling, stale Handles,
+Budgets, Lockkonflikte, Frame-Reset, Emergency, Hierarchie, Zyklus, Isolation,
+Sortierung, Damage, Surface-Bindung und Phasensperre ab. QEMU bestätigt
+`UEFI:SURFACE-MANAGER-READY` und `UEFI:LAYER-MANAGER-READY`.
+
+Weiterhin offen bleiben Mutation Queue, Maskensurfaces, Cache-Eviction,
+Triple-Buffering, partielle Present-Regionen, die vollständige automatische
+Qualitätsdegradation und BIOS-Parität. Der Audit kennzeichnet die Spezifikation
+daher weiterhin als teilweise integriert.
+
+## Framebuffer Backend
+
+`NPSPEC-BOOTRENDER-0005` besitzt nun ein separates Framebuffer Backend unter
+dem Compositor. Es erkennt VBE, GOP und Test als Backendtypen und hält einen
+erweiterbaren virtuellen Typ frei. Die einmalige Initialisierung übernimmt den
+bereits firmwarevalidierten Graphics Context und prüft Adresse, Auflösung,
+bytegenauen Pitch, BPP, Pixelformat, Mappinggröße und Capabilities erneut. Der
+Compositor ruft keine GOP- oder rohe GAL-Present-Funktion mehr auf.
+
+Die gemeinsame API bietet bounds-geprüftes Lesen und Schreiben einzelner
+Pixel, horizontale und vertikale Linien, Rechtecke sowie Blockkopien aus dem
+kanonischen 32-Bit-Farbmodell. Jede Adresse wird aus `y * Pitch + x * BPP`
+berechnet und nochmals gegen die Framebuffergröße geprüft. RGBA8888,
+BGRA8888, RGB888, BGR888, RGB565 und validierte Bitmasken werden über die
+gemeinsame Konvertierung verarbeitet.
+
+Ein Frame beginnt atomar, nimmt maximal 32 Dirty Regions auf, vereinigt
+überlappende Bereiche und darf nur in der Runtime-Presentphase abgeschlossen
+werden. Die GAL validiert zunächst sämtliche Regionen und schreibt erst danach
+die betroffenen Pixel; ein ungültiger Bereich erzeugt deshalb keinen
+Teilzustand. Ohne Damage wird sicher ein Full Present verwendet. Diagnosewerte
+umfassen Backend, Mappingdaten, Frames, Full/Partial Presents, geschriebene
+Bytes, Pixel-/Linien-/Rechteck-/Blockzugriffe, Bounds-, Mapping-, Format- und
+Presentfehler.
+
+Hosttests verwenden einen Pitch von zehn Pixeln bei nur acht sichtbaren
+Pixeln. Sie prüfen sämtliche Primitive, einen Schreibversuch außerhalb der
+Bounds sowie ein Partial Present und bestätigen, dass ein Pixel außerhalb der
+Dirty Region seinen Sentinelwert behält. Der produktive GOP-Pfad initialisiert
+den Vertrag vor der UI, der Compositor übergibt seine Damage-Menge an ihn und
+QEMU bestätigt `UEFI:FRAMEBUFFER-BACKEND-READY` sowie elf vollständige
+Presentphasen.
+
+Offen bleiben die Anbindung dieses C-Vertrags an den platzoptimierten
+BIOS-Assembler, ein explizit umschaltbarer Single-Buffer-Betrieb,
+plattformabhängige Cache-Flush-/MMIO-Barrieren, ein echtes Virtual-/Remote-
+Backend und Bare-Metal-Nachweise. Deshalb bleibt der Auditstatus teilweise.
+
+## UEFI GOP Backend
+
+`NPSPEC-BOOTRENDER-0006` ist jetzt in eine firmwareunabhängige GOP-Policy und
+einen dünnen UEFI-Adapter getrennt. Der Adapter verwendet ausschließlich
+`EFI_GRAPHICS_OUTPUT_PROTOCOL`, inventarisiert über `QueryMode` bis zu 64 Modi,
+kopiert die untrusted Firmwaredaten in feste Kandidatenstrukturen und gibt die
+Firmwarepuffer sofort wieder frei. Im Render- oder Present-Hotpath findet kein
+GOP-Aufruf und keine Allokation statt.
+
+Die Policy prüft pro Kandidat Auflösung, PixelsPerScanLine, Overflow,
+Pixelformat und bei BitMask vier disjunkte Farbmasken. BLT-only wird
+kontrolliert abgelehnt. Ohne Vorgabe bleibt der gültige aktuelle Modus aktiv;
+eine gewünschte Auflösung muss exakt vorhanden sein. Ist der aktuelle Modus
+ungültig, wird deterministisch der größte gültige Modus und bei Gleichstand
+die kleinste Mode-ID gewählt. Nach einem `SetMode` wird nicht der alte
+QueryMode-Snapshot verwendet, sondern der aktive GOP-Modus erneut vollständig
+gelesen und validiert.
+
+Der resultierende Descriptor enthält Framebufferadresse und -größe, Auflösung,
+Pitch, Bytes pro Pixel, internes Format, Farbmasks, Mode-ID und Modeanzahl.
+FrameBufferBase muss ungleich null sein; `Pitch * Height` wird overflow-fest
+gegen FrameBufferSize geprüft. Erst danach werden GAL und gemeinsames
+Framebuffer Backend aktiviert. Fehler führen über den bereits vorhandenen
+Runtime-Recoverypfad in den verständlichen Textfallback und blockieren den
+Bootvorgang nicht.
+
+Hosttests prüfen Current-, Preferred- und deterministische Fallback-Auswahl,
+eine nicht vorhandene Wunschauflösung, BLT-only, Descriptor und Shutdown. QEMU
+belegt den normalen GPT/FAT32-Start sowie separate echte GOP-Modi 800×600,
+1280×720 und 1920×1080. Alle vier Starts melden
+`UEFI:GOP-MODES-VALIDATED`; das Standardimage meldet zusätzlich
+`UEFI:GOP-DESCRIPTOR-READY` und präsentiert elf Frames.
+
+Noch offen sind die Übergabe dieses Descriptors über ein UEFI-NBHP/BIB an den
+Kernel, automatisierte GOP-not-found- und Safe-Mode-Injektion, ein echter
+BitMask-GOP-QEMU-Modus sowie Nachweise auf mehreren realen Firmware- und
+Bare-Metal-Implementierungen. Daher bleibt auch diese NPSPEC teilweise.
+
+## BIOS VBE Backend
+
+NPSPEC-BOOTRENDER-0007 verwendet im BIOS-Pfad nicht länger einen
+festverdrahteten Modus. Stage 2 fordert VBE-2.0-Controllerdaten an, prüft
+VESA-Signatur und Version und liest höchstens 256 Einträge aus der
+Firmware-Modusliste. Die Auswahl folgt exakt der vorgegebenen Reihenfolge
+1920×1080, 1600×900, 1366×768, 1280×720, 1024×768 und 800×600; erst danach
+darf ein anderer kompatibler Modus verwendet werden.
+
+Jede ModeInfo wird auf Supported-, Graphics- und LFB-Attribute, 32 Bit Direct
+Color, PhysBasePtr, Auflösung, bytegenauen Mindest-Pitch, overflow-festes
+Pitch × Height, das Framebuffer-Adressende und BGRX8888-Farbmasks geprüft.
+Der ausgewählte Descriptor wird direkt vor und nach SetMode erneut validiert.
+Erst dann werden Framebufferflag, Adresse, Pitch, Breite, Höhe, BPP und
+Pixelformat in den BIB-Graphics-TLV übernommen. Jeder Fehler löscht Flag und
+vollständige Payload, schaltet Modus 3 ein und setzt den Bootvorgang fort.
+
+make test-platform belegt mit QEMU std VGA BIOS:VBE-BACKEND-READY, den
+gewählten Modusrang, die interaktive GUI und NOVA_KERNEL_READY.
+make test-bios-vbe-fallback startet dasselbe Image mit -vga none und belegt
+BIOS:VBE-TEXT-FALLBACK sowie einen weiterhin erfolgreichen Kernelstart.
+
+Teilweise offen bleibt die Bindung des gemeinsamen C-Framebuffer-Backends mit
+Full/Partial Present an den platzbegrenzten BIOS-Assembler. Der gegenwärtige
+BIB-v1.2-Graphics-TLV besitzt außerdem keine normativen Felder für
+Framebuffergröße oder einzelne Farbmasks; die Masken werden daher vor der
+Übergabe streng validiert und durch BGRX8888 beschrieben, aber nicht einzeln
+transportiert. RGB888/RGB565 werden nicht aktiviert, weil dieselbe NPSPEC VBE
+2.0, LFB und 32 Bit als Voraussetzung festlegt. Firmware-Injektion für einzelne
+ungültige ModeInfo-Felder und reale Bare-Metal-Nachweise fehlen ebenfalls.

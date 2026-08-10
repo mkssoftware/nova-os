@@ -65,23 +65,42 @@ bool nova_graphics_initialize(const nova_graphics_context_t *description)
 void nova_graphics_shutdown(void)
 {if(context.initialized){context.initialized=false;context.backbuffer=0;++diagnostics.shutdowns;}}
 bool nova_graphics_present(const uint32_t *rgba,uint32_t width,uint32_t height,uint32_t stride)
+{return nova_graphics_present_regions(rgba,width,height,stride,0,0,true);}
+
+bool nova_graphics_present_regions(const uint32_t *rgba,uint32_t width,uint32_t height,
+    uint32_t stride,const nova_graphics_region_t *regions,uint32_t region_count,bool full)
 {
     if(!context.initialized||!rgba||width!=context.width||height!=context.height||stride<width||
-       nova_state_diagnostics()->phase!=NOVA_STATE_PHASE_PRESENT){
-        ++diagnostics.rejected_presents;return false;}
+       nova_state_diagnostics()->phase!=NOVA_STATE_PHASE_PRESENT||
+       (!full&&(!regions||!region_count))){++diagnostics.rejected_presents;return false;}
+    if(!full)for(uint32_t i=0;i<region_count;++i)if(regions[i].x<0||regions[i].y<0||
+       regions[i].width<=0||regions[i].height<=0||
+       (uint32_t)regions[i].x>=width||(uint32_t)regions[i].y>=height||
+       (uint32_t)regions[i].width>width-(uint32_t)regions[i].x||
+       (uint32_t)regions[i].height>height-(uint32_t)regions[i].y){
+        ++diagnostics.bounds_errors;++diagnostics.rejected_presents;return false;}
     context.backbuffer=rgba;context.backbuffer_stride=stride;
-    uint32_t bytes=(context.bits_per_pixel+7u)/8u;
-    for(uint32_t y=0;y<height;++y){uint8_t *destination=(uint8_t *)context.framebuffer+(uint64_t)y*context.pitch;
-        for(uint32_t x=0;x<width;++x){uint32_t source=rgba[(uint64_t)y*stride+x];
-            uint32_t converted=nova_graphics_convert_pixel(source,context.pixel_format,
-                context.red_mask,context.green_mask,context.blue_mask,context.alpha_mask);
-            if(bytes==2)((uint16_t *)destination)[x]=(uint16_t)converted;
-            else if(bytes==3){uint8_t *pixel=destination+x*3u;pixel[0]=(uint8_t)converted;
-                pixel[1]=(uint8_t)(converted>>8);pixel[2]=(uint8_t)(converted>>16);}
-            else ((uint32_t *)destination)[x]=converted;
-            if(context.pixel_format==NOVA_PIXEL_BGRA8888)++diagnostics.direct_pixels;
-            else ++diagnostics.converted_pixels;}}
-    ++diagnostics.presents;diagnostics.presented_bytes+=(uint64_t)width*height*bytes;return true;
+    uint32_t bytes=(context.bits_per_pixel+7u)/8u,loops=full?1u:region_count;
+    for(uint32_t region=0;region<loops;++region){
+        int32_t left=full?0:regions[region].x,top=full?0:regions[region].y;
+        int32_t right=full?(int32_t)width:left+regions[region].width;
+        int32_t bottom=full?(int32_t)height:top+regions[region].height;
+        for(int32_t y=top;y<bottom;++y){
+            uint8_t *destination=(uint8_t *)context.framebuffer+(uint64_t)y*context.pitch;
+            for(int32_t x=left;x<right;++x){uint32_t source=rgba[(uint64_t)y*stride+x];
+                uint32_t converted=nova_graphics_convert_pixel(source,context.pixel_format,
+                    context.red_mask,context.green_mask,context.blue_mask,context.alpha_mask);
+                if(bytes==2)((uint16_t *)destination)[x]=(uint16_t)converted;
+                else if(bytes==3){uint8_t *pixel=destination+x*3u;pixel[0]=(uint8_t)converted;
+                    pixel[1]=(uint8_t)(converted>>8);pixel[2]=(uint8_t)(converted>>16);}
+                else ((uint32_t *)destination)[x]=converted;
+                if(context.pixel_format==NOVA_PIXEL_BGRA8888)++diagnostics.direct_pixels;
+                else ++diagnostics.converted_pixels;}}
+    }
+    uint64_t pixel_count=full?(uint64_t)width*height:0;
+    if(!full)for(uint32_t i=0;i<region_count;++i)
+        pixel_count+=(uint64_t)regions[i].width*regions[i].height;
+    ++diagnostics.presents;diagnostics.presented_bytes+=pixel_count*bytes;return true;
 }
 const nova_graphics_context_t *nova_graphics_context(void){return &context;}
 const nova_graphics_diagnostics_t *nova_graphics_diagnostics(void){return &diagnostics;}

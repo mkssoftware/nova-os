@@ -3,6 +3,7 @@
 #include "unicode.h"
 #include "icons.h"
 #include "branding.h"
+#include "scene_graph.h"
 
 static nova_control_t controls[NOVA_CONTROL_CAPACITY];
 static bool used[NOVA_CONTROL_CAPACITY];
@@ -14,6 +15,7 @@ static uint16_t list_entry_count[NOVA_CONTROL_CAPACITY];
 static uint64_t list_selection_mask[NOVA_CONTROL_CAPACITY];
 static nova_style_descriptor_t styles[NOVA_STYLE_CAPACITY];
 static nova_control_template_t templates[NOVA_TEMPLATE_CAPACITY];
+static nova_scene_node_t *scene_nodes[NOVA_CONTROL_CAPACITY];
 
 static void copy_text(char *destination, const char *source)
 {
@@ -58,7 +60,10 @@ static uint32_t default_template_parts(nova_control_type_t type)
 
 void nova_controls_initialize(const nova_control_style_t *style)
 {
-    for (uint16_t i = 0; i < NOVA_CONTROL_CAPACITY; ++i) used[i] = false;
+    nova_scene_initialize();
+    for (uint16_t i = 0; i < NOVA_CONTROL_CAPACITY; ++i) {
+        used[i] = false;scene_nodes[i]=0;
+    }
     for(uint16_t i=0;i<NOVA_STYLE_CAPACITY;++i)styles[i]=(nova_style_descriptor_t){0};
     for(uint16_t i=0;i<NOVA_TEMPLATE_CAPACITY;++i)templates[i]=(nova_control_template_t){0};
     default_style = style ? *style : (nova_control_style_t){
@@ -107,6 +112,9 @@ nova_control_t *nova_control_create(nova_control_type_t type)
                                NOVA_TEXT_INPUT_PASSWORD:NOVA_TEXT_INPUT_STANDARD;
         if(type==NOVA_CONTROL_PASSWORD_FIELD)controls[i].flags|=NOVA_CONTROL_FLAG_PASSWORD;
         if(!nova_control_template_apply(&controls[i],(uint16_t)(type+1))){used[i]=false;return 0;}
+        scene_nodes[i]=nova_scene_create(NOVA_SCENE_CONTROL);
+        if(!scene_nodes[i]||!nova_scene_attach(nova_scene_root(),scene_nodes[i])){
+            used[i]=false;return 0;}
         ++diagnostics.created; ++diagnostics.active;
         return &controls[i];
     }
@@ -142,14 +150,23 @@ bool nova_control_set_state(nova_control_t *control, nova_control_state_t state)
     if (state == NOVA_CONTROL_DISABLED)
         control->flags &= ~NOVA_CONTROL_FLAG_ENABLED;
     control->flags |= NOVA_CONTROL_FLAG_DIRTY;
+    nova_scene_set_visibility(scene_nodes[control->id],
+        state==NOVA_CONTROL_VISIBLE||state==NOVA_CONTROL_ACTIVE?
+        NOVA_SCENE_VISIBLE:state==NOVA_CONTROL_DESTROYED?
+        NOVA_SCENE_COLLAPSED:NOVA_SCENE_HIDDEN);
+    nova_scene_set_enabled(scene_nodes[control->id],
+        (control->flags&NOVA_CONTROL_FLAG_ENABLED)!=0);
     return true;
 }
 
 bool nova_control_destroy(nova_control_t *control)
 {
-    if (!control || !used[control->id] || !nova_control_set_state(control, NOVA_CONTROL_DESTROYED))
+    if (!control || !used[control->id] || control->first_child!=NOVA_CONTROL_NONE||
+        !nova_control_set_state(control, NOVA_CONTROL_DESTROYED))
         return false;
     if(control->type==NOVA_CONTROL_PASSWORD_FIELD)nova_text_field_clear(control);
+    if(!nova_scene_destroy(scene_nodes[control->id]))return false;
+    scene_nodes[control->id]=0;
     if (focused_id == control->id) focused_id = NOVA_CONTROL_NONE;
     used[control->id] = false; --diagnostics.active; ++diagnostics.destroyed;
     return true;
@@ -164,13 +181,15 @@ bool nova_control_set_parent(nova_control_t *child, nova_control_t *parent)
     child->parent = parent->id;
     child->next_sibling = parent->first_child;
     parent->first_child = child->id;
+    if(!nova_scene_attach(scene_nodes[parent->id],scene_nodes[child->id]))return false;
     return true;
 }
 
 bool nova_control_set_bounds(nova_control_t *control, nova_rect_t bounds)
 {
-    if (!control || bounds.width <= 0 || bounds.height <= 0) return false;
-    control->bounds = bounds; control->flags |= NOVA_CONTROL_FLAG_DIRTY; return true;
+    if (!control || !used[control->id] || bounds.width <= 0 || bounds.height <= 0) return false;
+    control->bounds = bounds; control->flags |= NOVA_CONTROL_FLAG_DIRTY;
+    return nova_scene_set_bounds(scene_nodes[control->id],bounds);
 }
 
 bool nova_control_set_text(nova_control_t *control, const char *text)
@@ -389,6 +408,10 @@ bool nova_control_set_flags(nova_control_t *control, uint32_t flags)
     if (!control || !used[control->id] || control->state == NOVA_CONTROL_DESTROYED)
         return false;
     control->flags = flags | NOVA_CONTROL_FLAG_DIRTY;
+    nova_scene_set_visibility(scene_nodes[control->id],
+        flags&NOVA_CONTROL_FLAG_VISIBLE?NOVA_SCENE_VISIBLE:NOVA_SCENE_HIDDEN);
+    nova_scene_set_enabled(scene_nodes[control->id],
+        (flags&NOVA_CONTROL_FLAG_ENABLED)!=0);
     return true;
 }
 
@@ -844,6 +867,23 @@ bool nova_control_invalidate(nova_control_t *control)
     if (!control || !used[control->id] || control->state == NOVA_CONTROL_DESTROYED)
         return false;
     control->flags |= NOVA_CONTROL_FLAG_DIRTY;
+    return nova_scene_mark_dirty(scene_nodes[control->id],NOVA_SCENE_DIRTY_RENDER|
+        NOVA_SCENE_DIRTY_STATE);
+}
+
+bool nova_controls_sync_scene(void)
+{
+    for(uint16_t i=0;i<NOVA_CONTROL_CAPACITY;++i)if(used[i]){
+        nova_scene_visibility_t visibility=(controls[i].flags&NOVA_CONTROL_FLAG_VISIBLE)?
+            NOVA_SCENE_VISIBLE:NOVA_SCENE_HIDDEN;
+        if(!scene_nodes[i]||!nova_scene_set_bounds(scene_nodes[i],controls[i].bounds)||
+           !nova_scene_set_visibility(scene_nodes[i],visibility)||
+           !nova_scene_set_enabled(scene_nodes[i],
+                (controls[i].flags&NOVA_CONTROL_FLAG_ENABLED)!=0))return false;
+        if(controls[i].flags&NOVA_CONTROL_FLAG_DIRTY)
+            nova_scene_mark_dirty(scene_nodes[i],NOVA_SCENE_DIRTY_RENDER|
+                NOVA_SCENE_DIRTY_STATE);
+    }
     return true;
 }
 
