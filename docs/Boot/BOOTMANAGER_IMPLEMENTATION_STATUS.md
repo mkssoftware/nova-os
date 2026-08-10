@@ -111,8 +111,12 @@ Der Loader unterstützt Lazy Loading, synchrones Preload und die Reihenfolge
 Critical, High, Normal, Low. Bereits geladene Ressourcen werden aus dem Cache
 referenziert. Abhängigkeiten werden transitiv geladen und beim letzten Release
 transitiv freigegeben; ein fester Visiting-Bitset erkennt Zyklen. Das feste
-Cachebudget verwendet LRU-Eviction unter Berücksichtigung der Priorität und
-schützt aktive Referenzen. Unload, Manager-Shutdown, ungültige Zustände und das
+Cachebudget unterstützt LRU, LFU und permanente Einträge. Minimum, Maximum,
+Reserve und kritischer Bereich sind systemweit validiert; bei Druck werden
+zunächst LRU- und danach LFU-Kandidaten nach Priorität, Nutzungszeit und
+Zugriffshäufigkeit deterministisch entfernt. Aktive Referenzen sowie
+Permanent-Einträge bleiben geschützt. Unload, Manager-Shutdown, explizite
+Bereinigung, ungültige Zustände und das
 optionale, noch nicht implementierte Background Loading besitzen eindeutige
 Ergebnisse. Fehlende oder nach Registrierung beschädigte Ressourcen wechseln
 nur auf einen erneut verifizierten Default-Fallback.
@@ -120,8 +124,11 @@ nur auf einen erneut verifizierten Default-Fallback.
 Font, Icons, Themes, Designmanifest und NovaOS-Logo werden zentral registriert
 und vor dem ersten UI-Frame bis Priorität Normal preloaded. Hosttests decken
 Lazy/Preload, Cache, Referenzen, transitive Abhängigkeiten, Zyklen, CRC-Fallback,
-kleines Budget mit LRU, Busy-Unload und Shutdown ab. OVMF/QEMU meldet
-RESOURCE-LOADER-READY und RESOURCE-PRELOAD-READY. Externe BAP-Dateien,
+kleines Budget mit LRU, LFU-Zugriffshäufigkeit, permanente Ressourcen,
+Grenzwerte, Bereinigung, Busy-Unload und Shutdown ab. Standardschrift, alle
+15 Systemicons und das Logo sind permanent; das aktive Theme bleibt über
+seine Lebensdauer referenziert. OVMF/QEMU meldet RESOURCE-LOADER-READY,
+RESOURCE-CACHE-READY und RESOURCE-PRELOAD-READY. Externe BAP-Dateien,
 Packageheader, Indexdeskriptoren, Offsets und Signaturen bleiben blockiert,
 solange NPSPEC-BOOTRESOURCE-0002/0003 kein normatives Wire-Format definieren.
 
