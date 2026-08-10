@@ -9,7 +9,7 @@ static nova_boot_configuration_t defaults(void)
     nova_boot_configuration_t value={
         NOVA_CONFIGURATION_VERSION_MAJOR,NOVA_CONFIGURATION_VERSION_MINOR,
         NOVA_CONFIGURATION_VERSION_PATCH,NOVA_THEME_DARK,NOVA_QUALITY_BALANCED,
-        1000,750,5000,500,50,2,false,true,false,true,true,false,0
+        0,750,5000,500,50,2,false,true,false,true,true,false,0
     };
     value.checksum=nova_configuration_checksum(&value);return value;
 }
@@ -35,7 +35,8 @@ bool nova_configuration_validate(const nova_boot_configuration_t *value)
     if(!value||value->version_major!=NOVA_CONFIGURATION_VERSION_MAJOR||
        value->version_minor>NOVA_CONFIGURATION_VERSION_MINOR||
        value->theme>=NOVA_THEME_COUNT||value->quality>NOVA_QUALITY_AUTO||
-       value->scale_milli<1000||value->scale_milli>2000||
+       (value->scale_milli&&
+        (value->scale_milli<1000||value->scale_milli>3000))||
        value->tooltip_delay_ms<250||value->tooltip_delay_ms>1500||
        (value->tooltip_delay_ms-250)%250||value->watchdog_timeout_ms<1000||
        value->watchdog_timeout_ms>30000||value->key_repeat_delay_ms<100||

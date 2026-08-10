@@ -1,4 +1,5 @@
 #include "layout.h"
+#include "resolution.h"
 
 static nova_layout_diagnostics_t diagnostics;
 static int32_t clamp_i32(int32_t value, int32_t minimum, int32_t maximum)
@@ -45,14 +46,14 @@ bool nova_layout_compute(uint32_t width, uint32_t height, bool accessibility,
         ++diagnostics.fallbacks;
         return false;
     }
+    if(!nova_resolution_set_resolution(width,height)){++diagnostics.fallbacks;return false;}
+    const nova_viewport_t *viewport=nova_resolution_viewport();
     ++diagnostics.invalidations; ++diagnostics.measures;
-    uint32_t margin_x = width * 3u / 100u, margin_y = height * 3u / 100u;
-    if (margin_x < 12) margin_x = 12;
-    if (margin_y < 10) margin_y = 10;
+    uint32_t margin_x=(uint32_t)viewport->safe_pixels.x;
+    uint32_t margin_y=(uint32_t)viewport->safe_pixels.y;
     nova_layout_class_t cls = width < 900 || height < 600 ? NOVA_LAYOUT_COMPACT :
                               (width < 1600 ? NOVA_LAYOUT_STANDARD : NOVA_LAYOUT_WIDE);
-    uint32_t scale = width >= 2400 ? 2000 : width >= 1920 ? 1500 :
-                     width >= 1600 ? 1250 : 1000;
+    uint32_t scale=viewport->scale_milli;
     if (accessibility && scale < 1250) scale = 1250;
     int32_t safe_w = (int32_t)width - (int32_t)margin_x * 2;
     int32_t safe_h = (int32_t)height - (int32_t)margin_y * 2;
@@ -105,7 +106,7 @@ bool nova_layout_compute(uint32_t width, uint32_t height, bool accessibility,
         item_h,gap,clamp_i32(nova_dlu_to_pixels(20,scale),16,32),
         clamp_i32(nova_dlu_to_pixels(18,scale),12,32),
         clamp_i32(nova_dlu_to_pixels(15,scale),10,24),
-        scale,96,cls,compact_brand,accessibility
+        scale,viewport->dpi,cls,compact_brand,accessibility
     };
     ++diagnostics.arranges; ++diagnostics.finalizes;
     diagnostics.width=width; diagnostics.height=height;

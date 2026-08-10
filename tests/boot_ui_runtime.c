@@ -3,6 +3,7 @@
 #include "../boot/bootloader/bootmenu/motion.h"
 #include "../boot/bootloader/bootmenu/compositor.h"
 #include "../boot/bootloader/bootmenu/graphics.h"
+#include "../boot/bootloader/bootmenu/resolution.h"
 #include "../boot/bootloader/bootmenu/controls.h"
 #include "../boot/bootloader/bootmenu/text.h"
 #include "../boot/bootloader/bootmenu/unicode.h"
@@ -16,6 +17,9 @@
 #include "../boot/bootloader/bootmenu/runtime.h"
 #include "../boot/bootloader/bootmenu/state_model.h"
 #include "../boot/bootloader/bootmenu/branding.h"
+#include "../boot/bootloader/bootmenu/design.h"
+#include "../boot/bootloader/bootmenu/architecture.h"
+#include "../boot/bootloader/bootmenu/scene_graph.h"
 #include "../boot/bootloader/bootmenu/theme.h"
 #include "../boot/bootloader/bootmenu/layout.h"
 #include "../boot/bootloader/bootmenu/navigation.h"
@@ -522,6 +526,13 @@ int main(void)
                     credential->credential[0] == 0,
                     "Credential-Puffer beim Schliessen sicher geloescht");
     nova_layout_initialize();
+    nova_resolution_initialize();
+    failed|=check(nova_resolution_configure(1920,1080,96,false)&&
+                  nova_resolution_viewport()->scale_milli==1000&&
+                  nova_resolution_viewport()->resolution_class==NOVA_RESOLUTION_XL&&
+                  nova_resolution_viewport()->aspect_ratio==NOVA_ASPECT_16_9&&
+                  nova_resolution_viewport()->logical_width_dlu==1920,
+                  "Full-HD-Referenz verwendet 100 Prozent und DLU-Viewport");
     const uint32_t resolutions[][2] = {
         {640,480},{800,600},{1024,768},{1280,720},{1280,800},
         {1366,768},{1600,900},{1920,1080},{2560,1440},{3840,2160}
@@ -537,6 +548,25 @@ int main(void)
                         layout.status.y + layout.status.height <= layout.safe.y + layout.safe.height,
                         "interaktive Flächen innerhalb der Safe Area");
     }
+    failed|=check(nova_resolution_viewport()->resolution_class==NOVA_RESOLUTION_ULTRA&&
+                  nova_resolution_viewport()->scale_milli==2000&&
+                  nova_resolution_viewport()->logical_width_dlu==1920&&
+                  nova_resolution_viewport()->safe_pixels.width<3840,
+                  "UHD skaliert automatisch auf 200 Prozent mit Safe Area");
+    failed|=check(nova_resolution_set_resolution(3440,1440)&&
+                  nova_resolution_viewport()->aspect_ratio==NOVA_ASPECT_21_9&&
+                  nova_resolution_viewport()->resolution_class==NOVA_RESOLUTION_XXL,
+                  "UltraWide-Seitenverhaeltnis und Aufloesungsklasse");
+    failed|=check(nova_resolution_set_scale(1750)&&
+                  nova_logical_to_pixel(10)==18&&nova_pixel_to_logical(18)==10&&
+                  !nova_resolution_set_scale(999)&&nova_resolution_set_automatic(),
+                  "Benutzerskalierung, Pixelalignment und Rueckkehr zu Automatik");
+    failed|=check(nova_resolution_set_resolution(1920,1080)&&
+                  nova_resolution_set_dpi(144,true)&&
+                  nova_resolution_viewport()->scale_milli==1500&&
+                  nova_resolution_set_dpi(0,true)&&
+                  !nova_resolution_viewport()->dpi_reliable,
+                  "Verlaessliche DPI und sicherer DPI-Fallback");
     failed |= check(nova_dlu_to_pixels(10,1250)==13 &&
                     nova_dlu_to_pixels(-10,1250)==-13,
                     "deterministische DLU-Rundung");
@@ -725,6 +755,44 @@ int main(void)
     for(uint32_t icon=0;icon<NOVA_ICON_COUNT;++icon)
         if(!nova_icon_exists((nova_icon_token_t)icon))all_icons=false;
     failed |= check(all_icons,"alle semantischen Icon-Tokens besitzen Ressourcen");
+    failed|=check(nova_design_initialize()&&nova_design_diagnostics()->compatible&&
+                  nova_design_manifest()->design.major==NOVA_DESIGN_VERSION_MAJOR&&
+                  nova_design_components()->button_height_dlu==48&&
+                  nova_design_components()->button_radius_dlu==12&&
+                  nova_design_typography()->heading_dlu==32&&
+                  nova_design_motion()->dialog_ms==180&&
+                  nova_design_effects()->glass_blur_dlu==12&&
+                  nova_design_validate_resources(),
+                  "Versionierte Nova Design Language und gemeinsame DLU-Tokens");
+    nova_design_manifest_t incompatible=*nova_design_manifest();
+    incompatible.tokens.major=2;incompatible.checksum=0;
+    failed|=check(!nova_design_validate_manifest(&incompatible),
+                  "Inkompatible Design-Major-Version sicher abweisen");
+    nova_oem_design_t invalid_oem={.accent=0x80267cc1u};
+    nova_oem_design_t valid_oem={.accent=0xff267cc1u};
+    failed|=check(!nova_design_apply_oem(&invalid_oem)&&
+                  nova_design_apply_oem(&valid_oem)&&
+                  nova_design_accent()==0xff267cc1u,
+                  "OEM-Anpassung auf validierte Marke und Akzent begrenzen");
+
+    nova_architecture_initialize();
+    for(uint8_t i=0;i<NOVA_ARCH_SUBSYSTEM_COUNT;++i)
+        failed|=check(nova_architecture_register((nova_architecture_subsystem_t)i),
+                      "Architekturdeskriptor registrieren");
+    failed|=check(!nova_architecture_ready(NOVA_ARCH_APPLICATION),
+                  "Architekturabhaengigkeit abweisen");
+    static const nova_architecture_subsystem_t architecture_order[]={
+        NOVA_ARCH_PLATFORM,NOVA_ARCH_RESOURCE,NOVA_ARCH_GRAPHICS,
+        NOVA_ARCH_RENDERER,NOVA_ARCH_SCENE,NOVA_ARCH_LAYOUT,NOVA_ARCH_MOTION,
+        NOVA_ARCH_CONTROL,NOVA_ARCH_NAVIGATION,NOVA_ARCH_DIALOG,
+        NOVA_ARCH_APPLICATION,NOVA_ARCH_DIAGNOSTICS};
+    for(uint8_t i=0;i<sizeof(architecture_order)/sizeof(architecture_order[0]);++i)
+        failed|=check(nova_architecture_ready(architecture_order[i]),
+                      "Architekturabhaengigkeiten deterministisch aufloesen");
+    failed|=check(nova_architecture_validate()&&
+                  nova_architecture_diagnostics()->complete&&
+                  nova_architecture_descriptor(NOVA_ARCH_RENDERER)->platform_neutral,
+                  "Modulares Architekturmanifest validieren");
 
     nova_unicode_initialize();
     const char *unicode = "AΩЖאあ中";

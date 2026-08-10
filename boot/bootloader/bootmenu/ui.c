@@ -16,6 +16,8 @@
 #include "motion.h"
 #include "ui.h"
 #include "branding.h"
+#include "design.h"
+#include "architecture.h"
 #include "theme.h"
 #include "layout.h"
 #include "dialog.h"
@@ -268,6 +270,9 @@ static void sync_active_page(void)
 
 bool bootmenu_initialize(void)
 {
+    nova_architecture_initialize();
+    for(uint8_t subsystem=0;subsystem<NOVA_ARCH_SUBSYSTEM_COUNT;++subsystem)
+        if(!nova_architecture_register((nova_architecture_subsystem_t)subsystem))return false;
     if (!nova_compositor_initialize(nova_graphics_width(),
                                     nova_graphics_height())) return false;
     base_surface = nova_surface_acquire();
@@ -291,9 +296,11 @@ bool bootmenu_initialize(void)
             return false;
         if (!nova_icons_initialize()) return false;
         if (!nova_branding_initialize()) return false;
+        if(!nova_design_initialize())return false;
         if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_RESOURCES)||
            !nova_runtime_building_scene())return false;
         nova_debug_string("UEFI:BRANDING-READY\n");
+        nova_debug_string("UEFI:DESIGN-COMPATIBILITY-READY\n");
         nova_debug_string("UEFI:RESOURCES-READY\n");
         nova_page_model_initialize();
         static const char *const page_titles[7]={"NovaOS Bootmanager","Einstellungen",
@@ -513,6 +520,15 @@ bool bootmenu_initialize(void)
         nova_debug_string("UEFI:CONFIGURATION-MANAGER-READY\n");
         nova_debug_string("UEFI:INPUT-READY\n");
         nova_debug_string("UEFI:CONTROLS-READY\n");
+        static const nova_architecture_subsystem_t architecture_order[]={
+            NOVA_ARCH_PLATFORM,NOVA_ARCH_RESOURCE,NOVA_ARCH_GRAPHICS,
+            NOVA_ARCH_RENDERER,NOVA_ARCH_SCENE,NOVA_ARCH_LAYOUT,NOVA_ARCH_MOTION,
+            NOVA_ARCH_CONTROL,NOVA_ARCH_NAVIGATION,NOVA_ARCH_DIALOG,
+            NOVA_ARCH_APPLICATION,NOVA_ARCH_DIAGNOSTICS};
+        for(uint8_t i=0;i<sizeof(architecture_order)/sizeof(architecture_order[0]);++i)
+            if(!nova_architecture_ready(architecture_order[i]))return false;
+        if(!nova_architecture_validate())return false;
+        nova_debug_string("UEFI:UI-ARCHITECTURE-READY\n");
     }
     if (initialized) nova_debug_string("UEFI:COMPOSITOR-READY\n");
     return initialized;

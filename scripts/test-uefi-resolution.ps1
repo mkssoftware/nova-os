@@ -29,7 +29,9 @@ try {
         if (Test-Path -LiteralPath $logPath) {
             $content = Get-Content -LiteralPath $logPath -Raw -ErrorAction SilentlyContinue
             if ($content -like '*UEFI:GOP-PREFERRED-READY*' -and
+                $content -like '*UEFI:SCALING-READY*' -and
                 $content -like '*UEFI:LAYOUT-READY*' -and
+                $content -like '*UEFI:GAL-PRESENT*' -and
                 $content -like '*UEFI:COUNTDOWN-FRAME-READY*') { break }
             if ($content -like '*UEFI:GOP-PREFERRED-UNAVAILABLE*') {
                 throw 'Der angeforderte GOP-Modus ist in QEMU nicht verfügbar.'

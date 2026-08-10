@@ -661,3 +661,116 @@ Die bereits existierenden spezialisierten Dialog-, Page-, Navigation-, Motion-,
 Resource- und Input-Automaten sind funktional, aber noch nicht vollständig als
 Objekte dieses gemeinsamen Kerns registriert. Diese Migration sowie Touch,
 Controller und BIOS-Parität bleiben im Audit ausdrücklich teilweise offen.
+
+## BIOS/UEFI Graphics Abstraction
+
+Der UEFI-Pfad von `NPSPEC-BOOTUI-0005` verwendet jetzt einen gemeinsamen,
+heapfreien `GraphicsContext`. Er enthält Auflösung, bytegenauen Pitch,
+Farbtiefe, PixelFormat, DPI/Skalierung, Front- und Backbuffer, Capabilities,
+Framebufferadresse und -größe sowie Firmware- und Hardwarebeschreibung. Alle
+Zeiger, Dimensionen, Pitchwerte und Buffergrenzen werden vor der Aktivierung
+validiert. Layout, Controls und Compositor greifen nicht mehr auf GOP-Typen
+oder firmwareeigene Pixeloperationen zu.
+
+Der Compositor zeichnet ausschließlich in seinen Offscreen-Buffer. Erst nach
+der Runtime-Phase `Present` übergibt er das vollständige Bild an die GAL; ein
+Present während Input, Update, Animation, Layout oder Render wird verworfen.
+Der sichtbare Framebuffer wird zeilenweise mit dem gelieferten Pitch statt mit
+einer angenommenen Breite adressiert. Der Pfad allokiert während Present nicht
+und zählt Präsentationen, Bytes, direkte und konvertierte Pixel sowie Fehler.
+
+Das interne 32-Bit-Farbmodell wird in RGBA8888, BGRA8888, RGB888, BGR888,
+RGB565 oder beliebige Firmware-Bitmasken umgesetzt. Das GOP-Backend übernimmt
+RGB-, BGR- und Bitmask-Modi und weist BltOnly sicher ab. Der Standardstart
+beendet nach Runtime und State Model auch den GraphicsContext explizit.
+Hosttests prüfen Kanalreihenfolge, RGB565/Bitmask, einen Pitch größer als die
+Bildbreite, zu kleine Buffer und die Present-Phasensperre. QEMU bestätigt den
+echten GPT/FAT32-Image-Boot, Recovery sowie 800x600, 1280x720 und 1920x1080;
+`build/uefi-gal-1280x720.png` dokumentiert den sichtbaren Frame.
+
+Noch nicht vereinheitlicht ist der platzkritische BIOS/VBE-Stage-2-Renderer.
+Ebenso fehlen die Auswahl unter mehreren GOP-Handles, echtes Triple Buffering,
+QHD/4K oberhalb der derzeitigen statischen 1920x1080-Compositorfläche,
+physische DPI-Metadaten und gemessene Firmware-Zeitbudgets. Diese Punkte sind
+im Audit als teilweise offen ausgewiesen.
+
+## Resolution and Scaling System
+
+`NPSPEC-BOOTUI-0006` besitzt jetzt einen zentralen, gecachten DLU-Scaling-
+Kontext. Er speichert physische Auflösung, logischen Viewport, DPI und deren
+Verlässlichkeit, automatischen und erzwungenen Skalierungswert, vierseitige
+Safe Area, Auflösungsklasse und Seitenverhältnis. Die Spezifikationsreferenz
+1920x1080 entspricht nun exakt 100 Prozent; 3840x2160 ergibt ohne verlässliche
+DPI 200 Prozent und damit wieder 1920x1080 logische DLU.
+
+Die Runtime unterscheidet XS, S, M, L, XL, XXL und Ultra sowie 4:3, 5:4, 16:9,
+16:10, 21:9, 32:9 und Custom. Bei verlässlicher Firmware-DPI wird DPI/96 auf
+den nächsten 25-Prozent-Schritt quantisiert. Ohne verlässliche DPI verwendet
+sie die konservative Relation zur Full-HD-Referenz. Automatik ist der sichere
+Default; die Konfiguration akzeptiert zusätzlich erzwungene 100 bis 300
+Prozent. Ungültige Auflösung oder Skalierung wird abgewiesen, ungültige DPI
+fällt auf 96 DPI mit Auflösungsheuristik zurück.
+
+DLU-zu-Pixel und Pixel-zu-DLU runden deterministisch auf ganze Pixel. Layout,
+Text, Icons, Abstände, Radien, Dialoge und Motion-Distanzen verwenden denselben
+Wert. Die Safe Area beträgt pro Seite drei Prozent mit einer Mindestgrenze für
+kleine Modi. Eine Neuberechnung erfolgt nur bei Start, Auflösungs-, DPI- oder
+Scalewechsel; wiederholte Frames lesen den vorberechneten Kontext.
+
+Hosttests prüfen 640x480 bis 3840x2160, QHD, UHD, 21:9, 144 DPI, 175-Prozent-
+Override, Rückkehr zur Automatik, ungültige Werte und Pixelalignment. QEMU
+belegt GOP, Scaling, Layout und GAL-Present bei 800x600, 1280x720 und der
+korrigierten Full-HD-Referenz. `build/uefi-scaling-fullhd.png` ist der sichtbare
+Nachweis.
+
+Noch offen sind ein sichtbares Scale-Control in den Einstellungen, echte
+physische DPI aus Hardwaredaten, Multi-/Dual-Screen, die gemeinsame BIOS-
+Anbindung und QEMU-QHD/UHD. Letztere sind derzeit durch die statische
+1920x1080-Compositorfläche begrenzt und deshalb nur im Layout-Hosttest belegt.
+
+## NovaOS Design Compatibility
+
+`NPSPEC-BOOTUI-0010` besitzt nun ein versioniertes Designmanifest 1.0.0. Es
+bindet Theme-, Token-, Typografie-, Icon-, Font- und Motion-Version an dieselbe
+Major-Version und schützt das Manifest mit einer FNV-Prüfsumme. Beim Start
+werden Dark, Light und High Contrast, die gemeinsame Schrift, das NovaOS-Logo
+und sämtliche semantischen Icons vor ihrer Verwendung geprüft. Eine
+inkompatible Major-Version oder beschädigte Ressource verhindert die
+Aktivierung.
+
+Gemeinsame DLU-Token definieren Heading, Body, Caption, Zeilenhöhen,
+Laufweiten, Gewichte, Buttonhöhe und -radius, Dialogradius, Kontrollabstände,
+Motion-Dauern und -Kurven sowie Glass-, Kanten- und Schattenwerte. OEM-Daten
+sind auf validierte Hintergrund-, Logo- und Animationsressourcen sowie eine
+opake Akzentfarbe begrenzt; Komponenten, Navigation, Layout und Basistokens
+bleiben unveränderbar. Der Hosttest prüft Versionen, Ressourcen, Tokenwerte und
+OEM-Grenzen. Der QEMU-Theme-Test hat alle drei Themes sichtbar durchlaufen und
+protokolliert `UEFI:DESIGN-COMPATIBILITY-READY`.
+
+Die vollständige Akzeptanz kann noch nicht behauptet werden: Im Repository
+existiert kein NovaOS-Desktop-Renderer als visueller Vergleichspartner. Ebenso
+fehlen ein allgemeiner SVG-Primärpfad, ein externes gemeinsames Designpaket und
+vollständige BIOS-Parität. Das Laden eines solchen Pakets bleibt zusätzlich an
+den nicht normativ definierten BAP-/Index-Wire-Formaten blockiert.
+
+## Bootmanager UI Architecture
+
+`NPSPEC-BOOTUI-0001` wird jetzt durch ein zentrales ABI-1.0-Manifest technisch
+abgebildet. Es registriert Platform, Resources, Graphics, Renderer, Scene,
+Layout, Motion, Controls, Navigation, Dialoge, Boot Applications und
+Diagnostics als getrennte Schichten. Jede Schicht besitzt eine feste ID,
+Version, Plattformneutralitätsangabe und explizite Abhängigkeitsmaske. Eine
+Schicht kann nur nach allen Vorgängern bereit werden; doppelte Registrierung,
+ABI-Konflikte und verfrühte Anwendungsschichten werden verworfen.
+
+Der produktive UEFI-Start validiert das vollständige Manifest erst nachdem die
+konkreten Module initialisiert wurden und protokolliert anschließend
+`UEFI:UI-ARCHITECTURE-READY`. Der Hosttest erzwingt zusätzlich einen falschen
+Application-vor-Navigation-Versuch. Zusammen mit Runtime, State Model, GAL,
+Compositor, Layout, Motion, Controls, Navigation, Dialogen und Recovery ist die
+modulare UEFI-Pipeline damit explizit und prüfbar.
+
+Teilweise offen bleiben die gemeinsame BIOS-Anbindung, das vollständige
+Retained-Window-System, Touch, SVG/Blur, reale Firmware-Performancewerte und
+Tests auf VMware, Hyper-V, VirtualBox und Bare Metal. Diese Punkte werden nicht
+durch einen QEMU-Erfolg als erledigt ausgegeben.

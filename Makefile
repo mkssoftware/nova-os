@@ -82,10 +82,14 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		-Iboot/bootloader/bootmenu -I$(BUILD_DIR)/generated tests/boot_ui_runtime.c \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/compositor.c \
 		boot/bootloader/bootmenu/graphics.c \
+		boot/bootloader/bootmenu/resolution.c \
 		boot/bootloader/bootmenu/controls.c boot/bootloader/bootmenu/text.c \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/resources.c \
 		boot/bootloader/bootmenu/icons.c \
 		boot/bootloader/bootmenu/branding.c \
+		boot/bootloader/bootmenu/design.c \
+		boot/bootloader/bootmenu/architecture.c \
+		boot/bootloader/bootmenu/scene_graph.c \
 		boot/bootloader/bootmenu/theme.c \
 		boot/bootloader/bootmenu/layout.c \
 		boot/bootloader/bootmenu/input.c \
@@ -123,12 +127,16 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/motion.h \
 		boot/bootloader/bootmenu/compositor.c boot/bootloader/bootmenu/compositor.h \
 		boot/bootloader/bootmenu/graphics.c boot/bootloader/bootmenu/graphics.h \
+		boot/bootloader/bootmenu/resolution.c boot/bootloader/bootmenu/resolution.h \
 		boot/bootloader/bootmenu/controls.c boot/bootloader/bootmenu/controls.h \
 		boot/bootloader/bootmenu/text.c boot/bootloader/bootmenu/text.h \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/unicode.h \
 		boot/bootloader/bootmenu/resources.c boot/bootloader/bootmenu/resources.h \
 		boot/bootloader/bootmenu/icons.c boot/bootloader/bootmenu/icons.h \
 		boot/bootloader/bootmenu/branding.c boot/bootloader/bootmenu/branding.h \
+		boot/bootloader/bootmenu/design.c boot/bootloader/bootmenu/design.h \
+		boot/bootloader/bootmenu/architecture.c boot/bootloader/bootmenu/architecture.h \
+		boot/bootloader/bootmenu/scene_graph.c boot/bootloader/bootmenu/scene_graph.h \
 		boot/bootloader/bootmenu/theme.c boot/bootloader/bootmenu/theme.h \
 		boot/bootloader/bootmenu/layout.c boot/bootloader/bootmenu/layout.h \
 		boot/bootloader/bootmenu/input.c boot/bootloader/bootmenu/input.h \
@@ -153,10 +161,14 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/compositor.c \
 		boot/bootloader/bootmenu/graphics.c \
+		boot/bootloader/bootmenu/resolution.c \
 		boot/bootloader/bootmenu/controls.c boot/bootloader/bootmenu/text.c \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/resources.c \
 		boot/bootloader/bootmenu/icons.c \
 		boot/bootloader/bootmenu/branding.c \
+		boot/bootloader/bootmenu/design.c \
+		boot/bootloader/bootmenu/architecture.c \
+		boot/bootloader/bootmenu/scene_graph.c \
 		boot/bootloader/bootmenu/theme.c \
 		boot/bootloader/bootmenu/layout.c \
 		boot/bootloader/bootmenu/input.c \
@@ -199,6 +211,9 @@ test-uefi-image: uefi
 	grep -F "UEFI:RUNTIME-FRAME-COMPLETE" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:GAL-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:GAL-PRESENT" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:SCALING-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:DESIGN-COMPATIBILITY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:UI-ARCHITECTURE-READY" build/qemu-uefi-image-debug.log
 	@echo "Aktuelles GPT/FAT32-UEFI-IMG bootet erfolgreich"
 
 test-uefi: boot-ui-runtime-check uefi
@@ -215,6 +230,9 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:GOP-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:GAL-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:GAL-PRESENT" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:SCALING-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:DESIGN-COMPATIBILITY-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:UI-ARCHITECTURE-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:MENU-DRAWN" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:COMPOSITOR-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:MOTION-READY" $(UEFI_DEBUG_LOG)
@@ -238,6 +256,7 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:START" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RUNTIME-SHUTDOWN" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RUNTIME-DESTROYED" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:GAL-SHUTDOWN" $(UEFI_DEBUG_LOG)
 	@echo "QEMU UEFI Bootmanager- und Countdown-Test erfolgreich"
 
 test-uefi-input: uefi
@@ -441,6 +460,8 @@ test-uefi-themes: uefi
 		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
 		-DebugLog $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:THEME-LIGHT" $(UEFI_THEME_DEBUG_LOG)
+	grep -F "UEFI:DESIGN-COMPATIBILITY-READY" $(UEFI_THEME_DEBUG_LOG)
+	grep -F "UEFI:UI-ARCHITECTURE-READY" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:THEME-HIGH-CONTRAST" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:THEME-DARK" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:MENU-BUTTON-OPEN" $(UEFI_THEME_DEBUG_LOG)
@@ -461,6 +482,8 @@ test-uefi-resolutions: $(UEFI_FIRMWARE)
 		-DebugLog $(UEFI_RESOLUTION_DEBUG_LOG) -Screenshot build/uefi-800x600.ppm
 	grep -F "UEFI:GOP-PREFERRED-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:LAYOUT-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:SCALING-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:GAL-PRESENT" $(UEFI_RESOLUTION_DEBUG_LOG)
 	test -s build/uefi-800x600.ppm
 	$(MAKE) uefi UEFI_DIR=build/uefi-1280 UEFI_FIRMWARE=$(UEFI_FIRMWARE) \
 		UEFI_EXTRA_CFLAGS="-DNOVA_GOP_PREFERRED_WIDTH=1280 -DNOVA_GOP_PREFERRED_HEIGHT=720"
@@ -469,6 +492,8 @@ test-uefi-resolutions: $(UEFI_FIRMWARE)
 		-DebugLog $(UEFI_RESOLUTION_DEBUG_LOG) -Screenshot build/uefi-1280x720.ppm
 	grep -F "UEFI:GOP-PREFERRED-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:LAYOUT-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:SCALING-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:GAL-PRESENT" $(UEFI_RESOLUTION_DEBUG_LOG)
 	test -s build/uefi-1280x720.ppm
 	$(MAKE) uefi UEFI_DIR=build/uefi-1920 UEFI_FIRMWARE=$(UEFI_FIRMWARE) \
 		UEFI_EXTRA_CFLAGS="-DNOVA_GOP_PREFERRED_WIDTH=1920 -DNOVA_GOP_PREFERRED_HEIGHT=1080"
@@ -477,6 +502,8 @@ test-uefi-resolutions: $(UEFI_FIRMWARE)
 		-DebugLog $(UEFI_RESOLUTION_DEBUG_LOG) -Screenshot build/uefi-1920x1080.ppm
 	grep -F "UEFI:GOP-PREFERRED-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:LAYOUT-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:SCALING-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:GAL-PRESENT" $(UEFI_RESOLUTION_DEBUG_LOG)
 	test -s build/uefi-1920x1080.ppm
 	@echo "QEMU UEFI 800x600-, 1280x720- und 1920x1080-Layout-Test erfolgreich"
 

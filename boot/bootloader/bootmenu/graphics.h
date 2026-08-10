@@ -40,7 +40,7 @@ typedef struct {
     uint32_t backbuffer_stride,capabilities;
     uint32_t red_mask,green_mask,blue_mask,alpha_mask;
     const char *vendor,*device;
-    bool initialized;
+    bool dpi_reliable,initialized;
 } nova_graphics_context_t;
 
 typedef struct {

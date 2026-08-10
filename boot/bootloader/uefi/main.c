@@ -10,6 +10,8 @@
 #include "../bootmenu/memory.h"
 #include "../bootmenu/recovery.h"
 #include "../bootmenu/configuration.h"
+#include "../bootmenu/graphics.h"
+#include "../bootmenu/resolution.h"
 #include "firmware.h"
 
 EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *system_table);
@@ -238,10 +240,11 @@ static EFI_INPUT_KEY read_key(EFI_SYSTEM_TABLE *system_table)
 
 static void boot_selected(UINTN selection)
 {
-    if (selection == 0) {
-        nova_runtime_shutdown();nova_debug_string("UEFI:RUNTIME-SHUTDOWN\n");
-        nova_runtime_destroy();nova_debug_string("UEFI:RUNTIME-DESTROYED\n");
-        nova_debug_string("UEFI:START\n");
+      if (selection == 0) {
+          nova_runtime_shutdown();nova_debug_string("UEFI:RUNTIME-SHUTDOWN\n");
+          nova_runtime_destroy();nova_debug_string("UEFI:RUNTIME-DESTROYED\n");
+          nova_graphics_shutdown();nova_debug_string("UEFI:GAL-SHUTDOWN\n");
+          nova_debug_string("UEFI:START\n");
     }
     else if (selection == 1) nova_debug_string("UEFI:INSTALL-UNAVAILABLE\n");
     else if (selection == 2) nova_debug_string("UEFI:SETTINGS\n");
@@ -460,6 +463,10 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     nova_diag_initialize();nova_recovery_initialize();
     if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_DIAGNOSTICS))return 1;
     nova_configuration_initialize();
+    if(nova_configuration_effective()->scale_milli){
+        if(!nova_resolution_set_scale(nova_configuration_effective()->scale_milli))return 1;
+    }else if(!nova_resolution_set_automatic())return 1;
+    nova_debug_string("UEFI:SCALING-READY\n");
     if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_CONFIGURATION)||
        !nova_runtime_loading())return 1;
 

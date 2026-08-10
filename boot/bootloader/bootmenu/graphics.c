@@ -1,24 +1,18 @@
 #include "graphics.h"
 #include "state_model.h"
+#include "resolution.h"
 
 static nova_graphics_context_t context;
 static nova_graphics_diagnostics_t diagnostics;
 
-static uint32_t scale_for_width(uint32_t width)
-{
-    if(width>=3840)return 2000;
-    if(width>=2560)return 1750;
-    if(width>=1920)return 1500;
-    if(width>=1366)return 1250;
-    return 1000;
-}
 static uint32_t shift_for_mask(uint32_t mask)
 {uint32_t shift=0;if(!mask)return 0;while(!(mask&1u)){mask>>=1;++shift;}return shift;}
 static uint32_t bits_for_mask(uint32_t mask)
 {uint32_t bits=0;while(mask){bits+=mask&1u;mask>>=1;}return bits;}
 static uint32_t pack_channel(uint8_t value,uint32_t mask)
 {if(!mask)return 0;uint32_t bits=bits_for_mask(mask),maximum=bits>=32?0xffffffffu:((1u<<bits)-1u);
- return (((uint32_t)value*maximum+127u)/255u<<shift_for_mask(mask))&mask;}
+ uint64_t scaled=((uint64_t)value*maximum+127u)/255u;
+ return ((uint32_t)(scaled<<shift_for_mask(mask)))&mask;}
 
 uint32_t nova_graphics_convert_pixel(uint32_t rgba,nova_pixel_format_t format,
                                     uint32_t red_mask,uint32_t green_mask,
@@ -43,6 +37,14 @@ bool nova_graphics_initialize(const nova_graphics_context_t *description)
        (description->bits_per_pixel!=16&&description->bits_per_pixel!=24&&
         description->bits_per_pixel!=32)||description->pixel_format>NOVA_PIXEL_BIT_MASK){
         ++diagnostics.format_errors;return false;}
+    if(description->pixel_format==NOVA_PIXEL_BIT_MASK&&
+       ((!description->red_mask||!description->green_mask||!description->blue_mask)||
+        (description->red_mask&description->green_mask)||
+        (description->red_mask&description->blue_mask)||
+        (description->green_mask&description->blue_mask)||
+        (description->alpha_mask&(description->red_mask|description->green_mask|
+                                  description->blue_mask)))){
+        ++diagnostics.format_errors;return false;}
     uint32_t bytes=(description->bits_per_pixel+7u)/8u;
     uint64_t minimum_pitch=(uint64_t)description->width*bytes;
     uint64_t required=(uint64_t)description->pitch*description->height;
@@ -50,7 +52,13 @@ bool nova_graphics_initialize(const nova_graphics_context_t *description)
         ++diagnostics.bounds_errors;return false;}
     context=*description;context.backbuffer=0;context.backbuffer_stride=0;
     if(!context.dpi)context.dpi=96;
-    if(!context.scale_milli)context.scale_milli=scale_for_width(context.width);
+    nova_resolution_initialize();
+    if(!nova_resolution_configure(context.width,context.height,context.dpi,
+                                  context.dpi_reliable)&&
+       context.firmware!=NOVA_GRAPHICS_FIRMWARE_TEST)return false;
+    if(context.scale_milli){
+        if(!nova_resolution_set_scale(context.scale_milli))return false;
+    }else context.scale_milli=nova_resolution_viewport()->scale_milli;
     context.capabilities|=NOVA_GRAPHICS_DOUBLE_BUFFER|NOVA_GRAPHICS_BLEND;
     context.initialized=true;++diagnostics.initializations;return true;
 }
