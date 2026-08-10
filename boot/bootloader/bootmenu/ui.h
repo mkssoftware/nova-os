@@ -23,6 +23,7 @@ void bootmenu_set_status(const char *text);
 void bootmenu_draw(uint64_t selection, uint8_t opacity);
 void bootmenu_set_transition(int32_t offset_dlu, uint8_t opacity, bool input_locked);
 void bootmenu_set_dialog_motion(uint8_t opacity, uint16_t scale_per_mille);
+void bootmenu_set_dialog_effects(bool enabled);
 bool bootmenu_transition_input_locked(void);
 bool bootmenu_settings_toggle_tooltips(void);
 bool bootmenu_settings_toggle_reduced_motion(void);

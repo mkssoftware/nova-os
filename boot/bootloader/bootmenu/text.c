@@ -2,15 +2,32 @@
 #include "boot_font_data.h"
 #include "unicode.h"
 #include "resources.h"
+#include "font_resources.h"
 
 bool nova_text_register_font_resource(void)
 {
-    return nova_resource_register("boot://fonts/segoe-ui/semibold/15",
-        NOVA_RESOURCE_FONT, 1, nova_font_bitmap, sizeof(nova_font_bitmap), 0, 0);
+    static const nova_font_coverage_t coverage[]={
+        {0x20,0x7e},{0x00c4,0x00c4},{0x00d6,0x00d6},{0x00dc,0x00dc},
+        {0x00df,0x00df},{0x00e4,0x00e4},{0x00f6,0x00f6},{0x00fc,0x00fc}};
+    const char *uri="boot://fonts/segoe-ui/semibold/15";
+    if(!nova_resource_register(uri,NOVA_RESOURCE_FONT,1,nova_font_bitmap,
+        sizeof(nova_font_bitmap),0,0)||!nova_font_resource_initialize())return false;
+    nova_font_resource_descriptor_t descriptor={.font_id=NOVA_SYSTEM_FONT_ID,
+        .resource_id=nova_resource_id(uri),.name="NovaOS UI 15",
+        .family="Segoe UI",.style="SemiBold",.version=1,.resource_version=1,
+        .family_type=NOVA_FONT_FAMILY_UI,.weight=NOVA_FONT_WEIGHT_SEMIBOLD,
+        .priority=255,.coverage=coverage,
+        .coverage_count=(uint8_t)(sizeof(coverage)/sizeof(coverage[0]))};
+    if(!nova_font_resource_register(&descriptor))return false;
+    for(uint8_t role=0;role<NOVA_FONT_ROLE_COUNT;++role)
+        if(!nova_font_theme_set((nova_font_role_t)role,NOVA_SYSTEM_FONT_ID))return false;
+    return true;
 }
 
 static uint8_t font_code(uint32_t codepoint)
 {
+    if(!nova_font_resource_resolve(nova_font_theme_get(NOVA_FONT_ROLE_PRIMARY),codepoint))
+        return 0;
     return nova_unicode_latin_glyph_code(codepoint, 0);
 }
 

@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <string.h>
 #include <stdio.h>
 #include "../boot/bootloader/bootmenu/motion.h"
 #include "../boot/bootloader/bootmenu/compositor.h"
@@ -8,6 +9,7 @@
 #include "../boot/bootloader/bootmenu/text.h"
 #include "../boot/bootloader/bootmenu/unicode.h"
 #include "../boot/bootloader/bootmenu/resources.h"
+#include "../boot/bootloader/bootmenu/font_resources.h"
 #include "../boot/bootloader/bootmenu/icons.h"
 #include "../boot/bootloader/bootmenu/input.h"
 #include "../boot/bootloader/bootmenu/diagnostics.h"
@@ -24,6 +26,16 @@
 #include "../boot/bootloader/bootmenu/surface_manager.h"
 #include "../boot/bootloader/bootmenu/layer_manager.h"
 #include "../boot/bootloader/bootmenu/framebuffer_backend.h"
+#include "../boot/bootloader/bootmenu/present_scheduler.h"
+#include "../boot/bootloader/bootmenu/dirty_manager.h"
+#include "../boot/bootloader/bootmenu/clip_mask.h"
+#include "../boot/bootloader/bootmenu/transform2d.h"
+#include "../boot/bootloader/bootmenu/rounded_geometry.h"
+#include "../boot/bootloader/bootmenu/effects.h"
+#include "../boot/bootloader/bootmenu/background_blur.h"
+#include "../boot/bootloader/bootmenu/image_renderer.h"
+#include "../boot/bootloader/bootmenu/render_quality.h"
+#include "../boot/bootloader/bootmenu/software_renderer.h"
 #include "../boot/bootloader/bootmenu/gop_backend.h"
 #include "../boot/bootloader/bootmenu/theme.h"
 #include "../boot/bootloader/bootmenu/layout.h"
@@ -40,6 +52,11 @@ static void state_callback(const nova_state_object_t *object,uint8_t old_state,
                            uint8_t new_state,void *context)
 {(void)object;(void)old_state;(void)new_state;(void)context;++state_callback_count;}
 static uint32_t graphics_frontbuffer[80];
+static uint64_t present_test_clock;
+static uint64_t test_clock_us(void *context)
+{(void)context;present_test_clock+=50;return present_test_clock;}
+static uint8_t test_vector_mask(int32_t x,int32_t y,void *context)
+{(void)context;return ((x+y)&1)?128u:255u;}
 
 static int check(int condition, const char *message)
 {
@@ -62,6 +79,158 @@ static bool scene_visit(nova_scene_node_t *node,void *context)
 int main(void)
 {
     int failed = 0;
+    nova_transform2d_t transform=nova_transform_identity();
+    nova_point2d_t transformed_point_value={0},round_trip={0};
+    failed|=check(nova_transform_scale(&transform,2.0f,3.0f)&&
+        nova_transform_rotate(&transform,1.57079632679f)&&
+        nova_transform_translate(&transform,10.0f,20.0f)&&
+        nova_transform_point(&transform,(nova_point2d_t){1,0},
+                             &transformed_point_value)&&
+        transformed_point_value.x>9.99f&&transformed_point_value.x<10.01f&&
+        transformed_point_value.y>21.99f&&transformed_point_value.y<22.01f,
+        "Scale, Rotation und Translation in fester Reihenfolge");
+    nova_rect_t transformed_bounds={0};
+    failed|=check(nova_transform_bounds(&transform,(nova_rect_t){0,0,2,1},
+        &transformed_bounds)&&transformed_bounds.x==7&&transformed_bounds.y==20&&
+        transformed_bounds.width==3&&transformed_bounds.height==4,
+        "Rotierte Bounding Box aus allen vier Ecken berechnen");
+    nova_transform2d_t inverse={0};
+    failed|=check(nova_transform_inverse(&inverse,&transform)&&
+        nova_transform_point(&inverse,transformed_point_value,&round_trip)&&
+        round_trip.x>0.99f&&round_trip.x<1.01f&&
+        round_trip.y>-0.01f&&round_trip.y<0.01f,
+        "Affine Matrix sicher invertieren");
+    nova_transform2d_t mirror=nova_transform_identity();
+    nova_transform2d_t shear=nova_transform_identity();
+    nova_transform2d_t pivot_operation=nova_transform_identity();
+    nova_transform2d_t pivot_target=nova_transform_identity();
+    nova_point2d_t pivot_result={0},mirror_result={0},shear_result={0};
+    failed|=check(nova_transform_mirror(&mirror,true,false)&&
+        nova_transform_shear(&shear,0.5f,0.25f)&&
+        nova_transform_rotate(&pivot_operation,3.14159265359f)&&
+        nova_transform_pivot(&pivot_target,&pivot_operation,5,5)&&
+        nova_transform_point(&mirror,(nova_point2d_t){1,0},&mirror_result)&&
+        nova_transform_point(&shear,(nova_point2d_t){2,4},&shear_result)&&
+        nova_transform_point(&pivot_target,(nova_point2d_t){4,5},&pivot_result)&&
+        mirror_result.x<-0.99f&&shear_result.x>3.99f&&
+        pivot_result.x>5.98f&&pivot_result.x<6.02f,
+        "Spiegelung, Shear und Pivot kombinieren");
+    nova_fixed_transform2d_t fixed_transform={0},fixed_inverse={0};
+    nova_fixed_point2d_t fixed_point={0},fixed_round_trip={0};
+    failed|=check(nova_transform_to_fixed(&transform,&fixed_transform)&&
+        nova_transform_fixed_inverse(&fixed_inverse,fixed_transform)&&
+        nova_transform_fixed_point(fixed_transform,
+            (nova_fixed_point2d_t){65536,0},&fixed_point)&&
+        nova_transform_fixed_point(fixed_inverse,fixed_point,&fixed_round_trip)&&
+        fixed_round_trip.x>65530&&fixed_round_trip.x<65542,
+        "Float-API deterministisch in 16.16-Ausfuehrung ueberfuehren");
+    union {uint32_t u;float f;} not_a_number={0x7fc00000u};
+    nova_transform2d_t invalid_transform=nova_transform_identity();
+    invalid_transform.tx=not_a_number.f;
+    nova_transform_stack_reset();
+    failed|=check(!nova_transform_valid(&invalid_transform)&&
+        nova_transform_stack_push(&transform)&&
+        nova_transform_stack_current().tx>9.99f&&
+        nova_transform_stack_pop()&&!nova_transform_stack_pop(),
+        "NaN abweisen und Transformationsstack gegen Underflow sichern");
+    nova_rounded_reset_diagnostics();
+    nova_round_rect_t rounded={0},asymmetric={0},scaled_rounded={0},animated={0};
+    failed|=check(nova_round_rect_create(&rounded,2,2,10,8,99)&&
+        rounded.corners.top_left==4&&rounded.corners.bottom_right==4&&
+        nova_round_rect_create_corners(&asymmetric,(nova_rect_t){2,2,10,8},
+            (nova_corner_radius_t){0,2,3,4})&&
+        asymmetric.corners.top_left==0&&asymmetric.corners.bottom_left==4,
+        "Rounded Geometry begrenzt uniforme und individuelle Radien");
+    failed|=check(nova_round_rect_contains(&rounded,6,5)&&
+        !nova_round_rect_contains(&rounded,2,2)&&
+        nova_round_rect_coverage(&rounded,2,3,NOVA_ROUNDED_AA_HIGH)>0&&
+        nova_round_rect_coverage(&rounded,2,3,NOVA_ROUNDED_AA_HIGH)<255,
+        "Formgenaues Hit Testing und analytisches Kanten-AA");
+    failed|=check(nova_round_rect_scale(&asymmetric,98304,&scaled_rounded)&&
+        scaled_rounded.bounds.width==15&&scaled_rounded.corners.bottom_left==6&&
+        nova_round_rect_lerp(&asymmetric,&scaled_rounded,500,&animated)&&
+        animated.bounds.width==13&&animated.corners.bottom_left==5,
+        "DLU-Skalierung und animierbare Geometrieparameter");
+    uint32_t rounded_pixels[16*16]={0};
+    nova_surface_t rounded_surface={.pixels=rounded_pixels,.width=16,.height=16,.stride=16};
+    failed|=check(nova_round_rect_render(&rounded_surface,&asymmetric,0xff267cc1u,
+        NOVA_ROUNDED_AA_HIGH)&&rounded_pixels[5*16+6]==0xff267cc1u&&
+        nova_round_rect_render_border(&rounded_surface,&asymmetric,1,
+            NOVA_ROUNDED_BORDER_INSIDE,0xffffffffu,NOVA_ROUNDED_AA_STANDARD)&&
+        nova_rounded_diagnostics()->rendered==2&&
+        nova_rounded_diagnostics()->anti_aliasing,
+        "Heapfreies Rounded Rendering mit AA und Innenrahmen");
+    nova_effect_initialize(NOVA_EFFECT_QUALITY_HIGH);nova_effect_begin_frame();
+    nova_effect_object_t effect_object={0};
+    nova_effect_t effect_variants[8]={
+        {NOVA_EFFECT_DROP_SHADOW,0xff000000u,3,0.5f,1,1},
+        {NOVA_EFFECT_INNER_SHADOW,0xff000000u,2,0.4f,0,0},
+        {NOVA_EFFECT_AMBIENT_SHADOW,0xff000000u,4,0.2f,0,0},
+        {NOVA_EFFECT_CONTACT_SHADOW,0xff000000u,1,0.7f,0,1},
+        {NOVA_EFFECT_OUTER_GLOW,0xff267cc1u,3,0.6f,0,0},
+        {NOVA_EFFECT_INNER_GLOW,0xffffffffu,2,0.3f,0,0},
+        {NOVA_EFFECT_FOCUS_GLOW,0xff267cc1u,2,0.8f,0,0},
+        {NOVA_EFFECT_ACCENT_GLOW,0xffffa52bu,2,0.5f,0,0}};
+    failed|=check(nova_effect_object_create(&effect_object,&rounded),
+        "Effektobjekt aus Rounded-Kontur erzeugen");
+    for(uint8_t i=0;i<4;++i)failed|=check(nova_shadow_set(&effect_object,&effect_variants[i]),
+        "Schatteneffekt in stabiler Reihenfolge speichern");
+    for(uint8_t i=4;i<8;++i)failed|=check(nova_glow_set(&effect_object,&effect_variants[i]),
+        "Gloweffekt unabhaengig speichern");
+    nova_effect_t invalid_effect=effect_variants[0];invalid_effect.radius=-1;
+    nova_effect_t animated_effect={0};
+    failed|=check(!nova_shadow_set(&effect_object,&invalid_effect)&&
+        nova_effect_lerp(&effect_variants[0],&(nova_effect_t){NOVA_EFFECT_DROP_SHADOW,
+            0xffffffffu,5,1,3,3},500,&animated_effect)&&
+        animated_effect.radius>3.99f&&animated_effect.radius<4.01f&&
+        !nova_glow_set(&effect_object,&effect_variants[4]),
+        "Effektvalidierung, Animation und feste Achtfachkapazitaet");
+    for(uint16_t i=0;i<16*16;++i)rounded_pixels[i]=0;
+    failed|=check(nova_effect_render(&effect_object,&rounded_surface,
+        NOVA_EFFECT_PHASE_SHADOW,(nova_rect_t){0,0,16,16},0)&&
+        nova_effect_render(&effect_object,&rounded_surface,
+        NOVA_EFFECT_PHASE_GLOW,(nova_rect_t){0,0,16,16},0)&&
+        nova_effect_diagnostics()->shadows==4&&nova_effect_diagnostics()->glows==4&&
+        nova_effect_diagnostics()->rendered_pixels>0,
+        "Alle Shadow-/Glowtypen konturtreu rendern");
+    nova_effect_set_quality(NOVA_EFFECT_QUALITY_LOW);
+    failed|=check(nova_effect_diagnostics()->quality==NOVA_EFFECT_QUALITY_LOW,
+        "Effektqualitaet deterministisch reduzieren");
+    nova_effect_clear(&effect_object);
+    uint32_t blur_source_pixels[16*16],blur_destination_pixels[16*16]={0};
+    for(uint16_t i=0;i<16*16;++i)blur_source_pixels[i]=0xff000000u;
+    blur_source_pixels[6*16+6]=0xffffffffu;
+    nova_surface_t blur_source={.pixels=blur_source_pixels,.width=16,.height=16,.stride=16};
+    nova_surface_t blur_destination={.pixels=blur_destination_pixels,.width=16,.height=16,.stride=16};
+    nova_round_rect_t blur_rounding={0};
+    failed|=check(nova_round_rect_create(&blur_rounding,2,2,8,8,2)&&
+        nova_blur_initialize(16,16,1024*1024),
+        "Vorreservierte Blur-Laufzeit initialisieren");
+    nova_blur_region_t blur_region={{2,2,8,8},2.0f,NOVA_BLUR_QUALITY_HIGH,
+        NOVA_BLUR_KERNEL_DUAL_PASS_GAUSSIAN,&blur_rounding,0};
+    nova_blur_result_t blur_first=nova_blur_render(&blur_region,&blur_source,&blur_destination);
+    failed|=check(blur_first==NOVA_BLUR_OK&&
+        blur_destination_pixels[6*16+6]!=0xffffffffu&&
+        (blur_destination_pixels[6*16+5]&0x00ffffffu)!=0&&
+        (blur_destination_pixels[2*16+2]>>24)>0&&
+        (blur_destination_pixels[2*16+2]>>24)<255,
+        "Dual-Pass-Blur verarbeitet nur gerundete Hintergrundregion");
+    for(uint16_t i=0;i<16*16;++i)blur_destination_pixels[i]=0;
+    failed|=check(nova_blur_render(&blur_region,&blur_source,&blur_destination)==NOVA_BLUR_OK&&
+        nova_blur_diagnostics()->cache_hits==1,
+        "Unveraenderte Blur-Flaeche aus Cache wiederverwenden");
+    nova_rect_t unrelated_blur_dirty={0,0,1,1},related_blur_dirty={5,5,2,2};
+    nova_blur_invalidate(&unrelated_blur_dirty);
+    failed|=check(nova_blur_diagnostics()->cache_valid,
+        "Fremde Dirty Region behaelt Blur-Cache");
+    nova_blur_invalidate(&related_blur_dirty);
+    failed|=check(!nova_blur_diagnostics()->cache_valid&&
+        nova_blur_render(&blur_region,&blur_source,&blur_destination)==NOVA_BLUR_OK&&
+        nova_blur_diagnostics()->cache_misses==2,
+        "Ueberlappende Dirty Region invalidiert Blur-Cache");
+    failed|=check(nova_blur_initialize(16,16,1)&&nova_blur_diagnostics()->degraded,
+        "Speichermangel degradiert Blur automatisch auf Low");
+    nova_blur_shutdown();
     nova_controls_initialize(0);
     nova_scene_node_t *scene_parent=nova_scene_create(NOVA_SCENE_CONTAINER);
     nova_scene_node_t *scene_child=nova_scene_create(NOVA_SCENE_CONTROL);
@@ -83,6 +252,12 @@ int main(void)
         scene_visit_order[2]==scene_child->id&&scene_child->world_bounds.x==18&&
         scene_child->world_bounds.y==24&&scene_child->world_opacity==250,
         "Scene Graph traversiert deterministisch und vererbt Transform/Opacity");
+    nova_scene_matrix_t quarter_turn={0,-65536,65536,0,0,0};
+    failed|=check(nova_scene_set_transform(scene_child,quarter_turn)&&
+        nova_scene_traverse(0,0,false)&&scene_child->world_bounds.x==3&&
+        scene_child->world_bounds.y==24&&scene_child->world_bounds.width==10&&
+        scene_child->world_bounds.height==20,
+        "Scene Graph akzeptiert 90-Grad-Matrix und berechnet World Bounds");
     failed|=check(!nova_scene_destroy(scene_parent)&&nova_scene_destroy(scene_child)&&
         nova_scene_destroy(scene_parent),"Scene Graph zerstoert Kind vor Eltern");
     nova_diag_initialize();
@@ -793,6 +968,49 @@ int main(void)
         graphics_frontbuffer[0]==0xdeadbeefu&&
         nova_framebuffer_diagnostics()->partial_presents==1,
         "Dirty Region atomar und ohne fremde Pixel praesentieren");
+    nova_present_configuration_t present_configuration={.width=8,.height=8,
+        .source_stride=8,.available_memory=0,.request_triple_buffer=false,
+        .page_flip_available=false,.vsync=NOVA_PRESENT_VSYNC_EMULATED,
+        .clock=test_clock_us};
+    present_test_clock=0;
+    failed|=check(nova_present_initialize(&present_configuration)==NOVA_PRESENT_OK&&
+        nova_present_diagnostics()->buffering==NOVA_PRESENT_DOUBLE_BUFFER,
+        "Present Scheduler startet standardmaessig mit Double Buffer");
+    failed|=check(nova_present_begin(partial_frame)==NOVA_PRESENT_OK&&
+        nova_present_is_busy()&&
+        nova_present_begin(partial_frame)==NOVA_PRESENT_INVALID_STATE&&
+        nova_present_full()==NOVA_PRESENT_OK&&!nova_present_is_busy()&&
+        nova_present_diagnostics()->forced_presents==1,
+        "Present Lock und erzwungenes Full Present");
+    failed|=check(nova_present_begin(partial_frame)==NOVA_PRESENT_OK&&
+        nova_present_damage((nova_rect_t){1,1,2,2})==NOVA_PRESENT_OK&&
+        nova_present_damage((nova_rect_t){2,2,2,2})==NOVA_PRESENT_OK&&
+        nova_present_frame()==NOVA_PRESENT_OK&&
+        nova_present_diagnostics()->partial_presents==1&&
+        nova_present_diagnostics()->merged_regions==1&&
+        nova_present_diagnostics()->last_present_us==50,
+        "Dirty Regions mergen und Partial Present zeitlich messen");
+    nova_present_shutdown();
+    static uint32_t triple_buffer[64];
+    present_configuration.available_memory=sizeof(partial_frame);
+    present_configuration.triple_buffer=triple_buffer;
+    present_configuration.triple_buffer_pixels=64;
+    present_configuration.request_triple_buffer=true;
+    failed|=check(nova_present_initialize(&present_configuration)==NOVA_PRESENT_OK&&
+        nova_present_diagnostics()->buffering==NOVA_PRESENT_TRIPLE_BUFFER&&
+        nova_present_begin(partial_frame)==NOVA_PRESENT_OK&&
+        nova_present_full()==NOVA_PRESENT_OK&&
+        nova_present_diagnostics()->triple_buffer_frames==1&&
+        nova_present_diagnostics()->pending_copies==1,
+        "Optionalen Triple Buffer ueber Pending-Zustand praesentieren");
+    nova_present_shutdown();
+    present_configuration.source_stride=NOVA_SURFACE_WIDTH;
+    present_configuration.available_memory=0;
+    present_configuration.triple_buffer=0;
+    present_configuration.triple_buffer_pixels=0;
+    present_configuration.request_triple_buffer=false;
+    failed|=check(nova_present_initialize(&present_configuration)==NOVA_PRESENT_OK,
+        "Produktiven Double-Buffer-Scheduler fuer Compositor aktivieren");
     uint32_t presents_before_compositor=nova_graphics_diagnostics()->presents;
     nova_surface_manager_initialize();
     nova_surface_descriptor_t surface_description={NOVA_SURFACE_OFFSCREEN,8,8,
@@ -828,6 +1046,29 @@ int main(void)
         nova_surface_manager_reset_frame()&&nova_managed_surface_retain(frame_handle)==NOVA_SURFACE_ERR_INVALID_STATE&&
         nova_surface_manager_emergency()!=0,"Frame-Pool resetten und Emergency-Surface vorhalten");
 
+    failed|=check(nova_dirty_initialize(100,100,4,500)&&
+        (nova_dirty_clear(),true)&&
+        nova_dirty_add(&(nova_rect_t){-10,-10,20,20})&&
+        nova_dirty_add(&(nova_rect_t){-10,-10,20,20})&&
+        nova_dirty_add(&(nova_rect_t){5,5,20,20})&&
+        nova_dirty_add_expanded(&(nova_rect_t){50,50,10,10},2,3,1)&&
+        nova_dirty_get()->count==2&&nova_dirty_diagnostics()->duplicates==1&&
+        nova_dirty_diagnostics()->merges==1&&
+        nova_dirty_intersects((nova_rect_t){48,48,2,2}),
+        "Dirty Manager clippt, dedupliziert, merged und erweitert Effekte");
+    nova_dirty_clear();
+    failed|=check(nova_dirty_add(&(nova_rect_t){0,0,80,80})&&
+        nova_dirty_is_full()&&
+        nova_dirty_diagnostics()->full_reason==NOVA_DIRTY_FULL_THRESHOLD,
+        "Konfigurierbarer Dirty-Flaechenschwellwert erzwingt Full Damage");
+    failed|=check(nova_dirty_initialize(100,100,2,1000)&&
+        (nova_dirty_clear(),true)&&
+        nova_dirty_add(&(nova_rect_t){0,0,1,1})&&
+        nova_dirty_add(&(nova_rect_t){10,10,1,1})&&
+        nova_dirty_add(&(nova_rect_t){20,20,1,1})&&nova_dirty_is_full()&&
+        nova_dirty_diagnostics()->full_reason==NOVA_DIRTY_FULL_CAPACITY&&
+        !nova_dirty_add_expanded(&(nova_rect_t){0,0,1,1},UINT32_MAX,UINT32_MAX,UINT32_MAX),
+        "Kapazitaet und Erweiterungsoverflow sicher behandeln");
     failed |= check(nova_compositor_initialize(8, 8), "Compositor initialisieren");
     nova_surface_t *base = nova_surface_acquire();
     nova_surface_t *overlay = nova_surface_acquire();
@@ -873,26 +1114,540 @@ int main(void)
     failed|=check(nova_managed_layer_destroy(dialog_layer)&&
         nova_managed_layer_destroy(content_layer)&&nova_managed_layer_destroy(cursor_layer),
         "Layer kontrolliert Kind vor Parent abbauen");
+    nova_rect_t visible_clip={0};
+    failed|=check(nova_clip_mask_initialize(8,8)&&nova_clip_mask_begin_frame()&&
+        nova_clip_current().x==0&&nova_clip_current().y==0&&
+        nova_clip_current().width==8&&nova_clip_current().height==8&&
+        nova_clip_push((nova_rect_t){1,1,6,6})&&
+        nova_clip_push((nova_rect_t){3,0,5,5})&&
+        nova_clip_current().x==3&&nova_clip_current().y==1&&
+        nova_clip_current().width==4&&nova_clip_current().height==4&&
+        nova_clip_test(nova_clip_current_scope(),(nova_rect_t){2,2,3,3},
+                       &visible_clip)==NOVA_CLIP_PARTIAL&&
+        visible_clip.x==3&&visible_clip.width==2&&
+        nova_clip_pop()&&nova_clip_pop()&&!nova_clip_pop()&&
+        nova_clip_mask_end_frame(),
+        "Root-, Dialog-, Scroll- und verschachtelte Clips schneiden");
+    static const uint8_t bitmap_mask[2]={0x80u,0x40u};
+    static const uint8_t alpha_mask[4]={0u,64u,128u,255u};
+    nova_mask_handle_t rectangle_mask=0,bitmap_handle=0,alpha_handle=0;
+    nova_mask_handle_t rounded_handle=0,vector_handle=0;
+    failed|=check(
+        nova_mask_create(&(nova_mask_descriptor_t){.type=NOVA_MASK_RECTANGLE,
+            .bounds={0,0,4,4},.cacheable=true},&rectangle_mask)&&
+        nova_mask_create(&(nova_mask_descriptor_t){.type=NOVA_MASK_BITMAP,
+            .bounds={0,0,2,2},.pixels=bitmap_mask,.stride=1,.size=2},
+            &bitmap_handle)&&
+        nova_mask_create(&(nova_mask_descriptor_t){.type=NOVA_MASK_ALPHA,
+            .bounds={1,1,2,2},.pixels=alpha_mask,.stride=2,.size=4},
+            &alpha_handle)&&
+        nova_mask_create(&(nova_mask_descriptor_t){.type=NOVA_MASK_ROUNDED_RECTANGLE,
+            .bounds={0,0,4,4},.radius=2},&rounded_handle)&&
+        nova_mask_create(&(nova_mask_descriptor_t){.type=NOVA_MASK_VECTOR,
+            .bounds={0,0,4,4},.vector_callback=test_vector_mask,.cacheable=true},
+            &vector_handle)&&nova_clip_mask_begin_frame()&&
+        nova_mask_push(rectangle_mask)&&!nova_mask_push(rectangle_mask)&&
+        nova_mask_push(alpha_handle)&&nova_mask_coverage(nova_mask_current_scope(),1,1)==0&&
+        nova_mask_coverage(nova_mask_current_scope(),2,2)==255&&
+        nova_mask_pop()&&nova_mask_pop()&&nova_mask_push(bitmap_handle)&&
+        nova_mask_coverage(nova_mask_current_scope(),0,0)==255&&
+        nova_mask_coverage(nova_mask_current_scope(),1,0)==0&&nova_mask_pop()&&
+        nova_mask_push(rounded_handle)&&nova_mask_coverage(nova_mask_current_scope(),0,0)==0&&
+        nova_mask_coverage(nova_mask_current_scope(),2,2)==255&&nova_mask_pop()&&
+        nova_mask_push(vector_handle)&&nova_mask_coverage(nova_mask_current_scope(),0,0)==255&&
+        nova_mask_coverage(nova_mask_current_scope(),1,0)==128&&
+        nova_mask_coverage(nova_mask_current_scope(),1,0)==128&&nova_mask_pop()&&
+        nova_clip_mask_end_frame()&&nova_clip_mask_diagnostics()->cache_hits>=1,
+        "Rechteck-, Bitmap-, Alpha-, Rounded- und Vektormasken kombinieren");
+    failed|=check(nova_mask_destroy(rectangle_mask)&&nova_mask_destroy(bitmap_handle)&&
+        nova_mask_destroy(alpha_handle)&&nova_mask_destroy(rounded_handle)&&
+        nova_mask_destroy(vector_handle),
+        "Masken generationensicher ausserhalb aktiver Scopes freigeben");
+
+    static uint8_t render_alpha_mask[64];
+    for(uint8_t i=0;i<64;++i)render_alpha_mask[i]=0;
+    render_alpha_mask[6]=128;
+    nova_mask_handle_t render_mask=0;
+    failed|=check(nova_clip_mask_initialize(8,8)&&
+        nova_mask_create(&(nova_mask_descriptor_t){.type=NOVA_MASK_ALPHA,
+            .bounds={0,0,8,8},.pixels=render_alpha_mask,.stride=8,.size=64},
+            &render_mask),"Render-Maske vorbereiten");
     nova_render_initialize();
+    nova_transform2d_t render_transform=nova_transform_identity();
+    nova_round_rect_t render_rounded={0};
+    failed|=check(nova_transform_scale(&render_transform,2,1)&&
+        nova_transform_translate(&render_transform,2,0)&&
+        nova_round_rect_create(&render_rounded,3,3,3,3,1),
+        "Rendertransformation vorbereiten");
     failed|=check(nova_render_begin_frame()&&
         nova_render_clear(base,0xff000000u,NOVA_RENDER_BACKGROUND)&&
         nova_render_rect(base,(nova_rect_t){0,1,2,1},0xff112233u,NOVA_RENDER_SHAPE,2)&&
         nova_render_rect(base,(nova_rect_t){2,1,2,1},0xff112233u,NOVA_RENDER_SHAPE,2)&&
+        nova_mask_push(render_mask)&&
+        nova_render_rect(base,(nova_rect_t){6,0,1,1},0xff00ff00u,NOVA_RENDER_SHAPE,3)&&
+        nova_mask_pop()&&
+        nova_render_push_transform(&render_transform)&&
+        nova_render_rect(base,(nova_rect_t){0,0,1,1},0xffff0000u,
+                         NOVA_RENDER_SHAPE,4)&&
+        nova_render_pop_transform()&&
         nova_render_push_clip((nova_rect_t){2,2,4,4})&&
         nova_render_line(base,0,0,7,7,0xffffffffu,NOVA_RENDER_OVERLAY,0)&&
         nova_render_circle(base,4,4,1,0xff267cc1u,NOVA_RENDER_OVERLAY,1)&&
+        nova_render_rounded_rect(base,&render_rounded,0xff336699u,
+                                 NOVA_RENDER_OVERLAY,2)&&
         nova_render_pop_clip(),"Unveraenderliche Render Commands erfassen");
     failed|=check(!nova_render_rect(base,(nova_rect_t){0,0,0,1},0,
         NOVA_RENDER_SHAPE,0),"Ungueltigen Render Command verwerfen");
     failed|=check(nova_render_validate()&&nova_render_sort_optimize()&&
-        nova_render_command_count()==4&&nova_render_diagnostics()->batches==1&&
+        nova_render_command_count()==7&&nova_render_diagnostics()->batches==1&&
         nova_render_execute()&&nova_render_end_frame()&&
         base->pixels[1*base->stride+1]==0xff112233u&&
+        base->pixels[6]==0x8000ff00u&&
+        base->pixels[2]==0xffff0000u&&base->pixels[3]==0xffff0000u&&
         base->pixels[2*base->stride+2]==0xffffffffu&&
-        base->pixels[4*base->stride+4]==0xff267cc1u,
+        base->pixels[4*base->stride+4]==0xff336699u,
         "Render Queue sortiert, batcht, clippt und rastert deterministisch");
+    nova_round_rect_t masked_effect_geometry={0};
+    nova_effect_object_t masked_effect_object={0};
+    nova_effect_t masked_shadow={NOVA_EFFECT_DROP_SHADOW,0xff000000u,1,0.5f,0,0};
+    failed|=check(nova_round_rect_create(&masked_effect_geometry,5,0,1,1,0)&&
+        nova_effect_object_create(&masked_effect_object,&masked_effect_geometry)&&
+        nova_shadow_set(&masked_effect_object,&masked_shadow)&&
+        nova_clip_mask_begin_frame()&&nova_mask_push(render_mask),
+        "Effekt-Clip- und Maskscope vorbereiten");
+    uint16_t effect_mask_scope=nova_mask_current_scope();
+    base->pixels[6]=0;base->pixels[7]=0;
+    failed|=check(nova_effect_render(&masked_effect_object,base,NOVA_EFFECT_PHASE_SHADOW,
+        (nova_rect_t){6,0,1,1},effect_mask_scope)&&base->pixels[6]==0x20000000u&&
+        base->pixels[7]==0,
+        "Shadow respektiert echten Alpha-Maskscope und harten Clip");
+    nova_surface_clear(overlay,0);
+    nova_round_rect_t masked_blur_geometry={0};
+    failed|=check(nova_round_rect_create(&masked_blur_geometry,6,0,1,1,0),
+        "Gerundete Blurmaske vorbereiten");
+    nova_blur_region_t masked_blur={{6,0,1,1},0,NOVA_BLUR_QUALITY_LOW,
+        NOVA_BLUR_KERNEL_BOX,&masked_blur_geometry,effect_mask_scope};
+    failed|=check(nova_blur_initialize(8,8,1024*1024)&&
+        nova_blur_render(&masked_blur,base,overlay)==NOVA_BLUR_OK&&
+        overlay->pixels[6]==0x10000000u&&overlay->pixels[7]==0&&
+        nova_mask_pop()&&nova_clip_mask_end_frame()&&nova_mask_destroy(render_mask),
+        "Background Blur wendet Alpha-Maske erst nach dem Kernel an");
 
+    static const uint8_t lz4_abc_stream[]={0x35,'a','b','c',0x03,0x00};
+    static const uint8_t lz4_abc_expected[]={'a','b','c','a','b','c','a','b','c','a','b','c'};
+    static const uint8_t lz4_literal_stream[]={0x30,'N','O','V'};
+    static const uint8_t lz4_bad_offset[]={0x10,'x',0x00,0x00};
+    static const uint8_t lz4_truncated[]={0xf0};
+    uint8_t decompressed[32]={0};uint64_t decompressed_size=0;
+    failed|=check(nova_compression_initialize()&&
+        nova_resource_decompress(NOVA_COMPRESSION_LZ4,lz4_abc_stream,
+            sizeof(lz4_abc_stream),decompressed,sizeof(lz4_abc_expected),
+            &decompressed_size)==NOVA_COMPRESSION_OK&&
+        decompressed_size==sizeof(lz4_abc_expected)&&
+        nova_resource_checksum(decompressed,decompressed_size)==
+            nova_resource_checksum(lz4_abc_expected,sizeof(lz4_abc_expected)),
+        "LZ4-Block dekodiert ueberlappende Matches deterministisch");
+    failed|=check(nova_resource_decompress(NOVA_COMPRESSION_NONE,lz4_literal_stream+1,3,
+        decompressed,3,&decompressed_size)==NOVA_COMPRESSION_OK&&decompressed_size==3&&
+        decompressed[0]=='N'&&decompressed[2]=='V',"Unkomprimierte Ressource kopieren");
+    failed|=check(nova_resource_decompress(NOVA_COMPRESSION_LZ4,lz4_bad_offset,
+        sizeof(lz4_bad_offset),decompressed,5,&decompressed_size)==NOVA_COMPRESSION_CORRUPT&&
+        nova_resource_decompress(NOVA_COMPRESSION_LZ4,lz4_truncated,
+        sizeof(lz4_truncated),decompressed,16,&decompressed_size)==
+            NOVA_COMPRESSION_SOURCE_TRUNCATED&&
+        nova_resource_decompress(NOVA_COMPRESSION_LZ4,lz4_literal_stream,
+        sizeof(lz4_literal_stream),decompressed,2,&decompressed_size)==
+            NOVA_COMPRESSION_DESTINATION_TOO_SMALL&&
+        nova_resource_decompress(NOVA_COMPRESSION_LZ4,lz4_literal_stream,
+        sizeof(lz4_literal_stream),decompressed,4,&decompressed_size)==
+            NOVA_COMPRESSION_SIZE_MISMATCH&&
+        nova_resource_decompress(NOVA_COMPRESSION_ZSTD,lz4_literal_stream,
+        sizeof(lz4_literal_stream),decompressed,3,&decompressed_size)==
+            NOVA_COMPRESSION_UNSUPPORTED,
+        "Kompressionsfehler und optionales Zstd werden typisiert behandelt");
+
+    static const uint8_t sha256_abc[32]={
+        0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
+        0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad};
+    uint8_t sha256_result[32]={0};
+    failed|=check(nova_integrity_initialize(NOVA_INTEGRITY_STANDARD)&&
+        nova_integrity_sha256("abc",3,sha256_result)&&
+        nova_resource_checksum(sha256_result,32)==nova_resource_checksum(sha256_abc,32),
+        "SHA-256 entspricht dem bekannten FIPS-Testvektor abc");
+    nova_integrity_descriptor_t integrity_descriptor={.resource_id=1,.type=1,.version=1,
+        .data="abc",.size=3,.expected_crc32=nova_integrity_crc32("abc",3),
+        .expected_sha256=sha256_abc,.signature=NOVA_SIGNATURE_NONE};
+    nova_integrity_report_t integrity_report={0};
+    failed|=check(nova_resource_verify(&integrity_descriptor,&integrity_report)==
+        NOVA_INTEGRITY_OK&&integrity_report.trust==NOVA_RESOURCE_TRUST_VALID&&
+        integrity_report.crc_checked&&integrity_report.sha256_checked,
+        "Standardrichtlinie prueft CRC32 und SHA-256");
+    integrity_descriptor.expected_sha256=0;integrity_descriptor.expected_crc32=0;
+    failed|=check(nova_resource_verify(&integrity_descriptor,&integrity_report)==
+        NOVA_INTEGRITY_CHECKSUM_MISMATCH&&
+        nova_integrity_set_policy(NOVA_INTEGRITY_PERMISSIVE)&&
+        nova_resource_verify(&integrity_descriptor,&integrity_report)==NOVA_INTEGRITY_OK&&
+        nova_integrity_set_policy(NOVA_INTEGRITY_STRICT)&&
+        nova_resource_verify(&integrity_descriptor,&integrity_report)==
+            NOVA_INTEGRITY_SIGNATURE_REQUIRED,
+        "Permissiv, Standard und Strikt erzwingen unterschiedliche Vertrauensregeln");
+    integrity_descriptor.expected_sha256=sha256_abc;
+    integrity_descriptor.signature=NOVA_SIGNATURE_VERIFIED;
+    failed|=check(nova_resource_verify(&integrity_descriptor,&integrity_report)==
+        NOVA_INTEGRITY_OK&&integrity_report.trust==NOVA_RESOURCE_TRUST_SIGNED&&
+        integrity_report.signature_valid,"Strikt akzeptiert vorgelagert verifizierte Signatur");
+    integrity_descriptor.signature=NOVA_SIGNATURE_INVALID;
+    failed|=check(nova_resource_verify(&integrity_descriptor,&integrity_report)==
+        NOVA_INTEGRITY_SIGNATURE_INVALID,"Ungueltige Signatur wird immer abgewiesen");
+
+    failed|=check(nova_resource_loader_initialize(10),
+        "Resource Loader reserviert feste Registry und Cachebudget");
+    static const uint8_t resource_dependency_data[2]={1,2};
+    static const uint8_t resource_parent_data[3]={3,4,5};
+    nova_resource_descriptor_t dependency_descriptor={.uri="test://resource/dependency",
+        .type=NOVA_RESOURCE_BINARY,.version=1,.data=resource_dependency_data,
+        .size=sizeof(resource_dependency_data),.origin=NOVA_RESOURCE_ORIGIN_EMBEDDED,
+        .priority=NOVA_RESOURCE_PRIORITY_HIGH,.compression=NOVA_COMPRESSION_NONE};
+    nova_resource_descriptor_t parent_descriptor={.uri="test://resource/parent",
+        .type=NOVA_RESOURCE_CONFIGURATION,.version=1,.data=resource_parent_data,
+        .size=sizeof(resource_parent_data),.origin=NOVA_RESOURCE_ORIGIN_EMBEDDED,
+        .priority=NOVA_RESOURCE_PRIORITY_CRITICAL,.compression=NOVA_COMPRESSION_NONE};
+    nova_resource_t *dependency_resource=0,*parent_resource=0;
+    failed|=check(nova_resource_register_descriptor(&dependency_descriptor,&dependency_resource)==
+        NOVA_RESOURCE_OK&&nova_resource_register_descriptor(&parent_descriptor,&parent_resource)==
+        NOVA_RESOURCE_OK&&nova_resource_add_dependency(parent_resource->id,dependency_resource->id),
+        "Ressourcenmodell speichert Name, Herkunft, Prioritaet und Abhaengigkeit");
+    const nova_resource_t *loaded_parent=0;
+    failed|=check(nova_resource_load_mode(parent_resource->id,NOVA_LOAD_LAZY,&loaded_parent)==
+        NOVA_RESOURCE_OK&&loaded_parent==parent_resource&&dependency_resource->reference_count==1&&
+        nova_resource_release(parent_resource->id)&&dependency_resource->reference_count==0,
+        "Lazy Loading loest Abhaengigkeiten auf und gibt sie transitiv frei");
+    static const uint8_t cycle_data[1]={9};
+    failed|=check(nova_resource_register("test://resource/cycle-a",NOVA_RESOURCE_BINARY,1,
+        cycle_data,sizeof(cycle_data),0,0)&&
+        nova_resource_register("test://resource/cycle-b",NOVA_RESOURCE_BINARY,1,
+        cycle_data,sizeof(cycle_data),0,0),"Zyklusressourcen registrieren");
+    uint64_t cycle_a=nova_resource_id("test://resource/cycle-a");
+    uint64_t cycle_b=nova_resource_id("test://resource/cycle-b");
+    failed|=check(nova_resource_add_dependency(cycle_a,cycle_b)&&
+        nova_resource_add_dependency(cycle_b,cycle_a)&&!nova_resource_load(cycle_a)&&
+        nova_resource_diagnostics()->cycles==1,"Rekursive Abhaengigkeiten sicher erkennen");
+    uint8_t corruptible_resource[2]={6,7};
+    static const uint8_t fallback_resource_data[2]={8,9};
+    failed|=check(nova_resource_register("test://resource/fallback",NOVA_RESOURCE_BINARY,1,
+        fallback_resource_data,sizeof(fallback_resource_data),0,0),"Fallback registrieren");
+    uint64_t fallback_resource_id=nova_resource_id("test://resource/fallback");
+    failed|=check(nova_resource_register("test://resource/primary",NOVA_RESOURCE_BINARY,1,
+        corruptible_resource,sizeof(corruptible_resource),0,fallback_resource_id),
+        "Primaerressource mit Fallback registrieren");
+    corruptible_resource[0]^=1;
+    const nova_resource_t *fallback_loaded=nova_resource_load(
+        nova_resource_id("test://resource/primary"));
+    failed|=check(fallback_loaded&&fallback_loaded->id==fallback_resource_id&&
+        nova_resource_diagnostics()->fallback_uses==1&&nova_resource_release(fallback_resource_id),
+        "Integritaetsfehler aktiviert verifizierte Default-Ressource");
+    static const uint8_t eviction_a[6]={1,1,1,1,1,1};
+    static const uint8_t eviction_b[6]={2,2,2,2,2,2};
+    failed|=check(nova_resource_register("test://resource/evict-a",NOVA_RESOURCE_BINARY,1,
+        eviction_a,sizeof(eviction_a),0,0)&&nova_resource_register(
+        "test://resource/evict-b",NOVA_RESOURCE_BINARY,1,eviction_b,sizeof(eviction_b),0,0),
+        "LRU-Testressourcen registrieren");
+    uint64_t evict_a=nova_resource_id("test://resource/evict-a");
+    uint64_t evict_b=nova_resource_id("test://resource/evict-b");
+    failed|=check(nova_resource_load(evict_a)&&nova_resource_release(evict_a)&&
+        nova_resource_load(evict_b)&&nova_resource_diagnostics()->evictions>=1&&
+        nova_resource_find(evict_a)->state==NOVA_RESOURCE_UNLOADED&&
+        nova_resource_unload(evict_b)==NOVA_RESOURCE_BUSY&&nova_resource_release(evict_b)&&
+        nova_resource_unload(evict_b)==NOVA_RESOURCE_OK,
+        "Cachebudget erzwingt LRU und Busy-Ressourcen bleiben geschuetzt");
+    failed|=check(nova_resource_load_mode(parent_resource->id,NOVA_LOAD_BACKGROUND,
+        &loaded_parent)==NOVA_RESOURCE_UNSUPPORTED,"Optionales Background Loading typisiert abweisen");
+    failed|=check(nova_resource_preload(parent_resource->id)&&
+        parent_resource->state==NOVA_RESOURCE_RELEASED&&parent_resource->reference_count==0,
+        "Preloading legt verifizierte Ressource ohne aktive Referenz in Cache");
+    nova_resource_manager_shutdown();
+    failed|=check(!nova_resource_load(parent_resource->id)&&
+        !nova_resource_diagnostics()->initialized,"Shutdown sperrt weitere Ladezugriffe");
+    failed|=check(nova_resource_loader_initialize(NOVA_RESOURCE_DEFAULT_CACHE_BUDGET),
+        "Resource Loader fuer komprimierte Ressourcen neu initialisieren");
+    nova_resource_descriptor_t compressed_descriptor={
+        .uri="test://resource/lz4",.type=NOVA_RESOURCE_BINARY,.version=1,
+        .data=lz4_abc_stream,.size=sizeof(lz4_abc_stream),
+        .origin=NOVA_RESOURCE_ORIGIN_EMBEDDED,.priority=NOVA_RESOURCE_PRIORITY_NORMAL,
+        .compression=NOVA_COMPRESSION_LZ4,.original_size=sizeof(lz4_abc_expected),
+        .original_checksum=0};
+    compressed_descriptor.original_checksum=nova_resource_checksum(lz4_abc_expected,
+        sizeof(lz4_abc_expected));
+    nova_resource_t *compressed_resource=0;
+    failed|=check(nova_resource_register_descriptor(&compressed_descriptor,
+        &compressed_resource)==NOVA_RESOURCE_OK&&compressed_resource&&!compressed_resource->data,
+        "Komprimierte Ressource bleibt bis zum Erstzugriff gepackt");
+    const nova_resource_t *decoded_resource=nova_resource_load(compressed_resource->id);
+    failed|=check(decoded_resource&&decoded_resource->data&&
+        nova_resource_checksum(decoded_resource->data,decoded_resource->size)==
+            compressed_descriptor.original_checksum&&
+        nova_resource_diagnostics()->decompressions==1&&
+        nova_resource_load(compressed_resource->id)==decoded_resource&&
+        nova_resource_diagnostics()->decompressions==1&&
+        nova_integrity_diagnostics()->cache_skips==1&&
+        nova_resource_release(compressed_resource->id)&&
+        nova_resource_release(compressed_resource->id),
+        "Lazy Dekomprimierung wird validiert und danach aus dem Cache wiederverwendet");
+    static const uint8_t compressed_fallback_data[]={'o','k'};
+    failed|=check(nova_resource_register("test://resource/lz4-fallback",NOVA_RESOURCE_BINARY,1,
+        compressed_fallback_data,sizeof(compressed_fallback_data),0,0),
+        "Dekomprimierungs-Fallback registrieren");
+    nova_resource_descriptor_t corrupt_compressed={
+        .uri="test://resource/lz4-corrupt",.type=NOVA_RESOURCE_BINARY,.version=1,
+        .data=lz4_bad_offset,.size=sizeof(lz4_bad_offset),
+        .fallback_id=nova_resource_id("test://resource/lz4-fallback"),
+        .origin=NOVA_RESOURCE_ORIGIN_EMBEDDED,.priority=NOVA_RESOURCE_PRIORITY_NORMAL,
+        .compression=NOVA_COMPRESSION_LZ4,.original_size=5,.original_checksum=1};
+    failed|=check(nova_resource_register_descriptor(&corrupt_compressed,0)==NOVA_RESOURCE_OK&&
+        nova_resource_load(nova_resource_id("test://resource/lz4-corrupt"))->id==
+            corrupt_compressed.fallback_id&&nova_resource_diagnostics()->decompression_errors==1&&
+        nova_resource_release(corrupt_compressed.fallback_id),
+        "Beschaedigter LZ4-Datenstrom faellt auf sichere Ressource zurueck");
+    nova_resource_descriptor_t oversized_compressed=compressed_descriptor;
+    oversized_compressed.uri="test://resource/lz4-oversized";
+    oversized_compressed.original_size=(uint64_t)NOVA_RESOURCE_DECODE_BLOCK_SIZE*
+        NOVA_RESOURCE_DECODE_BLOCK_COUNT+1;oversized_compressed.original_checksum=1;
+    failed|=check(nova_resource_register_descriptor(&oversized_compressed,0)==NOVA_RESOURCE_OK&&
+        nova_resource_load_mode(nova_resource_id(oversized_compressed.uri),NOVA_LOAD_LAZY,
+            &decoded_resource)==NOVA_RESOURCE_NO_MEMORY,
+        "Statischer Dekompressionspool weist uebergrosse Ausgaben sicher ab");
+    nova_resource_manager_shutdown();
     nova_resource_manager_initialize();
+    failed|=check(nova_image_initialize(),"Image Renderer reserviert Cache-Pixelpool");
+    static const uint8_t raw_rgba[16]={
+        255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,255,128};
+    nova_image_t *raw_image=0,*raw_cached=0;
+    uint64_t raw_id=nova_resource_id("test://image/raw");
+    failed|=check(nova_image_create_raw(raw_id,2,2,8,NOVA_IMAGE_RGBA8888,
+        raw_rgba,sizeof(raw_rgba),&raw_image)==NOVA_IMAGE_OK&&raw_image&&
+        raw_image->pixels[0]==0xffff0000u&&raw_image->pixels[3]==0x80808080u&&
+        nova_image_create_raw(raw_id,2,2,8,NOVA_IMAGE_RGBA8888,
+            raw_rgba,sizeof(raw_rgba),&raw_cached)==NOVA_IMAGE_OK&&raw_cached==raw_image&&
+        raw_image->references==2,"RAW RGBA wird premultipliziert und gecacht");
+    uint32_t image_width=0,image_height=0;
+    failed|=check(nova_image_get_size(raw_image,&image_width,&image_height)&&
+        image_width==2&&image_height==2,"Imagegroesse typisiert abfragen");
+    nova_surface_clear(overlay,0xff101010u);
+    nova_image_render_options_t image_options={.destination={1,1,4,4},.clip={2,1,3,4},
+        .sampling=NOVA_IMAGE_SAMPLE_BILINEAR,.transform=nova_transform_fixed_identity(),
+        .opacity=1000,.tint=0xffffffffu};
+    failed|=check(nova_image_render(raw_image,overlay,&image_options)==NOVA_IMAGE_OK&&
+        overlay->pixels[1*overlay->stride+1]==0xff101010u&&
+        overlay->pixels[2*overlay->stride+2]!=0xff101010u,
+        "Bilineares Image Rendering respektiert Clip und Alpha");
+    nova_transform2d_t image_transform=nova_transform_identity();
+    nova_fixed_transform2d_t fixed_image_transform={0};
+    failed|=check(nova_transform_translate(&image_transform,2,1)&&
+        nova_transform_to_fixed(&image_transform,&fixed_image_transform),
+        "Bildtransformation vorbereiten");
+    image_options=(nova_image_render_options_t){.destination={0,0,2,2},.clip={0,0,8,8},
+        .sampling=NOVA_IMAGE_SAMPLE_NEAREST,.transform=fixed_image_transform,
+        .opacity=1000,.tint=0xffffffffu,.mirror_x=true};
+    failed|=check(nova_image_render(raw_image,overlay,&image_options)==NOVA_IMAGE_OK&&
+        overlay->pixels[1*overlay->stride+2]==0xff00ff00u,
+        "Nearest Image wird gespiegelt, verschoben und layerneutral gerendert");
+    static const uint8_t bmp_2x2[70]={
+        0x42,0x4d,70,0,0,0,0,0,0,0,54,0,0,0,40,0,0,0,
+        2,0,0,0,2,0,0,0,1,0,24,0,0,0,0,0,16,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        255,0,0, 255,255,255, 0,0,
+        0,0,255, 0,255,0, 0,0};
+    failed|=check(nova_resource_register("test://image/bmp",NOVA_RESOURCE_IMAGE,1,
+        bmp_2x2,sizeof(bmp_2x2),0,0),"Interne BMP-Ressource registrieren");
+    nova_image_t *bmp_image=0;
+    failed|=check(nova_image_load("test://image/bmp",&bmp_image)==NOVA_IMAGE_OK&&
+        bmp_image&&bmp_image->pixels[0]==0xffff0000u&&bmp_image->pixels[1]==0xff00ff00u,
+        "Validiertes BMP24 bottom-up dekodieren");
+    static const uint8_t png_rgba[78]={
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,2,0,0,0,2,8,6,0,0,0,0x72,0xb6,0x0d,0x24,0,0,0,0x15,0x49,0x44,
+        0x41,0x54,0x78,0x9c,0x63,0xf8,0xcf,0xc0,0xf0,0x1f,8,0x1b,0x18,0x80,0x34,
+        8,0x38,0,0,0x44,0x13,8,0xb9,0x6d,0xe6,0x3e,0x21,0,0,0,0,0x49,0x45,
+        0x4e,0x44,0xae,0x42,0x60,0x82};
+    static const uint8_t png_rgb_stored[75]={
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,2,0,0,0,1,8,2,0,0,0,0x7b,0x40,0xe8,0xdd,0,0,0,0x12,0x49,0x44,
+        0x41,0x54,0x78,1,1,7,0,0xf8,0xff,0,1,2,3,4,5,6,0,0x3f,0,0x16,0x68,
+        0x41,0x5f,0x8d,0,0,0,0,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+    static const uint8_t png_indexed[100]={
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,2,0,0,0,1,8,3,0,0,0,0xc3,0xfc,0x8f,0xb8,0,0,0,6,0x50,0x4c,
+        0x54,0x45,0xff,0,0,0,0,0xff,0x6c,0xa1,0xfd,0x8e,0,0,0,2,0x74,0x52,
+        0x4e,0x53,0xff,0x40,0x93,0x6b,0x71,0xda,0,0,0,0x0b,0x49,0x44,0x41,0x54,
+        0x78,0x9c,0x63,0x60,0x60,4,0,0,4,0,2,0xbf,0x7a,0x3f,0x4a,0,0,0,0,
+        0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+    static const uint8_t png_interlaced[70]={
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,1,0,0,0,1,8,6,0,0,1,0x68,0x12,0xf4,0x1f,0,0,0,0x0d,0x49,0x44,
+        0x41,0x54,0x78,0x9c,0x63,0x60,0x64,0x62,0x66,1,0,0,0x19,0,0x0b,0xe7,
+        0x5a,0x46,0xa4,0,0,0,0,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+    static const uint8_t png_gray1[81]={
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,4,0,0,0,1,1,0,0,0,0,0xd1,0x47,0x32,0x60,0,0,0,2,0x74,0x52,
+        0x4e,0x53,0,1,1,0x94,0xfd,0xae,0,0,0,0x0a,0x49,0x44,0x41,0x54,0x78,
+        0x9c,0x63,0x48,0,0,0,0x62,0,0x61,0xb1,0x98,0x79,0xf2,0,0,0,0,0x49,
+        0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+    static const uint8_t png_indexed2[107]={
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,4,0,0,0,1,2,3,0,0,0,0x84,0x52,0xe7,0x5e,0,0,0,0x0c,0x50,0x4c,
+        0x54,0x45,0xff,0,0,0,0xff,0,0,0,0xff,0xff,0xff,0xff,0xfb,0,0x60,0xf6,
+        0,0,0,4,0x74,0x52,0x4e,0x53,0xff,0x80,0x40,0,0x7c,0xda,0x34,0xee,0,0,
+        0,0x0a,0x49,0x44,0x41,0x54,0x78,0x9c,0x63,0x90,6,0,0,0x1d,0,0x1c,0x8e,
+        0xf4,0xf5,0x21,0,0,0,0,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+    static const uint8_t png_grayalpha[]={
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,2,0,0,0,1,8,4,0,0,0,0x5e,0x2b,0xb7,1,0,0,0,0x0d,0x49,0x44,
+        0x41,0x54,0x78,0x9c,0x63,0x68,0xf8,0xff,0xdf,1,0,7,0x40,2,0xbf,0xd9,
+        0xc4,0x24,0xb8,0,0,0,0,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+    static const uint8_t png_rgb_trns_multi[102]={
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,2,0,0,0,1,8,2,0,0,0,0x7b,0x40,0xe8,0xdd,0,0,0,6,0x74,0x52,
+        0x4e,0x53,0,1,0,2,0,3,0xc9,0x4b,0xab,0xf5,0,0,0,7,0x49,0x44,0x41,
+        0x54,0x78,0x9c,0x63,0x60,0x64,0x62,0x66,0xa5,5,0xc7,0x7a,0,0,0,8,0x49,
+        0x44,0x41,0x54,0x61,0x65,3,0,0,0x3f,0,0x16,0x76,0xf0,0xfb,0xb2,0,0,
+        0,0,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+    static const uint8_t png_filters[75]={
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,1,0,0,0,5,8,0,0,0,0,0xa1,0xef,0xd9,0x43,0,0,0,0x12,0x49,0x44,
+        0x41,0x54,0x78,0x9c,0x63,0xe0,0x62,0x14,0x61,0xe2,0x62,0x96,0x64,0xe1,
+        2,0,1,0x9f,0,0x56,0xfe,0x1e,0xc8,0x20,0,0,0,0,0x49,0x45,0x4e,0x44,
+        0xae,0x42,0x60,0x82};
+    nova_image_t *png_image=0;
+    failed|=check(nova_resource_register("test://image/png-rgba",NOVA_RESOURCE_IMAGE,1,
+        png_rgba,sizeof(png_rgba),0,0)&&nova_image_load("test://image/png-rgba",&png_image)==NOVA_IMAGE_OK&&
+        png_image->pixels[0]==0xffff0000u&&png_image->pixels[1]==0x80008000u&&
+        png_image->pixels[2]==0xff0000ffu&&png_image->pixels[3]==0x40404040u,
+        "PNG RGBA mit Deflate und Premultiplikation dekodieren");
+    failed|=check(nova_resource_register("test://image/png-rgb-stored",NOVA_RESOURCE_IMAGE,1,
+        png_rgb_stored,sizeof(png_rgb_stored),0,0)&&
+        nova_image_load("test://image/png-rgb-stored",&png_image)==NOVA_IMAGE_OK&&
+        png_image->pixels[0]==0xff010203u&&png_image->pixels[1]==0xff040506u,
+        "PNG RGB mit gespeichertem Deflate-Block dekodieren");
+    failed|=check(nova_resource_register("test://image/png-indexed",NOVA_RESOURCE_IMAGE,1,
+        png_indexed,sizeof(png_indexed),0,0)&&
+        nova_image_load("test://image/png-indexed",&png_image)==NOVA_IMAGE_OK&&
+        png_image->pixels[0]==0xffff0000u&&png_image->pixels[1]==0x40000040u,
+        "Indiziertes PNG mit PLTE und tRNS dekodieren");
+    failed|=check(nova_png_initialize()&&nova_png_validate(png_gray1,sizeof(png_gray1))&&
+        nova_resource_register("test://image/png-gray1",NOVA_RESOURCE_IMAGE,1,
+            png_gray1,sizeof(png_gray1),0,0)&&
+        nova_image_load("test://image/png-gray1",&png_image)==NOVA_IMAGE_OK&&
+        png_image->pixels[0]==0xff000000u&&png_image->pixels[1]==0&&
+        png_image->pixels[2]==0&&png_image->pixels[3]==0xff000000u,
+        "PNG-Graustufen 1 Bit und tRNS werden auf RGBA konvertiert");
+    failed|=check(nova_resource_register("test://image/png-indexed2",NOVA_RESOURCE_IMAGE,1,
+        png_indexed2,sizeof(png_indexed2),0,0)&&
+        nova_image_load("test://image/png-indexed2",&png_image)==NOVA_IMAGE_OK&&
+        png_image->pixels[0]==0xffff0000u&&png_image->pixels[1]==0x80008000u&&
+        png_image->pixels[2]==0x40000040u&&png_image->pixels[3]==0,
+        "PNG-Indexed 2 Bit entpackt PLTE und tRNS bitgenau");
+    failed|=check(nova_resource_register("test://image/png-grayalpha",NOVA_RESOURCE_IMAGE,1,
+        png_grayalpha,sizeof(png_grayalpha),0,0)&&
+        nova_image_load("test://image/png-grayalpha",&png_image)==NOVA_IMAGE_OK&&
+        png_image->pixels[0]==0xff808080u&&png_image->pixels[1]==0x40404040u,
+        "Optionales PNG-Graustufen-Alpha wird premultipliziert");
+    failed|=check(nova_resource_register("test://image/png-rgb-trns",NOVA_RESOURCE_IMAGE,1,
+        png_rgb_trns_multi,sizeof(png_rgb_trns_multi),0,0)&&
+        nova_image_load("test://image/png-rgb-trns",&png_image)==NOVA_IMAGE_OK&&
+        png_image->pixels[0]==0&&png_image->pixels[1]==0xff040506u,
+        "RGB-tRNS und mehrere aufeinanderfolgende IDAT-Chunks funktionieren");
+    failed|=check(nova_resource_register("test://image/png-filters",NOVA_RESOURCE_IMAGE,1,
+        png_filters,sizeof(png_filters),0,0)&&
+        nova_image_load("test://image/png-filters",&png_image)==NOVA_IMAGE_OK&&
+        png_image->pixels[0]==0xff0a0a0au&&png_image->pixels[1]==0xff141414u&&
+        png_image->pixels[2]==0xff1e1e1eu&&png_image->pixels[3]==0xff282828u&&
+        png_image->pixels[4]==0xff323232u,
+        "PNG-Filter None, Sub, Up, Average und Paeth werden zeilenweise rekonstruiert");
+    failed|=check(nova_resource_register("test://image/png-interlaced",NOVA_RESOURCE_IMAGE,1,
+        png_interlaced,sizeof(png_interlaced),0,0)&&
+        nova_image_load("test://image/png-interlaced",&png_image)==NOVA_IMAGE_UNSUPPORTED,
+        "Nicht unterstuetztes interlaced PNG definiert abweisen");
+    uint8_t png_bad_crc[sizeof(png_rgba)];memcpy(png_bad_crc,png_rgba,sizeof(png_rgba));
+    png_bad_crc[45]^=1;
+    failed|=check(nova_resource_register("test://image/png-bad-crc",NOVA_RESOURCE_IMAGE,1,
+        png_bad_crc,sizeof(png_bad_crc),0,0)&&
+        nova_image_load("test://image/png-bad-crc",&png_image)==NOVA_IMAGE_CORRUPT,
+        "PNG mit ungueltiger Chunk-Pruefsumme abweisen");
+    failed|=check(!nova_png_validate(png_bad_crc,sizeof(png_bad_crc))&&
+        nova_image_diagnostics()->png_crc_errors>=2&&
+        nova_image_diagnostics()->png_validations>=1&&
+        nova_image_diagnostics()->png_idat_chunks>=7,
+        "Oeffentliche PNG-Validierung und Chunkdiagnose erkennen Korruption");
+    static const uint8_t corrupt_bmp[16]={'B','M'};
+    failed|=check(nova_resource_register("test://image/corrupt",NOVA_RESOURCE_IMAGE,1,
+        corrupt_bmp,sizeof(corrupt_bmp),0,0)&&
+        nova_image_load("test://image/corrupt",&bmp_image)==NOVA_IMAGE_UNSUPPORTED,
+        "Beschaedigten BMP-Header sicher abweisen");
+    failed|=check(nova_image_destroy(raw_image)&&nova_image_destroy(raw_cached)&&
+        nova_image_diagnostics()->cache_hits>=1&&nova_image_diagnostics()->renders==2,
+        "Image-Referenzen und Diagnosen verwalten");
+    failed|=check(nova_render_quality_initialize(false,64ull*1024u*1024u)&&
+        nova_render_quality_get()==NOVA_RENDER_QUALITY_STANDARD&&
+        nova_render_quality_parameters()->image_sampling==NOVA_IMAGE_SAMPLE_BILINEAR,
+        "Quality Manager startet deterministisch mit Standardprofil");
+    for(uint8_t profile=0;profile<NOVA_RENDER_QUALITY_COUNT;++profile)
+        failed|=check(nova_render_quality_is_supported((nova_render_quality_t)profile),
+                      "Alle fuenf Renderingprofile werden unterstuetzt");
+    failed|=check(nova_render_quality_set(NOVA_RENDER_QUALITY_ULTRA)&&
+        nova_render_quality_parameters()->anti_aliasing==NOVA_ROUNDED_AA_HIGH&&
+        nova_render_quality_parameters()->effect_density==8&&nova_dirty_is_full(),
+        "Ultra setzt maximale Parameter und erzwingt Full Redraw");
+    failed|=check(nova_render_quality_set(NOVA_RENDER_QUALITY_SAFE)&&
+        !nova_render_quality_parameters()->blur_enabled&&
+        !nova_render_quality_parameters()->shadows_enabled&&
+        !nova_render_quality_parameters()->animations_enabled&&nova_motion_is_reduced()&&
+        nova_compositor_diagnostics()->fallback_level==3,
+        "Safe deaktiviert Blur, Schatten, Transparenz und Animationen");
+    failed|=check(!nova_render_quality_set(NOVA_RENDER_QUALITY_COUNT)&&
+        nova_render_quality_diagnostics()->rejected_profiles==1,
+        "Ungueltiges Renderingprofil wird abgewiesen");
+    failed|=check(nova_render_quality_set_auto(64ull*1024u*1024u,false,false)&&
+        nova_render_quality_get()==NOVA_RENDER_QUALITY_HIGH,
+        "Auto waehlt High anhand des Hardwarebudgets");
+    nova_render_quality_report_frame(40000);nova_render_quality_report_frame(40000);
+    failed|=check(nova_render_quality_get()==NOVA_RENDER_QUALITY_HIGH,
+        "Einzelne langsame Frames loesen keinen Profilwechsel aus");
+    nova_render_quality_report_frame(40000);
+    failed|=check(nova_render_quality_get()==NOVA_RENDER_QUALITY_STANDARD&&
+        nova_render_quality_diagnostics()->automatic_adjustments==1,
+        "Drei dauerhafte Budgetverletzungen degradieren atomar");
+    nova_render_quality_report_memory(15ull*1024u*1024u);
+    failed|=check(nova_render_quality_get()==NOVA_RENDER_QUALITY_SAFE&&
+        nova_render_quality_diagnostics()->memory_degradations==1,
+        "Speichermangel degradiert Auto auf Safe");
+    nova_sw_renderer_configuration_t software_configuration={8,8,
+        64ull*1024u*1024u,true,true,true,false};
+    failed|=check(nova_sw_renderer_initialize(&software_configuration)==NOVA_SW_RENDERER_OK&&
+        nova_sw_renderer_is_available()&&nova_sw_renderer_begin_frame()==NOVA_SW_RENDERER_OK&&
+        nova_sw_renderer_render_frame(nova_scene_root())==NOVA_SW_RENDERER_OK,
+        "Software Renderer initialisiert CPU-Pipeline und traversiert Scene Graph");
+    failed|=check(nova_sw_renderer_complete_frame(true,true)==NOVA_SW_RENDERER_OK&&
+        nova_sw_renderer_diagnostics()->rendered_frames>=2,
+        "Software Renderer schliesst erfolgreichen Frame diagnostisch ab");
+    failed|=check(nova_sw_renderer_report_memory(15ull*1024u*1024u)==
+        NOVA_SW_RENDERER_RECOVERED&&
+        nova_sw_renderer_diagnostics()->state==NOVA_SW_RENDERER_SAFE,
+        "Software Renderer degradiert bei Speichermangel ohne Bedienverlust");
+    failed|=check(nova_sw_renderer_report_failure(false)==NOVA_SW_RENDERER_RECOVERED&&
+        nova_sw_renderer_diagnostics()->resets==1&&
+        nova_sw_renderer_report_failure(true)==NOVA_SW_RENDERER_RECOVERED&&
+        nova_sw_renderer_diagnostics()->safe_entries==1&&
+        nova_sw_renderer_report_failure(true)==NOVA_SW_RENDERER_TEXT_REQUIRED&&
+        nova_sw_renderer_text_required(),
+        "Renderfehler eskalieren Reset, Full Repaint, Safe und Text");
+    failed|=check(nova_sw_renderer_shutdown()==NOVA_SW_RENDERER_OK&&
+        nova_sw_renderer_shutdown()==NOVA_SW_RENDERER_INVALID_STATE,
+        "Software Renderer verhindert doppelten Shutdown");
+    software_configuration.framebuffer_available=false;
+    failed|=check(nova_sw_renderer_initialize(&software_configuration)==
+        NOVA_SW_RENDERER_NOT_AVAILABLE&&nova_sw_renderer_text_required()&&
+        nova_sw_renderer_shutdown()==NOVA_SW_RENDERER_OK,
+        "Fehlender Framebuffer fordert funktionalen Textfallback an");
     failed |= check(nova_theme_initialize() &&
                     nova_theme_validate(NOVA_THEME_DARK) &&
                     nova_theme_validate(NOVA_THEME_LIGHT) &&
@@ -923,6 +1678,35 @@ int main(void)
     failed |= check(nova_text_register_font_resource() && nova_icons_initialize() &&
                     nova_branding_initialize(),
                     "Font-, Icon- und Brandingressourcen zentral registrieren");
+    const nova_font_resource_t *system_font=nova_font_resource_find(NOVA_SYSTEM_FONT_ID);
+    failed|=check(system_font&&nova_font_resource_validate(system_font)&&
+        system_font->family_type==NOVA_FONT_FAMILY_UI&&
+        system_font->weight==NOVA_FONT_WEIGHT_SEMIBOLD&&
+        nova_font_resource_load(NOVA_SYSTEM_FONT_ID)&&
+        nova_font_resource_load(NOVA_SYSTEM_FONT_ID)&&
+        nova_font_resource_resolve(NOVA_SYSTEM_FONT_ID,'A')==system_font&&
+        !nova_font_resource_resolve(NOVA_SYSTEM_FONT_ID,0x2603)&&
+        nova_font_resource_release(NOVA_SYSTEM_FONT_ID)&&
+        nova_font_resource_release(NOVA_SYSTEM_FONT_ID),
+        "Font Registry, Unicode-Abdeckung, Cache und Missing Glyph verwalten");
+    static const uint8_t fallback_font_data[]={0x4e,0x46,0x50,1};
+    static const nova_font_coverage_t snow_coverage[]={{0x2603,0x2603}};
+    failed|=check(nova_resource_register("test://font/snow",NOVA_RESOURCE_FONT,1,
+        fallback_font_data,sizeof(fallback_font_data),0,0),"Fallback-Fontressource registrieren");
+    nova_font_resource_descriptor_t snow_font={.font_id=0x534e4f57464f4e54ull,
+        .resource_id=nova_resource_id("test://font/snow"),.fallback_id=NOVA_SYSTEM_FONT_ID,
+        .name="Snow Symbols",.family="Symbols",.style="Regular",.version=1,
+        .resource_version=1,.family_type=NOVA_FONT_FAMILY_SYMBOLS,
+        .weight=NOVA_FONT_WEIGHT_REGULAR,.priority=100,.coverage=snow_coverage,
+        .coverage_count=1};
+    failed|=check(nova_font_resource_register(&snow_font)&&
+        !nova_font_resource_register(&snow_font)&&
+        nova_font_resource_resolve(snow_font.font_id,0x2603)->font_id==snow_font.font_id&&
+        nova_font_resource_resolve(snow_font.font_id,'A')->font_id==NOVA_SYSTEM_FONT_ID&&
+        nova_font_theme_set(NOVA_FONT_ROLE_SYMBOL,snow_font.font_id)&&
+        nova_font_theme_get(NOVA_FONT_ROLE_SYMBOL)==snow_font.font_id&&
+        nova_font_resource_diagnostics()->duplicates==1,
+        "Deterministische Font-Fallbackkette, Theme-Rolle und Duplicate-Schutz");
     failed |= check(nova_resource_find(nova_resource_id("boot://branding/novaos/logo")) != 0,
                     "NovaOS-Logo im Resource Manager");
     bool all_icons=true;
@@ -1139,7 +1923,10 @@ int main(void)
                     "modale Eingabesperre");
     failed |= check(nova_compositor_compose(), "Damage compositing im Offscreen-Buffer");
     nova_state_set_phase(NOVA_STATE_PHASE_RENDER);
-    failed|=check(!nova_compositor_present(),"Present ausserhalb der Present-Phase sperren");
+    failed|=check(!nova_compositor_present()&&
+                  nova_present_diagnostics()->recovery_attempts==1&&
+                  nova_present_diagnostics()->safe_mode_entries==1,
+                  "Presentfehler mit Full-Retry und Safe Mode eskalieren");
     nova_state_set_phase(NOVA_STATE_PHASE_PRESENT);
     failed|=check(nova_compositor_present()&&
                   nova_graphics_diagnostics()->presents==presents_before_compositor+1&&

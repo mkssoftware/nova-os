@@ -1,11 +1,11 @@
 #include "scene_graph.h"
 
-#define ONE 65536
+#define ONE NOVA_TRANSFORM_FIXED_ONE
 static nova_scene_node_t nodes[NOVA_SCENE_CAPACITY];
 static nova_scene_diagnostics_t diagnostics;
 
 nova_scene_matrix_t nova_scene_identity(void)
-{return (nova_scene_matrix_t){ONE,0,0,ONE,0,0};}
+{return nova_transform_fixed_identity();}
 static bool valid(const nova_scene_node_t *node)
 {return node&&node>=nodes&&node<nodes+NOVA_SCENE_CAPACITY&&node->active&&
     &nodes[node->id]==node;}
@@ -86,7 +86,7 @@ bool nova_scene_set_bounds(nova_scene_node_t *node,nova_rect_t bounds)
 }
 bool nova_scene_set_transform(nova_scene_node_t *node,nova_scene_matrix_t transform)
 {
-    if(!valid(node)||!transform.m11||!transform.m22)return false;
+    if(!valid(node)||!nova_transform_fixed_valid(transform))return false;
     node->local=transform;return nova_scene_mark_dirty(node,NOVA_SCENE_DIRTY_TRANSFORM|NOVA_SCENE_DIRTY_RENDER);
 }
 bool nova_scene_set_opacity(nova_scene_node_t *node,uint16_t opacity)
@@ -107,26 +107,28 @@ bool nova_scene_set_enabled(nova_scene_node_t *node,bool enabled)
  return nova_scene_mark_dirty(node,NOVA_SCENE_DIRTY_STATE);}
 static nova_scene_matrix_t multiply(nova_scene_matrix_t a,nova_scene_matrix_t b)
 {
-    return (nova_scene_matrix_t){
-        (int32_t)(((int64_t)a.m11*b.m11+(int64_t)a.m12*b.m21)/ONE),
-        (int32_t)(((int64_t)a.m11*b.m12+(int64_t)a.m12*b.m22)/ONE),
-        (int32_t)(((int64_t)a.m21*b.m11+(int64_t)a.m22*b.m21)/ONE),
-        (int32_t)(((int64_t)a.m21*b.m12+(int64_t)a.m22*b.m22)/ONE),
-        a.tx+(int32_t)(((int64_t)a.m11*b.tx+(int64_t)a.m12*b.ty)/ONE),
-        a.ty+(int32_t)(((int64_t)a.m21*b.tx+(int64_t)a.m22*b.ty)/ONE)};
+    nova_scene_matrix_t result=nova_scene_identity();
+    if(!nova_transform_fixed_multiply(&result,a,b))++diagnostics.rejected_handles;
+    return result;
 }
 static bool walk(nova_scene_node_t *node,nova_scene_matrix_t parent_matrix,
     uint16_t parent_opacity,bool parent_visible,uint32_t depth,nova_scene_visit_t visit,
     void *context,bool dirty_only)
 {
     if(depth>diagnostics.max_depth)diagnostics.max_depth=depth;
-    node->world=multiply(parent_matrix,node->local);
-    node->world.tx+=node->bounds.x*ONE;node->world.ty+=node->bounds.y*ONE;
+    nova_scene_matrix_t positioned=node->local;
+    int64_t tx=(int64_t)positioned.tx+(int64_t)node->bounds.x*ONE;
+    int64_t ty=(int64_t)positioned.ty+(int64_t)node->bounds.y*ONE;
+    if(tx>INT32_MAX||tx<INT32_MIN||ty>INT32_MAX||ty<INT32_MIN)return false;
+    positioned.tx=(int32_t)tx;positioned.ty=(int32_t)ty;
+    node->world=multiply(parent_matrix,positioned);
     node->world_opacity=(uint16_t)((uint32_t)parent_opacity*node->opacity/1000u);
     bool visible=parent_visible&&node->visibility==NOVA_SCENE_VISIBLE;
-    node->world_bounds=(nova_rect_t){node->world.tx/ONE,node->world.ty/ONE,
-        node->visibility==NOVA_SCENE_COLLAPSED?0:node->bounds.width,
-        node->visibility==NOVA_SCENE_COLLAPSED?0:node->bounds.height};
+    if(node->visibility==NOVA_SCENE_COLLAPSED)
+        node->world_bounds=(nova_rect_t){node->world.tx/ONE,node->world.ty/ONE,0,0};
+    else if(!nova_transform_fixed_bounds(node->world,
+        (nova_rect_t){0,0,node->bounds.width,node->bounds.height},
+        &node->world_bounds))return false;
     uint32_t was_dirty=node->dirty;
     if(was_dirty)++diagnostics.dirty_nodes;
     if(visible&&(!dirty_only||was_dirty)){++diagnostics.visited;if(visit&&!visit(node,context))return false;}

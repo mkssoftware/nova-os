@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "compositor.h"
+#include "transform2d.h"
 
 #define NOVA_SCENE_CAPACITY 256u
 #define NOVA_SCENE_NONE 0xffffu
@@ -18,7 +19,7 @@ enum {NOVA_SCENE_DIRTY_LAYOUT=1u,NOVA_SCENE_DIRTY_RENDER=2u,
     NOVA_SCENE_DIRTY_STATE=4u,NOVA_SCENE_DIRTY_ANIMATION=8u,
     NOVA_SCENE_DIRTY_TRANSFORM=16u,NOVA_SCENE_DIRTY_ALL=31u};
 
-typedef struct {int32_t m11,m12,m21,m22,tx,ty;} nova_scene_matrix_t;
+typedef nova_fixed_transform2d_t nova_scene_matrix_t;
 typedef struct {
     uint16_t id,parent,first_child,next_sibling;
     nova_scene_node_type_t type;

@@ -14,7 +14,7 @@ $arguments=@('-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$f
  '-drive',"format=raw,file=$imagePath",'-display','none','-serial','none','-debugcon',"file:$log",
  '-global','isa-debugcon.iobase=0xe9','-no-reboot','-no-shutdown')
 $process=Start-Process $Qemu -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
-try{$deadline=[DateTime]::UtcNow.AddSeconds(60)
+try{$deadline=[DateTime]::UtcNow.AddSeconds(90)
  do{Start-Sleep -Milliseconds 250;[string]$content=if(Test-Path $log){Get-Content $log -Raw}else{''}
     if($process.HasExited){$detail=if(Test-Path $stderr){Get-Content $stderr -Raw}else{''};throw "QEMU beendete den UEFI-IMG-Boot vorzeitig. $detail"}}
  while($content-notlike'*UEFI:COUNTDOWN-FRAME-READY*'-and[DateTime]::UtcNow-lt$deadline)

@@ -5,6 +5,7 @@
 #include "resources.h"
 #include "icons.h"
 #include "memory.h"
+#include "render_quality.h"
 
 static nova_diag_event_t events[NOVA_DIAG_CAPACITY];
 static uint16_t event_head, event_count;
@@ -22,7 +23,7 @@ void nova_diag_initialize(void)
         3ull*NOVA_SURFACE_WIDTH*NOVA_SURFACE_HEIGHT*4ull,0,0,0,0};
     memory_budget.free_memory=memory_budget.total_budget-memory_budget.used_memory;
     memory_budget.pool_memory=memory_budget.used_memory;memory_budget.peak_memory=memory_budget.used_memory;
-    quality=(nova_quality_status_t){NOVA_QUALITY_BALANCED,true,false,true,true,30};
+    quality=(nova_quality_status_t){NOVA_QUALITY_STANDARD,true,false,true,true,30};
 }
 
 void nova_diag_log(nova_diag_event_t event)
@@ -43,8 +44,13 @@ void nova_diag_frame(uint32_t frame_us,uint32_t layout_us,uint32_t animation_us,
 {
     frame_budget=(nova_frame_budget_t){frame_us,layout_us,animation_us,render_us,
                                        compositor_us,0,frame_budget.violations};
-    if(frame_us>33334u){++frame_budget.violations;quality.performance_limited=true;
-        if(quality.automatic){quality.quality=NOVA_QUALITY_LOW;quality.low_end=true;quality.target_fps=30;}}
+    if(frame_us>33334u){++frame_budget.violations;quality.performance_limited=true;}
+    nova_render_quality_report_frame(frame_us);
+    if(nova_render_quality_diagnostics()->initialized){
+        quality.quality=(nova_quality_t)nova_render_quality_get();
+        quality.low_end=quality.quality>=NOVA_QUALITY_PERFORMANCE;
+        quality.target_fps=quality.low_end?30:60;
+    }
     render_stats.frame_time_us=frame_us;render_stats.layout_time_us=layout_us;
     render_stats.render_time_us=render_us;render_stats.compositor_time_us=compositor_us;
     ++render_stats.frame_count;render_stats.fps=frame_us?1000000u/frame_us:0;
@@ -69,6 +75,7 @@ void nova_diag_snapshot(void)
         memory_budget.total_budget-memory_budget.used_memory:0;
     if(memory_budget.used_memory>memory_budget.peak_memory)
         memory_budget.peak_memory=memory_budget.used_memory;
+    nova_render_quality_report_memory(memory_budget.free_memory);
     stats.input_events=i->dispatched;stats.animation_events=m->completed+m->cancelled;
     stats.resource_events=r->loaded+r->releases+r->integrity_errors;
 }
@@ -77,12 +84,15 @@ void nova_diag_set_quality(nova_quality_t selected,bool automatic)
 {
     if(selected>NOVA_QUALITY_AUTO)selected=NOVA_QUALITY_SAFE;
     quality.automatic=automatic;
-    quality.quality=selected==NOVA_QUALITY_AUTO?NOVA_QUALITY_BALANCED:selected;
-    quality.low_end=quality.quality>=NOVA_QUALITY_LOW;
+    if(nova_render_quality_diagnostics()->initialized){
+        if(automatic||selected==NOVA_QUALITY_AUTO)
+            (void)nova_render_quality_set_auto(memory_budget.free_memory,false,
+                                               quality.software_renderer);
+        else (void)nova_render_quality_set((nova_render_quality_t)selected);
+        quality.quality=(nova_quality_t)nova_render_quality_get();
+    }else quality.quality=selected==NOVA_QUALITY_AUTO?NOVA_QUALITY_STANDARD:selected;
+    quality.low_end=quality.quality>=NOVA_QUALITY_PERFORMANCE;
     quality.target_fps=quality.low_end?30:60;
-    nova_compositor_set_fallback(quality.quality==NOVA_QUALITY_SAFE?3:
-                                 quality.quality==NOVA_QUALITY_LOW?2:0);
-    nova_motion_set_reduced(quality.quality==NOVA_QUALITY_SAFE);
 }
 
 const nova_render_statistics_t *nova_diag_render_statistics(void){return &render_stats;}

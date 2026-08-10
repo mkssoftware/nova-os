@@ -1,6 +1,6 @@
 # NovaOS Bootmanager – Implementierungsstatus und Blocker
 
-Stand: 2026-08-07
+Stand: 2026-08-10
 
 Dieses Dokument ergänzt die automatisch erzeugte Abdeckungsmatrix in
 `build/bootmanager-npspec-coverage.md`. Es unterscheidet zwischen einer
@@ -68,6 +68,16 @@ normative On-Disk-Packung des Index, keinen Index-Header, keine konkrete
 Resource-ID-/Hash-Ableitung und kein Kollisionsverfahren. Ein jetzt erfundenes
 Format wäre nicht nachweisbar kompatibel und würde die NPSPEC umgehen.
 
+`NPSPEC-BOOTRENDER-0012_Alpha_Compositing.md` enthält nicht die angekündigte
+Alpha-Compositing-Spezifikation, sondern ist inhaltlich eine vollständige
+Kopie von `NPSPEC-BOOTRENDER-0011_2D_Transformations.md`. Auch Dokument-ID und
+Titel im Inhalt lauten `NPSPEC-BOOTRENDER-0011` und `2D Transformations`; es
+gibt darin keinen Alpha-Compositing-Vertrag. Ohne Festlegung von Farbmodell,
+Straight oder Premultiplied Alpha, Operatoren, Rundungsreihenfolge, API und
+Akzeptanztests wäre eine behauptete 0012-Konformität erfunden. Das bereits
+vorhandene Compositor-Blending bleibt nutzbar, gilt aber nicht als Nachweis
+dieser fehlenden Spezifikation.
+
 Damit ist die Laufzeit-Auslagerung der statischen Font-, Logo- und Icondaten
 in ein BAP blockiert, bis diese Felder spezifiziert sind. Ein proprietäres
 Zwischenformat wird ausdrücklich nicht als BAP ausgegeben.
@@ -91,8 +101,29 @@ außerhalb der Firmware; `test-uefi` weist die Integration in QEMU nach.
 Die nachträglich befüllten NPSPECs `NPSPEC-BOOTRESOURCE-0001`,
 `NPSPEC-BOOTTEXT-0003` und `NPSPEC-BOOTDESIGN-0009` sind neu abgeglichen.
 Der UEFI-Pfad besitzt nun eine zentrale feste Resource Registry mit stabilen
-URI-IDs, CRC32-Validierung vor jeder Nutzung, Lazy Load, Cache-Hits,
-Referenzzählung, Release, Fallbackfeldern und Diagnosedaten.
+URI-IDs. Ein 128er Objektpool und ein 256er Open-Addressing-Hashindex liefern
+deterministischen O(1)-Lookup ohne Heap. Das Ressourcenmodell speichert Name,
+ID, Typ, Version, Größe, CRC32, Herkunft, Priorität, Zustand, Datenadresse,
+Referenzen, Fallback und bis zu acht Abhängigkeiten. CRC32 wird vor der
+Registrierung und erneut vor jeder Nutzung geprüft.
+
+Der Loader unterstützt Lazy Loading, synchrones Preload und die Reihenfolge
+Critical, High, Normal, Low. Bereits geladene Ressourcen werden aus dem Cache
+referenziert. Abhängigkeiten werden transitiv geladen und beim letzten Release
+transitiv freigegeben; ein fester Visiting-Bitset erkennt Zyklen. Das feste
+Cachebudget verwendet LRU-Eviction unter Berücksichtigung der Priorität und
+schützt aktive Referenzen. Unload, Manager-Shutdown, ungültige Zustände und das
+optionale, noch nicht implementierte Background Loading besitzen eindeutige
+Ergebnisse. Fehlende oder nach Registrierung beschädigte Ressourcen wechseln
+nur auf einen erneut verifizierten Default-Fallback.
+
+Font, Icons, Themes, Designmanifest und NovaOS-Logo werden zentral registriert
+und vor dem ersten UI-Frame bis Priorität Normal preloaded. Hosttests decken
+Lazy/Preload, Cache, Referenzen, transitive Abhängigkeiten, Zyklen, CRC-Fallback,
+kleines Budget mit LRU, Busy-Unload und Shutdown ab. OVMF/QEMU meldet
+RESOURCE-LOADER-READY und RESOURCE-PRELOAD-READY. Externe BAP-Dateien,
+Packageheader, Indexdeskriptoren, Offsets und Signaturen bleiben blockiert,
+solange NPSPEC-BOOTRESOURCE-0002/0003 kein normatives Wire-Format definieren.
 
 Der UTF-8-Decoder validiert ein- bis vierbyte Sequenzen, weist Overlong-
 Kodierungen, Surrogate und ungültige Codepoints sicher ab und verwendet
@@ -960,3 +991,524 @@ Framebuffergröße oder einzelne Farbmasks; die Masken werden daher vor der
 transportiert. RGB888/RGB565 werden nicht aktiviert, weil dieselbe NPSPEC VBE
 2.0, LFB und 32 Bit als Voraussetzung festlegt. Firmware-Injektion für einzelne
 ungültige ModeInfo-Felder und reale Bare-Metal-Nachweise fehlen ebenfalls.
+
+## Buffering and Frame Presentation
+
+NPSPEC-BOOTRENDER-0008 besitzt nun einen eigenen, plattformneutralen Present
+Scheduler zwischen Compositor und Framebuffer Backend. Der produktive UEFI-Pfad
+verwendet Double Buffering: Die vollständige Szene entsteht ausschließlich im
+unsichtbaren Compositor-Backbuffer und gelangt erst in der Presentphase in den
+firmwareabhängigen Frontbuffer. Ein globaler Lock sowie explizite Zustände
+Free, Rendering, Ready, Presenting und Displayed verhindern paralleles Rendern,
+Freigeben oder Präsentieren.
+
+Der Scheduler verwaltet bis zu 64 validierte Dirty Regions, vereinigt
+Überlappungen und wählt bei der ersten Darstellung, erzwungener Invalidierung,
+mehr als 60 Prozent geänderter Fläche oder einer Backendgrenze automatisch ein
+Full Present. Andernfalls wird ausschließlich die vereinigte Teilmenge
+kopiert. Optionales Triple Buffering ist implementiert, wird aber nur
+aktiviert, wenn der Aufrufer bereits beim Start einen ausreichend großen
+Pending Buffer und das zugehörige Speicherbudget bereitstellt; im normalen
+Double-Buffer-Pfad belegt er deshalb keinen zusätzlichen Vollbildspeicher.
+
+Diagnosewerte erfassen Frames, Bufferzustände, Full/Partial/Forced Presents,
+Dirty-Merges, Lockkonflikte, kopierte Pixel, Double-/Triple-Frames, Frame-,
+Render- und Presentdauer sowie VSync- und Pageflip-Strategie. Scheitert ein
+Present, versucht der Scheduler genau einmal ein Full Present. Ein zweiter
+Fehler löst den Lock, verwirft den Frame kontrolliert und meldet dem zentralen
+Recovery Manager den Renderingfehler für Safe Mode.
+
+Hosttests belegen Double und Triple Buffer, illegale Zustandswechsel, Present
+Lock, Full/Partial Present, Dirty Merge, Zeitmessung und die vollständige
+Recovery-Eskalation. Der echte OVMF/QEMU-Pfad meldet
+UEFI:PRESENT-SCHEDULER-READY und präsentiert im Countdown-Start 15 vollständige
+Runtimeframes.
+
+Offen bleiben die Anbindung an den separaten BIOS-LFB-Renderer, echtes
+firmware- oder hardwaregestütztes VSync und Page Flipping, ein produktiv
+aktiviertes Triple-Buffer-Profil, hochauflösende Hardwarezeitmessung sowie
+Tearing- und Bare-Metal-Nachweise. Daher bleibt die Spezifikation teilweise
+integriert.
+
+## Dirty Region Rendering
+
+NPSPEC-BOOTRENDER-0009 besitzt jetzt einen zentralen, heapfreien Dirty Manager.
+Kapazität bis 64 Regionen und Flächenschwellwert sind beim Start
+konfigurierbar; der produktive Compositor verwendet 64 Regionen und schaltet
+ab 50 Prozent der Bildschirmfläche auf Full Damage. Leere oder vollständig
+außerhalb liegende Rechtecke werden verworfen, teilweise sichtbare Rechtecke
+overflow-fest geclippt und identische Einträge dedupliziert. Überlappungen
+werden transitiv vereinigt, sodass auch eine neue Region, die zwei vorhandene
+Gruppen verbindet, genau eine Union erzeugt.
+
+Kapazitätsüberlauf, Initialisierung, Auflösungs- und Themewechsel, Recovery,
+Speicherfehler und explizite Invalidierung besitzen getrennte Full-Damage-
+Gründe. Für Effekte kann eine Region um Blur-Radius, Shadow-Extent und
+Alpha-Nachbarschaft erweitert werden. Der Manager bietet außerdem eine
+Layer-Schnittprüfung. Diagnosewerte enthalten Additions, Ablehnungen,
+Duplikate, Merges, Clips, Erweiterungen, Full-/Partial-Entscheidungen,
+Flächenmittelgrundlage und maximale Einzelfläche.
+
+Der Compositor führt seine bisherigen lokalen Present-Regionen nicht mehr
+parallel: Er speist den zentralen Manager und reicht dessen unverändertes
+Damage Set an den Present Scheduler weiter. Hosttests decken einzelne,
+mehrere, überlappende, identische und geclippte Regionen sowie Threshold,
+Kapazität, Blur/Shadow/Alpha-Erweiterung und Integer-Overflow ab. OVMF/QEMU
+meldet UEFI:DIRTY-MANAGER-READY und präsentiert das aktuelle GPT/FAT32-Image
+weiterhin erfolgreich.
+
+Offen bleibt eine feinere produktive Invalidierung: Die aktuelle UI zeichnet
+viele vollständige Layer pro Frame neu, statt bei Controls, Animationen und
+Mausbewegungen konsequent nur alte und neue Bounds einzureichen. Ebenso fehlen
+die identische BIOS-Anbindung und reale Mikrosekunden-/Bare-Metal-Messungen.
+Die Spezifikation bleibt deshalb teilweise integriert.
+
+## Clipping and Masks
+
+NPSPEC-BOOTRENDER-0010 besitzt nun einen zentralen, heapfreien Clip- und
+Mask-Manager. Jeder Frame beginnt mit genau einem Rootclip über die gesamte
+logische Ausgabe. Bis zu 32 verschachtelte Pushes erzeugen aus Eltern- und
+Kindrechteck unveränderliche effektive Scopes; leere Schnitte bleiben als
+gültige, vollständig unsichtbare Scopes erhalten. Inside, Partial und Outside
+werden vor der Rasterisierung unterschieden. Root-Pop, Stacküberlauf,
+ungültige Rechtecke und veraltete Scope-IDs werden kontrolliert abgewiesen.
+
+Die feste Registry verwaltet 64 generationensichere Masken der Typen Rectangle,
+1-Bit-Bitmap, 8-Bit-Alpha, Vector Callback und Rounded Rectangle. Bis zu 32
+aktive Masken werden in Reihenfolge durch Alpha-Multiplikation kombiniert.
+Bitmap- und Alphamasken prüfen Pointer, Stride und Gesamtgröße,
+Rounded-Masken ihren Radius, Vektormasken rekursive Callback-Aufrufe.
+Aktive Masken können nicht zerstört oder erneut rekursiv gepusht werden. Ein
+fester 256er Coverage-Cache vermeidet wiederholte statische Maskenberechnung.
+
+Render Commands speichern den wirksamen Clip- und Maskscope bereits beim
+Submit und bleiben dadurch trotz späterem Pop unveränderlich. Clear, Rechteck,
+Linie und Kreis führen zuerst den Bounding-Box-Test aus, verwerfen vollständig
+unsichtbare Befehle und schreiben keinen Pixel außerhalb von Clip, Surface
+oder Maske. Teiltransparente Masken skalieren die Quellalpha; das eigentliche
+Blending bleibt korrekt in der nachfolgenden Compositorphase.
+
+Hosttests belegen Root-, Dialog-, Scroll- und verschachtelte Clips,
+vollständiges und partielles Clipping, alle fünf Masktypen, Maskkombination,
+Cache, Rekursionsschutz, Lifecycle und einen tatsächlich nur mit Alpha 128
+geschriebenen Rasterpixel. Das aktuelle GPT/FAT32-Image meldet unter OVMF/QEMU
+UEFI:CLIP-MASK-READY und präsentiert weiterhin alle Countdownframes.
+
+Offen bleibt die vollständige Migration der älteren direkten Text-, Icon- und
+Control-Rasterizer auf Render Commands. Dadurch verwenden produktive Dialog-
+und Scrollinhalte den neuen Scopevertrag noch nicht lückenlos. Ellipse,
+Polygon und Bézier sind ebenfalls noch keine Render-Command-Primitive;
+BIOS-Parität und SIMD-Optimierung fehlen. Die beiden contentReference-
+Platzhalter in den Abschnitten 25 und 33 der Draft-NPSPEC sind redaktionell
+ungültig, blockieren aber keine der technisch auslegbaren Anforderungen.
+
+## 2D Transformations
+
+NPSPEC-BOOTRENDER-0011 besitzt nun eine gemeinsame affine 3×2-API. Die
+öffentliche Schnittstelle verwendet wie spezifiziert Floatwerte; vor dem
+Render-Hotpath wird jede Matrix einmal validiert und deterministisch in 16.16
+überführt. Identity, Translation, Rotation im Bogenmaß, uniforme und
+nichtuniforme Skalierung, negative Spiegelung, X-/Y-Shear, Pivot,
+Matrixmultiplikation, Inversion, Punktabbildung und Four-Corner-Bounding-Box
+sind implementiert. Operationen werden per Pre-Multiplikation in der
+vorgeschriebenen Reihenfolge Scale, Rotation, Translation aufgebaut.
+
+Die freestanding Runtime benötigt keine libm-Abhängigkeit. Sinus und Cosinus
+verwenden Winkelreduktion und eine feste Polynomauswertung; 0°, 90°, 180° und
+270° werden auf exakte Kardinalwerte eingerastet. NaN, Infinity, übergroße
+Komponenten, singuläre Fixed-Matrizen, Rechenüberläufe sowie Stack-Over- und
+Underflow werden abgewiesen. Ein fester 32er Transformationsstack berechnet
+Parent × Local zu World.
+
+Scene Graph und Layer Manager verwenden nicht mehr zwei eigene ungeprüfte
+Multiplikationen. Beide teilen die zentrale 16.16-Implementierung; insbesondere
+ist eine gültige 90°-Matrix mit m11 und m22 gleich null jetzt zulässig.
+World Bounds entstehen aus allen vier transformierten Ecken und stimmen damit
+auch bei Rotation, Scale, Mirror und Shear. Layouttranslation wird vor der
+Elternmultiplikation korrekt Bestandteil der lokalen Matrix.
+
+Jeder Render Command speichert beim Submit seine Worldmatrix. Bounding Box und
+Clipping werden erst nach der Transformation berechnet. Linien transformieren
+beide Endpunkte; Rechtecke und Kreise werden über eine geprüfte inverse Matrix
+in den lokalen Raum zurückprojiziert. Der Hosttest weist unter anderem nach,
+dass ein lokales 1×1-Rechteck nach Scale 2 und Translation 2 exakt die
+Bildschirmpixel zwei und drei schreibt. Weitere Tests decken S→R→T, Pivot,
+Mirror, Shear, Inverse Roundtrip, Float→Fixed, Stackschutz und rotierte
+Scene-Graph-Bounds ab. OVMF/QEMU meldet UEFI:TRANSFORM2D-READY.
+
+Offen bleiben die Migration der älteren direkten Text-, Icon-, Image- und
+Control-Rasterizer auf Commands, die automatische Einspeisung alter und neuer
+Bounds in den produktiven Dirty Manager, sichtbare Rotation-/Scale-Animationen
+im normalen Bootflow, BIOS-Parität, SIMD und echte Mikrosekundenmessungen.
+Der contentReference-Platzhalter in Abschnitt 1 der Draft-NPSPEC ist
+redaktionell ungültig, aber kein technischer Implementierungsblocker.
+
+## Rounded Geometry
+
+`NPSPEC-BOOTRENDER-0014` besitzt nun ein gemeinsames, heapfreies mathematisches
+Rounded-Geometry-Modul. Es unterstützt uniforme und vier individuelle
+Eckradien, begrenzt sie automatisch auf `min(Breite, Höhe) / 2`, skaliert
+Geometrie und Radien deterministisch in 16.16-DLU und interpoliert Position,
+Größe und Radien für Animationen. Das Hit-Testing prüft die tatsächliche
+Kontur statt nur der Bounding Box.
+
+Der analytische Kreisgleichungstest rastert ohne Polygon- oder Bitmapmaske.
+Die Qualitätsstufen bieten abgeschaltetes AA sowie deterministisches 2×2- und
+4×4-Kanten-AA. Innen-, zentrierte und Außenrahmen werden als Differenz zweier
+gerundeter Konturen erzeugt. Alle Schreibzugriffe werden an Surfacegrenzen
+geclippt; Diagnosen erfassen Erzeugung, Rendering, Hit Tests, Ablehnungen,
+Radien und AA-Status.
+
+Controls und Bootmanager-Panels verwenden produktiv diesen Renderer. Damit
+sind insbesondere Buttons, Karten, Dialogflächen, Schalter, Eingabefelder und
+der obere Balken nicht mehr von zwei separaten ganzzahligen Scanline-Helfern
+abhängig. Zusätzlich speichert ein eigener Rounded-Rectangle-Render-Command
+Einzelradien und Worldtransform unveränderlich; die inverse Rasterisierung
+unterstützt Translation, Rotation, Scale und Mirror und läuft durch die
+zentralen Clip- und Maskscopes.
+
+Hosttests decken Radius null, Maximalradius, Einzelradien, AA-Kantencoverage,
+DLU-Skalierung, Parameteranimation, alle Rahmenmodi, formgenaues Hit Testing
+und transformiertes/geclipptes Command-Rendering ab. Das neu erzeugte echte
+GPT/FAT32-Image bootet unter OVMF/QEMU, meldet
+`UEFI:ROUNDED-GEOMETRY-READY` und präsentiert alle Countdownframes.
+
+Nicht als erfüllt gelten Gradient-, Blur- und Schattenkonturintegration sowie
+identische BIOS-Pixelresultate. Die von 0014 vorausgesetzte
+`NPSPEC-BOOTRENDER-0013` (Gradients) existiert nicht als Datei und 0012 enthält
+statt Alpha Compositing eine Kopie von 0011. Diese fehlenden Vorverträge werden
+nicht durch proprietäre Annahmen ersetzt.
+
+## Shadows and Glows
+
+NPSPEC-BOOTRENDER-0015 besitzt nun ein gemeinsames heapfreies Effektsystem
+mit einer festen Liste von bis zu acht geordneten Effekten je Renderobjekt.
+Unterstützt werden Drop, Inner, Ambient und Contact Shadow sowie Outer, Inner,
+Focus und Accent Glow. Der validierte Deskriptor enthält RGBA-Farbe, Radius,
+Deckkraft und unabhängige positive oder negative X-/Y-Offsets. Clear sowie
+Interpolation von Radius, Farbe, Deckkraft und Offset sind vorhanden.
+
+Die Effektkontur wird direkt aus dem Rounded-Geometry-Objekt einschließlich
+seiner vier individuellen Radien abgeleitet. Shadow- und Glowphase sind
+getrennt, sodass die spezifizierte Reihenfolge Shadow, Fill, Border, Glow
+aufgebaut werden kann. Low, Standard und High begrenzen den Arbeitsradius
+deterministisch. Der Hotpath verwendet keine Heap-Allokation und verwirft
+Pixel vor der Berechnung anhand von Surfacegrenzen und aktuellem Clip. Danach
+wird die kombinierte Alpha-Maskcoverage angewandt und die vollständige
+Effektregion an den Dirty Manager gemeldet.
+
+Dialoge nutzen produktiv einen Ambient Shadow und einen nach unten versetzten
+Drop Shadow entlang ihrer tatsächlichen Rundung. High Contrast reduziert die
+Effektqualität und zeichnet den Schatten nicht, damit die opake, klar
+umrandete Accessibility-Darstellung erhalten bleibt. Diagnosen erfassen
+Objekte, gesetzte/gelöschte Effekte, Shadow-/Glowanzahl, geschriebene Pixel,
+Maximalradius, Cache-Misses, Qualität und Effekte pro Frame.
+
+Hosttests decken alle acht Effekttypen, Listenreihenfolge und -kapazität,
+negative Radien und andere ungültige Werte, Animation, Qualitätswechsel sowie
+einen echten Alpha-Maskscope in Kombination mit hartem Clip ab. Das reale
+GPT/FAT32-Image bootet unter OVMF/QEMU und meldet
+UEFI:SHADOW-GLOW-READY zusammen mit allen Countdownframes.
+
+Offen bleiben ein echter separabler Blur-Kernel, Effektcache und
+Renderzeitmessung, die produktive Focus-/Hover-Glow-Motion für alle Controls,
+die vollständige Anbindung jedes Renderobjekttyps sowie identische
+BIOS-Pixelresultate. Außerdem fehlen weiterhin die normativen Vorverträge aus
+0012 (falsch befüllt) und 0013 (keine Datei); deshalb wird 0015 nicht als
+vollständig integriert ausgewiesen.
+
+## Background Blur
+
+NPSPEC-BOOTRENDER-0016 besitzt nun eine heapfreie Background-Blur-Engine.
+Sie verlangt eine bereits fertig gerenderte Hintergrund-Surface und eine
+getrennte Ziel-Surface; In-place-Aufrufe werden kontrolliert abgewiesen. Ein
+Ring aus höchstens 65 horizontal gefilterten Zeilen und ein begrenzter
+512×512-Ergebnis-Cache vermeiden zusätzliche Vollbildsurfaces. Unterstützt werden
+Box, Gaussian und Dual-Pass Gaussian sowie Low, Standard und High. Radius,
+Region, Surface, Stride, Kernel und Qualität werden vor jedem Zugriff geprüft.
+
+Der Renderer kopiert ausschließlich die angeforderte Hintergrundregion,
+berechnet horizontale und vertikale Pässe getrennt und schreibt erst danach.
+Rounded Geometry mit vier Einzelradien und 4×4-AA sowie kombinierte
+Rechteck-/Rounded-/Alpha-Maskscopes greifen nach dem Kernel. Die Zielregion
+wird dem Damage-System gemeldet. Der Cache speichert für Regionen bis 512×512
+Pixel das bereits fertig maskierte Ergebnis; Treffer sind reine Kopien ohne
+erneute Kernel- oder Maskenauswertung. Größere Regionen werden korrekt
+gerendert, aber nicht gecacht. Nur überlappende Invalidierungen verwerfen ihn.
+
+Das angegebene Speicherbudget wird geprüft. Reicht es nicht für Snapshot und
+Zeilenring, bleibt der Pfad funktionsfähig, degradiert aber automatisch auf
+Low mit begrenztem Radius. Rekursive Renderaufrufe, negative oder unendliche
+Radien, ungültige Regionen, doppelte Initialisierungspfade und Zugriffe nach
+Shutdown werden kontrolliert behandelt. Diagnosen erfassen Regionen,
+Kopier-/Blurpixel, Cache Hits/Misses, Invalidierungen, Kernel, Radius,
+Qualität, Speicher und Degradation.
+
+Dialog-Glassflächen sind im stabilen Dialog-Lifecycle an diesen Pfad
+angebunden; Enter-/Exit-Motion deaktiviert teure Effekte explizit und High
+Contrast bleibt opak. Host-Pixeltests belegen Impulsverteilung,
+Dual-Pass-Ausgabe, gerundete AA-Kante, Cache Hit/Miss, fremde und
+überlappende Dirty Regions, Speichermangel sowie einen echten Alpha-Maskscope.
+Eine erste Vollbildsnapshot-Variante vergrößerte das PE-Image auf rund
+40,8 MiB und wurde von OVMF nicht mehr geladen. Nach der speichergerechten
+Umstellung beträgt SizeOfImage rund 33,7 MiB. Der neu gebaute echte
+GPT/FAT32-OVMF-Pfad startet wieder, meldet BACKGROUND-BLUR-READY und
+präsentiert alle elf Countdownframes.
+
+Der interaktive QEMU-Dialoglauf besitzt wegen des ersten softwareberechneten
+Firmwareframes nun eine Frist von 60 statt 15 Sekunden. Er belegt zwei echte
+BACKGROUND-BLUR-FRAME-Ausgaben, zunächst einen Cache-Miss und anschließend
+einen Cache-Hit, einen stabilen Screenshot sowie Resume, Escape, Exit-Motion,
+Cancel-Ergebnis und Seitenwiederherstellung. Teure Effekte sind während
+Enter-/Exit-Motion explizit deaktiviert und nur im stabilen Lifecycle aktiv.
+
+Offen bleiben SIMD, Tile-Parallelisierung, Hardwarezeitmessung, automatische
+Layer-Dirty-Generationen, BIOS-Pixelparität und der fehlende normative
+Alpha-Vertrag aus 0012.
+
+## Image Rendering
+
+NPSPEC-BOOTRENDER-0017 besitzt nun einen gemeinsamen Image Loader, Decoder,
+Cache und Renderer. Ressourcen werden vor dem ersten Rendern vollständig in
+internes premultiplied RGBA8888 konvertiert. Unterstützt sind RAW RGBA8888,
+BGRA8888, RGB888 und RGB565, das interne unkomprimierte BMP24/32 sowie PNG mit
+8-Bit Truecolor, RGBA oder Indexed Color einschließlich PLTE und tRNS. Der
+PNG-Pfad validiert Signatur, Chunkgrenzen und CRC, Zlib-Header und Adler-32,
+dekodiert Stored-, Fixed- und Dynamic-Deflate-Blöcke und rekonstruiert alle
+fünf PNG-Filter. APNG und interlaced PNG werden entsprechend der NPSPEC
+kontrolliert abgewiesen.
+
+Ein fester 512-KiB-Pixelpool und ein 240-KiB-Dekodierbereich begrenzen den
+Speicher ohne Allokation im Render-Hotpath. Ressourcen-IDs bilden den Cache;
+wiederholtes Laden erhöht nur die Referenzzahl. Breite, Höhe, Stride,
+Dateigröße, Speicherprodukte, Chunkanzahl, Format und sämtliche Decodergrenzen
+werden vor Zugriffen geprüft. Der Renderer unterstützt Nearest und Bilinear,
+Fit, Fill, Stretch und Originalgröße, Translation, Rotation, Skalierung,
+Spiegelung, Clip-/Maskscopes, Opacity, Tint, beliebige Ziel-Surfaces und
+Damage-Weitergabe. Ein schneller Identitäts-/Skalierungspfad vermeidet die
+allgemeine inverse Transformation und Divisionen pro Pixel. Das sichtbare
+Nova-Logo wird produktiv über diese API gezeichnet.
+
+Hosttests belegen RAW-Konvertierung und Premultiplikation, Cache und
+Referenzen, Nearest/Bilinear, Spiegelung, affine Transformation, Clipping,
+BMP24 sowie RGBA-, RGB- und indizierte PNGs. Außerdem werden Stored und
+komprimiertes Deflate, CRC-Schäden und nicht unterstütztes Interlacing
+geprüft. Das reale GPT/FAT32-Image bootet unter OVMF/QEMU mit
+IMAGE-RENDERER-READY; Menüframes sowie der vollständige Dialoglauf mit Blur,
+Escape und Seitenwiederherstellung bestehen. Die QEMU-Fristen betragen wegen
+der langsamen TCG-Softwaredarstellung 90 Sekunden für den initialen
+Animations-/Countdownnachweis und 60 Sekunden für den Dialog-Exit.
+
+Offen bleiben das Laden aus einem externen Boot Asset Package, weil dessen
+normative BAP- und Index-Wire-Formate in BOOTRESOURCE-0002/0003 fehlen,
+identische BIOS-Pixelresultate, SIMD, belastbare Decode-/Renderzeitmessungen,
+größere Speichermangel-/Fuzzfälle und der normative Alpha-Compositing-Vertrag
+aus der falsch befüllten NPSPEC-BOOTRENDER-0012.
+
+## Rendering Quality Profiles
+
+NPSPEC-BOOTRENDER-0018 besitzt nun einen zentralen heapfreien Quality Manager
+mit den fünf normativen Profilen Ultra, High, Standard, Performance und Safe.
+Jedes Profil besitzt eine unveränderliche, validierte Parametertabelle für
+Blur-Stufe und Maximalradius, Shadow-/Glow-Qualität und Effektdichte,
+Anti-Aliasing, Nearest/Bilinear, Animation, Transparenz, Dithering,
+Speicherbudget und Compositor-Fallback. Standard ist der deterministische
+Initialzustand. Explizite Konfiguration hat Vorrang; Auto berücksichtigt
+Speicher, Firmwareeinschränkung und Software-Rendering.
+
+Ein Profilwechsel setzt Blur, Effekte und deren maximale Anzahl, Rounded-AA,
+Image-Sampling, Motion und Compositor gemeinsam. Der Blur-Cache wird geleert
+und der Dirty Manager erzwingt ein vollständiges Re-Rendering. Safe schaltet
+Blur, Schatten, Glows, Transparenz und Animation aus und verwendet den
+minimalen Compositorpfad. Dialoge, Controls und Branding lesen die aktiven
+Parameter produktiv, statt eigene Qualitätswerte fest einzubauen.
+
+Die adaptive Steuerung degradiert bei Speichermangel sofort. Eine einzelne
+langsame Darstellung löst dagegen keinen Wechsel aus; erst drei aufeinander
+folgende Überschreitungen von 33,334 ms reduzieren in Auto die Stufe. Ein
+Grafikfehler kann auf Performance, ein kritischer Fehler auf Safe eskalieren.
+Alle Entscheidungen erfolgen bei Diagnose-/Fehlerereignissen außerhalb des
+eigentlichen Pixel-Hotpaths. Diagnosen erfassen aktives und gewünschtes
+Profil, Grund, Wechsel, Anwendungen, automatische Anpassungen, Full Redraws,
+Cacheinvalidierungen, deaktivierte Effekte, Budgetverletzungen, Speicher und
+Grafikdegradationen.
+
+Hosttests belegen alle fünf Profile, Invalidwerte, Ultra-Parameter, Safe,
+Hardware-Autoauswahl, dreistufige Frame-Hysterese, Speichermangel,
+Cacheinvalidierung und Full Redraw. Das reale GPT/FAT32-Image meldet unter
+OVMF/QEMU RENDER-QUALITY-READY und besteht den vollständigen Menüpfad sowie
+Dialog, Blur-Cache, Escape und Seitenwiederherstellung.
+
+Offen bleiben ein persistentes Konfigurations-Backend, echte GPU-/Firmware-
+Leistungsinventarisierung, produktives Dithering und reduzierte
+Renderauflösung, die dynamische Neudimensionierung bereits reservierter Pools,
+automatische Hochstufung nach dauerhafter Erholung, identisches BIOS-Verhalten
+und Bare-Metal-Performancewerte.
+
+## Software Rendering Fallback
+
+NPSPEC-BOOTRENDER-0019 besitzt nun eine gemeinsame Software-Renderer-
+Lifecycle-API. Sie umfasst Initialisierung, Shutdown, Framebeginn,
+Scene-Graph-Rendering, Present, Frameabschluss, Speicherbericht, Reset,
+Verfügbarkeit und Textfallback-Anforderung. Der produktive UEFI-Bootmanager
+durchläuft ausschließlich die CPU-Pipeline aus Render Commands, Scene Graph,
+Software-Rasterizer, Compositor, Present Scheduler und Framebuffer Backend;
+Firmware- oder GPU-Zeichenbeschleunigung wird nicht verwendet. Der portable
+Scalarpfad ist die Referenz und benötigt weder SIMD noch mehrere Kerne.
+
+Die Zustandsmaschine unterscheidet Offline, Active, Resetting, Safe und Text.
+Der erste Render- oder Presentfehler verwirft einen eventuell offenen
+Command-/Transform-/Clip-/Maskframe, leert den Blur-Cache und erzwingt ein
+Full Repaint. Ein unmittelbar folgender Fehler aktiviert das vollständige
+Safe-Qualitätsprofil. Ein dritter Folgefehler fordert den funktionalen
+UEFI-Textmodus an; der Bootprozess wird dadurch nicht abgebrochen. Ein
+erfolgreicher Frame setzt die Fehlerfolge zurück. Speichermangel unter
+16 MiB deaktiviert teure Effekte über Safe, leert temporäre Caches und
+erzwingt Full Damage.
+
+Die Initialisierung validiert Auflösung, Framebuffer und Speicher. Fehlender
+Framebuffer fordert direkt Text an. Doppelter Shutdown, Nutzung im falschen
+Zustand, Null-/inaktive Szenen sowie Render-/Presentfehler sind typisiert.
+Diagnosen erfassen aktiven Renderer und Scalar-/SIMD-Stufe, Frames, Presents,
+Pixel, Draw Calls, Dirty Regions, Cache Hits/Misses, Speicher, Fehler, Resets,
+Full Repaints, Safe-Eintritte und Textanforderungen.
+
+Hosttests belegen erfolgreiche Scene-Graph-Traversierung, Frameabschluss,
+Speichermangel, die vollständige Folge Reset → Full Repaint → Safe → Text,
+fehlenden Framebuffer und doppelten Shutdown. Das reale GPT/FAT32-Image meldet
+unter OVMF/QEMU SOFTWARE-RENDERER-READY und besteht Menü und Dialog. Ein eigener
+interaktiver QEMU-Test öffnet die Diagnoseseite, injiziert mit F11 einen
+Renderfehler und belegt SOFTWARE-RENDERER-RESET sowie
+SOFTWARE-RENDERER-RECOVERED mit anschließend weiter gezeichneter GUI.
+
+Der BIOS-Pfad rendert weiterhin vollständig per CPU direkt in den validierten
+VBE-LFB und besitzt einen getesteten Textfallback, ist aber noch nicht an
+dieselbe C-Pipeline gebunden. Offen bleiben daher identische BIOS-/UEFI-
+Pixelresultate, SIMD-Laufzeitauswahl, vollständige Neuinitialisierung aller
+persistent reservierten Surface-Pools und Bare-Metal-Fehlerinjektion.
+Gradienten bleiben wegen der fehlenden NPSPEC-BOOTRENDER-0013 offen; der
+normative Alpha-Vertrag in 0012 ist weiterhin falsch befüllt.
+
+## Resource Compression
+
+NPSPEC-BOOTRESOURCE-0005 ist jetzt in den zentralen Resource Loader integriert.
+`compression.c` implementiert die verpflichtenden Verfahren NONE und LZ4 als
+deterministischen O(n)-Raw-Blockdecoder. Token, erweiterte Literal- und
+Matchlängen, Backreference-Offsets, Überlappungen, Quell- und Zielgrenzen sowie
+Pointer- und Größenüberläufe werden vor jedem Zugriff geprüft. Das optionale
+Zstd wird typisiert als nicht unterstützt abgewiesen.
+
+Komprimierte Ressourcen verbleiben bis zum ersten Zugriff gepackt. Der Loader
+prüft zunächst die CRC32 der gepackten Daten, dekomprimiert in einen statischen,
+heapfreien 512-KiB-Blockpool und prüft danach Originalgröße und Original-CRC32.
+Die dekodierte Kopie wird in denselben referenzgezählten Cache übernommen und
+höchstens einmal erzeugt. Unter Pooldruck werden unreferenzierte, niedrig
+priorisierte LRU-Ressourcen freigegeben. Beschädigte Daten aktivieren die
+konfigurierte Fallback-Ressource; ungültige oder übergroße Ausgaben werden ohne
+Speicherüberschreibung abgewiesen.
+
+Hosttests decken NONE, LZ4-Literale, überlappende Matches, abgeschnittene und
+beschädigte Streams, Zielgrößenfehler, Zstd-Abweisung, Lazy Loading,
+Cache-Wiederverwendung, Fallback und Poolgrenze ab. Das reale GPT/FAT32-Abbild
+dekomprimiert beim Start unter OVMF/QEMU eine gepackte Ressource, validiert sie
+und meldet `UEFI:RESOURCE-LZ4-DECODE-READY`.
+
+Offen bleiben Zstd, belastbare Dekompressionszeitmessung, Ressourcen oberhalb
+des statischen 512-KiB-Pools und die gemeinsame BIOS-C-Pipeline. Eine echte
+Anbindung komprimierter Ressourcen aus Boot Asset Packages ist weiterhin durch
+die nicht normativ definierten BAP-/Index-Wire-Formate in
+NPSPEC-BOOTRESOURCE-0002 und -0003 blockiert.
+
+## Resource Integrity Verification
+
+NPSPEC-BOOTRESOURCE-0006 besitzt nun einen zentralen, heapfreien
+Integritätsmanager. Er unterstützt CRC32 und vollständiges SHA-256 mit
+statischem Hashkontext und konstantzeitlichem Digestvergleich. Der
+Vertrauenszustand unterscheidet Unknown, Valid, Signed, Invalid und Corrupted;
+die Richtlinien Permissive, Standard und Strict werden zentral und
+deterministisch ausgewertet. Strict akzeptiert nur einen Signaturstatus, den
+ein vorgelagerter kryptografischer Prüfer nachweisbar als Verified geliefert
+hat. Ein bloß vorhandenes Signaturfeld wird nicht als Authentizitätsbeweis
+behandelt.
+
+Der Resource Loader prüft ID-/Typkontext, Version, Datenzeiger, Größe,
+Pointerüberlauf und Signaturstatus. Gepackte Daten werden vor der
+Dekomprimierung gegen CRC32 und optional SHA-256 geprüft; danach folgen
+Originalgröße, Original-CRC32 und optional Original-SHA-256. Der ermittelte
+Trust-Status liegt O(1) direkt am Ressourcenobjekt. Nur eine weiterhin
+validierte Cachekopie überspringt erneutes Hashing; nach Unload oder Eviction
+wird bei der nächsten Nutzung erneut geprüft. Beschädigte Ressourcen werden
+verworfen und können über den bestehenden Loader-Fallback ersetzt werden.
+
+Hosttests belegen den bekannten FIPS-SHA-256-Vektor `abc`, CRC32/SHA-256,
+Permissive/Standard/Strict, ungültige und vorgelagert verifizierte
+Signaturzustände sowie den Cache-Skip. Bestehende Loader-Tests decken außerdem
+Korruption, Abhängigkeiten, Zyklen und Fallback ab. Das reale GPT/FAT32-Abbild
+prüft unter OVMF/QEMU feste SHA-256-Werte derselben Ressource vor und nach LZ4
+und meldet `UEFI:RESOURCE-SHA256-VERIFIED`.
+
+Nicht vorgetäuscht werden Ed25519 oder ECDSA P-256: Für Schlüssel, Signaturen,
+Trust Anchors und Richtlinien fehlt eine NPSPEC-BOOTSECURITY-0001 im aktuellen
+Dokumentbestand. Auch Paket-/Indexheader, Manifest und ihre signierten
+Bytebereiche sind in BOOTRESOURCE-0002/0003 nicht normativ als Wire-Format
+definiert. Diese Authentizitätsanteile bleiben daher eindeutig blockiert.
+Zusätzlich offen sind optionales SHA-512, Validierungszeitmessung und dieselbe
+Integritätspipeline im BIOS-Pfad.
+
+## PNG Decoder
+
+NPSPEC-BOOTRESOURCE-0007 ist nun als plattformneutraler, heapfreier Decoder in
+den Image Renderer und Resource Loader integriert. Die öffentliche API umfasst
+Initialisierung, reine Validierung und Dekodierung. Ein statischer 240-KiB-
+Arbeitsbereich nimmt den Inflate-/Scanline-Datenstrom auf; fertige Bilder
+werden ausschließlich aus dem bestehenden 512-KiB-RGBA-Pixelpool erzeugt.
+
+Unterstützt sind die verpflichtenden Farbtypen Grayscale, RGB, RGBA und
+Indexed mit den normativen Bit-Tiefen 1, 2, 4 und 8, soweit der jeweilige
+PNG-Farbtyp sie erlaubt. Zusätzlich wird Grayscale+Alpha mit 8 Bit verarbeitet.
+Packed Samples werden bitgenau extrahiert und auf RGBA32 skaliert. PLTE und
+tRNS funktionieren für Indexed, Grayscale und RGB; echte Alpha-Kanäle werden
+premultipliziert. Mehrere zusammenhängende IDAT-Chunks, Stored-, Fixed- und
+Dynamic-Deflate, Adler32 sowie None, Sub, Up, Average und Paeth sind vollständig
+im statischen Decoderpfad enthalten.
+
+Der Parser prüft PNG-Signatur, IHDR als ersten Chunk, Chunknamen und Reserved
+Bit, jede Chunklänge und Addition, CRC32 jedes Chunks, PLTE-/tRNS-/IDAT-
+Reihenfolge, unbekannte Critical Chunks, IEND ohne Nutzdaten und das exakte
+Dateiende. Dimensionen, Scanlinegröße, Pixelbudget und Paletteindizes werden
+vor einer Image-Allokation validiert. Diagnosen erfassen Bildgröße, Farbtyp,
+Bit-Tiefe, Chunks, IDATs, Filterzeilen, CRC- und Formatfehler.
+
+Hosttests belegen RGB, RGBA, Indexed 8/2 Bit, Grayscale 1/8 Bit,
+Grayscale+Alpha, alle Transparenzpfade, mehrere IDATs, alle fünf Filter,
+Deflatevarianten, CRC-Schäden und die öffentliche Validate-API. Das reale
+GPT/FAT32-Abbild lädt unter OVMF/QEMU eine eingebettete 1-Bit-Grayscale-PNG mit
+tRNS durch den produktiven Resource Loader und meldet
+`UEFI:PNG-DECODER-READY`.
+
+Offen bleiben die optionale 16-Bit-Unterstützung, Adam7-Interlacing, mehr als
+16 IDAT-Chunks, belastbare Decodezeitmessung und dieselbe C-Pipeline im
+BIOS-Pfad. Externe PNGs aus BAP-Dateien bleiben zusätzlich vom fehlenden
+Wire-Format in BOOTRESOURCE-0002/0003 abhängig.
+
+## SVG Icon Renderer – normativ blockiert
+
+NPSPEC-BOOTRESOURCE-0008 kann derzeit nicht spezifikationsgetreu implementiert
+werden. Sie fordert ausdrücklich NPSPEC-BOOTRENDER-0012 und -0013 als
+Transformations-, Alpha- und Vektorgeometriegrundlage. Eine Datei 0013 ist im
+Dokumentbestand nicht vorhanden. Die Datei
+`NPSPEC-BOOTRENDER-0012_Alpha_Compositing.md` trägt intern die Dokument-ID 0011
+und ist inhaltlich eine Kopie der 2D-Transformationsspezifikation; ein
+Alpha-Compositing- oder Vector-Geometry-Vertrag fehlt damit ebenfalls.
+
+Auch BOOTRESOURCE-0008 selbst nennt zwar SVG-Elemente und Attribute, definiert
+aber nicht die unterstützten Path-Kommandos, Fill-/Winding-Regel, Stroke Caps
+und Joins, Kurven-/Arc-Flattening, XML-Namespace-/Entityregeln oder die Syntax
+für Themefarbreferenzen. Ohne diese Regeln wären Rasterresultate und damit die
+geforderte BIOS-/UEFI-Identität nicht objektiv testbar. Ein beliebiger
+Teilparser würde den fehlenden Vertrag nur verdecken.
+
+Der Bootmanager verwendet deshalb weiterhin die bereits validierte,
+plattformneutrale 2-Bit-Antialias-Iconquelle mit DLU-Skalierung und Theme-Tint.
+Der SVG-Renderer bleibt im Audit ausdrücklich **Blockiert**, bis 0013 ergänzt,
+0012 korrigiert und die oben genannten SVG-Unterregeln festgelegt sind.

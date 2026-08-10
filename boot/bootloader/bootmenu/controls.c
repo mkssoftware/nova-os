@@ -4,6 +4,8 @@
 #include "icons.h"
 #include "branding.h"
 #include "scene_graph.h"
+#include "rounded_geometry.h"
+#include "render_quality.h"
 
 static nova_control_t controls[NOVA_CONTROL_CAPACITY];
 static bool used[NOVA_CONTROL_CAPACITY];
@@ -933,25 +935,10 @@ void nova_control_release(nova_control_t *control)
 static void control_rounded_rect(nova_surface_t *surface, nova_rect_t rect,
                                  uint16_t radius, uint32_t color)
 {
-    if (!radius || rect.width <= 0 || rect.height <= 0) {
-        nova_surface_rect(surface, rect, color);
-        return;
-    }
-    if ((int32_t)radius * 2 > rect.height) radius = (uint16_t)(rect.height / 2);
-    if ((int32_t)radius * 2 > rect.width) radius = (uint16_t)(rect.width / 2);
-    for (int32_t row = 0; row < rect.height; ++row) {
-        int32_t edge = row < radius ? row : rect.height - 1 - row;
-        int32_t inset = 0;
-        if (edge < radius) {
-            int32_t dy = (int32_t)radius - 1 - edge;
-            int32_t extent = 0;
-            while ((extent + 1) * (extent + 1) + dy * dy <= radius * radius)
-                ++extent;
-            inset = (int32_t)radius - extent;
-        }
-        nova_surface_rect(surface, (nova_rect_t){rect.x + inset, rect.y + row,
-                          rect.width - inset * 2, 1}, color);
-    }
+    nova_round_rect_t geometry;
+    if(nova_round_rect_create(&geometry,rect.x,rect.y,rect.width,rect.height,radius))
+        (void)nova_round_rect_render(surface,&geometry,color,
+            nova_render_quality_parameters()->anti_aliasing);
 }
 
 static int32_t text_prefix_width(const nova_control_t *control,uint16_t bytes)

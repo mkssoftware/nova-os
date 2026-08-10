@@ -87,7 +87,7 @@ bool nova_managed_layer_set_opacity(nova_layer_handle_t handle,uint16_t opacity)
 {if(!mutable()||opacity>1000){++diagnostics.rejected_mutations;return false;}nova_managed_layer_t *l=lookup(handle);if(!l)return false;
  l->opacity=opacity;if(opacity<1000){l->flags|=NOVA_LAYER_HAS_OPACITY|NOVA_LAYER_ISOLATED;}l->flags|=NOVA_LAYER_DIRTY;++diagnostics.mutations;return true;}
 bool nova_managed_layer_set_transform(nova_layer_handle_t handle,nova_scene_matrix_t transform)
-{if(!mutable()||!transform.m11||!transform.m22){++diagnostics.rejected_mutations;return false;}nova_managed_layer_t *l=lookup(handle);if(!l)return false;
+{if(!mutable()||!nova_transform_fixed_valid(transform)){++diagnostics.rejected_mutations;return false;}nova_managed_layer_t *l=lookup(handle);if(!l)return false;
  l->transform=transform;l->flags|=NOVA_LAYER_TRANSFORMED|NOVA_LAYER_ISOLATED|NOVA_LAYER_DIRTY;++diagnostics.mutations;return true;}
 bool nova_managed_layer_bind_surface(nova_layer_handle_t handle,nova_surface_handle_t surface)
 {if(!mutable()){++diagnostics.rejected_mutations;return false;}nova_managed_layer_t *l=lookup(handle);nova_surface_info_t info;
@@ -107,13 +107,9 @@ static bool after(const nova_managed_layer_t *a,const nova_managed_layer_t *b)
  (a->z_index==b->z_index&&(a->creation>b->creation||
  (a->creation==b->creation&&a->handle>b->handle)))));}
 static nova_scene_matrix_t multiply(nova_scene_matrix_t a,nova_scene_matrix_t b)
-{return (nova_scene_matrix_t){
- (int32_t)(((int64_t)a.m11*b.m11+(int64_t)a.m12*b.m21)/65536),
- (int32_t)(((int64_t)a.m11*b.m12+(int64_t)a.m12*b.m22)/65536),
- (int32_t)(((int64_t)a.m21*b.m11+(int64_t)a.m22*b.m21)/65536),
- (int32_t)(((int64_t)a.m21*b.m12+(int64_t)a.m22*b.m22)/65536),
- a.tx+(int32_t)(((int64_t)a.m11*b.tx+(int64_t)a.m12*b.ty)/65536),
- a.ty+(int32_t)(((int64_t)a.m21*b.tx+(int64_t)a.m22*b.ty)/65536)};}
+{nova_scene_matrix_t result=nova_scene_identity();
+ if(!nova_transform_fixed_multiply(&result,a,b))++diagnostics.invalid_handles;
+ return result;}
 static nova_rect_t intersection(nova_rect_t a,nova_rect_t b)
 {if(a.width<=0||a.height<=0)return b;if(b.width<=0||b.height<=0)return a;
  int32_t x=a.x>b.x?a.x:b.x,y=a.y>b.y?a.y:b.y,r=a.x+a.width<b.x+b.width?a.x+a.width:b.x+b.width;

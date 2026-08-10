@@ -12,8 +12,11 @@
 #include "../bootmenu/configuration.h"
 #include "../bootmenu/graphics.h"
 #include "../bootmenu/framebuffer_backend.h"
+#include "../bootmenu/present_scheduler.h"
 #include "../bootmenu/gop_backend.h"
 #include "../bootmenu/resolution.h"
+#include "../bootmenu/software_renderer.h"
+#include "../bootmenu/resources.h"
 #include "firmware.h"
 
 EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *system_table);
@@ -37,6 +40,7 @@ static nova_dialog_motion_t dialog_visual;
 static void animate_dialog_motion(bool entering,UINTN selection)
 {
     if(!runtime_system_table)return;
+    bootmenu_set_dialog_effects(false);
     if(entering)dialog_visual=(nova_dialog_motion_t){0};
     bool scheduled=entering?nova_dialog_enter(&dialog_visual):
                             nova_dialog_exit(&dialog_visual);
@@ -55,7 +59,7 @@ static void animate_dialog_motion(bool entering,UINTN selection)
         nova_motion_update(start+duration+1u);
     }
     if(entering){dialog_visual.opacity=255;dialog_visual.scale=1000;
-        dialog_visual.focused=true;}
+        dialog_visual.focused=true;bootmenu_set_dialog_effects(true);}
     else{dialog_visual.opacity=0;dialog_visual.scale=nova_motion_is_reduced()?1000:950;}
     bootmenu_set_dialog_motion((uint8_t)dialog_visual.opacity,(uint16_t)dialog_visual.scale);
     bootmenu_draw(selection,255);
@@ -245,6 +249,8 @@ static void boot_selected(UINTN selection)
       if (selection == 0) {
           nova_runtime_shutdown();nova_debug_string("UEFI:RUNTIME-SHUTDOWN\n");
           nova_runtime_destroy();nova_debug_string("UEFI:RUNTIME-DESTROYED\n");
+          nova_resource_manager_shutdown();nova_debug_string("UEFI:RESOURCE-MANAGER-SHUTDOWN\n");
+          nova_present_shutdown();nova_debug_string("UEFI:PRESENT-SCHEDULER-SHUTDOWN\n");
           nova_framebuffer_shutdown();nova_debug_string("UEFI:FRAMEBUFFER-BACKEND-SHUTDOWN\n");
           nova_gop_shutdown();nova_debug_string("UEFI:GOP-SHUTDOWN\n");
           nova_graphics_shutdown();nova_debug_string("UEFI:GAL-SHUTDOWN\n");
@@ -480,6 +486,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
         nova_runtime_enter_recovery();
         return text_fallback(system_table,"Bootoberflaeche konnte nicht initialisiert werden.");
     }
+    const nova_boot_configuration_t *boot_configuration=nova_configuration_effective();
+    nova_diag_set_quality(boot_configuration->quality,
+                          boot_configuration->quality==NOVA_QUALITY_AUTO);
     nova_navigation_initialize((nova_navigation_entry_t){NOVA_VIEW_MAIN,0,0,0,0});
     nova_dialog_initialize();
     if(!nova_runtime_ready()||!nova_runtime_run())return 1;
@@ -501,6 +510,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
         bootmenu_draw(selection, (uint8_t)entrance_opacity);
         system_table->BootServices->Stall(20000);
     }
+    if(nova_sw_renderer_text_required())
+        return text_fallback(system_table,"Software-Renderer konnte nicht wiederhergestellt werden.");
     nova_debug_string("UEFI:MOTION-READY\n");
     nova_diag_frame(20000, 500, 500, 8000, 4000);
     nova_diag_snapshot();
@@ -523,6 +534,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
             bootmenu_set_status(countdown[4 - tick / 10]);
             nova_debug_string(countdown_marker[4 - tick / 10]);
             bootmenu_draw(selection, 255);
+            if(nova_sw_renderer_text_required())
+                return text_fallback(system_table,"Software-Renderer konnte nicht wiederhergestellt werden.");
             if (tick == 0) nova_debug_string("UEFI:COUNTDOWN-FRAME-READY\n");
         }
         system_table->BootServices->Stall(100000);
@@ -559,6 +572,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     }
 
     for (;;) {
+        if(nova_sw_renderer_text_required())
+            return text_fallback(system_table,"Software-Renderer konnte nicht wiederhergestellt werden.");
         if(bootmenu_help_search_active()){
             bootmenu_help_search_input(key.ScanCode,key.UnicodeChar);
             bootmenu_draw(selection,255);
@@ -653,6 +668,14 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
         } else if (key.ScanCode == 20 &&
                    bootmenu_view()==NOVA_VIEW_DIAGNOSTICS) {
             if(bootmenu_recovery_self_test())bootmenu_draw(selection,255);
+        } else if (key.ScanCode == 21 &&
+                   bootmenu_view()==NOVA_VIEW_DIAGNOSTICS) {
+            if(nova_sw_renderer_report_failure(false)==NOVA_SW_RENDERER_RECOVERED){
+                nova_debug_string("UEFI:SOFTWARE-RENDERER-RESET\n");
+                bootmenu_set_status("Software-Renderer wurde sicher neu initialisiert.");
+                bootmenu_draw(selection,255);
+                nova_debug_string("UEFI:SOFTWARE-RENDERER-RECOVERED\n");
+            }
         } else if (key.ScanCode == 11) {
             nova_debug_string("UEFI:HELP-VIEW\n");
             navigate_to(NOVA_VIEW_HELP, &selection, NOVA_NAV_PUSH);

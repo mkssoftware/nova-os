@@ -58,7 +58,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -87,6 +87,9 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/resolution.c \
 		boot/bootloader/bootmenu/controls.c boot/bootloader/bootmenu/text.c \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/resources.c \
+		boot/bootloader/bootmenu/compression.c \
+		boot/bootloader/bootmenu/integrity.c \
+		boot/bootloader/bootmenu/font_resources.c \
 		boot/bootloader/bootmenu/icons.c \
 		boot/bootloader/bootmenu/branding.c \
 		boot/bootloader/bootmenu/design.c \
@@ -96,6 +99,16 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/surface_manager.c \
 		boot/bootloader/bootmenu/layer_manager.c \
 		boot/bootloader/bootmenu/framebuffer_backend.c \
+		boot/bootloader/bootmenu/present_scheduler.c \
+		boot/bootloader/bootmenu/dirty_manager.c \
+		boot/bootloader/bootmenu/clip_mask.c \
+		boot/bootloader/bootmenu/transform2d.c \
+		boot/bootloader/bootmenu/rounded_geometry.c \
+		boot/bootloader/bootmenu/effects.c \
+		boot/bootloader/bootmenu/background_blur.c \
+		boot/bootloader/bootmenu/image_renderer.c \
+		boot/bootloader/bootmenu/render_quality.c \
+		boot/bootloader/bootmenu/software_renderer.c \
 		boot/bootloader/bootmenu/gop_backend.c \
 		boot/bootloader/bootmenu/theme.c \
 		boot/bootloader/bootmenu/layout.c \
@@ -139,6 +152,9 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/text.c boot/bootloader/bootmenu/text.h \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/unicode.h \
 		boot/bootloader/bootmenu/resources.c boot/bootloader/bootmenu/resources.h \
+		boot/bootloader/bootmenu/compression.c boot/bootloader/bootmenu/compression.h \
+		boot/bootloader/bootmenu/integrity.c boot/bootloader/bootmenu/integrity.h \
+		boot/bootloader/bootmenu/font_resources.c boot/bootloader/bootmenu/font_resources.h \
 		boot/bootloader/bootmenu/icons.c boot/bootloader/bootmenu/icons.h \
 		boot/bootloader/bootmenu/branding.c boot/bootloader/bootmenu/branding.h \
 		boot/bootloader/bootmenu/design.c boot/bootloader/bootmenu/design.h \
@@ -148,6 +164,16 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/surface_manager.c boot/bootloader/bootmenu/surface_manager.h \
 		boot/bootloader/bootmenu/layer_manager.c boot/bootloader/bootmenu/layer_manager.h \
 		boot/bootloader/bootmenu/framebuffer_backend.c boot/bootloader/bootmenu/framebuffer_backend.h \
+		boot/bootloader/bootmenu/present_scheduler.c boot/bootloader/bootmenu/present_scheduler.h \
+		boot/bootloader/bootmenu/dirty_manager.c boot/bootloader/bootmenu/dirty_manager.h \
+		boot/bootloader/bootmenu/clip_mask.c boot/bootloader/bootmenu/clip_mask.h \
+		boot/bootloader/bootmenu/transform2d.c boot/bootloader/bootmenu/transform2d.h \
+		boot/bootloader/bootmenu/rounded_geometry.c boot/bootloader/bootmenu/rounded_geometry.h \
+		boot/bootloader/bootmenu/effects.c boot/bootloader/bootmenu/effects.h \
+		boot/bootloader/bootmenu/background_blur.c boot/bootloader/bootmenu/background_blur.h \
+		boot/bootloader/bootmenu/image_renderer.c boot/bootloader/bootmenu/image_renderer.h \
+		boot/bootloader/bootmenu/render_quality.c boot/bootloader/bootmenu/render_quality.h \
+		boot/bootloader/bootmenu/software_renderer.c boot/bootloader/bootmenu/software_renderer.h \
 		boot/bootloader/bootmenu/gop_backend.c boot/bootloader/bootmenu/gop_backend.h \
 		boot/bootloader/bootmenu/theme.c boot/bootloader/bootmenu/theme.h \
 		boot/bootloader/bootmenu/layout.c boot/bootloader/bootmenu/layout.h \
@@ -176,6 +202,9 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/resolution.c \
 		boot/bootloader/bootmenu/controls.c boot/bootloader/bootmenu/text.c \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/resources.c \
+		boot/bootloader/bootmenu/compression.c \
+		boot/bootloader/bootmenu/integrity.c \
+		boot/bootloader/bootmenu/font_resources.c \
 		boot/bootloader/bootmenu/icons.c \
 		boot/bootloader/bootmenu/branding.c \
 		boot/bootloader/bootmenu/design.c \
@@ -185,6 +214,16 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/surface_manager.c \
 		boot/bootloader/bootmenu/layer_manager.c \
 		boot/bootloader/bootmenu/framebuffer_backend.c \
+		boot/bootloader/bootmenu/present_scheduler.c \
+		boot/bootloader/bootmenu/dirty_manager.c \
+		boot/bootloader/bootmenu/clip_mask.c \
+		boot/bootloader/bootmenu/transform2d.c \
+		boot/bootloader/bootmenu/rounded_geometry.c \
+		boot/bootloader/bootmenu/effects.c \
+		boot/bootloader/bootmenu/background_blur.c \
+		boot/bootloader/bootmenu/image_renderer.c \
+		boot/bootloader/bootmenu/render_quality.c \
+		boot/bootloader/bootmenu/software_renderer.c \
 		boot/bootloader/bootmenu/gop_backend.c \
 		boot/bootloader/bootmenu/theme.c \
 		boot/bootloader/bootmenu/layout.c \
@@ -236,6 +275,24 @@ test-uefi-image: uefi
 	grep -F "UEFI:SURFACE-MANAGER-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:LAYER-MANAGER-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:FRAMEBUFFER-BACKEND-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:PRESENT-SCHEDULER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:DIRTY-MANAGER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:CLIP-MASK-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:TRANSFORM2D-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:ROUNDED-GEOMETRY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:SHADOW-GLOW-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:BACKGROUND-BLUR-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:IMAGE-RENDERER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:PNG-DECODER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:FONT-RESOURCE-REGISTRY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RENDER-QUALITY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:SOFTWARE-RENDERER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOURCE-LOADER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOURCE-COMPRESSION-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOURCE-INTEGRITY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOURCE-LZ4-DECODE-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOURCE-SHA256-VERIFIED" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOURCE-PRELOAD-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:GOP-MODES-VALIDATED" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:GOP-DESCRIPTOR-READY" build/qemu-uefi-image-debug.log
 	@echo "Aktuelles GPT/FAT32-UEFI-IMG bootet erfolgreich"
@@ -262,6 +319,24 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:SURFACE-MANAGER-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:LAYER-MANAGER-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:FRAMEBUFFER-BACKEND-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:PRESENT-SCHEDULER-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:DIRTY-MANAGER-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:CLIP-MASK-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:TRANSFORM2D-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:ROUNDED-GEOMETRY-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:SHADOW-GLOW-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:BACKGROUND-BLUR-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:IMAGE-RENDERER-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:PNG-DECODER-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:FONT-RESOURCE-REGISTRY-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RENDER-QUALITY-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:SOFTWARE-RENDERER-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RESOURCE-LOADER-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RESOURCE-COMPRESSION-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RESOURCE-INTEGRITY-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RESOURCE-LZ4-DECODE-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RESOURCE-SHA256-VERIFIED" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RESOURCE-PRELOAD-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:GOP-MODES-VALIDATED" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:GOP-DESCRIPTOR-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:MENU-DRAWN" $(UEFI_DEBUG_LOG)
@@ -333,9 +408,16 @@ test-uefi-dialog: uefi
 		-File scripts/test-uefi-dialog.ps1 -Qemu "$(QEMU64)" \
 		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
 		-DebugLog build/qemu-uefi-dialog-debug.log
+
+test-uefi-software-renderer: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/test-uefi-software-renderer.ps1 -Qemu "$(QEMU64)" \
+		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-software-renderer-debug.log
 	grep -F "UEFI:DIALOG-READY" build/qemu-uefi-dialog-debug.log
 	grep -F "UEFI:DIALOG-OPEN" build/qemu-uefi-dialog-debug.log
 	grep -F "UEFI:DIALOG-FRAME-READY" build/qemu-uefi-dialog-debug.log
+	grep -F "UEFI:BACKGROUND-BLUR-FRAME" build/qemu-uefi-dialog-debug.log
 	grep -F "UEFI:DIALOG-PAGE-ACTIVE" build/qemu-uefi-dialog-debug.log
 	grep -F "UEFI:PAGE-RESTORED" build/qemu-uefi-dialog-debug.log
 	grep -F "UEFI:DIALOG-RESULT-CANCEL" build/qemu-uefi-dialog-debug.log
