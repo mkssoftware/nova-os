@@ -11,7 +11,9 @@ bool nova_text_register_font_resource(void)
         {0x00df,0x00df},{0x00e4,0x00e4},{0x00f6,0x00f6},{0x00fc,0x00fc}};
     const char *uri="boot://fonts/segoe-ui/semibold/15";
     if(!nova_resource_register(uri,NOVA_RESOURCE_FONT,1,nova_font_bitmap,
-        sizeof(nova_font_bitmap),0,0)||!nova_font_resource_initialize())return false;
+        sizeof(nova_font_bitmap),0,0)||
+       !nova_resource_cache_set_policy(nova_resource_id(uri),NOVA_CACHE_PERMANENT)||
+       !nova_font_resource_initialize())return false;
     nova_font_resource_descriptor_t descriptor={.font_id=NOVA_SYSTEM_FONT_ID,
         .resource_id=nova_resource_id(uri),.name="NovaOS UI 15",
         .family="Segoe UI",.style="SemiBold",.version=1,.resource_version=1,

@@ -90,6 +90,8 @@ bool nova_icons_initialize(void)
     for (uint32_t i = 0; i < NOVA_ICON_COUNT; ++i) if (entries[i].bitmap) {
         if (!nova_resource_register(entries[i].uri, NOVA_RESOURCE_ICON, 1,
                                     entries[i].bitmap, 100, 0, 0)) return false;
+        if(!nova_resource_cache_set_policy(nova_resource_id(entries[i].uri),
+                                           NOVA_CACHE_PERMANENT))return false;
     }
     return true;
 }

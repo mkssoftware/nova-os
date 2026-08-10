@@ -4,6 +4,7 @@
 #include "controls.h"
 #include "text.h"
 #include "font_resources.h"
+#include "animation_resources.h"
 #include "unicode.h"
 #include "resources.h"
 #include "icons.h"
@@ -334,6 +335,8 @@ bool bootmenu_initialize(void)
         nova_debug_string("UEFI:SURFACE-MANAGER-READY\n");
         nova_debug_string("UEFI:LAYER-MANAGER-READY\n");
         if(!nova_resource_loader_initialize(NOVA_RESOURCE_DEFAULT_CACHE_BUDGET))return false;
+        if(!nova_resource_cache_configure(512u*1024u,NOVA_RESOURCE_DEFAULT_CACHE_BUDGET,
+                                          512u*1024u,7u*1024u*1024u))return false;
         nova_debug_string("UEFI:RESOURCE-LOADER-READY\n");
         if(!nova_compression_supported(NOVA_COMPRESSION_LZ4)||
            nova_compression_supported(NOVA_COMPRESSION_ZSTD))return false;
@@ -392,6 +395,9 @@ bool bootmenu_initialize(void)
         const nova_boot_configuration_t *initial_configuration=
             nova_configuration_effective();
         if(!nova_theme_activate(initial_configuration->theme))return false;
+        if(!nova_theme_current()||nova_theme_current()->references!=1||
+           nova_theme_diagnostics()->registered!=NOVA_THEME_COUNT)return false;
+        nova_debug_string("UEFI:THEME-RESOURCE-READY\n");
         nova_theme_set_reduced_motion(initial_configuration->reduced_motion);
         tooltips_enabled=initial_configuration->tooltips;
         tooltip_delay_ms=initial_configuration->tooltip_delay_ms;
@@ -413,6 +419,19 @@ bool bootmenu_initialize(void)
         nova_debug_string("UEFI:BRANDING-READY\n");
         nova_debug_string("UEFI:DESIGN-COMPATIBILITY-READY\n");
         if(!nova_resource_preload_priority(NOVA_RESOURCE_PRIORITY_NORMAL))return false;
+        const nova_resource_t *cached_font=nova_resource_find(
+            nova_resource_id("boot://fonts/segoe-ui/semibold/15"));
+        const nova_resource_t *cached_icon=nova_resource_find(
+            nova_resource_id("boot://icons/home"));
+        const nova_resource_t *cached_logo=nova_resource_find(
+            nova_resource_id("boot://branding/novaos/logo"));
+        if(!cached_font||!cached_icon||!cached_logo||
+           cached_font->cache_policy!=NOVA_CACHE_PERMANENT||
+           cached_icon->cache_policy!=NOVA_CACHE_PERMANENT||
+           cached_logo->cache_policy!=NOVA_CACHE_PERMANENT||
+           nova_resource_diagnostics()->cache_minimum!=512u*1024u||
+           nova_resource_diagnostics()->cache_critical!=7u*1024u*1024u)return false;
+        nova_debug_string("UEFI:RESOURCE-CACHE-READY\n");
         nova_debug_string("UEFI:RESOURCE-PRELOAD-READY\n");
         nova_debug_string("UEFI:RESOURCES-READY\n");
         nova_page_model_initialize();
@@ -613,6 +632,30 @@ bool bootmenu_initialize(void)
            !nova_runtime_subsystem_ready(NOVA_RUNTIME_LAYOUT_ENGINE))return false;
         nova_debug_string("UEFI:LAYOUT-READY\n");
         nova_motion_initialize();
+        if(!nova_animation_resource_initialize())return false;
+        static const nova_animation_keyframe_t page_motion_frames[]={
+            {0,NOVA_PROPERTY_OPACITY,0,NOVA_EASE_LINEAR},
+            {180,NOVA_PROPERTY_OPACITY,255,NOVA_EASE_OUT_CUBIC},
+            {0,NOVA_PROPERTY_X,24,NOVA_EASE_LINEAR},
+            {180,NOVA_PROPERTY_X,0,NOVA_EASE_OUT_CUBIC}};
+        if(!nova_resource_register("boot://animations/page-enter",NOVA_RESOURCE_ANIMATION,1,
+            page_motion_frames,sizeof(page_motion_frames),0,0))return false;
+        nova_animation_resource_descriptor_t page_motion={
+            .animation_id=0x50414745454e5445ull,
+            .resource_id=nova_resource_id("boot://animations/page-enter"),
+            .name="Page Enter",.version=1,.resource_version=1,.duration_ms=180,
+            .repeat=NOVA_ANIMATION_REPEAT_ONCE,.trigger=NOVA_ANIMATION_TRIGGER_PAGE_CHANGE,
+            .category=NOVA_ANIMATION_CATEGORY_NAVIGATION,.priority=2,
+            .keyframes=page_motion_frames,.keyframe_count=4};
+        nova_animation_sample_t page_motion_sample;
+        if(!nova_animation_resource_register(&page_motion)||
+           !nova_animation_resource_load(page_motion.animation_id)||
+           !nova_animation_theme_bind(0,page_motion.animation_id)||
+           !nova_animation_resource_sample(page_motion.animation_id,90,&page_motion_sample)||
+           !(page_motion_sample.property_mask&(1u<<NOVA_PROPERTY_OPACITY))||
+           !(page_motion_sample.property_mask&(1u<<NOVA_PROPERTY_X)))return false;
+        nova_animation_resource_set_reduced(initial_configuration->reduced_motion);
+        nova_debug_string("UEFI:ANIMATION-RESOURCE-READY\n");
         if(!nova_render_quality_initialize(true,64ull*1024u*1024u))return false;
         nova_debug_string("UEFI:RENDER-QUALITY-READY\n");
         nova_sw_renderer_configuration_t software={nova_graphics_width(),
@@ -766,7 +809,9 @@ bool bootmenu_configuration_select_theme(uint8_t theme)
 {
     if(!initialized||theme>=NOVA_THEME_COUNT||
        !configuration_commit(NOVA_CONFIG_THEME,theme))return false;
-    return nova_theme_activate((nova_theme_id_t)theme);
+    if(!nova_theme_activate((nova_theme_id_t)theme))return false;
+    nova_animation_resource_set_reduced(nova_theme_reduced_motion());
+    return true;
 }
 
 bool bootmenu_settings_toggle_reduced_motion(void)
@@ -774,7 +819,8 @@ bool bootmenu_settings_toggle_reduced_motion(void)
     if(!initialized)return false;
     bool reduced=!nova_configuration_effective()->reduced_motion;
     if(!configuration_commit(NOVA_CONFIG_REDUCED_MOTION,reduced))return false;
-    nova_theme_set_reduced_motion(reduced);return true;
+    nova_theme_set_reduced_motion(reduced);
+    nova_animation_resource_set_reduced(reduced);return true;
 }
 
 bool bootmenu_settings_toggle_tooltips(void)

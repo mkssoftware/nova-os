@@ -207,6 +207,17 @@ Fokus, Auswahl, Rahmen, Disabled- und Statusfarben sowie Radius-, Abstands-,
 Transparenz- und Accessibilitywerte werden ausschließlich über semantische
 O(1)-Tokens aufgelöst. Die Tabellen werden vor Aktivierung auf Vollständigkeit
 und Mindesthelligkeitskontrast geprüft und als Theme-Ressourcen registriert.
+Die heapfreie Registry führt ID, Ressourcen-ID, Name, Autor, Theme- und
+Ressourcenversion, 22 semantische Tokens, Ladezustand und Referenzen. Ein
+fester Open-Addressing-Index ermöglicht die geforderte O(1)-Auflösung.
+
+Ein Wechsel lädt und validiert zunächst die vollständige Zielressource. Erst
+danach wird der aktive Eintrag atomar umgeschaltet; die bisherige Ressource
+wird anschließend freigegeben. Dadurch bleibt genau ein Theme aktiv und ein
+ungültiges Ziel verändert den sichtbaren Zustand nicht. Wiederholte Auswahl
+nutzt den Resource-Cache ohne Referenzleck. Farben, Materialfallback und
+Reduced Motion einschließlich der Animationsregistry werden ohne Neustart
+gemeinsam aktualisiert.
 
 „Darstellung“ in den Einstellungen wechselt unmittelbar und ohne neue
 Controls zwischen allen drei Themes. High Contrast erzwingt opake Materialien,
@@ -214,6 +225,14 @@ Reduced Motion, einen dauerhaft sichtbaren gelben Fokus und einen weißen
 Kartenrahmen. Der separate Accessibility-Eintrag schaltet Reduced Motion auch
 in Dark und Light. `test-uefi-themes` aktiviert alle drei Varianten in QEMU,
 prüft die Debugmarker und erzeugt visuelle Light-/High-Contrast-Referenzframes.
+Der Hosttest prüft zusätzlich Metadaten, Hash-Lookup, Cache, Referenzschutz und
+Rollback. Das aktuelle GPT/FAT32-Image durchläuft den produktiven Pfad unter
+OVMF/QEMU und meldet `UEFI:THEME-RESOURCE-READY`.
+
+Offen bleiben externe Themepakete und darin deklarierte Font-, Icon-,
+Animations- und Layoutabhängigkeiten, weil BOOTRESOURCE-0002/0003 weiterhin
+kein normatives BAP-/Index-Wire-Format festlegen. Ebenso fehlt die gemeinsame
+Theme-Registry im platzbeschränkten BIOS-Pfad.
 
 ## Responsive DLU-Layoutlaufzeit
 
@@ -1512,3 +1531,64 @@ Der Bootmanager verwendet deshalb weiterhin die bereits validierte,
 plattformneutrale 2-Bit-Antialias-Iconquelle mit DLU-Skalierung und Theme-Tint.
 Der SVG-Renderer bleibt im Audit ausdrücklich **Blockiert**, bis 0013 ergänzt,
 0012 korrigiert und die oben genannten SVG-Unterregeln festgelegt sind.
+
+## Font Resources
+
+Der technisch eindeutig definierte Teil von NPSPEC-BOOTRESOURCE-0009 ist nun
+implementiert. `font_resources.c` stellt eine statische Registry für 16 Fonts
+mit einem 32-Slot-Open-Addressing-Index bereit. Jeder Eintrag enthält Font- und
+Ressourcen-ID, Font-/Ressourcenversion, Name, Familie, Stil, Gewicht,
+Priorität, sortierte Unicodebereiche, Fallback-ID, Zustand und Referenzen.
+Fontdaten werden ausschließlich über den zentralen Resource Loader geladen;
+direkter Dateizugriff der Textengine findet nicht statt.
+
+Der Resolver verarbeitet deterministisch Primärfont, font-eigenen Fallback,
+Theme-Fallback, Systemfont und schließlich Missing Glyph. Rekursive Ketten
+werden erkannt. Primary, Heading, Monospace, Symbol und Fallback sind als
+Theme-Rollen gespeichert; ein Themewechsel ändert nur IDs und lädt die UI
+nicht neu. Die produktive 2-Bit-AA-Systemschrift ist als UI/SemiBold mit ihrer
+tatsächlichen ASCII-/Umlautabdeckung registriert, und die Textengine konsultiert
+die Registry vor jeder Glyphenauswahl.
+
+Hosttests belegen O(1)-Lookup, Metadaten, Load/Release, Cache, Duplicate-Schutz,
+Unicodeabdeckung, Missing Glyph, eine zweite Symbolschrift, Fallback und
+Theme-Rollen. Das reale GPT/FAT32-Abbild lädt und löst die Systemschrift unter
+OVMF/QEMU produktiv auf und meldet `UEFI:FONT-RESOURCE-REGISTRY-READY`.
+
+Das verpflichtende Nova Font Package kann noch nicht geparst werden: Keine
+vorhandene Spezifikation definiert NFP-Magic, Headergröße, Endianness,
+Tabellenoffsets, Unicode-Mapping, Glyph-/Metrik-/Kerningrecords oder signierte
+Bytebereiche. Externe NFP/BAP-Fonts bleiben deshalb blockiert. Ebenfalls offen
+sind vollständige Unicode-/Sprach-/Scriptfonts, optionale TTF/OTF-Unterstützung,
+Ladezeitmessung und dieselbe Registry im BIOS-Pfad.
+
+## Animation Resources
+
+NPSPEC-BOOTRESOURCE-0010 besitzt nun eine zentrale, heapfreie Registry für 32
+Animationen mit einem 64-Slot-O(1)-ID-Index und bis zu 32 statisch kopierten
+Keyframes je Ressource. Deskriptor und Validator prüfen ID, Name, Font-unabhängige
+Ressourcen-/Formatversion, Dauer, Wiederholungsmodus, Trigger, Kategorie,
+Priorität sowie Property, Easing und strikt ansteigende Zeitpunkte. Jede
+verwendete Property muss einen Keyframe bei 0 und am Timelineende besitzen.
+
+Der Timeline-Resolver wertet kombinierte Properties in O(n) aus und verwendet
+dieselben deterministischen Fixed-Point-Easings wie die Motion Engine. Once,
+feste Wiederholungszahl und Infinite werden verarbeitet. Themes können acht
+Animationsslots austauschen und die Geschwindigkeit zwischen 25 und 400
+Prozent setzen. Reduced Motion liefert unmittelbar den sicheren Endzustand und
+wird mit der Motion Engine synchronisiert. Trigger werden nach Kategorie und
+Priorität aufgelöst; Loader, Referenzen und Cache laufen ausschließlich über
+den Resource Manager.
+
+Hosttests belegen kombinierte Opacity-/Scale-Keyframes, Zwischenwerte,
+Wiederholung, Theme-Speed, Trigger, Themebindung, Cache, Duplicate-Schutz,
+ungültige Timelines und Reduced Motion. Das reale GPT/FAT32-Abbild registriert,
+lädt, bindet und sampelt unter OVMF/QEMU eine Page-Enter-Ressource und meldet
+`UEFI:ANIMATION-RESOURCE-READY`.
+
+Noch nicht sämtliche bestehenden spezialisierten Dialog-, Fokus-, Navigation-
+und Fortschrittshelfer beziehen ihre Defaultwerte ausschließlich aus dieser
+Registry; diese Migration bleibt offen. Ebenfalls fehlen ein normatives
+externes Animations-Wire-Format, eine eindeutige Darstellung von Color-
+Keyframes und Triggerpayloads, Lade-/Auswertungszeitmessung sowie dieselbe
+Registry im BIOS-Pfad.

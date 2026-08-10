@@ -10,6 +10,7 @@
 #include "../boot/bootloader/bootmenu/unicode.h"
 #include "../boot/bootloader/bootmenu/resources.h"
 #include "../boot/bootloader/bootmenu/font_resources.h"
+#include "../boot/bootloader/bootmenu/animation_resources.h"
 #include "../boot/bootloader/bootmenu/icons.h"
 #include "../boot/bootloader/bootmenu/input.h"
 #include "../boot/bootloader/bootmenu/diagnostics.h"
@@ -1368,6 +1369,45 @@ int main(void)
     nova_resource_manager_shutdown();
     failed|=check(!nova_resource_load(parent_resource->id)&&
         !nova_resource_diagnostics()->initialized,"Shutdown sperrt weitere Ladezugriffe");
+    failed|=check(nova_resource_loader_initialize(64)&&
+        nova_resource_cache_configure(4,64,8,48)&&
+        !nova_resource_cache_configure(65,64,0,64),
+        "Cachegrenzen fuer Minimum, Maximum, Reserve und kritischen Bereich validieren");
+    static const uint8_t cache_lfu_a[4]={1,2,3,4},cache_lfu_b[4]={5,6,7,8};
+    static const uint8_t cache_permanent[4]={9,10,11,12};
+    static const uint8_t cache_pressure[56]={0};
+    failed|=check(nova_resource_register("test://cache/lfu-a",NOVA_RESOURCE_BINARY,1,
+        cache_lfu_a,sizeof(cache_lfu_a),0,0)&&
+        nova_resource_register("test://cache/lfu-b",NOVA_RESOURCE_BINARY,1,
+        cache_lfu_b,sizeof(cache_lfu_b),0,0)&&
+        nova_resource_register("test://cache/permanent",NOVA_RESOURCE_BINARY,1,
+        cache_permanent,sizeof(cache_permanent),0,0)&&
+        nova_resource_register("test://cache/pressure",NOVA_RESOURCE_BINARY,1,
+        cache_pressure,sizeof(cache_pressure),0,0),
+        "Cache-Testressourcen genau einmal registrieren");
+    uint64_t cache_a=nova_resource_id("test://cache/lfu-a");
+    uint64_t cache_b=nova_resource_id("test://cache/lfu-b");
+    uint64_t cache_p=nova_resource_id("test://cache/permanent");
+    uint64_t cache_big=nova_resource_id("test://cache/pressure");
+    failed|=check(nova_resource_cache_set_policy(cache_a,NOVA_CACHE_LFU)&&
+        nova_resource_cache_set_policy(cache_b,NOVA_CACHE_LFU)&&
+        nova_resource_cache_set_policy(cache_p,NOVA_CACHE_PERMANENT)&&
+        nova_resource_load(cache_a)&&nova_resource_release(cache_a)&&
+        nova_resource_load(cache_b)&&nova_resource_load(cache_b)&&
+        nova_resource_release(cache_b)&&nova_resource_release(cache_b)&&
+        nova_resource_load(cache_p)&&nova_resource_release(cache_p)&&
+        nova_resource_load(cache_big)&&
+        nova_resource_find(cache_a)->state==NOVA_RESOURCE_UNLOADED&&
+        nova_resource_find(cache_b)->state==NOVA_RESOURCE_RELEASED&&
+        nova_resource_find(cache_p)->state==NOVA_RESOURCE_RELEASED&&
+        nova_resource_diagnostics()->lfu_evictions==1,
+        "LFU entfernt unter Druck den seltensten Eintrag und schuetzt Permanent");
+    failed|=check(nova_resource_release(cache_big)&&nova_resource_cache_collect()==2&&
+        nova_resource_find(cache_p)->state==NOVA_RESOURCE_RELEASED&&
+        nova_resource_diagnostics()->permanent_skips==1&&
+        nova_resource_diagnostics()->current_references==0,
+        "deterministische Bereinigung erhaelt permanente Ressourcen");
+    nova_resource_manager_shutdown();
     failed|=check(nova_resource_loader_initialize(NOVA_RESOURCE_DEFAULT_CACHE_BUDGET),
         "Resource Loader fuer komprimierte Ressourcen neu initialisieren");
     nova_resource_descriptor_t compressed_descriptor={
@@ -1651,19 +1691,39 @@ int main(void)
     failed |= check(nova_theme_initialize() &&
                     nova_theme_validate(NOVA_THEME_DARK) &&
                     nova_theme_validate(NOVA_THEME_LIGHT) &&
-                    nova_theme_validate(NOVA_THEME_HIGH_CONTRAST),
-                    "drei vollständige Theme-Token-Tabellen");
+                    nova_theme_validate(NOVA_THEME_HIGH_CONTRAST) &&
+                    !nova_theme_current() &&
+                    nova_theme_tokens()->background == 0xff101113u,
+                    "drei vollständige Theme-Token-Tabellen und sicherer Startzustand");
+    const nova_theme_resource_t *light_theme=nova_theme_resource_find(
+        nova_resource_id("boot://themes/light"));
+    failed |= check(light_theme && light_theme->valid && light_theme->version == 1 &&
+                    light_theme->token_count == 22 && light_theme->references == 0,
+                    "Theme-Ressourcen in O(1)-Registry mit Metadaten finden");
     failed |= check(nova_theme_activate(NOVA_THEME_LIGHT) &&
-                    nova_theme_tokens()->background == 0xfff2f4f7u,
-                    "O(1)-Wechsel zum Light Theme");
+                    nova_theme_tokens()->background == 0xfff2f4f7u &&
+                    nova_theme_current() == light_theme && light_theme->references == 1 &&
+                    !nova_theme_resource_release(NOVA_THEME_LIGHT),
+                    "atomarer O(1)-Wechsel hält aktives Light Theme referenziert");
+    failed |= check(nova_theme_activate(NOVA_THEME_LIGHT) && light_theme->references == 1 &&
+                    nova_theme_diagnostics()->cache_hits >= 1,
+                    "erneute Theme-Aktivierung nutzt Cache ohne Referenzleck");
     failed |= check(nova_theme_activate(NOVA_THEME_HIGH_CONTRAST) &&
                     nova_theme_reduced_motion() &&
-                    nova_compositor_diagnostics()->fallback_level == 3,
+                    nova_compositor_diagnostics()->fallback_level == 3 &&
+                    light_theme->references == 0,
                     "High Contrast überschreibt Motion und Materialien");
+    const nova_theme_resource_t *before_invalid=nova_theme_current();
+    failed |= check(!nova_theme_activate(NOVA_THEME_COUNT) &&
+                    nova_theme_current() == before_invalid,
+                    "ungültiges Theme lässt aktives Theme atomar unverändert");
     failed |= check(nova_theme_activate(NOVA_THEME_DARK) &&
                     !nova_theme_reduced_motion() &&
-                    nova_compositor_diagnostics()->fallback_level == 0,
-                    "Dark Theme als validierter Standard");
+                    nova_compositor_diagnostics()->fallback_level == 0 &&
+                    nova_theme_current()->references == 1 &&
+                    nova_theme_diagnostics()->registered == NOVA_THEME_COUNT &&
+                    nova_theme_diagnostics()->atomic_switches == 3,
+                    "Dark Theme als validierter Standard und genau eine aktive Ressource");
     static const uint8_t resource_data[] = {1,2,3,4};
     failed |= check(nova_resource_register("boot://test/data", NOVA_RESOURCE_CONFIGURATION,
                     1, resource_data, sizeof(resource_data), 0, 0), "Ressource registrieren");
@@ -1707,6 +1767,53 @@ int main(void)
         nova_font_theme_get(NOVA_FONT_ROLE_SYMBOL)==snow_font.font_id&&
         nova_font_resource_diagnostics()->duplicates==1,
         "Deterministische Font-Fallbackkette, Theme-Rolle und Duplicate-Schutz");
+    static const nova_animation_keyframe_t animation_frames[]={
+        {0,NOVA_PROPERTY_OPACITY,0,NOVA_EASE_LINEAR},
+        {100,NOVA_PROPERTY_OPACITY,1000,NOVA_EASE_LINEAR},
+        {0,NOVA_PROPERTY_SCALE,900,NOVA_EASE_LINEAR},
+        {50,NOVA_PROPERTY_SCALE,950,NOVA_EASE_IN_OUT},
+        {100,NOVA_PROPERTY_SCALE,1000,NOVA_EASE_OUT_CUBIC}};
+    failed|=check(nova_resource_register("test://animation/dialog",NOVA_RESOURCE_ANIMATION,1,
+        animation_frames,sizeof(animation_frames),0,0)&&nova_animation_resource_initialize(),
+        "Animationsressourcenmanager initialisieren");
+    nova_animation_resource_descriptor_t animation_descriptor={
+        .animation_id=0x414e494d4449414cull,
+        .resource_id=nova_resource_id("test://animation/dialog"),.name="Dialog Enter",
+        .version=1,.resource_version=1,.duration_ms=100,.repeat=NOVA_ANIMATION_REPEAT_COUNT,
+        .repeat_count=1,.trigger=NOVA_ANIMATION_TRIGGER_DIALOG_OPEN,
+        .category=NOVA_ANIMATION_CATEGORY_DIALOG,.priority=3,
+        .keyframes=animation_frames,.keyframe_count=5};
+    nova_animation_sample_t animation_sample={0};
+    failed|=check(nova_animation_resource_register(&animation_descriptor)&&
+        !nova_animation_resource_register(&animation_descriptor)&&
+        nova_animation_resource_load(animation_descriptor.animation_id)&&
+        nova_animation_resource_load(animation_descriptor.animation_id)&&
+        nova_animation_resource_sample(animation_descriptor.animation_id,50,&animation_sample)&&
+        animation_sample.values[NOVA_PROPERTY_OPACITY]==500&&
+        animation_sample.values[NOVA_PROPERTY_SCALE]==950&&
+        nova_animation_resource_for_trigger(NOVA_ANIMATION_TRIGGER_DIALOG_OPEN,
+            NOVA_ANIMATION_CATEGORY_DIALOG)->animation_id==animation_descriptor.animation_id&&
+        nova_animation_theme_bind(0,animation_descriptor.animation_id)&&
+        nova_animation_theme_get(0)==animation_descriptor.animation_id&&
+        nova_animation_resource_release(animation_descriptor.animation_id)&&
+        nova_animation_resource_release(animation_descriptor.animation_id),
+        "Deklarative kombinierte Timeline, Trigger, Cache und Themebindung");
+    failed|=check(nova_animation_theme_speed(2000)&&
+        nova_animation_resource_sample(animation_descriptor.animation_id,25,&animation_sample)&&
+        animation_sample.values[NOVA_PROPERTY_OPACITY]==500,
+        "Theme-Geschwindigkeit skaliert Timeline deterministisch");
+    nova_animation_resource_set_reduced(true);
+    failed|=check(nova_animation_resource_sample(animation_descriptor.animation_id,1,
+        &animation_sample)&&animation_sample.values[NOVA_PROPERTY_OPACITY]==1000&&
+        animation_sample.values[NOVA_PROPERTY_SCALE]==1000&&animation_sample.complete&&
+        nova_motion_is_reduced(),"Reduced Motion springt deklarativ auf Endzustand");
+    nova_animation_resource_set_reduced(false);
+    nova_animation_resource_descriptor_t invalid_animation=animation_descriptor;
+    invalid_animation.duration_ms=40;
+    failed|=check(!nova_animation_resource_register(&invalid_animation)&&
+        nova_animation_resource_diagnostics()->duplicates==1&&
+        nova_animation_resource_diagnostics()->invalid_resources>=1,
+        "Beschaedigte Timeline und doppelte ID abweisen");
     failed |= check(nova_resource_find(nova_resource_id("boot://branding/novaos/logo")) != 0,
                     "NovaOS-Logo im Resource Manager");
     bool all_icons=true;

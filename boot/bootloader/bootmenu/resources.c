@@ -7,7 +7,23 @@ _Alignas(64) static uint8_t decoded_pool[NOVA_RESOURCE_DECODE_BLOCK_SIZE*
                                          NOVA_RESOURCE_DECODE_BLOCK_COUNT];
 static bool decoded_blocks[NOVA_RESOURCE_DECODE_BLOCK_COUNT];
 static nova_resource_diagnostics_t diagnostics;
-static uint32_t use_clock;
+static uint64_t use_clock;
+
+static uint64_t next_use(void)
+{
+    if(use_clock==UINT64_MAX){
+        for(uint16_t i=0;i<NOVA_RESOURCE_CAPACITY;++i)if(used[i])registry[i].last_use>>=1;
+        use_clock>>=1;
+    }
+    return ++use_clock;
+}
+
+static void record_reference(void)
+{
+    if(diagnostics.current_references<UINT32_MAX)++diagnostics.current_references;
+    if(diagnostics.current_references>diagnostics.peak_references)
+        diagnostics.peak_references=diagnostics.current_references;
+}
 
 static void copy_name(char *destination,const char *source)
 {
@@ -67,6 +83,7 @@ bool nova_resource_loader_initialize(uint64_t cache_budget)
     for(uint8_t i=0;i<NOVA_RESOURCE_DECODE_BLOCK_COUNT;++i)decoded_blocks[i]=false;
     diagnostics=(nova_resource_diagnostics_t){0};use_clock=0;
     diagnostics.cache_budget=cache_budget?cache_budget:NOVA_RESOURCE_DEFAULT_CACHE_BUDGET;
+    diagnostics.cache_critical=diagnostics.cache_budget-(diagnostics.cache_budget/8u);
     diagnostics.initialized=nova_compression_initialize()&&
         nova_integrity_initialize(NOVA_INTEGRITY_STANDARD);return diagnostics.initialized;
 }
@@ -81,6 +98,7 @@ void nova_resource_manager_shutdown(void)
         registry[i].reference_count=0;registry[i].state=NOVA_RESOURCE_UNLOADED;}
     for(uint8_t i=0;i<NOVA_RESOURCE_DECODE_BLOCK_COUNT;++i)decoded_blocks[i]=false;
     diagnostics.cached_bytes=0;diagnostics.busy=false;diagnostics.initialized=false;
+    diagnostics.current_references=0;
     ++diagnostics.shutdowns;
 }
 
@@ -100,7 +118,9 @@ nova_resource_result_t nova_resource_register_descriptor(
        descriptor->type>=NOVA_RESOURCE_TYPE_COUNT||!descriptor->version||
        !descriptor->data||!descriptor->size||descriptor->origin>NOVA_RESOURCE_ORIGIN_RECOVERY||
        descriptor->priority>NOVA_RESOURCE_PRIORITY_LOW||
-       descriptor->compression>=NOVA_COMPRESSION_COUNT){
+       descriptor->cache_policy>=NOVA_CACHE_POLICY_COUNT||
+       descriptor->compression>=NOVA_COMPRESSION_COUNT||
+       diagnostics.registered_bytes>UINT64_MAX-descriptor->size){
         ++diagnostics.invalid_requests;return NOVA_RESOURCE_INVALID_ARGUMENT;}
     uint64_t id=nova_resource_id(descriptor->uri);int16_t existing=lookup_index(id);
     if(existing>=0){++diagnostics.duplicate_requests;
@@ -127,6 +147,7 @@ nova_resource_result_t nova_resource_register_descriptor(
         nova_resource_t resource={.id=id,.fallback_id=descriptor->fallback_id,
             .type=descriptor->type,.state=NOVA_RESOURCE_REGISTERED,
             .origin=descriptor->origin,.priority=descriptor->priority,
+            .cache_policy=descriptor->cache_policy,
             .version=descriptor->version,.checksum=original_checksum,.size=original_size,
             .data=compressed?0:descriptor->data,.packed_data=descriptor->data,
             .packed_size=descriptor->size,.packed_checksum=actual,
@@ -167,13 +188,25 @@ static bool evict_for(uint64_t required,int16_t protected_index)
 {
     if(required>diagnostics.cache_budget)return false;
     while(diagnostics.cached_bytes>diagnostics.cache_budget-required){
-        int16_t candidate=-1;uint32_t oldest=UINT32_MAX;
-        for(int16_t i=0;i<(int16_t)NOVA_RESOURCE_CAPACITY;++i)if(used[i]&&i!=protected_index&&
-           !registry[i].reference_count&&(registry[i].state==NOVA_RESOURCE_CACHED||
-           registry[i].state==NOVA_RESOURCE_RELEASED)&&registry[i].last_use<=oldest){
-            if(candidate<0||registry[i].priority>registry[candidate].priority||
-               (registry[i].priority==registry[candidate].priority&&
-                registry[i].last_use<oldest)){candidate=i;oldest=registry[i].last_use;}}
+        int16_t candidate=-1;uint64_t oldest=UINT64_MAX;uint32_t least_used=UINT32_MAX;
+        nova_cache_policy_t selected_policy=NOVA_CACHE_LRU;
+        for(uint8_t policy_pass=0;policy_pass<2&&candidate<0;++policy_pass){
+            nova_cache_policy_t policy=policy_pass?NOVA_CACHE_LFU:NOVA_CACHE_LRU;
+            for(int16_t i=0;i<(int16_t)NOVA_RESOURCE_CAPACITY;++i)if(used[i]&&
+               i!=protected_index&&!registry[i].reference_count&&
+               (registry[i].state==NOVA_RESOURCE_CACHED||
+                registry[i].state==NOVA_RESOURCE_RELEASED)&&
+               registry[i].cache_policy==policy){
+                bool better=candidate<0||registry[i].priority>registry[candidate].priority;
+                if(!better&&registry[i].priority==registry[candidate].priority)
+                    better=policy==NOVA_CACHE_LRU?registry[i].last_use<oldest:
+                        (registry[i].access_count<least_used||
+                         (registry[i].access_count==least_used&&
+                          registry[i].last_use<oldest));
+                if(better){candidate=i;oldest=registry[i].last_use;
+                    least_used=registry[i].access_count;selected_policy=policy;}
+            }
+        }
         if(candidate<0)return false;
         diagnostics.cached_bytes-=registry[candidate].size;
         if(registry[candidate].decoded_block_count){
@@ -183,6 +216,8 @@ static bool evict_for(uint64_t required,int16_t protected_index)
             registry[candidate].data=0;
         }
         registry[candidate].state=NOVA_RESOURCE_UNLOADED;++diagnostics.evictions;
+        if(selected_policy==NOVA_CACHE_LRU)++diagnostics.lru_evictions;
+        else ++diagnostics.lfu_evictions;
         registry[candidate].integrity_verified=false;
     }
     return true;
@@ -215,18 +250,31 @@ static void release_decoded(nova_resource_t *resource)
 
 static bool evict_decoded_for(int16_t protected_index)
 {
-    int16_t candidate=-1;uint32_t oldest=UINT32_MAX;
-    for(int16_t i=0;i<(int16_t)NOVA_RESOURCE_CAPACITY;++i)if(used[i]&&
-       i!=protected_index&&!registry[i].reference_count&&registry[i].decoded_block_count&&
-       (registry[i].state==NOVA_RESOURCE_CACHED||registry[i].state==NOVA_RESOURCE_RELEASED)){
-        if(candidate<0||registry[i].priority>registry[candidate].priority||
-           (registry[i].priority==registry[candidate].priority&&
-            registry[i].last_use<oldest)){candidate=i;oldest=registry[i].last_use;}}
+    int16_t candidate=-1;uint64_t oldest=UINT64_MAX;uint32_t least_used=UINT32_MAX;
+    nova_cache_policy_t selected_policy=NOVA_CACHE_LRU;
+    for(uint8_t pass=0;pass<2&&candidate<0;++pass){
+        nova_cache_policy_t policy=pass?NOVA_CACHE_LFU:NOVA_CACHE_LRU;
+        for(int16_t i=0;i<(int16_t)NOVA_RESOURCE_CAPACITY;++i)if(used[i]&&
+           i!=protected_index&&!registry[i].reference_count&&registry[i].decoded_block_count&&
+           registry[i].cache_policy==policy&&
+           (registry[i].state==NOVA_RESOURCE_CACHED||registry[i].state==NOVA_RESOURCE_RELEASED)){
+            bool better=candidate<0||registry[i].priority>registry[candidate].priority;
+            if(!better&&registry[i].priority==registry[candidate].priority)
+                better=policy==NOVA_CACHE_LRU?registry[i].last_use<oldest:
+                    (registry[i].access_count<least_used||
+                     (registry[i].access_count==least_used&&registry[i].last_use<oldest));
+            if(better){candidate=i;oldest=registry[i].last_use;
+                least_used=registry[i].access_count;selected_policy=policy;}
+        }
+    }
     if(candidate<0)return false;
     diagnostics.cached_bytes-=registry[candidate].size;
     release_decoded(&registry[candidate]);registry[candidate].state=NOVA_RESOURCE_UNLOADED;
     registry[candidate].integrity_verified=false;
-    ++diagnostics.evictions;return true;
+    ++diagnostics.evictions;
+    if(selected_policy==NOVA_CACHE_LRU)++diagnostics.lru_evictions;
+    else ++diagnostics.lfu_evictions;
+    return true;
 }
 
 static void invalidate_resource(nova_resource_t *resource)
@@ -266,7 +314,12 @@ static nova_resource_result_t load_index(int16_t index,uint64_t *visiting,uint8_
        !verify_resource_data(resource,resource->data,resource->size,resource->checksum,
                             resource->original_sha256)){
         invalidate_resource(resource);return NOVA_RESOURCE_INTEGRITY_ERROR;}
-    if(resource->reference_count){++resource->reference_count;resource->last_use=++use_clock;
+    if(resource->reference_count){
+        if(resource->reference_count==UINT32_MAX){++diagnostics.invalid_requests;
+            return NOVA_RESOURCE_INVALID_STATE;}
+        ++resource->reference_count;
+        if(resource->access_count<UINT32_MAX)++resource->access_count;
+        resource->last_use=next_use();record_reference();
         ++diagnostics.cache_hits;nova_integrity_record_cache_skip();
         if(result)*result=resource;
         return NOVA_RESOURCE_OK;}
@@ -318,7 +371,10 @@ static nova_resource_result_t load_index(int16_t index,uint64_t *visiting,uint8_
         if(diagnostics.cached_bytes>diagnostics.peak_cached_bytes)
             diagnostics.peak_cached_bytes=diagnostics.cached_bytes;}
     visiting[index>>6]&=~bit;resource->state=NOVA_RESOURCE_IN_USE;
-    resource->reference_count=1;resource->last_use=++use_clock;
+    resource->reference_count=1;
+    if(resource->access_count<UINT32_MAX)++resource->access_count;
+    resource->last_use=next_use();
+    record_reference();
     ++diagnostics.cache_misses;++diagnostics.loaded;if(result)*result=resource;
     return NOVA_RESOURCE_OK;
 }
@@ -370,8 +426,9 @@ bool nova_resource_release(uint64_t id)
 {
     int16_t index=lookup_index(id);if(index<0||!registry[index].reference_count)return false;
     nova_resource_t *resource=&registry[index];--resource->reference_count;++diagnostics.releases;
+    if(diagnostics.current_references)--diagnostics.current_references;
     if(resource->reference_count){resource->state=NOVA_RESOURCE_IN_USE;return true;}
-    resource->state=NOVA_RESOURCE_RELEASED;resource->last_use=++use_clock;
+    resource->state=NOVA_RESOURCE_RELEASED;resource->last_use=next_use();
     for(uint8_t i=0;i<resource->dependency_count;++i)
         (void)nova_resource_release(resource->dependencies[i]);
     return true;
@@ -386,6 +443,54 @@ nova_resource_result_t nova_resource_unload(uint64_t id)
     release_decoded(resource);
     resource->integrity_verified=false;resource->trust=NOVA_RESOURCE_TRUST_UNKNOWN;
     resource->state=NOVA_RESOURCE_UNLOADED;++diagnostics.unloaded;return NOVA_RESOURCE_OK;
+}
+
+bool nova_resource_cache_configure(uint64_t minimum,uint64_t maximum,
+    uint64_t reserved,uint64_t critical)
+{
+    if(!diagnostics.initialized||!maximum||minimum>maximum||reserved>maximum||
+       critical<minimum||critical>maximum||diagnostics.cached_bytes>maximum)return false;
+    diagnostics.cache_minimum=minimum;diagnostics.cache_budget=maximum;
+    diagnostics.cache_reserved=reserved;diagnostics.cache_critical=critical;return true;
+}
+
+bool nova_resource_cache_set_policy(uint64_t id,nova_cache_policy_t policy)
+{
+    int16_t index=lookup_index(id);
+    if(index<0||policy>=NOVA_CACHE_POLICY_COUNT)return false;
+    registry[index].cache_policy=policy;return true;
+}
+
+uint32_t nova_resource_cache_collect(void)
+{
+    if(!diagnostics.initialized||diagnostics.busy)return 0;
+    uint32_t collected=0;++diagnostics.collections;
+    for(uint8_t pass=0;pass<2;++pass){
+        nova_cache_policy_t policy=pass?NOVA_CACHE_LFU:NOVA_CACHE_LRU;
+        for(;;){int16_t candidate=-1;uint64_t oldest=UINT64_MAX;
+            uint32_t frequency=UINT32_MAX;
+            for(int16_t i=0;i<(int16_t)NOVA_RESOURCE_CAPACITY;++i)if(used[i]&&
+               !registry[i].reference_count&&registry[i].cache_policy==policy&&
+               (registry[i].state==NOVA_RESOURCE_CACHED||
+                registry[i].state==NOVA_RESOURCE_RELEASED)){
+                bool better=candidate<0;
+                if(policy==NOVA_CACHE_LRU)better=better||registry[i].last_use<oldest;
+                else better=better||registry[i].access_count<frequency||
+                    (registry[i].access_count==frequency&&registry[i].last_use<oldest);
+                if(better){candidate=i;frequency=registry[i].access_count;
+                    oldest=registry[i].last_use;}}
+            if(candidate<0)break;
+            if(nova_resource_unload(registry[candidate].id)!=NOVA_RESOURCE_OK)break;
+            ++collected;++diagnostics.evictions;
+            if(policy==NOVA_CACHE_LRU)++diagnostics.lru_evictions;
+            else ++diagnostics.lfu_evictions;
+        }
+    }
+    for(uint16_t i=0;i<NOVA_RESOURCE_CAPACITY;++i)if(used[i]&&
+        registry[i].cache_policy==NOVA_CACHE_PERMANENT&&!registry[i].reference_count&&
+        (registry[i].state==NOVA_RESOURCE_CACHED||registry[i].state==NOVA_RESOURCE_RELEASED))
+        ++diagnostics.permanent_skips;
+    return collected;
 }
 
 const nova_resource_diagnostics_t *nova_resource_diagnostics(void){return &diagnostics;}

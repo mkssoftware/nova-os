@@ -31,6 +31,8 @@ typedef enum {NOVA_RESOURCE_PRIORITY_CRITICAL,NOVA_RESOURCE_PRIORITY_HIGH,
     NOVA_RESOURCE_PRIORITY_NORMAL,NOVA_RESOURCE_PRIORITY_LOW} nova_resource_priority_t;
 typedef enum {NOVA_LOAD_LAZY,NOVA_LOAD_PRELOAD,NOVA_LOAD_BACKGROUND}
 nova_resource_load_mode_t;
+typedef enum {NOVA_CACHE_LRU,NOVA_CACHE_LFU,NOVA_CACHE_PERMANENT,
+    NOVA_CACHE_POLICY_COUNT} nova_cache_policy_t;
 typedef enum {NOVA_RESOURCE_OK,NOVA_RESOURCE_NOT_FOUND,NOVA_RESOURCE_INVALID_ARGUMENT,
     NOVA_RESOURCE_INTEGRITY_ERROR,NOVA_RESOURCE_VERSION_ERROR,NOVA_RESOURCE_TYPE_ERROR,
     NOVA_RESOURCE_NO_MEMORY,NOVA_RESOURCE_DEPENDENCY_ERROR,NOVA_RESOURCE_CYCLE,
@@ -47,6 +49,7 @@ typedef struct {
     uint64_t fallback_id;
     nova_resource_origin_t origin;
     nova_resource_priority_t priority;
+    nova_cache_policy_t cache_policy;
     nova_compression_type_t compression;
     uint64_t original_size;
     uint32_t original_checksum;
@@ -62,8 +65,9 @@ typedef struct {
     nova_resource_state_t state;
     nova_resource_origin_t origin;
     nova_resource_priority_t priority;
-    uint32_t version,checksum,reference_count,last_use;
-    uint64_t size;
+    nova_cache_policy_t cache_policy;
+    uint32_t version,checksum,reference_count,access_count;
+    uint64_t last_use,size;
     const void *data;
     const void *packed_data;
     uint64_t packed_size;
@@ -84,7 +88,10 @@ typedef struct {
     uint32_t dependency_loads,dependency_failures,cycles,duplicate_requests;
     uint32_t invalid_requests,unsupported_requests,shutdowns,max_dependency_depth;
     uint32_t decompressions,decompression_errors;
+    uint32_t collections,lru_evictions,lfu_evictions,permanent_skips;
+    uint32_t current_references,peak_references;
     uint64_t cached_bytes,cache_budget,peak_cached_bytes,registered_bytes;
+    uint64_t cache_minimum,cache_reserved,cache_critical;
     uint64_t compressed_bytes,decoded_bytes;
     bool initialized,busy;
 } nova_resource_diagnostics_t;
@@ -108,6 +115,10 @@ bool nova_resource_preload(uint64_t id);
 uint32_t nova_resource_preload_priority(nova_resource_priority_t maximum_priority);
 bool nova_resource_release(uint64_t id);
 nova_resource_result_t nova_resource_unload(uint64_t id);
+bool nova_resource_cache_configure(uint64_t minimum,uint64_t maximum,
+    uint64_t reserved,uint64_t critical);
+bool nova_resource_cache_set_policy(uint64_t id,nova_cache_policy_t policy);
+uint32_t nova_resource_cache_collect(void);
 uint32_t nova_resource_checksum(const void *data,uint64_t size);
 const nova_resource_diagnostics_t *nova_resource_diagnostics(void);
 

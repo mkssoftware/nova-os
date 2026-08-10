@@ -11,6 +11,7 @@ bool nova_branding_initialize(void)
     uint64_t id=nova_resource_id("boot://branding/novaos/logo");
     return nova_resource_register("boot://branding/novaos/logo", NOVA_RESOURCE_IMAGE,
                                   1, nova_logo_data, sizeof(nova_logo_data), 0, 0) &&
+           nova_resource_cache_set_policy(id,NOVA_CACHE_PERMANENT) &&
            nova_resource_load(id)&&
            nova_image_create_2bit_alpha(id,NOVA_LOGO_WIDTH,NOVA_LOGO_HEIGHT,
                nova_logo_data,sizeof(nova_logo_data),&branding_image)==NOVA_IMAGE_OK;

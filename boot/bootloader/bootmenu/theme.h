@@ -15,12 +15,25 @@ typedef struct {
     bool opaque_materials, reduced_motion, high_contrast;
 } nova_theme_tokens_t;
 typedef struct {
+    uint64_t theme_id,resource_id;
+    const char *name,*author;
+    uint32_t version,resource_version,references,token_count;
+    const nova_theme_tokens_t *tokens;
+    bool loaded,valid;
+} nova_theme_resource_t;
+typedef struct {
     uint32_t activations, validation_errors, accessibility_overrides;
+    uint32_t registered,loads,cache_hits,releases,atomic_switches;
+    uint32_t missing_resources,duplicate_ids;
     nova_theme_id_t active;
 } nova_theme_diagnostics_t;
 
 bool nova_theme_initialize(void);
 bool nova_theme_activate(nova_theme_id_t id);
+const nova_theme_resource_t *nova_theme_resource_load(nova_theme_id_t id);
+const nova_theme_resource_t *nova_theme_resource_find(uint64_t theme_id);
+const nova_theme_resource_t *nova_theme_current(void);
+bool nova_theme_resource_release(nova_theme_id_t id);
 nova_theme_id_t nova_theme_active(void);
 const nova_theme_tokens_t *nova_theme_tokens(void);
 bool nova_theme_validate(nova_theme_id_t id);

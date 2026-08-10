@@ -90,6 +90,7 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/compression.c \
 		boot/bootloader/bootmenu/integrity.c \
 		boot/bootloader/bootmenu/font_resources.c \
+		boot/bootloader/bootmenu/animation_resources.c \
 		boot/bootloader/bootmenu/icons.c \
 		boot/bootloader/bootmenu/branding.c \
 		boot/bootloader/bootmenu/design.c \
@@ -155,6 +156,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/compression.c boot/bootloader/bootmenu/compression.h \
 		boot/bootloader/bootmenu/integrity.c boot/bootloader/bootmenu/integrity.h \
 		boot/bootloader/bootmenu/font_resources.c boot/bootloader/bootmenu/font_resources.h \
+		boot/bootloader/bootmenu/animation_resources.c boot/bootloader/bootmenu/animation_resources.h \
 		boot/bootloader/bootmenu/icons.c boot/bootloader/bootmenu/icons.h \
 		boot/bootloader/bootmenu/branding.c boot/bootloader/bootmenu/branding.h \
 		boot/bootloader/bootmenu/design.c boot/bootloader/bootmenu/design.h \
@@ -205,6 +207,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/compression.c \
 		boot/bootloader/bootmenu/integrity.c \
 		boot/bootloader/bootmenu/font_resources.c \
+		boot/bootloader/bootmenu/animation_resources.c \
 		boot/bootloader/bootmenu/icons.c \
 		boot/bootloader/bootmenu/branding.c \
 		boot/bootloader/bootmenu/design.c \
@@ -284,10 +287,13 @@ test-uefi-image: uefi
 	grep -F "UEFI:BACKGROUND-BLUR-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:IMAGE-RENDERER-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:PNG-DECODER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:THEME-RESOURCE-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:FONT-RESOURCE-REGISTRY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:ANIMATION-RESOURCE-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RENDER-QUALITY-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:SOFTWARE-RENDERER-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RESOURCE-LOADER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOURCE-CACHE-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RESOURCE-COMPRESSION-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RESOURCE-INTEGRITY-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RESOURCE-LZ4-DECODE-READY" build/qemu-uefi-image-debug.log
@@ -328,10 +334,13 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:BACKGROUND-BLUR-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:IMAGE-RENDERER-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:PNG-DECODER-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:THEME-RESOURCE-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:FONT-RESOURCE-REGISTRY-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:ANIMATION-RESOURCE-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RENDER-QUALITY-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:SOFTWARE-RENDERER-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-LOADER-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RESOURCE-CACHE-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-COMPRESSION-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-INTEGRITY-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-LZ4-DECODE-READY" $(UEFI_DEBUG_LOG)
