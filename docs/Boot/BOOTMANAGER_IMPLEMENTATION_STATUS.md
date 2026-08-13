@@ -1,6 +1,6 @@
 # NovaOS Bootmanager – Implementierungsstatus und Blocker
 
-Stand: 2026-08-10
+Stand: 2026-08-13
 
 Dieses Dokument ergänzt die automatisch erzeugte Abdeckungsmatrix in
 `build/bootmanager-npspec-coverage.md`. Es unterscheidet zwischen einer
@@ -28,6 +28,129 @@ Die zugehörigen QEMU-Nachweise sind die Make-Ziele `test`, `test-mouse`,
 `test-uefi-scrollview` und `test-uefi-image`.
 Der UEFI-Test weist EFI-Einstieg, GOP-Initialisierung,
 GUI-Zeichnung und die automatische Standardauswahl nach fünf Sekunden nach.
+
+## Semantische Interaction States
+
+Die UEFI-Control-Laufzeit besitzt nun die zwölf in
+`NPSPEC-BOOTDESIGN-0011` geforderten Zustände als zentrale, heapfreie
+Registry mit fester Übergangsmatrix. Hover wird nur von Pointereingaben
+angenommen; Fokus überlagert Hover und Auswahl; Disabled, ReadOnly und
+Loading besitzen getrennte Eingabesperren. Error wird neben der Fehlerfarbe
+mit einem sichtbaren Fehlersymbol und Statusstring dargestellt. Gemeinsame
+Controls beziehen Hintergrund, Vordergrund, Rahmen und Radius aus dem
+aktiven Zustandsstil. Dark, Light und High Contrast werden über denselben
+Resolver bedient.
+
+`boot-ui-runtime-check` prüft alle zwölf Zustände, erlaubte und verbotene
+Übergänge sowie Eingabesperren. Der reale EDK2/QEMU-Pfad meldet
+`UEFI:INTERACTION-STATES-READY`; das separat gebaute GPT/FAT32-Abbild
+`build/nova-uefi-interaction-current.img` erreicht zusätzlich den vollständig
+gezeichneten Countdownframe.
+
+## Validiertes Dark Theme
+
+Dark ist als versionierte Standardressource mit Descriptor,
+`nova_theme_default`, `nova_theme_is_dark` und atomarer Default-Aktivierung
+angebunden. Die Aktivierungsprüfung erfasst alle Farbrollen, Alpha- und
+DLU-Invarianten sowie Mindestkontraste für Texte, Fokus und Akzent. Alle
+nachgelagerten Designregistries lösen ihr Dark-Profil ohne Heap-Allokationen
+und in O(1) auf. Das Image `build/nova-uefi-dark-current.img` wurde mit EDK2
+gestartet und meldet `UEFI:DARK-THEME-READY` vor dem ersten vollständigen
+Countdownframe. Externe Themepakete bleiben bis zur normativen Definition der
+BAP-/Index-Wire-Formate blockiert.
+
+## Validiertes Light Theme
+
+Light besitzt nun denselben versionierten Ressourcen-, Descriptor-,
+Kontrast- und atomaren Aktivierungspfad wie Dark, ist aber ausdrücklich nicht
+als Default markiert. Der QEMU-Ablauftest synchronisiert Tasteneingaben an den
+fertigen Navigationsframe, wechselt Dark → Light → High Contrast → Dark und
+erzeugt referenzierbare 1024×768-Framebuffer. Das eigenständige Abbild
+`build/nova-uefi-light-current.img` meldet `UEFI:LIGHT-THEME-READY` und
+erreicht den vollständig gezeichneten Countdownframe.
+
+## Validiertes High Contrast Theme
+
+High Contrast besitzt einen eigenen Accessibility-Descriptor und erzwingt
+vor der Aktivierung opake Materialien, Reduced Motion, mindestens 2 DLU
+Fokusgeometrie, 7:1-Kontrast für Text/Fokus/Ebenen und 4,5:1 für alle
+Statusrollen. Der QEMU-Thementest erzeugt einen echten High-Contrast-
+Framebuffer und prüft Themewechsel sowie Reduced Motion. Das Image
+`build/nova-uefi-high-contrast-current.img` meldet
+`UEFI:HIGH-CONTRAST-THEME-READY`. Screenreader-/Sprachausgabe bleibt als
+fehlendes externes Accessibility-Backend ausdrücklich offen.
+
+## Visual-Continuity-Vertrag
+
+Der Bootbereich stellt nun einen versionierten, heapfreien Übergabekontext
+mit aktiver Theme-ID und Registry-Signatur bereit. Ein nachfolgendes Modul
+muss dieselben Typography-, Spacing-, Radius-, Icon-, Material-, Motion- und
+Interaction-Registries sowie ausschließlich semantische Tokens deklarieren;
+Abweichungen werden vor der Nutzung abgewiesen. EDK2/QEMU meldet
+`UEFI:VISUAL-CONTINUITY-READY` aus
+`build/nova-uefi-continuity-current.img`.
+
+Die vollständige Akzeptanz von `NPSPEC-BOOTDESIGN-0015` bleibt extern
+blockiert: Login, Desktop und Nova Shell existieren im aktuellen Projekt noch
+nicht als ausführbare Verbraucher dieses Vertrags. Deshalb sind die
+geforderten Übergänge Boot → Login → Desktop und ein systemweiter
+Pixel-/Registryvergleich derzeit nicht beweisbar.
+
+## Fehlende normative Accessibility-Abhängigkeiten
+
+`NPSPEC-BOOTDESIGN-0014` und `0015` verweisen auf
+`NPSPEC-BOOTACCESS-0001` und `NPSPEC-BOOTTHEME-0001`. Beide Dokumente sind
+im aktuellen NPSPEC-Bestand nicht vorhanden. Vorhandene High-Contrast-,
+Tastatur-, Reduced-Motion- und semantische Control-Funktionen bleiben
+implementiert und getestet; ein normativer Screenreader-/Accessibility-
+Frameworkvertrag oder ein darüber hinausgehendes Theme-Wire-API wird jedoch
+nicht erfunden.
+
+## Unterbrechbare Animationen
+
+Animationen erhalten Zwischenwert, Restdauer und Geschwindigkeit nun über
+Interrupt, Resume, Redirect und Reverse. Die Übergänge laufen aus dem
+aktuellen Framezustand weiter; Reverse verwendet den tatsächlichen Ursprung.
+Hosttests prüfen alle Operationen und Diagnosen. Das eigenständige Image
+`build/nova-uefi-motion-current.img` führt beim UEFI-Start einen Selbsttest
+aus und meldet `UEFI:INTERRUPTIBLE-MOTION-READY`.
+
+## Reduced-Motion-Policy
+
+Reduced Motion klassifiziert nun jede animierbare Property zentral. Fade,
+Tint und Fokusrahmen bleiben kurz erhalten, räumliche Bewegungen werden
+ersetzt und Blur, Glow sowie Shadow deaktiviert. Ein Wechsel wirkt im selben
+Frame auch auf laufende Animationen. Dialoge verwenden weder Scale noch
+bewegte Materialeffekte, Navigation bleibt als Cross-Fade verständlich. Der
+interaktive QEMU-Test committed die Einstellung und weist
+`UEFI:NAV-REDUCED-FADE` nach; das Image
+`build/nova-uefi-reduced-motion-current.img` meldet zusätzlich
+`UEFI:REDUCED-MOTION-POLICY-READY`.
+
+## Motion Performance Budget
+
+Das Motion-System überwacht Frame- und Schedulergrenze, festen Poolverbrauch
+und typisierte Objektlimits. Wiederholte Verletzungen deaktivieren in fester
+Reihenfolge Glow, Shadow, Blur, Spring, Material und zuletzt dekorative
+Animationen; danach ist Safe Mode aktiv. Essenzielle Status- und
+Fokusübergänge bleiben erhalten. Hosttests prüfen alle sechs Stufen. Das
+Image `build/nova-uefi-motion-budget-current.img` simuliert denselben Ablauf
+im UEFI-Pfad und meldet `UEFI:MOTION-BUDGET-READY`.
+
+## Boot-UI- und Frame-Performance
+
+Die Diagnose-API führt nun FPS, Frameklasse A–E, alle acht Pipelinezeiten,
+Min/Max/Mittelwert, Draw Calls, Dirty Regions, Speicher sowie Soft-, Hard-
+und Phasenverletzungen. Startupgrenzen und ein vollständiger Klasse-A- sowie
+Klasse-E-Frame werden im Host und im UEFI-Selbsttest geprüft. Das Image
+`build/nova-uefi-frame-budget-current.img` meldet
+`UEFI:FRAME-BUDGET-READY`.
+
+Noch nicht als Erfüllungsnachweis gewertet werden reale Zeitziele: Der
+aktuelle Firmwarepfad besitzt keine phasenweise Hochpräzisionsmessung und der
+vollständig softwaregerenderte QEMU-Debugaufbau ist deutlich langsamer als
+100 ms bis zum ersten Frame. Reale 30/60-FPS- sowie Startup-Grenzen benötigen
+optimierten Releasecode und Tests auf repräsentativer physischer Hardware.
 
 ## Externe Funktionsblocker
 
@@ -132,6 +255,62 @@ RESOURCE-CACHE-READY und RESOURCE-PRELOAD-READY. Externe BAP-Dateien,
 Packageheader, Indexdeskriptoren, Offsets und Signaturen bleiben blockiert,
 solange NPSPEC-BOOTRESOURCE-0002/0003 kein normatives Wire-Format definieren.
 
+## Resource Versioning
+
+NPSPEC-BOOTRESOURCE-0013 ist im UEFI-Ressourcenpfad als eigene heapfreie
+Multi-Version-Registry umgesetzt. 32 feste Einträge und ein 64-Slot-
+Open-Addressing-Index trennen logische Ressourcen-IDs von ihren physischen
+Backing-Ressourcen. Damit können mehrere Versionen parallel vorhanden sein,
+ohne den Duplikat- oder Integritätsschutz des Resource Managers aufzuweichen.
+
+Jeder Eintrag führt `Major.Minor.Patch.Build`, Mindest-/Maximalversion und bis
+zu acht versionierte Mindestabhängigkeiten. Unterschiedliche Major-Versionen
+sind inkompatibel, Minor und Patch werden abwärtskompatibel geprüft. Die
+Buildnummer beeinflusst entsprechend der Spezifikation nicht die
+Kompatibilität, dient aber als reproduzierbarer Tie-Breaker. Die Auswahl nimmt
+deterministisch die höchste kompatible Version. Abhängigkeiten werden transitiv
+mit Zyklenschutz geprüft; Auswahl und Rollback stellen bei jedem Konflikt den
+vorherigen aktiven Zustand atomar wieder her.
+
+Der Hosttest deckt Major, Minor, Patch, Build, Bereiche, parallele Versionen,
+Duplikate, Mindestabhängigkeiten, Konflikte und Rollback ab. Das aktuelle
+GPT/FAT32-Image führt unter OVMF/QEMU eine versionierte Theme-/Font-Auswahl und
+einen Rollback aus und meldet `UEFI:RESOURCE-VERSIONING-READY`.
+
+Offen bleiben externe Paketmanifeste, die Prüfung manipulierter
+Manifestversionsfelder und paketübergreifend vorbereitete Tabellen, weil
+BOOTRESOURCE-0002/0003 weiterhin kein normatives BAP-/Index-Wire-Format
+festlegen. Die getrennte BIOS-Runtime verwendet die Registry ebenfalls noch
+nicht.
+
+## Asset-Build-Pipeline
+
+Der technisch unabhängig vom noch undefinierten Paketformat umsetzbare Teil
+von NPSPEC-BOOTRESOURCE-0014 ist als automatisches Buildzeit-Gate vorhanden.
+`validate-boot-assets.ps1` scannt Ressourcen rekursiv in kanonischer
+Pfadreihenfolge und erkennt PNG, SVG, TTF, OTF, Theme, Sprache, Animation,
+Cursor und Binärdaten. Unbekannte oder leere Dateien brechen den Build ab.
+PNG-Signatur, IHDR und Dimensionen, sicheres SVG-XML ohne DTD, striktes UTF-8
+sowie die definierten Formatheader werden vor jeder weiteren Verwendung
+geprüft.
+
+Für jede gültige Quelle entstehen deterministisch eine `boot://`-URI, dieselbe
+FNV-1a-64-ID wie in der Laufzeit, vollständige Major.Minor.Patch.Build-
+Metadaten, Typ, Größe und SHA-256. Der stabile Report enthält weder Zeitstempel
+noch Zufallswerte. Debug, Development und Release sind explizite Profile;
+doppelte IDs und beschädigte Quellen sind harte Fehler. `make
+asset-pipeline-check` erzeugt aus denselben Quellen zweimal byteidentische
+Reports und prüft zusätzlich, dass ein beschädigtes PNG sicher abgewiesen wird.
+
+Eine vollständige BAP-Datei darf noch nicht erzeugt werden: BOOTRESOURCE-0002
+und -0003 definieren weder Headerpackung, Offsets, Endianness noch das
+Prüfsummenverfahren für Manifest und Index. BOOTSECURITY-0001 liefert zudem
+keinen verwendbaren Schlüssel-/Signaturcontainer für Ed25519 oder ECDSA P-256.
+Damit bleiben Manifest-/Index-/Paketbytes, Paketkompression und Signierung
+ausdrücklich blockiert. Die Pipeline läuft nur beim Build und benötigt deshalb
+keinen QEMU-Laufzeitmarker; das resultierende UEFI-Image wird weiterhin separat
+unter OVMF/QEMU geprüft.
+
 Der UTF-8-Decoder validiert ein- bis vierbyte Sequenzen, weist Overlong-
 Kodierungen, Surrogate und ungültige Codepoints sicher ab und verwendet
 U+FFFD/Missing-Glyph-Fallback. Die vorhandenen Segoe-UI-Glyphen und die sechs
@@ -205,6 +384,59 @@ Keine Energieaktion läuft beim ersten Enter: Zunächst erscheint eine explizite
 Bestätigung, erst ein zweites Enter auf derselben Auswahl darf sie ausführen.
 Recovery-, Firmware- und Netzwerk-Neustart bleiben ohne verifiziertes Ziel
 sicher gesperrt und werden verständlich als nicht verfügbar erklärt.
+
+## Semantische Typography-, Spacing- und Radius-Tokens
+
+BOOTDESIGN-0004 bis -0006 besitzen nun eine gemeinsame, heapfreie und pro
+Theme vorbereitete Tokenebene. Die Typography-Registry enthält alle elf
+Pflichtrollen von Display bis Monospace. Jede Rolle führt Font-ID, Größe,
+minimale, normale und maximale Zeilenhöhe, echten Schriftschnitt sowie
+semantisches und numerisches Letter Spacing. Die Font-IDs zeigen auf die
+zentrale Font-Resource-/Fallbackregistry; ungültige Zeilenhöhen oder fehlende
+Fonts verhindern die Designaktivierung.
+
+Spacing stellt alle acht DLU-Rollen XXS bis XXXL bereit und validiert ihre
+monotone Hierarchie. Radius enthält None, Tiny, Small, Medium, Large, XLarge,
+Pill und Circle. Dark und Light teilen das reguläre Profil, High Contrast
+vergrößert Typografie und Abstände und vereinfacht Radien. Ein Themewechsel
+tauscht die vorbereiteten Tabellen O(1) aus, ohne Controls neu zu erzeugen.
+Zentrale Control-, Listen-, Badge- und Panelstyles verwenden Padding und
+Radien bereits produktiv über die semantischen Resolver.
+
+Der Hosttest prüft sämtliche 27 Rollen, Zeilenhöheninvarianten, Reihenfolge und
+Theme-/Accessibilitywechsel. Das GPT/FAT32-Image validiert die Tabellen vor dem
+ersten Frame und meldet unter OVMF/QEMU
+`UEFI:SEMANTIC-DESIGN-TOKENS-READY`. Noch zu migrieren sind lokale DLU-/Scale-
+Werte einiger spezialisierter Renderer; vollständige Unicodefonts, ein eigenes
+Touchprofil und identische Nutzung in der BIOS-Runtime fehlen ebenfalls.
+
+## Elevation, Glass und Motion Tokens
+
+BOOTDESIGN-0007, -0008 und -0010 sind als weitere statische Themeprofile in
+die Designruntime integriert. Sechs Elevationsebenen besitzen jeweils ein
+Shadow Token mit bis zu zwei Lagen aus DLU-X/Y, Blur, Deckkraft und Farbe.
+Dark und Light verwenden abgestufte weiche Schatten; High Contrast deaktiviert
+Tiefeneffekte, ohne die semantischen Ebenen zu entfernen. Der Dialogrenderer
+bezieht seine beiden Schattenlagen produktiv ausschließlich aus Level4.
+
+Die Materialregistry enthält None, Surface, Glass, Glass.Light, Glass.Medium,
+Glass.Strong, Overlay und Dialog. Jede Rolle führt Oberflächen-/Rahmenfarbe,
+DLU-Blur, Alpha, Reflexion, Helligkeit, Elevation und Opaque-Fallback. Dialog
+und Overlay beziehen Farbe, Rand, Blur und Transparenz aus diesen Tokens und
+verwenden den bestehenden cachefähigen Software-Blur-/Compositorpfad. High
+Contrast ersetzt sämtliche Glasrollen deterministisch durch opake Flächen.
+
+Motion stellt sechs Dauerklassen, acht Easingrollen und sieben Übergangsprofile
+für Page, Dialog, Menu, Tooltip, Card, Focus und Selection bereit. Dialog
+Enter/Exit, Seitennavigation, Fokusring und Fortschrittsänderung verwenden die
+Resolver statt lokaler Dauern und Easings. Reduced Motion und High Contrast
+liefern einen linearen 1-ms-Endzustand bei unveränderten Rollennamen.
+
+Hosttests prüfen Vollständigkeit, Parameter und Accessibility-Fallbacks. Das
+reale GPT/FAT32-Image validiert die Tabellen vor dem ersten Frame und meldet
+unter OVMF/QEMU `UEFI:EFFECT-MOTION-TOKENS-READY`. Noch offen sind separate
+Reflection-/Brightness-Passes, die Migration einzelner älterer
+Spezialanimationen und die identische Tokenverwendung im BIOS-Pfad.
 
 ## Theme- und Accessibility-Runtime
 

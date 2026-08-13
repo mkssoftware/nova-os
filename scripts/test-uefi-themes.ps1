@@ -39,8 +39,8 @@ try {
     try {
         $writer = [IO.StreamWriter]::new($client.GetStream()); $writer.AutoFlush = $true
         function Send-Key([string]$key) { $writer.WriteLine("sendkey $key"); Start-Sleep -Milliseconds 650 }
-        function Wait-Marker([string]$marker) {
-            $until = [DateTime]::UtcNow.AddSeconds(12)
+        function Wait-Marker([string]$marker,[int]$timeoutSeconds=45) {
+            $until = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
             while ([DateTime]::UtcNow -lt $until) {
                 $content = Get-Content -LiteralPath $logPath -Raw -ErrorAction SilentlyContinue
                 if ($content -like "*$marker*") { return }
@@ -49,6 +49,9 @@ try {
             throw "Marker $marker fehlt."
         }
         Send-Key 'down'; Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:SETTINGS'
+        # SETTINGS is emitted when navigation begins. Input remains locked until
+        # the final transition frame, so synchronize before opening the menu.
+        Wait-Marker 'UEFI:NAV-ENTER-COMPLETE'
         Send-Key 'ret'; Wait-Marker 'UEFI:MENU-BUTTON-OPEN'
         Wait-Marker 'UEFI:MENU-BUTTON-FRAME-READY'
         $writer.WriteLine('screendump build/uefi-menu-button.ppm')

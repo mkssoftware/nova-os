@@ -16,6 +16,7 @@ _Alignas(64) static uint8_t arena[NOVA_MEMORY_ARENA_SIZE];
 static nova_memory_pool_t pools[NOVA_MEMORY_POOL_COUNT];
 static nova_memory_object_t objects[NOVA_MEMORY_OBJECT_CAPACITY];
 static nova_memory_statistics_t statistics;
+static nova_memory_budget_t memory_budget;
 static uint32_t next_id;
 
 static const uint32_t pool_budgets[NOVA_MEMORY_POOL_COUNT]={
@@ -25,6 +26,82 @@ static const uint32_t pool_budgets[NOVA_MEMORY_POOL_COUNT]={
 static const uint32_t arena_capacities[NOVA_MEMORY_POOL_COUNT]={
     KIB(256),KIB(128),KIB(512),KIB(128),KIB(256),KIB(256),KIB(512),KIB(128)
 };
+
+/* Standard profile from NPSPEC-BOOTPERF-0003, excluding the platform-owned
+ * framebuffer. Minimal and comfort profiles preserve deterministic ratios. */
+static const uint8_t standard_area_mib[NOVA_MEMORY_AREA_COUNT]={
+    8,12,4,4,1,2,2,2,2,27
+};
+
+static void refresh_budget(void)
+{
+    uint64_t areas=0;uint32_t fragmentation=0;
+    for(uint8_t i=0;i<NOVA_MEMORY_AREA_COUNT;++i)areas+=memory_budget.area_used[i];
+    for(uint8_t i=0;i<NOVA_MEMORY_POOL_COUNT;++i)
+        fragmentation+=pools[i].statistics.fragmentation;
+    memory_budget.pool_memory=statistics.total_used;
+    memory_budget.cache_memory=memory_budget.area_used[NOVA_MEMORY_AREA_RESOURCE_CACHE]+
+        memory_budget.area_used[NOVA_MEMORY_AREA_GLYPH_CACHE]+
+        memory_budget.area_used[NOVA_MEMORY_AREA_SVG_CACHE]+
+        memory_budget.area_used[NOVA_MEMORY_AREA_THEME_CACHE];
+    memory_budget.used_memory=areas+statistics.total_used+memory_budget.framebuffer_memory;
+    memory_budget.free_memory=memory_budget.used_memory<memory_budget.total_budget?
+        memory_budget.total_budget-memory_budget.used_memory:0;
+    memory_budget.fragmentation=fragmentation;
+    memory_budget.within_budget=memory_budget.used_memory<=memory_budget.total_budget;
+    if(memory_budget.used_memory>memory_budget.peak_memory)
+        memory_budget.peak_memory=memory_budget.used_memory;
+}
+
+bool nova_memory_budget_configure(nova_memory_profile_t profile)
+{
+    if(profile!=NOVA_MEMORY_PROFILE_MINIMAL&&profile!=NOVA_MEMORY_PROFILE_STANDARD&&
+       profile!=NOVA_MEMORY_PROFILE_COMFORT)return false;
+    memory_budget=(nova_memory_budget_t){.total_budget=(uint64_t)profile*1024u*1024u,
+        .profile=profile,.within_budget=true};
+    for(uint8_t i=0;i<NOVA_MEMORY_AREA_COUNT;++i)
+        memory_budget.area_budget[i]=(uint64_t)standard_area_mib[i]*1024u*1024u*
+            (uint32_t)profile/(uint32_t)NOVA_MEMORY_PROFILE_STANDARD;
+    refresh_budget();return true;
+}
+
+bool nova_memory_budget_initialize(void)
+{return nova_memory_budget_configure(NOVA_MEMORY_PROFILE_STANDARD);}
+const nova_memory_budget_t *nova_memory_budget_status(void){refresh_budget();return &memory_budget;}
+bool nova_memory_budget_available(uint64_t bytes)
+{refresh_budget();return bytes<=memory_budget.free_memory;}
+bool nova_memory_budget_reset(void)
+{nova_memory_profile_t profile=memory_budget.profile?memory_budget.profile:
+    NOVA_MEMORY_PROFILE_STANDARD;return nova_memory_budget_configure(profile);}
+bool nova_memory_budget_set_runtime(bool active)
+{memory_budget.runtime_locked=active;return true;}
+bool nova_memory_budget_report(nova_memory_area_t area,uint64_t used)
+{
+    if(area>=NOVA_MEMORY_AREA_COUNT)return false;
+    memory_budget.area_used[area]=used;refresh_budget();
+    if(used>memory_budget.area_budget[area]||!memory_budget.within_budget){
+        ++memory_budget.budget_overruns;return false;
+    }
+    return true;
+}
+void nova_memory_budget_record_eviction(uint64_t bytes)
+{
+    ++memory_budget.cache_evictions;
+    uint64_t *used=&memory_budget.area_used[NOVA_MEMORY_AREA_RESOURCE_CACHE];
+    *used=bytes<*used?*used-bytes:0;refresh_budget();
+}
+bool nova_memory_budget_apply_pressure(void)
+{
+    ++memory_budget.pressure_events;
+    if(memory_budget.overload_step<5)++memory_budget.overload_step;
+    return memory_budget.overload_step<5;
+}
+void nova_memory_secure_zero(void *address,uint32_t size)
+{
+    volatile uint8_t *bytes=(volatile uint8_t *)address;
+    if(!bytes)return;
+    while(size--)*bytes++=0;
+}
 
 static uint32_t align_up(uint32_t value,uint8_t alignment)
 {return (value+(uint32_t)alignment-1u)&~((uint32_t)alignment-1u);}
@@ -80,6 +157,7 @@ void nova_memory_initialize(void)
     }
     for(uint16_t i=0;i<NOVA_MEMORY_OBJECT_CAPACITY;++i)
         objects[i]=(nova_memory_object_t){0};
+    (void)nova_memory_budget_initialize();
 }
 
 void *nova_memory_allocate(nova_memory_pool_id_t pool,uint32_t size,
@@ -89,6 +167,9 @@ void *nova_memory_allocate(nova_memory_pool_id_t pool,uint32_t size,
         if(!valid_alignment(alignment))++statistics.alignment_errors;
         else ++statistics.invalid_pointers;
         return 0;
+    }
+    if(memory_budget.runtime_locked&&pool!=NOVA_MEMORY_FRAME){
+        ++statistics.recovery_requests;return 0;
     }
     nova_memory_pool_t *target=&pools[pool];
     uint32_t aligned=align_up(target->offset,alignment);
@@ -102,7 +183,7 @@ void *nova_memory_allocate(nova_memory_pool_id_t pool,uint32_t size,
     *object=(nova_memory_object_t){next_id++,address,size,owner,1,alignment,pool,
                                    NOVA_MEMORY_OBJECT_ACTIVE};
     ++target->statistics.allocations;++target->statistics.active_objects;
-    ++statistics.allocations;update_total();return address;
+    ++statistics.allocations;update_total();refresh_budget();return address;
 }
 
 bool nova_memory_track_static(nova_memory_pool_id_t pool,void *address,
@@ -123,7 +204,7 @@ bool nova_memory_track_static(nova_memory_pool_id_t pool,void *address,
     *object=(nova_memory_object_t){next_id++,address,size,owner,1,alignment,pool,
                                    NOVA_MEMORY_OBJECT_STATIC};
     target->external_used+=size;++target->statistics.allocations;
-    ++target->statistics.active_objects;++statistics.allocations;update_total();return true;
+    ++target->statistics.active_objects;++statistics.allocations;update_total();refresh_budget();return true;
 }
 
 bool nova_memory_retain(void *address)
@@ -146,7 +227,7 @@ bool nova_memory_release(void *address)
     else pool->statistics.fragmentation+=object->size;
     object->references=0;object->state=NOVA_MEMORY_OBJECT_RELEASED;
     --pool->statistics.active_objects;++pool->statistics.releases;
-    ++statistics.releases;update_total();return true;
+    ++statistics.releases;update_total();refresh_budget();return true;
 }
 
 bool nova_memory_reset_frame(void)
@@ -157,7 +238,7 @@ bool nova_memory_reset_frame(void)
             objects[i].state=NOVA_MEMORY_OBJECT_RELEASED;objects[i].references=0;
         }
     frame->offset=0;frame->statistics.fragmentation=0;
-    frame->statistics.active_objects=0;++statistics.frame_resets;update_total();return true;
+    frame->statistics.active_objects=0;++statistics.frame_resets;update_total();refresh_budget();return true;
 }
 
 bool nova_memory_validate_pointer(const void *address,

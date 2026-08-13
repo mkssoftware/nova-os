@@ -11,6 +11,8 @@ typedef enum {
     NOVA_MOTION_WAITING,
     NOVA_MOTION_RUNNING,
     NOVA_MOTION_PAUSED,
+    NOVA_MOTION_INTERRUPTED,
+    NOVA_MOTION_RESUMING,
     NOVA_MOTION_COMPLETED,
     NOVA_MOTION_CANCELLED
 } nova_motion_state_t;
@@ -37,6 +39,8 @@ typedef enum {
     NOVA_PROPERTY_CORNER_RADIUS,
     NOVA_PROPERTY_COUNT
 } nova_property_t;
+typedef enum {NOVA_MOTION_POLICY_ALLOWED,NOVA_MOTION_POLICY_REPLACED,
+    NOVA_MOTION_POLICY_DISABLED,NOVA_MOTION_POLICY_INVALID} nova_motion_policy_t;
 
 typedef struct {
     int32_t *target;
@@ -54,6 +58,9 @@ typedef struct {
     bool auto_reverse;
     bool reversed;
     bool interruptible;
+    int32_t current_velocity_16_16;
+    uint32_t remaining_ms;
+    uint64_t paused_at_ms;
 } nova_animation_t;
 
 typedef struct {
@@ -63,6 +70,8 @@ typedef struct {
     uint32_t completed;
     uint32_t cancelled;
     uint32_t rejected;
+    uint32_t interruptions,pauses,resumes,reversals,redirects;
+    uint32_t policy_reloads,policy_replacements,policy_disables,policy_errors;
     bool paused;
     bool reduced_motion;
     uint8_t quality;
@@ -81,9 +90,16 @@ typedef struct { int32_t displayed, requested; bool indeterminate, running, fail
 typedef struct {
     uint32_t frame_time_us;
     uint32_t scheduler_time_us;
+    uint32_t property_time_us,material_time_us,memory_bytes;
+    uint16_t active_animations,material_animations;
     uint16_t violations;
-    uint8_t quality;
+    uint8_t quality,fallback_step;
+    bool glow_enabled,shadow_enabled,blur_enabled,spring_enabled;
+    bool material_enabled,decorative_enabled,safe_mode;
 } nova_motion_budget_t;
+typedef enum {NOVA_ANIMATION_GENERAL,NOVA_ANIMATION_TIMELINE,NOVA_ANIMATION_SPRING,
+    NOVA_ANIMATION_MATERIAL,NOVA_ANIMATION_PROGRESS,NOVA_ANIMATION_TYPE_COUNT}
+    nova_animation_type_t;
 
 void nova_motion_initialize(void);
 nova_animation_t *nova_motion_create(const nova_animation_t *description);
@@ -95,8 +111,11 @@ bool nova_motion_reverse(nova_animation_t *animation, uint64_t current_ms);
 bool nova_motion_redirect(nova_animation_t *animation, int32_t target,
                           uint64_t current_ms);
 void nova_motion_pause_group(uint16_t group);
-void nova_motion_set_reduced(bool enabled);
+bool nova_motion_set_reduced(bool enabled);
 bool nova_motion_is_reduced(void);
+nova_motion_policy_t nova_motion_policy(nova_property_t property);
+bool nova_motion_apply_policy(nova_animation_t *animation);
+bool nova_motion_reload_policy(void);
 const nova_motion_diagnostics_t *nova_motion_diagnostics(void);
 int32_t nova_ease_apply(nova_easing_t easing, int32_t progress_16_16);
 bool nova_transition_begin(nova_transition_t *transition, int32_t from, int32_t to,
@@ -111,6 +130,10 @@ bool nova_focus_set(nova_focus_motion_t *focus, bool focused, bool selected);
 bool nova_progress_set(nova_progress_motion_t *progress, int32_t value_per_mille);
 void nova_progress_set_indeterminate(nova_progress_motion_t *progress, bool enabled);
 void nova_motion_budget_update(uint32_t frame_time_us, uint32_t scheduler_time_us);
+bool nova_motion_budget_initialize(void);
+const nova_motion_budget_t *nova_motion_budget_get(void);
+bool nova_motion_budget_can_allocate(nova_animation_type_t type);
+void nova_motion_budget_apply_fallback(void);
 const nova_motion_budget_t *nova_motion_budget(void);
 
 #endif

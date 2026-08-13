@@ -9,6 +9,7 @@
 #include "../boot/bootloader/bootmenu/text.h"
 #include "../boot/bootloader/bootmenu/unicode.h"
 #include "../boot/bootloader/bootmenu/resources.h"
+#include "../boot/bootloader/bootmenu/resource_version.h"
 #include "../boot/bootloader/bootmenu/font_resources.h"
 #include "../boot/bootloader/bootmenu/animation_resources.h"
 #include "../boot/bootloader/bootmenu/icons.h"
@@ -326,6 +327,40 @@ int main(void)
                     nova_memory_statistics()->recovery_requests==1&&
                     nova_recovery_safe_mode()&&nova_recovery_continue_boot(),
                     "Pool-Overflow aktiviert Recovery statt Speicher zu ueberschreiben");
+    uint64_t area_budget_sum=0;
+    failed|=check(nova_memory_budget_configure(NOVA_MEMORY_PROFILE_MINIMAL)&&
+        nova_memory_budget_status()->total_budget==32ull*1024u*1024u&&
+        nova_memory_budget_status()->profile==NOVA_MEMORY_PROFILE_MINIMAL&&
+        nova_memory_budget_configure(NOVA_MEMORY_PROFILE_STANDARD)&&
+        nova_memory_budget_status()->total_budget==64ull*1024u*1024u&&
+        nova_memory_budget_configure(NOVA_MEMORY_PROFILE_COMFORT)&&
+        nova_memory_budget_status()->total_budget==128ull*1024u*1024u&&
+        !nova_memory_budget_configure((nova_memory_profile_t)48)&&
+        nova_memory_budget_configure(NOVA_MEMORY_PROFILE_STANDARD),
+        "Deterministische 32/64/128-MiB-Speicherprofile");
+    for(uint8_t area=0;area<NOVA_MEMORY_AREA_COUNT;++area)
+        area_budget_sum+=nova_memory_budget_status()->area_budget[area];
+    failed|=check(area_budget_sum==nova_memory_budget_status()->total_budget&&
+        nova_memory_budget_report(NOVA_MEMORY_AREA_GLYPH_CACHE,4ull*1024u*1024u)&&
+        !nova_memory_budget_report(NOVA_MEMORY_AREA_GLYPH_CACHE,4ull*1024u*1024u+1)&&
+        nova_memory_budget_status()->budget_overruns==1,
+        "Alle Speicherbereiche besitzen feste Budgets und Ueberlaufdiagnose");
+    for(uint8_t step=0;step<5;++step)(void)nova_memory_budget_apply_pressure();
+    failed|=check(nova_memory_budget_status()->overload_step==5&&
+        nova_memory_budget_status()->pressure_events==5&&
+        !nova_memory_budget_apply_pressure(),
+        "Fuenfstufiges deterministisches Verhalten bei Speicherdruck");
+    uint8_t secret[8]={1,2,3,4,5,6,7,8};nova_memory_secure_zero(secret,sizeof(secret));
+    bool secret_erased=true;for(uint8_t i=0;i<sizeof(secret);++i)secret_erased&=secret[i]==0;
+    failed|=check(secret_erased&&nova_memory_budget_set_runtime(true)&&
+        !nova_memory_allocate(NOVA_MEMORY_RUNTIME,16,0x606u,16)&&
+        nova_memory_allocate(NOVA_MEMORY_FRAME,16,0x606u,16)!=0&&
+        nova_memory_budget_set_runtime(false),
+        "Sichere Loeschung und Heap-Sperre waehrend der regulaeren UI-Laufzeit");
+    failed|=check(nova_memory_budget_reset()&&
+        nova_memory_budget_status()->cache_evictions==0&&
+        nova_memory_budget_available(1024),
+        "Speicherbudget und Diagnosezustand lassen sich definiert zuruecksetzen");
     nova_configuration_initialize();
     const nova_boot_configuration_t *configuration=nova_configuration_get();
     failed |= check(configuration->theme==NOVA_THEME_DARK&&configuration->tooltips&&
@@ -824,7 +859,7 @@ int main(void)
     nova_animation_t description = {
         &value, 0, 1000, 100, 20, 200, 7, 2, 0,
         NOVA_PROPERTY_X, NOVA_EASE_LINEAR, NOVA_MOTION_CREATED,
-        false, false, true
+        false, false, true, 0, 0, 0
     };
     nova_animation_t *animation = nova_motion_create(&description);
     failed |= check(animation != 0, "Animation anlegen");
@@ -837,8 +872,23 @@ int main(void)
     failed |= check(value == 500, "Pause haelt Property");
     failed |= check(nova_motion_resume(animation, 260), "Fortsetzung");
     failed |= check(nova_motion_redirect(animation, 1500, 260), "Zielumleitung");
-    nova_motion_update(460);
+    nova_motion_update(470);
     failed |= check(value == 1500, "umgeleitetes Ziel");
+    failed |= check(nova_motion_diagnostics()->interruptions==1&&
+                    nova_motion_diagnostics()->resumes==1&&
+                    nova_motion_diagnostics()->redirects==1,
+                    "Interrupt-Diagnose zählt Pause, Resume und Redirect");
+    int32_t reverse_value=0;
+    nova_animation_t reversible=description;
+    reversible.target=&reverse_value;reversible.start_ms=500;reversible.delay_ms=0;
+    nova_animation_t *reverse_animation=nova_motion_create(&reversible);
+    nova_motion_update(600);
+    int32_t reverse_origin=reverse_value;
+    failed|=check(reverse_animation&&reverse_origin>0&&
+        nova_motion_reverse(reverse_animation,600),"laufende Animation am Zwischenwert umkehren");
+    nova_motion_update(710);
+    failed|=check(reverse_value==0&&nova_motion_diagnostics()->reversals==1,
+        "Richtungswechsel läuft ohne Sprung zum Ursprung zurück");
 
     nova_motion_set_reduced(true);
     failed |= check(nova_navigation_visual_begin(NOVA_NAV_POP,true,500) &&
@@ -856,9 +906,37 @@ int main(void)
     nova_animation_t *reduced_animation = nova_motion_create(&reduced);
     failed |= check(reduced_animation && reduced_animation->easing == NOVA_EASE_OUT_CUBIC,
                     "Reduced Motion ersetzt Spring");
-    failed |= check(nova_motion_create(&reduced) == 0, "doppelte Property abweisen");
+    failed |= check(reduced_value==1000&&
+                    reduced_animation->state==NOVA_MOTION_COMPLETED&&
+                    nova_motion_policy(NOVA_PROPERTY_X)==NOVA_MOTION_POLICY_REPLACED&&
+                    nova_motion_policy(NOVA_PROPERTY_OPACITY)==NOVA_MOTION_POLICY_ALLOWED&&
+                    nova_motion_policy(NOVA_PROPERTY_BLUR)==NOVA_MOTION_POLICY_DISABLED,
+                    "Reduced-Motion-Policy ersetzt Bewegung und erhält Fade");
     nova_motion_update(1000);
 
+    nova_motion_initialize();
+    int32_t running_position=0,running_opacity=0,running_blur=0;
+    nova_animation_t running_policy={.target=&running_position,.from=0,.to=100,
+        .duration_ms=200,.property=NOVA_PROPERTY_X,.easing=NOVA_EASE_LINEAR,
+        .state=NOVA_MOTION_CREATED,.interruptible=true};
+    nova_animation_t running_fade=running_policy;
+    running_fade.target=&running_opacity;running_fade.to=255;
+    running_fade.property=NOVA_PROPERTY_OPACITY;
+    nova_animation_t running_material=running_policy;
+    running_material.target=&running_blur;running_material.to=12;
+    running_material.property=NOVA_PROPERTY_BLUR;
+    nova_animation_t *position_policy=nova_motion_create(&running_policy);
+    nova_animation_t *fade_policy=nova_motion_create(&running_fade);
+    nova_animation_t *material_policy=nova_motion_create(&running_material);
+    nova_motion_update(50);
+    failed|=check(position_policy&&fade_policy&&material_policy&&
+        nova_motion_set_reduced(true)&&running_position==100&&running_blur==12&&
+        position_policy->state==NOVA_MOTION_COMPLETED&&
+        material_policy->state==NOVA_MOTION_COMPLETED&&
+        fade_policy->state==NOVA_MOTION_RUNNING&&fade_policy->duration_ms==150&&
+        nova_motion_diagnostics()->policy_replacements>=1&&
+        nova_motion_diagnostics()->policy_disables>=1,
+        "laufende Animationen im selben Frame auf Reduced-Motion-Policy umstellen");
     nova_motion_initialize();
     nova_motion_set_reduced(true);
     nova_dialog_motion_t dialog = {0};
@@ -899,7 +977,22 @@ int main(void)
                     "ungueltiger Progress faellt sicher zurueck");
     nova_motion_budget_update(20000, 1200);
     failed |= check(nova_motion_budget()->violations == 1 &&
-                    nova_motion_budget()->quality == 3, "Budget-Degradation");
+                    nova_motion_budget()->quality == 3&&
+                    nova_motion_budget()->fallback_step==1&&
+                    nova_motion_budget()->memory_bytes<=512u*1024u&&
+                    !nova_motion_budget_can_allocate(NOVA_ANIMATION_SPRING)&&
+                    !nova_motion_budget_can_allocate(NOVA_ANIMATION_TYPE_COUNT),
+                    "Budget-Degradation und feste Speicher-/Typgrenzen");
+    for(uint8_t fallback=1;fallback<6;++fallback)
+        nova_motion_budget_update(20000,1200);
+    failed|=check(nova_motion_budget_get()->violations==6&&
+        nova_motion_budget_get()->fallback_step==6&&
+        nova_motion_budget_get()->safe_mode&&
+        !nova_motion_budget_get()->glow_enabled&&!nova_motion_budget_get()->shadow_enabled&&
+        !nova_motion_budget_get()->blur_enabled&&!nova_motion_budget_get()->spring_enabled&&
+        !nova_motion_budget_get()->material_enabled&&
+        !nova_motion_budget_get()->decorative_enabled,
+        "Fallbackreihenfolge endet deterministisch im Motion Safe Mode");
 
     nova_gop_reset();
     nova_gop_mode_candidate_t gop_modes[]={
@@ -1688,6 +1781,59 @@ int main(void)
         NOVA_SW_RENDERER_NOT_AVAILABLE&&nova_sw_renderer_text_required()&&
         nova_sw_renderer_shutdown()==NOVA_SW_RENDERER_OK,
         "Fehlender Framebuffer fordert funktionalen Textfallback an");
+    static const uint8_t version_dep_data[]={1},version_app_100_data[]={2};
+    static const uint8_t version_app_110_data[]={3},version_app_200_data[]={4};
+    failed|=check(nova_resource_register("test://version/dep/1.0.0.7",NOVA_RESOURCE_FONT,1,
+        version_dep_data,sizeof(version_dep_data),0,0)&&
+        nova_resource_register("test://version/app/1.0.0.2",NOVA_RESOURCE_THEME,1,
+        version_app_100_data,sizeof(version_app_100_data),0,0)&&
+        nova_resource_register("test://version/app/1.1.0.9",NOVA_RESOURCE_THEME,1,
+        version_app_110_data,sizeof(version_app_110_data),0,0)&&
+        nova_resource_register("test://version/app/2.0.0.1",NOVA_RESOURCE_THEME,2,
+        version_app_200_data,sizeof(version_app_200_data),0,0)&&
+        nova_resource_version_initialize(),"Versionierungsressourcen registrieren");
+    uint64_t version_dep=nova_resource_id("logical://version/dep");
+    uint64_t version_app=nova_resource_id("logical://version/app");
+    nova_resource_version_descriptor_t dep_version={.logical_id=version_dep,
+        .backing_resource_id=nova_resource_id("test://version/dep/1.0.0.7"),
+        .version={1,0,0,7},.minimum={1,0,0,0},.maximum={1,9,9,65535}};
+    nova_resource_version_dependency_t app_dependencies[]={{version_dep,{1,0,0,0}}};
+    nova_resource_version_descriptor_t app_100={.logical_id=version_app,
+        .backing_resource_id=nova_resource_id("test://version/app/1.0.0.2"),
+        .version={1,0,0,2},.minimum={1,0,0,0},.maximum={1,9,9,65535},
+        .dependencies=app_dependencies,.dependency_count=1};
+    nova_resource_version_descriptor_t app_110=app_100;
+    app_110.backing_resource_id=nova_resource_id("test://version/app/1.1.0.9");
+    app_110.version=(nova_resource_version_t){1,1,0,9};
+    nova_resource_version_descriptor_t app_200=app_100;
+    app_200.backing_resource_id=nova_resource_id("test://version/app/2.0.0.1");
+    app_200.version=(nova_resource_version_t){2,0,0,1};
+    app_200.minimum=(nova_resource_version_t){2,0,0,0};
+    app_200.maximum=(nova_resource_version_t){2,9,9,65535};
+    failed|=check(nova_resource_version_register(&dep_version)&&
+        nova_resource_version_register(&app_100)&&nova_resource_version_register(&app_110)&&
+        nova_resource_version_register(&app_200)&&!nova_resource_version_register(&app_110),
+        "parallele Versionen zulassen und identisches Versionsduplikat abweisen");
+    nova_resource_version_t v1000={1,0,0,0},v199max={1,9,9,65535};
+    nova_resource_version_t v2000={2,0,0,0},v3000={3,0,0,0};
+    failed|=check(nova_resource_version_compatible(&v1000,&app_110.version)&&
+        !nova_resource_version_compatible(&v1000,&v2000)&&
+        nova_resource_version_compare((nova_resource_version_t){1,1,0,1},
+                                      (nova_resource_version_t){1,1,0,9})<0,
+        "Major inkompatibel, Minor/Patch kompatibel und Build reproduzierbar ordnen");
+    failed|=check(nova_resource_version_select(version_dep,&v1000,&v199max)&&
+        nova_resource_version_select(version_app,&v1000,&v199max)&&
+        nova_resource_version(version_app)->version.minor==1&&
+        nova_resource_version_dependencies(nova_resource_version(version_app)),
+        "hoechste kompatible Version samt Mindestabhaengigkeit aktivieren");
+    failed|=check(nova_resource_version_rollback(version_app)&&
+        nova_resource_version(version_app)->version.minor==0&&
+        nova_resource_version_select(version_app,&v2000,&v2000)&&
+        nova_resource_version(version_app)->version.build==1&&
+        !nova_resource_version_select(version_app,&v3000,&v3000)&&
+        nova_resource_version(version_app)->version.major==2&&
+        nova_resource_version_diagnostics()->rollbacks==1,
+        "Rollback waehlt aelteren kompatiblen Stand und Konflikt bleibt atomar");
     failed |= check(nova_theme_initialize() &&
                     nova_theme_validate(NOVA_THEME_DARK) &&
                     nova_theme_validate(NOVA_THEME_LIGHT) &&
@@ -1695,20 +1841,36 @@ int main(void)
                     !nova_theme_current() &&
                     nova_theme_tokens()->background == 0xff101113u,
                     "drei vollständige Theme-Token-Tabellen und sicherer Startzustand");
+    failed |= check(nova_theme_default()&&nova_theme_default()->is_default&&
+                    nova_theme_default()->is_dark&&nova_theme_default()->version==1&&
+                    !nova_theme_is_dark()&&nova_theme_diagnostics()->contrast_checks>=12,
+                    "Dark-Theme-Descriptor und Kontrastvalidierung vor Aktivierung");
+    failed |= check(nova_theme_light()&&!nova_theme_light()->is_default&&
+                    !nova_theme_light()->is_dark&&nova_theme_light()->version==1&&
+                    nova_theme_light()->theme_id==nova_resource_id("boot://themes/light")&&
+                    !nova_theme_is_light(),
+                    "Light-Theme-Descriptor ist vollständig und nicht Standard");
+    const nova_accessibility_theme_t *high_contrast=nova_theme_high_contrast();
+    failed |= check(high_contrast&&high_contrast->accessibility_theme&&
+                    high_contrast->high_contrast&&high_contrast->reduced_motion&&
+                    high_contrast->opaque_materials&&high_contrast->minimum_focus_dlu>=2&&
+                    !nova_theme_is_high_contrast(),
+                    "High-Contrast-Descriptor erzwingt Accessibility-Overrides");
     const nova_theme_resource_t *light_theme=nova_theme_resource_find(
         nova_resource_id("boot://themes/light"));
     failed |= check(light_theme && light_theme->valid && light_theme->version == 1 &&
                     light_theme->token_count == 22 && light_theme->references == 0,
                     "Theme-Ressourcen in O(1)-Registry mit Metadaten finden");
-    failed |= check(nova_theme_activate(NOVA_THEME_LIGHT) &&
+    failed |= check(nova_theme_activate_light() && nova_theme_is_light() &&
                     nova_theme_tokens()->background == 0xfff2f4f7u &&
                     nova_theme_current() == light_theme && light_theme->references == 1 &&
                     !nova_theme_resource_release(NOVA_THEME_LIGHT),
-                    "atomarer O(1)-Wechsel hält aktives Light Theme referenziert");
+                    "atomarer Light-API-Wechsel hält aktive Theme-Ressource referenziert");
     failed |= check(nova_theme_activate(NOVA_THEME_LIGHT) && light_theme->references == 1 &&
                     nova_theme_diagnostics()->cache_hits >= 1,
                     "erneute Theme-Aktivierung nutzt Cache ohne Referenzleck");
-    failed |= check(nova_theme_activate(NOVA_THEME_HIGH_CONTRAST) &&
+    failed |= check(nova_theme_activate_high_contrast() &&
+                    nova_theme_is_high_contrast() &&
                     nova_theme_reduced_motion() &&
                     nova_compositor_diagnostics()->fallback_level == 3 &&
                     light_theme->references == 0,
@@ -1717,13 +1879,14 @@ int main(void)
     failed |= check(!nova_theme_activate(NOVA_THEME_COUNT) &&
                     nova_theme_current() == before_invalid,
                     "ungültiges Theme lässt aktives Theme atomar unverändert");
-    failed |= check(nova_theme_activate(NOVA_THEME_DARK) &&
+    failed |= check(nova_theme_activate_default() && nova_theme_is_dark() &&
                     !nova_theme_reduced_motion() &&
                     nova_compositor_diagnostics()->fallback_level == 0 &&
                     nova_theme_current()->references == 1 &&
                     nova_theme_diagnostics()->registered == NOVA_THEME_COUNT &&
-                    nova_theme_diagnostics()->atomic_switches == 3,
-                    "Dark Theme als validierter Standard und genau eine aktive Ressource");
+                    nova_theme_diagnostics()->atomic_switches == 3&&
+                    nova_theme_diagnostics()->token_lookups>=2,
+                    "Dark Theme per Default-API, O(1)-Tokens und genau eine aktive Ressource");
     static const uint8_t resource_data[] = {1,2,3,4};
     failed |= check(nova_resource_register("boot://test/data", NOVA_RESOURCE_CONFIGURATION,
                     1, resource_data, sizeof(resource_data), 0, 0), "Ressource registrieren");
@@ -1829,6 +1992,82 @@ int main(void)
                   nova_design_effects()->glass_blur_dlu==12&&
                   nova_design_validate_resources(),
                   "Versionierte Nova Design Language und gemeinsame DLU-Tokens");
+    const nova_visual_continuity_context_t *continuity=
+        nova_visual_continuity_current();
+    nova_component_descriptor_t continuity_component={
+        .design_language_version=continuity?continuity->design_language_version:0,
+        .registry_signature=continuity?continuity->registry_signature:0,
+        .typography_count=NOVA_TYPOGRAPHY_COUNT,.spacing_count=NOVA_SPACING_COUNT,
+        .radius_count=NOVA_RADIUS_COUNT,.icon_count=NOVA_ICON_COUNT,
+        .material_count=NOVA_DESIGN_MATERIAL_COUNT,.motion_count=NOVA_TRANSITION_COUNT,
+        .interaction_count=NOVA_INTERACTION_COUNT,.semantic_tokens_only=true};
+    failed|=check(continuity&&continuity->visual_continuity_enabled&&
+        continuity->accessibility_semantics_preserved&&continuity->theme_id!=0&&
+        nova_visual_continuity_validate(&continuity_component),
+        "Visual-Continuity-Kontext bindet gemeinsame versionierte Registries");
+    nova_component_descriptor_t divergent_component=continuity_component;
+    divergent_component.motion_count--;
+    failed|=check(!nova_visual_continuity_validate(&divergent_component)&&
+        nova_visual_continuity_diagnostics()->violations==1&&
+        nova_visual_continuity_reload()&&
+        nova_visual_continuity_diagnostics()->consistent,
+        "abweichende Modulregistry abweisen und Kontext atomar neu laden");
+    bool typography_complete=true,spacing_complete=true,radius_complete=true;
+    for(uint8_t i=0;i<NOVA_TYPOGRAPHY_COUNT;++i){
+        const nova_typography_style_t *style=nova_typography_get((nova_typography_role_t)i);
+        if(!nova_typography_exists((nova_typography_role_t)i)||!style||
+           style->line_min_dlu>style->line_dlu||style->line_dlu>style->line_max_dlu)
+            typography_complete=false;}
+    for(uint8_t i=0;i<NOVA_SPACING_COUNT;++i)
+        if(!nova_spacing_exists((nova_spacing_token_t)i))spacing_complete=false;
+    for(uint8_t i=0;i<NOVA_RADIUS_COUNT;++i)
+        if(!nova_radius_exists((nova_radius_token_t)i))radius_complete=false;
+    failed|=check(typography_complete&&spacing_complete&&radius_complete&&
+        nova_typography_get(NOVA_TYPOGRAPHY_TITLE)->weight==600&&
+        nova_spacing_get(NOVA_SPACING_M)==12&&nova_radius_get(NOVA_RADIUS_LARGE)==12,
+        "elf Typography-, acht Spacing- und acht Radiusrollen O(1) aufloesen");
+    failed|=check(nova_theme_activate(NOVA_THEME_HIGH_CONTRAST)&&
+        nova_design_tokens_reload()&&nova_typography_get(NOVA_TYPOGRAPHY_BODY)->size_dlu==16&&
+        nova_spacing_get(NOVA_SPACING_M)==14&&nova_radius_get(NOVA_RADIUS_LARGE)==6&&
+        nova_theme_activate(NOVA_THEME_DARK)&&nova_design_tokens_reload()&&
+        nova_typography_get(NOVA_TYPOGRAPHY_BODY)->size_dlu==14,
+        "Theme und Accessibility wechseln semantische Designtokens ohne Controls");
+    bool shadows_complete=true,materials_complete=true,motion_complete=true;
+    for(uint8_t i=0;i<NOVA_ELEVATION_COUNT;++i)
+        if(!nova_shadow_exists((nova_elevation_token_t)i)||
+           !nova_shadow_get((nova_elevation_token_t)i))shadows_complete=false;
+    for(uint8_t i=0;i<NOVA_DESIGN_MATERIAL_COUNT;++i)
+        if(!nova_material_exists((nova_material_token_t)i)||
+           !nova_material_get((nova_material_token_t)i))materials_complete=false;
+    for(uint8_t i=0;i<NOVA_TRANSITION_COUNT;++i)
+        if(!nova_design_motion_exists((nova_transition_token_t)i)||
+           !nova_design_motion_get((nova_transition_token_t)i))motion_complete=false;
+    failed|=check(shadows_complete&&materials_complete&&motion_complete&&
+        nova_shadow_get(NOVA_ELEVATION_LEVEL4)->layer_count==2&&
+        nova_material_get(NOVA_DESIGN_MATERIAL_DIALOG)->blur_dlu==12&&
+        nova_duration_get(NOVA_DURATION_NORMAL)==180&&
+        nova_design_motion_get(NOVA_TRANSITION_FOCUS)->duration_ms==120,
+        "Elevation, Glass und Motion Tokens vollstaendig O(1) aufloesen");
+    bool states_complete=true;
+    for(uint8_t i=0;i<NOVA_INTERACTION_COUNT;++i)
+        if(!nova_state_exists((nova_interaction_state_t)i)||
+           !nova_state_get((nova_interaction_state_t)i))states_complete=false;
+    failed|=check(states_complete&&
+        nova_state_get(NOVA_INTERACTION_FOCUSED)->border==nova_theme_tokens()->focus&&
+        nova_state_get(NOVA_INTERACTION_DISABLED)->input_blocked&&
+        !nova_state_get(NOVA_INTERACTION_READONLY)->input_blocked&&
+        nova_state_get(NOVA_INTERACTION_ERROR)->indicator_required&&
+        nova_state_transition_allowed(NOVA_INTERACTION_HOVER,NOVA_INTERACTION_PRESSED)&&
+        nova_state_transition_allowed(NOVA_INTERACTION_EXPANDED,NOVA_INTERACTION_COLLAPSED)&&
+        !nova_state_transition_allowed(NOVA_INTERACTION_HOVER,NOVA_INTERACTION_CHECKED),
+        "zwoelf Interaction States, semantische Stile und validierte Uebergaenge");
+    failed|=check(nova_theme_activate(NOVA_THEME_HIGH_CONTRAST)&&
+        nova_design_tokens_reload()&&nova_shadow_get(NOVA_ELEVATION_LEVEL4)->disabled&&
+        nova_material_get(NOVA_DESIGN_MATERIAL_DIALOG)->opaque&&
+        nova_design_motion_get(NOVA_TRANSITION_DIALOG)->disabled&&
+        nova_duration_get(NOVA_DURATION_VERY_SLOW)==1&&
+        nova_theme_activate(NOVA_THEME_DARK)&&nova_design_tokens_reload(),
+        "Accessibility deaktiviert Schatten, Glas und Bewegung semantisch");
     nova_design_manifest_t incompatible=*nova_design_manifest();
     incompatible.tokens.major=2;incompatible.checksum=0;
     failed|=check(!nova_design_validate_manifest(&incompatible),
@@ -1870,6 +2109,33 @@ int main(void)
                     cp == NOVA_UNICODE_REPLACEMENT, "ungueltiges UTF-8 ersetzt");
 
     nova_controls_initialize(0);
+    nova_control_t *state_probe=nova_control_create(NOVA_CONTROL_BUTTON);
+    failed|=check(state_probe&&nova_control_set_state(state_probe,NOVA_CONTROL_INITIALIZED)&&
+        nova_control_set_state(state_probe,NOVA_CONTROL_VISIBLE)&&
+        !nova_control_set_interaction(state_probe,NOVA_INTERACTION_HOVER,true,false)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_HOVER,true,true)&&
+        nova_control_interaction(state_probe)==NOVA_INTERACTION_HOVER&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_PRESSED,true,false)&&
+        nova_control_interaction(state_probe)==NOVA_INTERACTION_PRESSED&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_PRESSED,false,false)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_HOVER,false,true)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_EXPANDED,true,false)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_COLLAPSED,true,false)&&
+        nova_control_interaction(state_probe)==NOVA_INTERACTION_COLLAPSED,
+        "pointergebundener Hover, Pressed und Expanded/Collapsed State");
+    failed|=check(nova_control_set_interaction(state_probe,NOVA_INTERACTION_DISABLED,true,false)&&
+        !nova_control_invoke(state_probe,0)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_DISABLED,false,false)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_NORMAL,true,false)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_READONLY,true,false)&&
+        !nova_control_invoke(state_probe,0)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_NORMAL,true,false)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_LOADING,true,false)&&
+        !nova_control_invoke(state_probe,0)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_NORMAL,true,false)&&
+        nova_control_set_interaction(state_probe,NOVA_INTERACTION_ERROR,true,false)&&
+        state_probe->status_text[0],
+        "Disabled, ReadOnly und Loading sperren Eingabe; Error besitzt Textindikator");
     nova_control_t *list = nova_control_create(NOVA_CONTROL_LIST);
     nova_control_t *item = nova_control_create(NOVA_CONTROL_LIST_ITEM);
     failed |= check(list && item && nova_control_set_parent(item, list),
@@ -2005,9 +2271,25 @@ int main(void)
         nova_diag_log((nova_diag_event_t){i,NOVA_DIAG_INFO,1,i,0,0});
     failed |= check(nova_diag_statistics()->overwritten==3 &&
                     nova_diag_get(0)->event_id==3, "heapfreier Diagnose-Ringpuffer");
+    failed|=check(nova_boot_perf_record_startup(30000,10000,20000,50000,100000)&&
+        nova_boot_perf_startup()->valid&&
+        !nova_boot_perf_record_startup(30001,10000,20000,50000,100000),
+        "UI-, Theme-, Resource-, Window- und First-Frame-Startbudgets");
+    nova_diag_frame_extended(16000,400,400,1800,1800,1400,5500,1800,1400);
+    failed|=check(!nova_frame_budget_exceeded()&&
+        nova_boot_perf_metrics()->frame_class==NOVA_FRAME_CLASS_A&&
+        nova_boot_perf_metrics()->fps==62&&nova_boot_perf_metrics()->within_budget,
+        "vollständiger 60-FPS-Frame innerhalb aller Teilbudgets");
     nova_diag_frame(40000,1000,1200,20000,8000);
     failed |= check(nova_diag_frame_budget()->violations==1 &&
-                    nova_diag_quality()->low_end, "Framebudget und adaptive Qualitaet");
+                    nova_diag_quality()->low_end&&nova_frame_budget_exceeded()&&
+                    nova_boot_perf_metrics()->frame_class==NOVA_FRAME_CLASS_E&&
+                    nova_boot_perf_metrics()->hard_violations==1&&
+                    nova_boot_perf_metrics()->phase_violations==1&&
+                    nova_boot_perf_metrics()->minimum_frame_us==16000&&
+                    nova_boot_perf_metrics()->maximum_frame_us==40000&&
+                    nova_boot_perf_metrics()->average_frame_us==28000,
+                    "Framebudget, Phasenverletzung und adaptive Qualitaet");
     nova_diag_set_quality(NOVA_QUALITY_SAFE,false);
     failed |= check(nova_diag_quality()->quality==NOVA_QUALITY_SAFE &&
                     nova_motion_is_reduced() &&

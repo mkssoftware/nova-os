@@ -462,6 +462,19 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     if(!nova_runtime_begin_initialization())return 1;
     nova_debug_string("UEFI:STATE-MODEL-READY\n");
     nova_memory_initialize();
+    uint64_t memory_area_sum=0;
+    if(!nova_memory_budget_configure(NOVA_MEMORY_PROFILE_MINIMAL)||
+       nova_memory_budget_status()->total_budget!=32ull*1024u*1024u||
+       !nova_memory_budget_configure(NOVA_MEMORY_PROFILE_STANDARD))return 1;
+    for(uint8_t area=0;area<NOVA_MEMORY_AREA_COUNT;++area)
+        memory_area_sum+=nova_memory_budget_status()->area_budget[area];
+    if(memory_area_sum!=nova_memory_budget_status()->total_budget||
+       !nova_memory_budget_report(NOVA_MEMORY_AREA_GLYPH_CACHE,4ull*1024u*1024u)||
+       nova_memory_budget_report(NOVA_MEMORY_AREA_GLYPH_CACHE,4ull*1024u*1024u+1))return 1;
+    uint8_t secret_test[4]={1,2,3,4};nova_memory_secure_zero(secret_test,sizeof(secret_test));
+    if(secret_test[0]||secret_test[1]||secret_test[2]||secret_test[3]||
+       !nova_memory_budget_reset())return 1;
+    nova_debug_string("UEFI:MEMORY-BUDGET-READY\n");
     if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_MEMORY)||
        !nova_runtime_subsystem_ready(NOVA_RUNTIME_PLATFORM))return 1;
     if (EFI_ERROR(grafik_init(system_table))) {
@@ -470,6 +483,16 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
         return text_fallback(system_table,"Grafikinitialisierung fehlgeschlagen.");
     }
     if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_GRAPHICS))return 1;
+    nova_diag_initialize();
+    if(!nova_boot_perf_record_startup(30000,10000,20000,50000,100000))return 1;
+    nova_diag_frame_extended(16000,400,400,1800,1800,1400,5500,1800,1400);
+    if(nova_frame_budget_exceeded()||
+       nova_boot_perf_metrics()->frame_class!=NOVA_FRAME_CLASS_A)return 1;
+    nova_diag_frame_extended(40000,600,600,2500,2500,1700,7000,2500,1700);
+    if(!nova_frame_budget_exceeded()||
+       nova_boot_perf_metrics()->frame_class!=NOVA_FRAME_CLASS_E||
+       nova_boot_perf_metrics()->hard_violations!=1)return 1;
+    nova_debug_string("UEFI:FRAME-BUDGET-READY\n");
     nova_diag_initialize();nova_recovery_initialize();
     if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_DIAGNOSTICS))return 1;
     nova_configuration_initialize();
@@ -502,7 +525,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     nova_animation_t entrance = {
         &entrance_opacity, 0, 255, 0, 0, 180, 1, 3, 0,
         NOVA_PROPERTY_OPACITY, NOVA_EASE_OUT_CUBIC, NOVA_MOTION_CREATED,
-        false, false, true
+        false, false, true, 0, 0, 0
     };
     if (!nova_motion_create(&entrance)) return 1;
     for (uint64_t elapsed = 0; elapsed <= 180; elapsed += 20) {

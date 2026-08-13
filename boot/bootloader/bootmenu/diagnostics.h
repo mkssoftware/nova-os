@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "memory.h"
 
 #define NOVA_DIAG_CAPACITY 256u
 typedef enum { NOVA_DIAG_TRACE, NOVA_DIAG_DEBUG, NOVA_DIAG_INFO,
@@ -22,13 +23,23 @@ typedef struct {
     uint64_t frame_time_us, render_time_us, layout_time_us, compositor_time_us;
 } nova_render_statistics_t;
 typedef struct {
-    uint64_t total_budget, used_memory, free_memory, cache_memory, pool_memory,
-             peak_memory;
-} nova_memory_budget_t;
-typedef struct {
     uint32_t frame_time_us, layout_time_us, animation_time_us, render_time_us,
              compositor_time_us, presentation_time_us, violations;
 } nova_frame_budget_t;
+typedef enum {NOVA_FRAME_CLASS_A,NOVA_FRAME_CLASS_B,NOVA_FRAME_CLASS_C,
+    NOVA_FRAME_CLASS_D,NOVA_FRAME_CLASS_E} nova_frame_class_t;
+typedef struct {
+    uint32_t fps,frame_time_us,draw_calls,dirty_regions;
+    uint64_t memory_usage;
+    uint32_t input_time_us,event_time_us,layout_time_us,animation_time_us,
+             text_time_us,render_time_us,compositor_time_us,presentation_time_us;
+    uint32_t minimum_frame_us,maximum_frame_us,average_frame_us;
+    uint32_t soft_violations,hard_violations,phase_violations,optimization_actions;
+    nova_frame_class_t frame_class;
+    bool software_renderer,within_budget;
+} nova_boot_perf_metrics_t;
+typedef struct {uint32_t ui_engine_us,theme_us,resources_us,first_window_us,
+    first_frame_us;bool valid;} nova_boot_startup_metrics_t;
 typedef struct {
     nova_quality_t quality;
     bool automatic, performance_limited, low_end, software_renderer;
@@ -44,6 +55,16 @@ void nova_diag_log(nova_diag_event_t event);
 const nova_diag_event_t *nova_diag_get(uint32_t chronological_index);
 void nova_diag_frame(uint32_t frame_us, uint32_t layout_us, uint32_t animation_us,
                      uint32_t render_us, uint32_t compositor_us);
+void nova_diag_frame_extended(uint32_t frame_us,uint32_t input_us,uint32_t event_us,
+    uint32_t layout_us,uint32_t animation_us,uint32_t text_us,uint32_t render_us,
+    uint32_t compositor_us,uint32_t presentation_us);
+bool nova_boot_perf_initialize(void);
+const nova_boot_perf_metrics_t *nova_boot_perf_metrics(void);
+bool nova_boot_perf_reset(void);
+bool nova_boot_perf_record_startup(uint32_t ui_engine_us,uint32_t theme_us,
+    uint32_t resources_us,uint32_t first_window_us,uint32_t first_frame_us);
+const nova_boot_startup_metrics_t *nova_boot_perf_startup(void);
+bool nova_frame_budget_exceeded(void);
 void nova_diag_snapshot(void);
 void nova_diag_set_quality(nova_quality_t quality, bool automatic);
 const nova_render_statistics_t *nova_diag_render_statistics(void);

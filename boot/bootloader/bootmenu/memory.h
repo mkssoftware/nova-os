@@ -8,6 +8,45 @@
 #define NOVA_MEMORY_TOTAL_BUDGET (64u*1024u*1024u)
 
 typedef enum {
+    NOVA_MEMORY_PROFILE_MINIMAL=32,
+    NOVA_MEMORY_PROFILE_STANDARD=64,
+    NOVA_MEMORY_PROFILE_COMFORT=128
+} nova_memory_profile_t;
+
+typedef enum {
+    NOVA_MEMORY_AREA_RENDERING,
+    NOVA_MEMORY_AREA_RESOURCE_CACHE,
+    NOVA_MEMORY_AREA_GLYPH_CACHE,
+    NOVA_MEMORY_AREA_SVG_CACHE,
+    NOVA_MEMORY_AREA_THEME_CACHE,
+    NOVA_MEMORY_AREA_ANIMATION_POOL,
+    NOVA_MEMORY_AREA_CONTROL_POOL,
+    NOVA_MEMORY_AREA_LAYOUT_POOL,
+    NOVA_MEMORY_AREA_DIAGNOSTICS,
+    NOVA_MEMORY_AREA_RESERVE,
+    NOVA_MEMORY_AREA_COUNT
+} nova_memory_area_t;
+
+typedef enum {
+    NOVA_MEMORY_CLASS_PERMANENT,
+    NOVA_MEMORY_CLASS_SESSION,
+    NOVA_MEMORY_CLASS_FRAME,
+    NOVA_MEMORY_CLASS_CACHE,
+    NOVA_MEMORY_CLASS_TEMPORARY
+} nova_memory_class_t;
+
+typedef struct {
+    uint64_t total_budget,used_memory,free_memory,cache_memory,pool_memory,
+             peak_memory,framebuffer_memory;
+    uint64_t area_budget[NOVA_MEMORY_AREA_COUNT];
+    uint64_t area_used[NOVA_MEMORY_AREA_COUNT];
+    uint32_t fragmentation,cache_evictions,budget_overruns,pressure_events;
+    uint8_t overload_step;
+    nova_memory_profile_t profile;
+    bool runtime_locked,within_budget;
+} nova_memory_budget_t;
+
+typedef enum {
     NOVA_MEMORY_PERMANENT,
     NOVA_MEMORY_RUNTIME,
     NOVA_MEMORY_SCENE,
@@ -64,6 +103,16 @@ typedef struct {
 } nova_memory_statistics_t;
 
 void nova_memory_initialize(void);
+bool nova_memory_budget_initialize(void);
+bool nova_memory_budget_configure(nova_memory_profile_t profile);
+const nova_memory_budget_t *nova_memory_budget_status(void);
+bool nova_memory_budget_available(uint64_t bytes);
+bool nova_memory_budget_reset(void);
+bool nova_memory_budget_set_runtime(bool active);
+bool nova_memory_budget_report(nova_memory_area_t area,uint64_t used);
+void nova_memory_budget_record_eviction(uint64_t bytes);
+bool nova_memory_budget_apply_pressure(void);
+void nova_memory_secure_zero(void *address,uint32_t size);
 void *nova_memory_allocate(nova_memory_pool_id_t pool,uint32_t size,
     uint32_t owner,uint8_t alignment);
 bool nova_memory_track_static(nova_memory_pool_id_t pool,void *address,

@@ -126,13 +126,13 @@ bool nova_navigation_visual_begin(nova_navigation_transition_t type, bool enteri
     opacity_animation = nova_motion_create(&(nova_animation_t){
         &visual.opacity,visual.opacity,entering?255:0,start_ms,0,visual.duration_ms,
         visual_group,2,0,NOVA_PROPERTY_OPACITY,NOVA_EASE_OUT_CUBIC,
-        NOVA_MOTION_CREATED,false,false,true
+        NOVA_MOTION_CREATED,false,false,true,0,0,0
     });
     offset_animation = 0;
     if (distance) offset_animation = nova_motion_create(&(nova_animation_t){
         &visual.offset_dlu,visual.offset_dlu,entering?0:-distance,start_ms,0,
         visual.duration_ms,visual_group,2,0,NOVA_PROPERTY_X,NOVA_EASE_OUT_CUBIC,
-        NOVA_MOTION_CREATED,false,false,true
+        NOVA_MOTION_CREATED,false,false,true,0,0,0
     });
     if (!opacity_animation || (distance && !offset_animation)) {
         if (opacity_animation) nova_motion_cancel(opacity_animation);

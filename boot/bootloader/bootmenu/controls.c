@@ -161,6 +161,63 @@ bool nova_control_set_state(nova_control_t *control, nova_control_state_t state)
     return true;
 }
 
+nova_interaction_state_t nova_control_interaction(const nova_control_t *control)
+{
+    if(!control)return NOVA_INTERACTION_NORMAL;
+    if(!(control->flags&NOVA_CONTROL_FLAG_ENABLED))return NOVA_INTERACTION_DISABLED;
+    if(control->flags&NOVA_CONTROL_FLAG_ERROR)return NOVA_INTERACTION_ERROR;
+    if(control->flags&NOVA_CONTROL_FLAG_BUSY)return NOVA_INTERACTION_LOADING;
+    if(control->flags&NOVA_CONTROL_FLAG_PRESSED)return NOVA_INTERACTION_PRESSED;
+    if(control->flags&NOVA_CONTROL_FLAG_FOCUSED)return NOVA_INTERACTION_FOCUSED;
+    if(control->flags&NOVA_CONTROL_FLAG_HOVERED)return NOVA_INTERACTION_HOVER;
+    if(control->flags&NOVA_CONTROL_FLAG_SELECTED)return NOVA_INTERACTION_SELECTED;
+    if(control->flags&NOVA_CONTROL_FLAG_CHECKED)return NOVA_INTERACTION_CHECKED;
+    if(control->flags&NOVA_CONTROL_FLAG_EXPANDED)return NOVA_INTERACTION_EXPANDED;
+    if(control->flags&NOVA_CONTROL_FLAG_READONLY)return NOVA_INTERACTION_READONLY;
+    if(control->interaction_state==NOVA_INTERACTION_COLLAPSED)
+        return NOVA_INTERACTION_COLLAPSED;
+    return NOVA_INTERACTION_NORMAL;
+}
+
+bool nova_control_set_interaction(nova_control_t *control,
+    nova_interaction_state_t state,bool active,bool pointer_device)
+{
+    if(!control||control->id>=NOVA_CONTROL_CAPACITY||!used[control->id]||
+       state>=NOVA_INTERACTION_COUNT||(state==NOVA_INTERACTION_HOVER&&!pointer_device))return false;
+    nova_interaction_state_t current=nova_control_interaction(control);
+    if(active&&current!=state&&current!=NOVA_INTERACTION_NORMAL&&
+       !nova_state_transition_allowed(current,state))return false;
+    uint32_t flag=0;
+    switch(state){
+    case NOVA_INTERACTION_HOVER:flag=NOVA_CONTROL_FLAG_HOVERED;break;
+    case NOVA_INTERACTION_FOCUSED:flag=NOVA_CONTROL_FLAG_FOCUSED;break;
+    case NOVA_INTERACTION_PRESSED:flag=NOVA_CONTROL_FLAG_PRESSED;break;
+    case NOVA_INTERACTION_SELECTED:flag=NOVA_CONTROL_FLAG_SELECTED;break;
+    case NOVA_INTERACTION_CHECKED:flag=NOVA_CONTROL_FLAG_CHECKED;break;
+    case NOVA_INTERACTION_EXPANDED:flag=NOVA_CONTROL_FLAG_EXPANDED;break;
+    case NOVA_INTERACTION_READONLY:flag=NOVA_CONTROL_FLAG_READONLY;break;
+    case NOVA_INTERACTION_LOADING:flag=NOVA_CONTROL_FLAG_BUSY;break;
+    case NOVA_INTERACTION_ERROR:flag=NOVA_CONTROL_FLAG_ERROR;break;
+    default:break;
+    }
+    if(state==NOVA_INTERACTION_NORMAL&&active){
+        control->flags&=~(NOVA_CONTROL_FLAG_HOVERED|NOVA_CONTROL_FLAG_FOCUSED|
+            NOVA_CONTROL_FLAG_PRESSED|NOVA_CONTROL_FLAG_SELECTED|NOVA_CONTROL_FLAG_BUSY|
+            NOVA_CONTROL_FLAG_ERROR|NOVA_CONTROL_FLAG_EXPANDED|NOVA_CONTROL_FLAG_CHECKED|
+            NOVA_CONTROL_FLAG_READONLY);
+    }else if(state==NOVA_INTERACTION_COLLAPSED&&active)
+        control->flags&=~NOVA_CONTROL_FLAG_EXPANDED;
+    else if(state==NOVA_INTERACTION_DISABLED){
+        if(active)control->flags&=~NOVA_CONTROL_FLAG_ENABLED;
+        else control->flags|=NOVA_CONTROL_FLAG_ENABLED;
+    }else if(flag){if(active)control->flags|=flag;else control->flags&=~flag;}
+    if(state==NOVA_INTERACTION_ERROR&&active&&!control->status_text[0])
+        copy_text(control->status_text,"Fehler");
+    if(active)control->interaction_state=state;
+    else if(control->interaction_state==state)control->interaction_state=NOVA_INTERACTION_NORMAL;
+    control->flags|=NOVA_CONTROL_FLAG_DIRTY;return true;
+}
+
 bool nova_control_destroy(nova_control_t *control)
 {
     if (!control || !used[control->id] || control->first_child!=NOVA_CONTROL_NONE||
@@ -753,12 +810,14 @@ bool nova_list_item_set_state(nova_control_t *item,nova_list_item_state_t state)
     if(!item||item->type!=NOVA_CONTROL_LIST_ITEM||state>NOVA_LIST_ITEM_ERROR)return false;
     item->flags&=~(NOVA_CONTROL_FLAG_HOVERED|NOVA_CONTROL_FLAG_FOCUSED|
         NOVA_CONTROL_FLAG_SELECTED|NOVA_CONTROL_FLAG_ERROR);
-    if(state==NOVA_LIST_ITEM_HOVER)item->flags|=NOVA_CONTROL_FLAG_HOVERED;
-    else if(state==NOVA_LIST_ITEM_FOCUS)item->flags|=NOVA_CONTROL_FLAG_FOCUSED;
-    else if(state==NOVA_LIST_ITEM_SELECTED)item->flags|=NOVA_CONTROL_FLAG_SELECTED;
-    else if(state==NOVA_LIST_ITEM_ERROR)item->flags|=NOVA_CONTROL_FLAG_ERROR;
-    if(state==NOVA_LIST_ITEM_DISABLED)item->flags&=~NOVA_CONTROL_FLAG_ENABLED;
-    else item->flags|=NOVA_CONTROL_FLAG_ENABLED;
+    item->flags|=NOVA_CONTROL_FLAG_ENABLED;
+    bool valid=state==NOVA_LIST_ITEM_NORMAL||
+        (state==NOVA_LIST_ITEM_HOVER&&nova_control_set_interaction(item,NOVA_INTERACTION_HOVER,true,true))||
+        (state==NOVA_LIST_ITEM_FOCUS&&nova_control_set_interaction(item,NOVA_INTERACTION_FOCUSED,true,false))||
+        (state==NOVA_LIST_ITEM_SELECTED&&nova_control_set_interaction(item,NOVA_INTERACTION_SELECTED,true,false))||
+        (state==NOVA_LIST_ITEM_DISABLED&&nova_control_set_interaction(item,NOVA_INTERACTION_DISABLED,true,false))||
+        (state==NOVA_LIST_ITEM_ERROR&&nova_control_set_interaction(item,NOVA_INTERACTION_ERROR,true,false));
+    if(!valid)return false;
     item->template_id=(uint16_t)state;item->flags|=NOVA_CONTROL_FLAG_DIRTY;return true;
 }
 bool nova_status_badge_set_type(nova_control_t *badge,nova_badge_type_t type)
@@ -894,9 +953,10 @@ bool nova_control_focus(nova_control_t *control)
     if (!control || !(control->flags & NOVA_CONTROL_FLAG_VISIBLE) ||
         !(control->flags & NOVA_CONTROL_FLAG_ENABLED)) return false;
     if (focused_id != NOVA_CONTROL_NONE && used[focused_id])
-        controls[focused_id].flags &= ~NOVA_CONTROL_FLAG_FOCUSED;
-    focused_id = control->id; control->flags |= NOVA_CONTROL_FLAG_FOCUSED |
-                                             NOVA_CONTROL_FLAG_DIRTY;
+        (void)nova_control_set_interaction(&controls[focused_id],NOVA_INTERACTION_FOCUSED,
+                                           false,false);
+    if(!nova_control_set_interaction(control,NOVA_INTERACTION_FOCUSED,true,false))return false;
+    focused_id = control->id;
     diagnostics.focused = focused_id;
     return true;
 }
@@ -922,14 +982,17 @@ bool nova_control_invoke(nova_control_t *control, uint32_t *action)
     if(control->type==NOVA_CONTROL_CHECKBOX||control->type==NOVA_CONTROL_SWITCH||
        (control->type==NOVA_CONTROL_BUTTON&&control->template_id==NOVA_BUTTON_TOGGLE))
         nova_control_toggle(control);
-    control->action_fired = true; control->flags |= NOVA_CONTROL_FLAG_PRESSED;
+    if(!nova_control_set_interaction(control,NOVA_INTERACTION_PRESSED,true,false)){
+        ++diagnostics.rejected_actions;return false;}
+    control->action_fired = true;
     if (action) *action = control->action;
     return true;
 }
 
 void nova_control_release(nova_control_t *control)
 {
-    if (control) { control->action_fired = false; control->flags &= ~NOVA_CONTROL_FLAG_PRESSED; }
+    if (control) { control->action_fired = false;
+        (void)nova_control_set_interaction(control,NOVA_INTERACTION_PRESSED,false,false); }
 }
 
 static void control_rounded_rect(nova_surface_t *surface, nova_rect_t rect,
@@ -953,20 +1016,28 @@ static int32_t text_prefix_width(const nova_control_t *control,uint16_t bytes)
 void nova_control_render(nova_control_t *control, nova_surface_t *surface)
 {
     if (!control || !surface || !(control->flags & NOVA_CONTROL_FLAG_VISIBLE)) return;
+    nova_interaction_state_t interaction=nova_control_interaction(control);
+    const nova_state_style_t *state_style=nova_state_get(interaction);
     uint32_t color = (control->flags & NOVA_CONTROL_FLAG_ENABLED) ?
                      control->style.background : control->style.disabled;
+    uint32_t state_background=state_style?state_style->background:color;
+    uint32_t state_foreground=state_style?state_style->foreground:control->style.foreground;
+    uint32_t state_border=state_style?state_style->border:control->style.border;
+    if(interaction==NOVA_INTERACTION_NORMAL)state_background=control->style.background;
+    if(interaction==NOVA_INTERACTION_DISABLED)state_background=color;
     nova_rect_t b = control->bounds;
-    int32_t radius = control->style.corner_dlu;
+    int32_t radius = state_style?nova_radius_get(state_style->radius):control->style.corner_dlu;
+    if(interaction==NOVA_INTERACTION_NORMAL&&control->style.corner_dlu)
+        radius=control->style.corner_dlu;
     int32_t thickness = control->style.border_dlu ? control->style.border_dlu : 1;
     int32_t range = control->maximum - control->minimum;
     int32_t fraction = range > 0 ? (int32_t)(((int64_t)(control->value-control->minimum)*1000)/range) : 0;
     switch (control->type) {
     case NOVA_CONTROL_TEXT_FIELD:
     case NOVA_CONTROL_PASSWORD_FIELD: {
-        control_rounded_rect(surface,b,(uint16_t)radius,color);
-        uint32_t border=(control->flags&NOVA_CONTROL_FLAG_ERROR)?control->style.error:
-                        (control->flags&NOVA_CONTROL_FLAG_FOCUSED)?control->style.accent:
-                        control->style.disabled;
+        control_rounded_rect(surface,b,(uint16_t)radius,state_background);
+        uint32_t border=interaction==NOVA_INTERACTION_NORMAL?
+                        control->style.disabled:state_border;
         nova_surface_rect(surface,(nova_rect_t){b.x,b.y,b.width,thickness},border);
         nova_surface_rect(surface,(nova_rect_t){b.x,b.y+b.height-thickness,b.width,thickness},border);
         int32_t pad=control->style.padding_dlu?control->style.padding_dlu:8;
@@ -981,7 +1052,7 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
             while(*cursor){const char *before=cursor;
                 if(!nova_unicode_next(&cursor,&cp)&&cursor==before)break;
                 control_rounded_rect(surface,(nova_rect_t){x,text_y+7,6,6},3,
-                                     control->style.foreground);x+=10;
+                                     state_foreground);x+=10;
                 if(x>b.x+b.width-pad-6)break;
             }
         }else{
@@ -992,7 +1063,7 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
                 nova_surface_rect(surface,(nova_rect_t){sx,b.y+3,ex-sx,b.height-6},
                                   (control->style.accent&0x00ffffffu)|0x66000000u);}
             nova_text_draw(surface,b.x+pad,text_y,b.width-pad*2,control->text,
-                           control->style.foreground,NOVA_TEXT_LEFT,true);
+                           state_foreground,NOVA_TEXT_LEFT,true);
         }
         if((control->flags&NOVA_CONTROL_FLAG_FOCUSED)&&
            !(control->flags&NOVA_CONTROL_FLAG_READONLY)){
@@ -1070,17 +1141,13 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
         break;
     }
     case NOVA_CONTROL_LIST_ITEM: {
-        uint32_t background=control->style.background;
-        if(control->flags&NOVA_CONTROL_FLAG_PRESSED)background=control->style.disabled;
-        control_rounded_rect(surface,b,(uint16_t)radius,background);
+        control_rounded_rect(surface,b,(uint16_t)radius,state_background);
         if(control->flags&NOVA_CONTROL_FLAG_ERROR)
             nova_surface_rect(surface,(nova_rect_t){b.x,b.y,4,b.height},control->style.error);
         break;
     }
     case NOVA_CONTROL_TILE: {
-        uint32_t background=(control->flags&NOVA_CONTROL_FLAG_SELECTED)?
-            control->style.disabled:color;
-        control_rounded_rect(surface,b,(uint16_t)radius,background);
+        control_rounded_rect(surface,b,(uint16_t)radius,state_background);
         uint32_t marker=control->style.accent;
         if(control->template_id==NOVA_TILE_RECOVERY)marker=control->style.information;
         else if(control->template_id==NOVA_TILE_DIAGNOSTIC)marker=control->style.success;
@@ -1096,7 +1163,7 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
     }
     case NOVA_CONTROL_ICON_BUTTON: {
         uint32_t background=(control->flags&(NOVA_CONTROL_FLAG_HOVERED|
-            NOVA_CONTROL_FLAG_FOCUSED|NOVA_CONTROL_FLAG_SELECTED))?control->style.background:0;
+            NOVA_CONTROL_FLAG_FOCUSED|NOVA_CONTROL_FLAG_SELECTED))?state_background:0;
         if(background)control_rounded_rect(surface,b,(uint16_t)radius,background);
         if(control->flags&NOVA_CONTROL_FLAG_FOCUSED){
             nova_surface_rect(surface,(nova_rect_t){b.x,b.y,b.width,2},control->style.accent);
@@ -1105,7 +1172,7 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
         break;
     }
     case NOVA_CONTROL_BUTTON: {
-        uint32_t background=control->style.background;
+        uint32_t background=state_background;
         if(control->template_id==NOVA_BUTTON_TOGGLE&&
            (control->flags&NOVA_CONTROL_FLAG_CHECKED))background=control->style.accent;
         if(control->flags&(NOVA_CONTROL_FLAG_FOCUSED|NOVA_CONTROL_FLAG_SELECTED)){
@@ -1121,17 +1188,17 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
             int32_t icon_size=b.height-12;if(icon_size<12)icon_size=12;
             nova_icon_draw(surface,(nova_icon_token_t)control->minimum,text_x,
                            b.y+(b.height-icon_size)/2,(uint16_t)icon_size,
-                           control->style.foreground);
+                           state_foreground);
             text_x+=icon_size+pad;text_width-=icon_size+pad;
         }
         if(control->text[0])nova_text_draw(surface,text_x,b.y+(b.height-20)/2,
-            text_width,control->text,control->style.foreground,NOVA_TEXT_CENTER,true);
+            text_width,control->text,state_foreground,NOVA_TEXT_CENTER,true);
         break;
     }
     case NOVA_CONTROL_MENU_BUTTON: {
         uint32_t background=(control->flags&(NOVA_CONTROL_FLAG_HOVERED|
             NOVA_CONTROL_FLAG_FOCUSED|NOVA_CONTROL_FLAG_EXPANDED))?
-            control->style.background:control->style.disabled;
+            state_background:control->style.disabled;
         if(control->flags&NOVA_CONTROL_FLAG_FOCUSED){
             int32_t ring=thickness>1?thickness:2;
             control_rounded_rect(surface,b,(uint16_t)radius,control->style.accent);
@@ -1142,13 +1209,13 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
         int32_t pad=control->style.padding_dlu?control->style.padding_dlu:8;
         int32_t arrow_w=10,arrow_x=b.x+b.width-pad-arrow_w;
         nova_text_draw(surface,b.x+pad,b.y+(b.height-20)/2,
-            b.width-pad*3-arrow_w,control->text,control->style.foreground,
+            b.width-pad*3-arrow_w,control->text,state_foreground,
             NOVA_TEXT_LEFT,true);
         int32_t center_y=b.y+b.height/2;
         bool expanded=(control->flags&NOVA_CONTROL_FLAG_EXPANDED)!=0;
         for(int32_t i=0;i<5;++i){int32_t inset=expanded?4-i:i;
             nova_surface_rect(surface,(nova_rect_t){arrow_x+inset,
-                center_y-2+i,arrow_w-inset*2,1},control->style.foreground);}
+                center_y-2+i,arrow_w-inset*2,1},state_foreground);}
         break;
     }
     case NOVA_CONTROL_STATUS_BADGE: {
@@ -1286,6 +1353,12 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
         nova_rect_t marker = control->bounds;
         marker.width = control->style.border_dlu ? control->style.border_dlu * 4 : 4;
         nova_surface_rect(surface, marker, control->style.accent);
+    }
+    if(interaction==NOVA_INTERACTION_ERROR&&state_style&&state_style->indicator_required){
+        int32_t icon_size=b.height<18?b.height:18;
+        if(icon_size>=8)nova_icon_draw(surface,NOVA_ICON_ERROR,
+            b.x+b.width-icon_size-4,b.y+(b.height-icon_size)/2,(uint16_t)icon_size,
+            state_style->border);
     }
     control->flags &= ~NOVA_CONTROL_FLAG_DIRTY;
     ++diagnostics.renders;

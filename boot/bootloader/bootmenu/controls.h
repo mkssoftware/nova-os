@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "compositor.h"
+#include "design.h"
 
 #define NOVA_CONTROL_CAPACITY 128u
 #define NOVA_CONTROL_TEXT_CAPACITY 96u
@@ -110,6 +111,7 @@ typedef struct {
     uint16_t id, parent, first_child, next_sibling;
     nova_control_type_t type;
     nova_control_state_t state;
+    nova_interaction_state_t interaction_state;
     uint32_t flags;
     nova_rect_t bounds;
     nova_control_style_t style;
@@ -138,6 +140,9 @@ nova_control_t *nova_control_create(nova_control_type_t type);
 bool nova_control_destroy(nova_control_t *control);
 bool nova_control_set_parent(nova_control_t *child, nova_control_t *parent);
 bool nova_control_set_state(nova_control_t *control, nova_control_state_t state);
+bool nova_control_set_interaction(nova_control_t *control,
+    nova_interaction_state_t state,bool active,bool pointer_device);
+nova_interaction_state_t nova_control_interaction(const nova_control_t *control);
 bool nova_control_set_bounds(nova_control_t *control, nova_rect_t bounds);
 bool nova_control_set_text(nova_control_t *control, const char *text);
 bool nova_text_field_set_placeholder(nova_control_t *control, const char *placeholder);

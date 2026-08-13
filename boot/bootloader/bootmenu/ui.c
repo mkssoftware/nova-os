@@ -7,6 +7,7 @@
 #include "animation_resources.h"
 #include "unicode.h"
 #include "resources.h"
+#include "resource_version.h"
 #include "icons.h"
 #include "input.h"
 #include "diagnostics.h"
@@ -198,10 +199,14 @@ static bool refresh_control_styles(const nova_theme_tokens_t *theme)
     nova_control_style_t base={.background=theme->surface,
         .foreground=theme->text_primary,.accent=theme->accent,.disabled=theme->disabled,
         .border=theme->border,.information=theme->information,.success=theme->success,
-        .warning=theme->warning,.error=theme->error,.corner_dlu=theme->radius_medium,
-        .border_dlu=(uint16_t)(theme->high_contrast?2:1),.padding_dlu=theme->spacing_small};
-    nova_control_style_t badge=base;badge.corner_dlu=16;badge.padding_dlu=7;
-    nova_control_style_t item=base;item.background=0;item.corner_dlu=theme->radius_medium;
+        .warning=theme->warning,.error=theme->error,
+        .corner_dlu=nova_radius_get(NOVA_RADIUS_MEDIUM),
+        .border_dlu=(uint16_t)(theme->high_contrast?2:1),
+        .padding_dlu=nova_spacing_get(NOVA_SPACING_S)};
+    nova_control_style_t badge=base;badge.corner_dlu=nova_radius_get(NOVA_RADIUS_XLARGE);
+    badge.padding_dlu=nova_spacing_get(NOVA_SPACING_XS);
+    nova_control_style_t item=base;item.background=0;
+    item.corner_dlu=nova_radius_get(NOVA_RADIUS_MEDIUM);
     nova_control_style_t label=base;label.background=0;
     nova_control_style_t media=label;
     if(!nova_style_define(0,NOVA_CONTROL_NONE,&base,NOVA_STYLE_ALL,NOVA_CONTROL_MATERIAL_OPAQUE)||
@@ -218,7 +223,7 @@ static void rounded_panel(nova_surface_t *surface, int32_t x, int32_t y,
 {
     nova_round_rect_t geometry;
     if(nova_round_rect_create(&geometry,x,y,width,height,
-        nova_theme_tokens()->radius_medium))
+        nova_radius_get(NOVA_RADIUS_LARGE)))
         (void)nova_round_rect_render(surface,&geometry,color,
             nova_render_quality_parameters()->anti_aliasing);
 }
@@ -338,6 +343,42 @@ bool bootmenu_initialize(void)
         if(!nova_resource_cache_configure(512u*1024u,NOVA_RESOURCE_DEFAULT_CACHE_BUDGET,
                                           512u*1024u,7u*1024u*1024u))return false;
         nova_debug_string("UEFI:RESOURCE-LOADER-READY\n");
+        static const uint8_t version_dep_bytes[]={1},version_theme_100[]={2};
+        static const uint8_t version_theme_110[]={3};
+        if(!nova_resource_register("boot://version/probe/font/1.0",NOVA_RESOURCE_FONT,1,
+            version_dep_bytes,sizeof(version_dep_bytes),0,0)||
+           !nova_resource_register("boot://version/probe/theme/1.0",NOVA_RESOURCE_THEME,1,
+            version_theme_100,sizeof(version_theme_100),0,0)||
+           !nova_resource_register("boot://version/probe/theme/1.1",NOVA_RESOURCE_THEME,1,
+            version_theme_110,sizeof(version_theme_110),0,0)||
+           !nova_resource_version_initialize())return false;
+        uint64_t version_font_id=nova_resource_id("boot://version/logical/font");
+        uint64_t version_theme_id=nova_resource_id("boot://version/logical/theme");
+        nova_resource_version_descriptor_t version_font={.logical_id=version_font_id,
+            .backing_resource_id=nova_resource_id("boot://version/probe/font/1.0"),
+            .version={1,0,0,4},.minimum={1,0,0,0},.maximum={1,9,9,65535}};
+        nova_resource_version_dependency_t version_dependencies[]={
+            {version_font_id,{1,0,0,0}}};
+        nova_resource_version_descriptor_t version_theme_old={.logical_id=version_theme_id,
+            .backing_resource_id=nova_resource_id("boot://version/probe/theme/1.0"),
+            .version={1,0,0,2},.minimum={1,0,0,0},.maximum={1,9,9,65535},
+            .dependencies=version_dependencies,.dependency_count=1};
+        nova_resource_version_descriptor_t version_theme_new=version_theme_old;
+        version_theme_new.backing_resource_id=
+            nova_resource_id("boot://version/probe/theme/1.1");
+        version_theme_new.version=(nova_resource_version_t){1,1,0,8};
+        nova_resource_version_t version_min={1,0,0,0},version_max={1,9,9,65535};
+        if(!nova_resource_version_register(&version_font)||
+           !nova_resource_version_register(&version_theme_old)||
+           !nova_resource_version_register(&version_theme_new)||
+           !nova_resource_version_select(version_font_id,&version_min,&version_max)||
+           !nova_resource_version_select(version_theme_id,&version_min,&version_max)||
+           nova_resource_version(version_theme_id)->version.minor!=1||
+           !nova_resource_version_rollback(version_theme_id)||
+           nova_resource_version(version_theme_id)->version.minor!=0||
+           !nova_resource_version_select(version_theme_id,&version_min,&version_max)||
+           nova_resource_version_diagnostics()->rollbacks!=1)return false;
+        nova_debug_string("UEFI:RESOURCE-VERSIONING-READY\n");
         if(!nova_compression_supported(NOVA_COMPRESSION_LZ4)||
            nova_compression_supported(NOVA_COMPRESSION_ZSTD))return false;
         nova_debug_string("UEFI:RESOURCE-COMPRESSION-READY\n");
@@ -398,6 +439,25 @@ bool bootmenu_initialize(void)
         if(!nova_theme_current()||nova_theme_current()->references!=1||
            nova_theme_diagnostics()->registered!=NOVA_THEME_COUNT)return false;
         nova_debug_string("UEFI:THEME-RESOURCE-READY\n");
+        const nova_theme_descriptor_t *default_theme=nova_theme_default();
+        if(!default_theme||!default_theme->is_default||!default_theme->is_dark||
+           !nova_theme_validate(NOVA_THEME_DARK)||
+           nova_theme_resource_find(default_theme->theme_id)==0)return false;
+        nova_debug_string("UEFI:DARK-THEME-READY\n");
+        const nova_theme_descriptor_t *light_theme=nova_theme_light();
+        if(!light_theme||light_theme->is_default||light_theme->is_dark||
+           !nova_theme_validate(NOVA_THEME_LIGHT)||
+           nova_theme_resource_find(light_theme->theme_id)==0)return false;
+        nova_debug_string("UEFI:LIGHT-THEME-READY\n");
+        const nova_accessibility_theme_t *high_contrast_theme=
+            nova_theme_high_contrast();
+        if(!high_contrast_theme||!high_contrast_theme->accessibility_theme||
+           !high_contrast_theme->high_contrast||
+           !high_contrast_theme->reduced_motion||
+           !high_contrast_theme->opaque_materials||
+           high_contrast_theme->minimum_focus_dlu<2||
+           !nova_theme_validate(NOVA_THEME_HIGH_CONTRAST))return false;
+        nova_debug_string("UEFI:HIGH-CONTRAST-THEME-READY\n");
         nova_theme_set_reduced_motion(initial_configuration->reduced_motion);
         tooltips_enabled=initial_configuration->tooltips;
         tooltip_delay_ms=initial_configuration->tooltip_delay_ms;
@@ -414,6 +474,48 @@ bool bootmenu_initialize(void)
         if (!nova_icons_initialize()) return false;
         if (!nova_branding_initialize()) return false;
         if(!nova_design_initialize())return false;
+        if(!nova_typography_exists(NOVA_TYPOGRAPHY_DISPLAY)||
+           !nova_typography_exists(NOVA_TYPOGRAPHY_MONOSPACE)||
+           nova_typography_get(NOVA_TYPOGRAPHY_BODY)->line_dlu<
+            nova_typography_get(NOVA_TYPOGRAPHY_BODY)->size_dlu||
+           nova_spacing_get(NOVA_SPACING_XXXL)<nova_spacing_get(NOVA_SPACING_XXS)||
+           !nova_radius_exists(NOVA_RADIUS_CIRCLE))return false;
+        nova_debug_string("UEFI:SEMANTIC-DESIGN-TOKENS-READY\n");
+        if(!nova_shadow_exists(NOVA_ELEVATION_LEVEL5)||
+           !nova_material_exists(NOVA_DESIGN_MATERIAL_DIALOG)||
+           !nova_design_motion_exists(NOVA_TRANSITION_DIALOG)||
+           !nova_shadow_get(NOVA_ELEVATION_LEVEL4)->layer_count||
+           !nova_material_get(NOVA_DESIGN_MATERIAL_DIALOG)->blur_dlu||
+           !nova_design_motion_get(NOVA_TRANSITION_DIALOG)->duration_ms)return false;
+        nova_debug_string("UEFI:EFFECT-MOTION-TOKENS-READY\n");
+        const nova_visual_continuity_context_t *continuity=
+            nova_visual_continuity_current();
+        if(!continuity||!continuity->visual_continuity_enabled||
+           !continuity->accessibility_semantics_preserved||
+           continuity->typography_count!=NOVA_TYPOGRAPHY_COUNT||
+           continuity->icon_count!=NOVA_ICON_COUNT||
+           continuity->interaction_count!=NOVA_INTERACTION_COUNT)return false;
+        nova_component_descriptor_t boot_component={
+            .design_language_version=continuity->design_language_version,
+            .registry_signature=continuity->registry_signature,
+            .typography_count=NOVA_TYPOGRAPHY_COUNT,.spacing_count=NOVA_SPACING_COUNT,
+            .radius_count=NOVA_RADIUS_COUNT,.icon_count=NOVA_ICON_COUNT,
+            .material_count=NOVA_DESIGN_MATERIAL_COUNT,.motion_count=NOVA_TRANSITION_COUNT,
+            .interaction_count=NOVA_INTERACTION_COUNT,.semantic_tokens_only=true};
+        if(!nova_visual_continuity_validate(&boot_component))return false;
+        nova_debug_string("UEFI:VISUAL-CONTINUITY-READY\n");
+        bool interaction_states_ready=true;
+        for(uint8_t state=0;state<NOVA_INTERACTION_COUNT;++state)
+            if(!nova_state_exists((nova_interaction_state_t)state)||
+               !nova_state_get((nova_interaction_state_t)state))
+                interaction_states_ready=false;
+        if(!interaction_states_ready||
+           !nova_state_get(NOVA_INTERACTION_DISABLED)->input_blocked||
+           !nova_state_get(NOVA_INTERACTION_ERROR)->indicator_required||
+           !nova_state_transition_allowed(NOVA_INTERACTION_HOVER,NOVA_INTERACTION_PRESSED)||
+           !nova_state_transition_allowed(NOVA_INTERACTION_EXPANDED,NOVA_INTERACTION_COLLAPSED))
+            return false;
+        nova_debug_string("UEFI:INTERACTION-STATES-READY\n");
         if(!nova_runtime_subsystem_ready(NOVA_RUNTIME_RESOURCES)||
            !nova_runtime_building_scene())return false;
         nova_debug_string("UEFI:BRANDING-READY\n");
@@ -448,8 +550,8 @@ bool bootmenu_initialize(void)
             .accent=initial_theme->focus,.disabled=initial_theme->disabled,
             .border=initial_theme->border,.information=initial_theme->information,
             .success=initial_theme->success,.warning=initial_theme->warning,
-            .error=initial_theme->error,.corner_dlu=initial_theme->radius_medium,
-            .border_dlu=1,.padding_dlu=initial_theme->spacing_small
+            .error=initial_theme->error,.corner_dlu=nova_radius_get(NOVA_RADIUS_MEDIUM),
+            .border_dlu=1,.padding_dlu=nova_spacing_get(NOVA_SPACING_S)
         };
         nova_controls_initialize(&style);
         if(!refresh_control_styles(initial_theme))return false;
@@ -632,6 +734,46 @@ bool bootmenu_initialize(void)
            !nova_runtime_subsystem_ready(NOVA_RUNTIME_LAYOUT_ENGINE))return false;
         nova_debug_string("UEFI:LAYOUT-READY\n");
         nova_motion_initialize();
+        int32_t interrupt_probe_value=0;
+        nova_animation_t interrupt_probe={.target=&interrupt_probe_value,.from=0,.to=1000,
+            .start_ms=0,.duration_ms=100,.group=0xff,.priority=3,
+            .property=NOVA_PROPERTY_X,.easing=NOVA_EASE_LINEAR,
+            .state=NOVA_MOTION_CREATED,.interruptible=true};
+        nova_animation_t *interrupt_animation=nova_motion_create(&interrupt_probe);
+        nova_motion_update(50);
+        if(!interrupt_animation||interrupt_probe_value!=500||
+           !nova_motion_interrupt(interrupt_animation)||
+           !nova_motion_resume(interrupt_animation,50)||
+           !nova_motion_redirect(interrupt_animation,1500,50))return false;
+        nova_motion_update(150);
+        if(interrupt_probe_value!=1500||nova_motion_diagnostics()->interruptions!=1||
+           nova_motion_diagnostics()->resumes!=1||
+           nova_motion_diagnostics()->redirects!=1)return false;
+        nova_debug_string("UEFI:INTERRUPTIBLE-MOTION-READY\n");
+        int32_t reduced_position=0,reduced_opacity=0;
+        nova_animation_t reduced_spatial={.target=&reduced_position,.from=0,.to=100,
+            .start_ms=200,.duration_ms=200,.group=0xfe,.priority=2,
+            .property=NOVA_PROPERTY_X,.easing=NOVA_EASE_SPRING,
+            .state=NOVA_MOTION_CREATED,.interruptible=true};
+        nova_animation_t reduced_fade=reduced_spatial;
+        reduced_fade.target=&reduced_opacity;reduced_fade.to=255;
+        reduced_fade.property=NOVA_PROPERTY_OPACITY;
+        if(!nova_motion_create(&reduced_spatial)||!nova_motion_create(&reduced_fade))return false;
+        nova_motion_update(250);
+        if(!nova_motion_set_reduced(true)||reduced_position!=100||
+           nova_motion_policy(NOVA_PROPERTY_X)!=NOVA_MOTION_POLICY_REPLACED||
+           nova_motion_policy(NOVA_PROPERTY_OPACITY)!=NOVA_MOTION_POLICY_ALLOWED||
+           nova_motion_diagnostics()->policy_replacements<1)return false;
+        nova_debug_string("UEFI:REDUCED-MOTION-POLICY-READY\n");
+        for(uint8_t violation=0;violation<6;++violation)
+            nova_motion_budget_update(20000,1200);
+        const nova_motion_budget_t *motion_budget=nova_motion_budget_get();
+        if(!motion_budget||motion_budget->memory_bytes>512u*1024u||
+           motion_budget->violations!=6||motion_budget->fallback_step!=6||
+           !motion_budget->safe_mode||motion_budget->decorative_enabled)return false;
+        nova_debug_string("UEFI:MOTION-BUDGET-READY\n");
+        nova_motion_initialize();
+        nova_motion_set_reduced(nova_theme_reduced_motion());
         if(!nova_animation_resource_initialize())return false;
         static const nova_animation_keyframe_t page_motion_frames[]={
             {0,NOVA_PROPERTY_OPACITY,0,NOVA_EASE_LINEAR},
@@ -810,6 +952,7 @@ bool bootmenu_configuration_select_theme(uint8_t theme)
     if(!initialized||theme>=NOVA_THEME_COUNT||
        !configuration_commit(NOVA_CONFIG_THEME,theme))return false;
     if(!nova_theme_activate((nova_theme_id_t)theme))return false;
+    if(!nova_design_tokens_reload())return false;
     nova_animation_resource_set_reduced(nova_theme_reduced_motion());
     return true;
 }
@@ -820,6 +963,7 @@ bool bootmenu_settings_toggle_reduced_motion(void)
     bool reduced=!nova_configuration_effective()->reduced_motion;
     if(!configuration_commit(NOVA_CONFIG_REDUCED_MOTION,reduced))return false;
     nova_theme_set_reduced_motion(reduced);
+    if(!nova_design_tokens_reload())return false;
     nova_animation_resource_set_reduced(reduced);return true;
 }
 
@@ -1496,22 +1640,34 @@ static void draw_dialog(nova_surface_t *surface,int32_t x,int32_t y,
     if (!dialog) return;
     nova_rect_t card = {x,y,width,height};
     const nova_theme_tokens_t *theme = nova_theme_tokens();
+    const nova_shadow_style_t *shadow=nova_shadow_get(NOVA_ELEVATION_LEVEL4);
+    const nova_material_style_t *material=nova_material_get(NOVA_DESIGN_MATERIAL_DIALOG);
     nova_round_rect_t shadow_geometry;
     nova_effect_object_t shadow_object;
-    nova_effect_t ambient={NOVA_EFFECT_AMBIENT_SHADOW,0xff000000u,4.0f,0.22f,0.0f,0.0f};
-    nova_effect_t drop={NOVA_EFFECT_DROP_SHADOW,0xff000000u,3.0f,0.36f,0.0f,4.0f};
     const nova_render_quality_parameters_t *quality=nova_render_quality_parameters();
-    if(dialog_effects_enabled&&quality&&quality->shadows_enabled&&!theme->high_contrast&&
+    if(dialog_effects_enabled&&!nova_motion_is_reduced()&&quality&&quality->shadows_enabled&&
+       shadow&&!shadow->disabled&&
        nova_round_rect_create(&shadow_geometry,card.x,card.y,card.width,card.height,
-        theme->radius_medium)&&nova_effect_object_create(&shadow_object,&shadow_geometry)&&
-       nova_shadow_set(&shadow_object,&ambient)&&nova_shadow_set(&shadow_object,&drop))
+        nova_radius_get(NOVA_RADIUS_XLARGE))&&nova_effect_object_create(&shadow_object,&shadow_geometry)){
+        for(uint8_t layer=0;layer<shadow->layer_count;++layer){nova_effect_t effect={
+            layer?NOVA_EFFECT_AMBIENT_SHADOW:NOVA_EFFECT_DROP_SHADOW,
+            shadow->layers[layer].color,
+            (float)nova_dlu_to_pixels(shadow->layers[layer].blur_dlu,current_layout.scale_milli),
+            (float)shadow->layers[layer].opacity/255.0f,
+            (float)nova_dlu_to_pixels((uint16_t)(shadow->layers[layer].x_dlu<0?
+                -shadow->layers[layer].x_dlu:shadow->layers[layer].x_dlu),current_layout.scale_milli)*
+                (shadow->layers[layer].x_dlu<0?-1.0f:1.0f),
+            (float)nova_dlu_to_pixels((uint16_t)(shadow->layers[layer].y_dlu<0?
+                -shadow->layers[layer].y_dlu:shadow->layers[layer].y_dlu),current_layout.scale_milli)*
+                (shadow->layers[layer].y_dlu<0?-1.0f:1.0f)};
+            (void)nova_shadow_set(&shadow_object,&effect);}
         (void)nova_effect_render(&shadow_object,surface,NOVA_EFFECT_PHASE_SHADOW,
-            (nova_rect_t){0,0,(int32_t)surface->width,(int32_t)surface->height},0);
+             (nova_rect_t){0,0,(int32_t)surface->width,(int32_t)surface->height},0);}
     rounded_panel(surface, card.x - 2, card.y - 2, card.width + 4, card.height + 4,
                   dialog_color(dialog->type == NOVA_DIALOG_ERROR ? theme->error :
-                  dialog->type == NOVA_DIALOG_WARNING ? theme->warning : theme->border));
+                  dialog->type == NOVA_DIALOG_WARNING ? theme->warning : material->border));
     rounded_panel(surface, card.x, card.y, card.width, card.height,
-                  dialog_color(theme->surface_secondary));
+                  dialog_color(material->surface));
     int32_t padding = nova_dlu_to_pixels(20, current_layout.scale_milli);
     nova_text_draw_scaled(surface, card.x + padding, card.y + padding,
                           card.width - padding * 2, dialog->title,
@@ -1978,11 +2134,15 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
             nova_debug_string("UEFI:BACKGROUND-BLUR-QUALITY-SKIP\n");
         else if(theme->high_contrast)
             nova_debug_string("UEFI:BACKGROUND-BLUR-HIGH-CONTRAST-SKIP\n");
+        else if(nova_motion_is_reduced())
+            nova_debug_string("UEFI:BACKGROUND-BLUR-REDUCED-MOTION-SKIP\n");
         else {
-          if(nova_round_rect_create(&blur_geometry,card.x,card.y,
-            card.width,card.height,theme->radius_medium)){
-            float radius=render_quality->maximum_blur_radius<4?
-                (float)render_quality->maximum_blur_radius:4.0f;
+          const nova_material_style_t *dialog_material=nova_material_get(NOVA_DESIGN_MATERIAL_DIALOG);
+          if(dialog_material&&!dialog_material->opaque&&nova_round_rect_create(&blur_geometry,
+            card.x,card.y,card.width,card.height,nova_radius_get(NOVA_RADIUS_XLARGE))){
+            uint16_t requested=nova_dlu_to_pixels(dialog_material->blur_dlu,current_layout.scale_milli);
+            float radius=(float)(render_quality->maximum_blur_radius<requested?
+                render_quality->maximum_blur_radius:requested);
             nova_blur_region_t blur_region={card,radius,
                 render_quality->blur_quality,NOVA_BLUR_KERNEL_BOX,
                 &blur_geometry,0};
@@ -1996,8 +2156,9 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
             }else nova_debug_string("UEFI:BACKGROUND-BLUR-FAILED\n");
           }else nova_debug_string("UEFI:BACKGROUND-BLUR-GEOMETRY-FAILED\n");
         }
-        uint8_t backdrop=render_quality->transparency_enabled?
-            (uint8_t)((uint16_t)0x99u*dialog_opacity/255u):255u;
+        const nova_material_style_t *overlay=nova_material_get(NOVA_DESIGN_MATERIAL_OVERLAY);
+        uint8_t backdrop=render_quality->transparency_enabled&&!overlay->opaque?
+            (uint8_t)((uint16_t)overlay->opacity*dialog_opacity/255u):255u;
         alpha_over_rect(interaction_surface,(nova_rect_t){0,0,width,(int32_t)nova_graphics_height()},
                         (uint32_t)backdrop<<24);
         draw_dialog(interaction_surface,card.x,card.y,card.width,card.height);

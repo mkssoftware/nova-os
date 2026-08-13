@@ -58,13 +58,16 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check asset-pipeline-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
 abi-check:
 	PATH=/ucrt64/bin:/usr/bin "$(HOST_CC)" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
 		tests/boot_protocol_layout.c
+
+asset-pipeline-check:
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-boot-asset-pipeline.ps1
 
 $(FONT_C_HEADER): boot/bootloader/include/boot-font-aa.inc scripts/convert-boot-font-to-c.ps1 | $(BUILD_DIR)
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \
@@ -89,6 +92,7 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/resources.c \
 		boot/bootloader/bootmenu/compression.c \
 		boot/bootloader/bootmenu/integrity.c \
+		boot/bootloader/bootmenu/resource_version.c \
 		boot/bootloader/bootmenu/font_resources.c \
 		boot/bootloader/bootmenu/animation_resources.c \
 		boot/bootloader/bootmenu/icons.c \
@@ -155,6 +159,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/resources.c boot/bootloader/bootmenu/resources.h \
 		boot/bootloader/bootmenu/compression.c boot/bootloader/bootmenu/compression.h \
 		boot/bootloader/bootmenu/integrity.c boot/bootloader/bootmenu/integrity.h \
+		boot/bootloader/bootmenu/resource_version.c boot/bootloader/bootmenu/resource_version.h \
 		boot/bootloader/bootmenu/font_resources.c boot/bootloader/bootmenu/font_resources.h \
 		boot/bootloader/bootmenu/animation_resources.c boot/bootloader/bootmenu/animation_resources.h \
 		boot/bootloader/bootmenu/icons.c boot/bootloader/bootmenu/icons.h \
@@ -205,8 +210,9 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/controls.c boot/bootloader/bootmenu/text.c \
 		boot/bootloader/bootmenu/unicode.c boot/bootloader/bootmenu/resources.c \
 		boot/bootloader/bootmenu/compression.c \
-		boot/bootloader/bootmenu/integrity.c \
-		boot/bootloader/bootmenu/font_resources.c \
+	boot/bootloader/bootmenu/integrity.c \
+	boot/bootloader/bootmenu/resource_version.c \
+	boot/bootloader/bootmenu/font_resources.c \
 		boot/bootloader/bootmenu/animation_resources.c \
 		boot/bootloader/bootmenu/icons.c \
 		boot/bootloader/bootmenu/branding.c \
@@ -272,6 +278,18 @@ test-uefi-image: uefi
 	grep -F "UEFI:GAL-PRESENT" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:SCALING-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:DESIGN-COMPATIBILITY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:SEMANTIC-DESIGN-TOKENS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:EFFECT-MOTION-TOKENS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:INTERACTION-STATES-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:DARK-THEME-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:LIGHT-THEME-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:HIGH-CONTRAST-THEME-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:VISUAL-CONTINUITY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:INTERRUPTIBLE-MOTION-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:REDUCED-MOTION-POLICY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:MOTION-BUDGET-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:FRAME-BUDGET-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:MEMORY-BUDGET-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:UI-ARCHITECTURE-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:SCENE-GRAPH-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RENDER-COMMANDS-READY" build/qemu-uefi-image-debug.log
@@ -294,6 +312,7 @@ test-uefi-image: uefi
 	grep -F "UEFI:SOFTWARE-RENDERER-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RESOURCE-LOADER-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RESOURCE-CACHE-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOURCE-VERSIONING-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RESOURCE-COMPRESSION-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RESOURCE-INTEGRITY-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RESOURCE-LZ4-DECODE-READY" build/qemu-uefi-image-debug.log
@@ -306,7 +325,7 @@ test-uefi-image: uefi
 test-uefi: boot-ui-runtime-check uefi
 	rm -f $(UEFI_DEBUG_LOG)
 	status=0; TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
-		timeout 45s "$(QEMU64)" -machine q35 \
+		timeout 75s "$(QEMU64)" -machine q35 \
 		-drive if=pflash,format=raw,snapshot=on,file=$(UEFI_FIRMWARE) \
 		-drive format=raw,file=fat:rw:$(UEFI_DIR) \
 		-display none -monitor none -serial none \
@@ -319,6 +338,18 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:GAL-PRESENT" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:SCALING-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:DESIGN-COMPATIBILITY-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:SEMANTIC-DESIGN-TOKENS-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:EFFECT-MOTION-TOKENS-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:INTERACTION-STATES-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:DARK-THEME-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:LIGHT-THEME-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:HIGH-CONTRAST-THEME-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:VISUAL-CONTINUITY-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:INTERRUPTIBLE-MOTION-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:REDUCED-MOTION-POLICY-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:MOTION-BUDGET-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:FRAME-BUDGET-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:MEMORY-BUDGET-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:UI-ARCHITECTURE-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:SCENE-GRAPH-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RENDER-COMMANDS-READY" $(UEFI_DEBUG_LOG)
@@ -341,6 +372,7 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:SOFTWARE-RENDERER-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-LOADER-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-CACHE-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:RESOURCE-VERSIONING-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-COMPRESSION-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-INTEGRITY-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-LZ4-DECODE-READY" $(UEFI_DEBUG_LOG)
@@ -582,6 +614,8 @@ test-uefi-themes: uefi
 		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
 		-DebugLog $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:THEME-LIGHT" $(UEFI_THEME_DEBUG_LOG)
+	grep -F "UEFI:LIGHT-THEME-READY" $(UEFI_THEME_DEBUG_LOG)
+	grep -F "UEFI:HIGH-CONTRAST-THEME-READY" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:DESIGN-COMPATIBILITY-READY" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:UI-ARCHITECTURE-READY" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:THEME-HIGH-CONTRAST" $(UEFI_THEME_DEBUG_LOG)

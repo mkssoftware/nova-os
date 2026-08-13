@@ -22,14 +22,35 @@ typedef struct {
     bool loaded,valid;
 } nova_theme_resource_t;
 typedef struct {
+    uint64_t theme_id;
+    const char *name;
+    uint32_t version;
+    bool is_default,is_dark;
+} nova_theme_descriptor_t;
+typedef struct {
+    uint64_t theme_id;
+    bool accessibility_theme,high_contrast,reduced_motion,opaque_materials;
+    uint16_t minimum_focus_dlu;
+} nova_accessibility_theme_t;
+typedef struct {
     uint32_t activations, validation_errors, accessibility_overrides;
     uint32_t registered,loads,cache_hits,releases,atomic_switches;
     uint32_t missing_resources,duplicate_ids;
+    uint32_t token_lookups,contrast_checks;
     nova_theme_id_t active;
 } nova_theme_diagnostics_t;
 
 bool nova_theme_initialize(void);
 bool nova_theme_activate(nova_theme_id_t id);
+const nova_theme_descriptor_t *nova_theme_default(void);
+const nova_theme_descriptor_t *nova_theme_light(void);
+const nova_accessibility_theme_t *nova_theme_high_contrast(void);
+bool nova_theme_is_dark(void);
+bool nova_theme_is_light(void);
+bool nova_theme_is_high_contrast(void);
+bool nova_theme_activate_default(void);
+bool nova_theme_activate_light(void);
+bool nova_theme_activate_high_contrast(void);
 const nova_theme_resource_t *nova_theme_resource_load(nova_theme_id_t id);
 const nova_theme_resource_t *nova_theme_resource_find(uint64_t theme_id);
 const nova_theme_resource_t *nova_theme_current(void);
