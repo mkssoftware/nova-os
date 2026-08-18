@@ -1,5 +1,7 @@
 # Nova OS
 
+![Alternativtext](assets/file_00000000fe988246ab03fde576916f3a.png)
+
 Nova OS ist ein modernes, modulares Betriebssystemprojekt mit Fokus auf:
 
 - eigene Bootarchitektur
