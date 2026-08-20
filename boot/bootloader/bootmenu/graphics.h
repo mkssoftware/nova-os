@@ -2,6 +2,8 @@
 #define NOVA_BOOT_GRAPHICS_H
 
 #include <stdbool.h>
+
+#define NOVA_RENDER_REFERENCE_CAPACITY 32u
 #include <stdint.h>
 
 typedef enum {
@@ -63,6 +65,29 @@ uint32_t nova_graphics_convert_pixel(uint32_t rgba,nova_pixel_format_t format,
                                     uint32_t blue_mask,uint32_t alpha_mask);
 const nova_graphics_context_t *nova_graphics_context(void);
 const nova_graphics_diagnostics_t *nova_graphics_diagnostics(void);
+
+typedef enum {NOVA_REFERENCE_DARK,NOVA_REFERENCE_LIGHT,NOVA_REFERENCE_HIGH_CONTRAST}
+nova_render_reference_theme_t;
+typedef enum {NOVA_REFERENCE_SOFTWARE,NOVA_REFERENCE_LOW_END,NOVA_REFERENCE_STANDARD,
+    NOVA_REFERENCE_HIGH_QUALITY,NOVA_REFERENCE_GPU} nova_render_reference_profile_t;
+typedef struct {uint32_t reference_id,version,width,height,dpi;
+    nova_render_reference_theme_t theme;nova_render_reference_profile_t profile;
+    uint64_t created_epoch;bool read_only,validated;} nova_render_reference_metadata_t;
+typedef struct {uint32_t test_id,reference_id,differing_pixels,maximum_channel_delta,
+    first_difference_x,first_difference_y;uint32_t similarity_per_mille;
+    bool passed,dimensions_match,alpha_compared,masked,position_tolerance_used;
+} nova_render_reference_result_t;
+typedef struct {uint8_t count,passed,failed;uint32_t reports;bool initialized,
+    isolated,deterministic;} nova_render_reference_summary_t;
+bool nova_render_reference_initialize(void);
+bool nova_render_reference_execute(uint32_t test_id,
+    const nova_render_reference_metadata_t *metadata,const uint32_t *reference,
+    const uint32_t *actual,const uint8_t *mask,uint32_t stride,
+    uint32_t *difference,uint32_t difference_stride);
+const nova_render_reference_result_t *nova_render_reference_results(void);
+const nova_render_reference_summary_t *nova_render_reference_summary(void);
+bool nova_render_reference_generate_report(bool authorized,uint8_t *output,
+                                           uint32_t capacity,uint32_t *written);
 uint32_t nova_graphics_width(void);
 uint32_t nova_graphics_height(void);
 

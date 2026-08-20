@@ -9,7 +9,7 @@ static nova_boot_configuration_t defaults(void)
     nova_boot_configuration_t value={
         NOVA_CONFIGURATION_VERSION_MAJOR,NOVA_CONFIGURATION_VERSION_MINOR,
         NOVA_CONFIGURATION_VERSION_PATCH,NOVA_THEME_DARK,NOVA_QUALITY_BALANCED,
-        0,750,5000,500,50,2,false,true,false,true,true,false,0
+        0,750,5000,500,50,100,500,2,false,true,false,true,true,false,0
     };
     value.checksum=nova_configuration_checksum(&value);return value;
 }
@@ -23,6 +23,8 @@ uint32_t nova_configuration_checksum(const nova_boot_configuration_t *value)
     MIX(value->theme);MIX(value->quality);MIX(value->scale_milli);
     MIX(value->tooltip_delay_ms);MIX(value->watchdog_timeout_ms);
     MIX(value->key_repeat_delay_ms);MIX(value->key_repeat_rate_ms);
+    MIX(value->mouse_speed_percent);
+    MIX(value->double_click_time_ms);
     MIX(value->recovery_retries);MIX(value->reduced_motion);MIX(value->tooltips);
     MIX(value->safe_mode);MIX(value->text_fallback);MIX(value->auto_recovery);
     MIX(value->debug_overlay);
@@ -41,7 +43,9 @@ bool nova_configuration_validate(const nova_boot_configuration_t *value)
        (value->tooltip_delay_ms-250)%250||value->watchdog_timeout_ms<1000||
        value->watchdog_timeout_ms>30000||value->key_repeat_delay_ms<100||
        value->key_repeat_delay_ms>2000||value->key_repeat_rate_ms<20||
-       value->key_repeat_rate_ms>1000||value->recovery_retries>3)return false;
+       value->key_repeat_rate_ms>1000||value->mouse_speed_percent<25||
+       value->mouse_speed_percent>400||value->double_click_time_ms<200||
+       value->double_click_time_ms>1000||value->recovery_retries>3)return false;
     return !value->checksum||value->checksum==nova_configuration_checksum(value);
 }
 
@@ -58,6 +62,8 @@ static void rebuild_effective(void)
     APPLY(NOVA_CONFIG_WATCHDOG_TIMEOUT,watchdog_timeout_ms);
     APPLY(NOVA_CONFIG_KEY_REPEAT_DELAY,key_repeat_delay_ms);
     APPLY(NOVA_CONFIG_KEY_REPEAT_RATE,key_repeat_rate_ms);
+    APPLY(NOVA_CONFIG_MOUSE_SPEED,mouse_speed_percent);
+    APPLY(NOVA_CONFIG_DOUBLE_CLICK_TIME,double_click_time_ms);
     APPLY(NOVA_CONFIG_DEBUG_OVERLAY,debug_overlay);
 #undef APPLY
     effective.checksum=nova_configuration_checksum(&effective);
@@ -93,6 +99,8 @@ static bool set_value(nova_boot_configuration_t *target,
     case NOVA_CONFIG_WATCHDOG_TIMEOUT:target->watchdog_timeout_ms=(uint16_t)value;break;
     case NOVA_CONFIG_KEY_REPEAT_DELAY:target->key_repeat_delay_ms=(uint16_t)value;break;
     case NOVA_CONFIG_KEY_REPEAT_RATE:target->key_repeat_rate_ms=(uint16_t)value;break;
+    case NOVA_CONFIG_MOUSE_SPEED:target->mouse_speed_percent=(uint16_t)value;break;
+    case NOVA_CONFIG_DOUBLE_CLICK_TIME:target->double_click_time_ms=(uint16_t)value;break;
     case NOVA_CONFIG_DEBUG_OVERLAY:target->debug_overlay=value!=0;break;
     default:return false;
     }

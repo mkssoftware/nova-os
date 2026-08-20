@@ -6,6 +6,8 @@
 #include "scene_graph.h"
 #include "rounded_geometry.h"
 #include "render_quality.h"
+#include "dialog.h"
+#include "navigation.h"
 
 static nova_control_t controls[NOVA_CONTROL_CAPACITY];
 static bool used[NOVA_CONTROL_CAPACITY];
@@ -15,9 +17,16 @@ static nova_control_diagnostics_t diagnostics;
 static uint16_t list_entries[NOVA_CONTROL_CAPACITY][NOVA_LIST_ITEM_CAPACITY];
 static uint16_t list_entry_count[NOVA_CONTROL_CAPACITY];
 static uint64_t list_selection_mask[NOVA_CONTROL_CAPACITY];
+static bool password_reveal_enabled[NOVA_CONTROL_CAPACITY];
+static uint32_t password_reveal_remaining_ms[NOVA_CONTROL_CAPACITY];
+static nova_password_diagnostics_t password_diagnostics[NOVA_CONTROL_CAPACITY];
 static nova_style_descriptor_t styles[NOVA_STYLE_CAPACITY];
 static nova_control_template_t templates[NOVA_TEMPLATE_CAPACITY];
 static nova_scene_node_t *scene_nodes[NOVA_CONTROL_CAPACITY];
+static nova_control_test_result_t test_results[NOVA_CONTROL_TEST_CAPACITY];
+static nova_control_test_summary_t test_summary;
+static nova_control_event_handler_t event_handlers[NOVA_CONTROL_CAPACITY];
+static void *event_contexts[NOVA_CONTROL_CAPACITY];
 
 static void copy_text(char *destination, const char *source)
 {
@@ -64,7 +73,10 @@ void nova_controls_initialize(const nova_control_style_t *style)
 {
     nova_scene_initialize();
     for (uint16_t i = 0; i < NOVA_CONTROL_CAPACITY; ++i) {
-        used[i] = false;scene_nodes[i]=0;
+        used[i] = false;scene_nodes[i]=0;event_handlers[i]=0;event_contexts[i]=0;
+        password_reveal_enabled[i]=false;
+        password_reveal_remaining_ms[i]=0;
+        password_diagnostics[i]=(nova_password_diagnostics_t){0};
     }
     for(uint16_t i=0;i<NOVA_STYLE_CAPACITY;++i)styles[i]=(nova_style_descriptor_t){0};
     for(uint16_t i=0;i<NOVA_TEMPLATE_CAPACITY;++i)templates[i]=(nova_control_template_t){0};
@@ -112,7 +124,8 @@ nova_control_t *nova_control_create(nova_control_type_t type)
         controls[i].maximum_length=NOVA_CONTROL_TEXT_CAPACITY-1;
         controls[i].input_mode=type==NOVA_CONTROL_PASSWORD_FIELD?
                                NOVA_TEXT_INPUT_PASSWORD:NOVA_TEXT_INPUT_STANDARD;
-        if(type==NOVA_CONTROL_PASSWORD_FIELD)controls[i].flags|=NOVA_CONTROL_FLAG_PASSWORD;
+        if(type==NOVA_CONTROL_PASSWORD_FIELD){controls[i].flags|=NOVA_CONTROL_FLAG_PASSWORD;
+            password_diagnostics[i].field_id=i;}
         if(!nova_control_template_apply(&controls[i],(uint16_t)(type+1))){used[i]=false;return 0;}
         scene_nodes[i]=nova_scene_create(NOVA_SCENE_CONTROL);
         if(!scene_nodes[i]||!nova_scene_attach(nova_scene_root(),scene_nodes[i])){
@@ -158,6 +171,8 @@ bool nova_control_set_state(nova_control_t *control, nova_control_state_t state)
         NOVA_SCENE_COLLAPSED:NOVA_SCENE_HIDDEN);
     nova_scene_set_enabled(scene_nodes[control->id],
         (control->flags&NOVA_CONTROL_FLAG_ENABLED)!=0);
+    nova_control_event_t event={.type=NOVA_CONTROL_EVENT_STATE_CHANGED,.value=(int32_t)state};
+    (void)nova_control_dispatch_event(control,&event);
     return true;
 }
 
@@ -220,13 +235,26 @@ bool nova_control_set_interaction(nova_control_t *control,
 
 bool nova_control_destroy(nova_control_t *control)
 {
-    if (!control || !used[control->id] || control->first_child!=NOVA_CONTROL_NONE||
-        !nova_control_set_state(control, NOVA_CONTROL_DESTROYED))
-        return false;
+    if (!control || !used[control->id] || control->first_child!=NOVA_CONTROL_NONE)return false;
+    nova_control_event_t destroy={.type=NOVA_CONTROL_EVENT_DESTROY};
+    (void)nova_control_dispatch_event(control,&destroy);
+    if(!nova_control_set_state(control,NOVA_CONTROL_DESTROYED))return false;
     if(control->type==NOVA_CONTROL_PASSWORD_FIELD)nova_text_field_clear(control);
+    if(control->parent!=NOVA_CONTROL_NONE&&control->parent<NOVA_CONTROL_CAPACITY&&
+       used[control->parent]){
+        nova_control_t *parent=&controls[control->parent];
+        if(parent->first_child==control->id)parent->first_child=control->next_sibling;
+        else{uint16_t sibling=parent->first_child;
+            while(sibling!=NOVA_CONTROL_NONE&&sibling<NOVA_CONTROL_CAPACITY){
+                if(controls[sibling].next_sibling==control->id){
+                    controls[sibling].next_sibling=control->next_sibling;break;}
+                sibling=controls[sibling].next_sibling;}}
+        control->parent=NOVA_CONTROL_NONE;control->next_sibling=NOVA_CONTROL_NONE;
+    }
     if(!nova_scene_destroy(scene_nodes[control->id]))return false;
     scene_nodes[control->id]=0;
     if (focused_id == control->id) focused_id = NOVA_CONTROL_NONE;
+    event_handlers[control->id]=0;event_contexts[control->id]=0;
     used[control->id] = false; --diagnostics.active; ++diagnostics.destroyed;
     return true;
 }
@@ -244,16 +272,53 @@ bool nova_control_set_parent(nova_control_t *child, nova_control_t *parent)
     return true;
 }
 
+bool nova_control_set_event_handler(nova_control_t *control,
+    nova_control_event_handler_t handler,void *context)
+{
+    if(!control||control->id>=NOVA_CONTROL_CAPACITY||!used[control->id]||
+       control->state==NOVA_CONTROL_DESTROYED)return false;
+    event_handlers[control->id]=handler;event_contexts[control->id]=context;return true;
+}
+
+bool nova_control_dispatch_event(nova_control_t *target,nova_control_event_t *event)
+{
+    if(!target||!event||target->id>=NOVA_CONTROL_CAPACITY||!used[target->id]||
+       target->state==NOVA_CONTROL_DESTROYED||event->type>NOVA_CONTROL_EVENT_CAPTURE_CANCEL){
+        ++diagnostics.event_errors;return false;}
+    uint16_t route[NOVA_CONTROL_CAPACITY],count=0,current=target->id;
+    while(current!=NOVA_CONTROL_NONE){
+        if(current>=NOVA_CONTROL_CAPACITY||!used[current]||count>=NOVA_CONTROL_CAPACITY){
+            ++diagnostics.event_errors;return false;}
+        for(uint16_t i=0;i<count;++i)if(route[i]==current){
+            ++diagnostics.event_errors;return false;}
+        route[count++]=current;current=controls[current].parent;
+    }
+    event->target_id=target->id;event->handled=false;event->route_depth=count;
+    for(uint16_t i=0;i<count;++i){
+        event->current_id=route[i];event->phase=i?NOVA_CONTROL_EVENT_BUBBLE:
+                                             NOVA_CONTROL_EVENT_TARGET;
+        ++diagnostics.events_dispatched;if(i)++diagnostics.events_bubbled;
+        nova_control_event_handler_t handler=event_handlers[route[i]];
+        if(handler&&handler(&controls[route[i]],event,event_contexts[route[i]])){
+            event->handled=true;++diagnostics.events_handled;return true;}
+    }
+    return true;
+}
+
 bool nova_control_set_bounds(nova_control_t *control, nova_rect_t bounds)
 {
     if (!control || !used[control->id] || bounds.width <= 0 || bounds.height <= 0) return false;
     control->bounds = bounds; control->flags |= NOVA_CONTROL_FLAG_DIRTY;
-    return nova_scene_set_bounds(scene_nodes[control->id],bounds);
+    if(!nova_scene_set_bounds(scene_nodes[control->id],bounds))return false;
+    nova_control_event_t event={.type=NOVA_CONTROL_EVENT_LAYOUT_CHANGED,
+        .x=bounds.x,.y=bounds.y,.value=bounds.width};
+    (void)nova_control_dispatch_event(control,&event);return true;
 }
 
 bool nova_control_set_text(nova_control_t *control, const char *text)
 {
     if (!control || !text) return false;
+    if(control->type==NOVA_CONTROL_PASSWORD_FIELD)return false;
     uint16_t source_length=0;
     while(text[source_length]&&source_length<NOVA_CONTROL_TEXT_CAPACITY)++source_length;
     if(text[source_length]||((control->type==NOVA_CONTROL_TEXT_FIELD||
@@ -266,7 +331,10 @@ bool nova_control_set_text(nova_control_t *control, const char *text)
     copy_text(control->text, text);
     control->text_length=control->caret=source_length;
     control->selection_start=control->selection_end=source_length;
-    control->flags |= NOVA_CONTROL_FLAG_DIRTY; return true;
+    control->flags |= NOVA_CONTROL_FLAG_DIRTY;
+    nova_control_event_t event={.type=NOVA_CONTROL_EVENT_VALUE_CHANGED,
+        .value=(int32_t)source_length};
+    (void)nova_control_dispatch_event(control,&event);return true;
 }
 
 static bool is_text_field(const nova_control_t *control)
@@ -349,19 +417,34 @@ bool nova_text_field_insert(nova_control_t *control,uint32_t codepoint)
 {
     char encoded[4];
     if(!is_text_field(control)||(control->flags&(NOVA_CONTROL_FLAG_READONLY|
-       NOVA_CONTROL_FLAG_LOCKED|NOVA_CONTROL_FLAG_BUSY))||!accepts_codepoint(control,codepoint))
-        return false;
-    uint8_t bytes=encode_utf8(codepoint,encoded);if(!bytes)return false;
+       NOVA_CONTROL_FLAG_LOCKED|NOVA_CONTROL_FLAG_BUSY)))return false;
+    if(!accepts_codepoint(control,codepoint)){
+        if(control->type==NOVA_CONTROL_PASSWORD_FIELD){nova_password_field_clear(control);
+            ++password_diagnostics[control->id].errors;}return false;}
+    uint8_t bytes=encode_utf8(codepoint,encoded);
+    if(!bytes){if(control->type==NOVA_CONTROL_PASSWORD_FIELD){nova_password_field_clear(control);
+        ++password_diagnostics[control->id].errors;}return false;}
     if(control->selection_start!=control->selection_end)
         erase_range(control,control->selection_start,control->selection_end);
-    if(control->text_length+bytes>control->maximum_length)return false;
+    if(control->text_length+bytes>control->maximum_length){
+        if(control->type==NOVA_CONTROL_PASSWORD_FIELD){nova_password_field_clear(control);
+            ++password_diagnostics[control->id].errors;}return false;}
     for(uint16_t i=control->text_length+1;i>control->caret;--i)
         control->text[i+bytes-1]=control->text[i-1];
     for(uint8_t i=0;i<bytes;++i)control->text[control->caret+i]=encoded[i];
     control->caret=(uint16_t)(control->caret+bytes);
     control->text_length=(uint16_t)(control->text_length+bytes);
     control->selection_start=control->selection_end=control->caret;
-    ++diagnostics.value_changes;return nova_control_invalidate(control);
+    if(control->type==NOVA_CONTROL_PASSWORD_FIELD)
+        ++password_diagnostics[control->id].input_length;
+    ++diagnostics.value_changes;
+    nova_control_event_t character={.type=NOVA_CONTROL_EVENT_CHARACTER_INPUT,
+        .character=codepoint,.value=(int32_t)control->text_length};
+    (void)nova_control_dispatch_event(control,&character);
+    nova_control_event_t changed={.type=NOVA_CONTROL_EVENT_VALUE_CHANGED,
+        .value=(int32_t)control->text_length};
+    (void)nova_control_dispatch_event(control,&changed);
+    return nova_control_invalidate(control);
 }
 
 bool nova_text_field_backspace(nova_control_t *control)
@@ -372,7 +455,11 @@ bool nova_text_field_backspace(nova_control_t *control)
         erase_range(control,control->selection_start,control->selection_end);
     else if(control->caret){uint16_t start=previous_boundary(control,control->caret);
         erase_range(control,start,control->caret);}else return false;
-    ++diagnostics.value_changes;return nova_control_invalidate(control);
+    ++diagnostics.value_changes;
+    nova_control_event_t event={.type=NOVA_CONTROL_EVENT_VALUE_CHANGED,
+        .value=(int32_t)control->text_length};
+    (void)nova_control_dispatch_event(control,&event);
+    return nova_control_invalidate(control);
 }
 
 bool nova_text_field_delete(nova_control_t *control)
@@ -384,7 +471,11 @@ bool nova_text_field_delete(nova_control_t *control)
     else if(control->caret<control->text_length)
         erase_range(control,control->caret,next_boundary(control,control->caret));
     else return false;
-    ++diagnostics.value_changes;return nova_control_invalidate(control);
+    ++diagnostics.value_changes;
+    nova_control_event_t event={.type=NOVA_CONTROL_EVENT_VALUE_CHANGED,
+        .value=(int32_t)control->text_length};
+    (void)nova_control_dispatch_event(control,&event);
+    return nova_control_invalidate(control);
 }
 
 bool nova_text_field_move(nova_control_t *control,int16_t codepoints,bool extend)
@@ -415,12 +506,86 @@ void nova_text_field_clear(nova_control_t *control)
     nova_control_invalidate(control);
 }
 
+nova_control_t *nova_password_field_create(void)
+{return nova_control_create(NOVA_CONTROL_PASSWORD_FIELD);}
+bool nova_password_field_set_placeholder(nova_control_t *field,const char *placeholder)
+{return field&&field->type==NOVA_CONTROL_PASSWORD_FIELD&&
+        nova_text_field_set_placeholder(field,placeholder);}
+bool nova_password_field_enable_reveal(nova_control_t *field,bool enabled)
+{
+    if(!field||field->type!=NOVA_CONTROL_PASSWORD_FIELD)return false;
+    password_reveal_enabled[field->id]=enabled;
+    password_diagnostics[field->id].reveal_enabled=enabled;
+    if(!enabled){field->flags&=~NOVA_CONTROL_FLAG_REVEALED;
+        password_reveal_remaining_ms[field->id]=0;
+        password_diagnostics[field->id].revealed=false;}
+    return nova_control_invalidate(field);
+}
+bool nova_password_field_set_revealed(nova_control_t *field,bool revealed,uint32_t duration_ms)
+{
+    if(!field||field->type!=NOVA_CONTROL_PASSWORD_FIELD||
+       (revealed&&(!password_reveal_enabled[field->id]||!duration_ms||duration_ms>10000u))){
+        if(field&&field->type==NOVA_CONTROL_PASSWORD_FIELD)
+            ++password_diagnostics[field->id].errors;
+        return false;
+    }
+    if(revealed){field->flags|=NOVA_CONTROL_FLAG_REVEALED;
+        password_reveal_remaining_ms[field->id]=duration_ms;
+        ++password_diagnostics[field->id].reveals;}
+    else{field->flags&=~NOVA_CONTROL_FLAG_REVEALED;
+        password_reveal_remaining_ms[field->id]=0;}
+    password_diagnostics[field->id].revealed=revealed;
+    return nova_control_invalidate(field);
+}
+bool nova_password_field_tick(nova_control_t *field,uint32_t elapsed_ms)
+{
+    if(!field||field->type!=NOVA_CONTROL_PASSWORD_FIELD)return false;
+    uint32_t *remaining=&password_reveal_remaining_ms[field->id];
+    if(!(field->flags&NOVA_CONTROL_FLAG_REVEALED))return true;
+    if(elapsed_ms<*remaining){*remaining-=elapsed_ms;return true;}
+    return nova_password_field_set_revealed(field,false,0);
+}
+bool nova_password_field_validate(nova_control_t *field,uint16_t minimum_length,
+    bool require_uppercase,bool require_lowercase,bool require_digit)
+{
+    if(!field||field->type!=NOVA_CONTROL_PASSWORD_FIELD||
+       minimum_length>field->maximum_length)return false;
+    bool upper=false,lower=false,digit=false;uint16_t glyphs=0;
+    const char *cursor=field->text;uint32_t cp;
+    while(*cursor){if(!nova_unicode_next(&cursor,&cp)){nova_password_field_clear(field);
+            ++password_diagnostics[field->id].errors;return false;}
+        ++glyphs;if(cp>='A'&&cp<='Z')upper=true;if(cp>='a'&&cp<='z')lower=true;
+        if(cp>='0'&&cp<='9')digit=true;}
+    bool valid=glyphs>=minimum_length&&(!require_uppercase||upper)&&
+        (!require_lowercase||lower)&&(!require_digit||digit);
+    password_diagnostics[field->id].input_length=glyphs;
+    if(!valid){++password_diagnostics[field->id].failed_attempts;
+        ++password_diagnostics[field->id].validation_errors;field->flags|=NOVA_CONTROL_FLAG_ERROR;}
+    else field->flags&=~NOVA_CONTROL_FLAG_ERROR;
+    nova_control_invalidate(field);return valid;
+}
+void nova_password_field_clear(nova_control_t *field)
+{
+    if(!field||field->type!=NOVA_CONTROL_PASSWORD_FIELD)return;
+    nova_text_field_clear(field);field->flags&=~NOVA_CONTROL_FLAG_REVEALED;
+    password_reveal_remaining_ms[field->id]=0;
+    password_diagnostics[field->id].input_length=0;
+    password_diagnostics[field->id].revealed=false;
+    ++password_diagnostics[field->id].clears;
+}
+bool nova_password_field_empty(const nova_control_t *field)
+{return field&&field->type==NOVA_CONTROL_PASSWORD_FIELD&&field->text_length==0;}
+const nova_password_diagnostics_t *nova_password_field_diagnostics(const nova_control_t *field)
+{return field&&field->type==NOVA_CONTROL_PASSWORD_FIELD?
+        &password_diagnostics[field->id]:0;}
+
 bool nova_control_set_accessibility(nova_control_t *control, uint16_t role,
                                     const char *name, bool decorative)
 {
     if (!control || (!decorative && (!name || !*name))) return false;
     control->accessibility_role = role;
-    copy_text(control->accessibility_name, name);
+    copy_text(control->accessibility_name,control->type==NOVA_CONTROL_PASSWORD_FIELD?
+              "Passwortfeld":name);
     if (decorative) control->flags |= NOVA_CONTROL_FLAG_DECORATIVE;
     else control->flags &= ~NOVA_CONTROL_FLAG_DECORATIVE;
     return true;
@@ -431,7 +596,9 @@ bool nova_control_set_range(nova_control_t *control, int32_t minimum,
 {
     if (!control || minimum >= maximum || value < minimum || value > maximum) return false;
     control->minimum = minimum; control->maximum = maximum; control->value = value;
-    control->flags |= NOVA_CONTROL_FLAG_DIRTY; return true;
+    control->flags |= NOVA_CONTROL_FLAG_DIRTY;
+    nova_control_event_t event={.type=NOVA_CONTROL_EVENT_VALUE_CHANGED,.value=value};
+    (void)nova_control_dispatch_event(control,&event);return true;
 }
 
 bool nova_control_set_step(nova_control_t *control, int32_t step)
@@ -446,6 +613,8 @@ bool nova_control_set_value(nova_control_t *control, int32_t value)
     if (!control || value < control->minimum || value > control->maximum) return false;
     control->value = value;
     ++diagnostics.value_changes;
+    nova_control_event_t event={.type=NOVA_CONTROL_EVENT_VALUE_CHANGED,.value=value};
+    (void)nova_control_dispatch_event(control,&event);
     return nova_control_invalidate(control);
 }
 
@@ -486,6 +655,9 @@ bool nova_control_set_checked(nova_control_t *control, bool checked)
     else control->flags &= ~NOVA_CONTROL_FLAG_CHECKED;
     control->flags &= ~NOVA_CONTROL_FLAG_INDETERMINATE;
     ++diagnostics.toggles;
+    nova_control_event_t event={.type=NOVA_CONTROL_EVENT_VALUE_CHANGED,
+        .value=checked?1:0};
+    (void)nova_control_dispatch_event(control,&event);
     return nova_control_invalidate(control);
 }
 
@@ -873,6 +1045,9 @@ void nova_style_theme_changed(void)
        controls[i].style_id<NOVA_STYLE_CAPACITY&&styles[controls[i].style_id].valid){
         controls[i].style=styles[controls[i].style_id].resolved;
         controls[i].flags|=NOVA_CONTROL_FLAG_DIRTY;
+        nova_control_event_t event={.type=NOVA_CONTROL_EVENT_THEME_CHANGED,
+            .value=(int32_t)controls[i].style_id};
+        (void)nova_control_dispatch_event(&controls[i],&event);
     }
 }
 bool nova_control_template_define(uint16_t id,uint16_t parent,
@@ -948,16 +1123,34 @@ bool nova_controls_sync_scene(void)
     return true;
 }
 
+nova_control_t *nova_control_get(uint16_t id)
+{return id<NOVA_CONTROL_CAPACITY&&used[id]?&controls[id]:0;}
+
+bool nova_control_focusable(const nova_control_t *control)
+{
+    return control&&control->id<NOVA_CONTROL_CAPACITY&&used[control->id]&&
+        control->state!=NOVA_CONTROL_DESTROYED&&
+        (control->flags&(NOVA_CONTROL_FLAG_VISIBLE|NOVA_CONTROL_FLAG_ENABLED))==
+            (NOVA_CONTROL_FLAG_VISIBLE|NOVA_CONTROL_FLAG_ENABLED)&&
+        !(control->flags&NOVA_CONTROL_FLAG_DECORATIVE);
+}
+
 bool nova_control_focus(nova_control_t *control)
 {
-    if (!control || !(control->flags & NOVA_CONTROL_FLAG_VISIBLE) ||
-        !(control->flags & NOVA_CONTROL_FLAG_ENABLED)) return false;
-    if (focused_id != NOVA_CONTROL_NONE && used[focused_id])
+    if(!nova_control_focusable(control))return false;
+    if (focused_id != NOVA_CONTROL_NONE && used[focused_id]){
+        nova_control_event_t blur={.type=NOVA_CONTROL_EVENT_BLUR};
+        (void)nova_control_dispatch_event(&controls[focused_id],&blur);
         (void)nova_control_set_interaction(&controls[focused_id],NOVA_INTERACTION_FOCUSED,
                                            false,false);
+    }
     if(!nova_control_set_interaction(control,NOVA_INTERACTION_FOCUSED,true,false))return false;
     focused_id = control->id;
     diagnostics.focused = focused_id;
+    if(control->type==NOVA_CONTROL_PASSWORD_FIELD)
+        ++password_diagnostics[control->id].focus_changes;
+    nova_control_event_t focus={.type=NOVA_CONTROL_EVENT_FOCUS};
+    (void)nova_control_dispatch_event(control,&focus);
     return true;
 }
 
@@ -985,6 +1178,8 @@ bool nova_control_invoke(nova_control_t *control, uint32_t *action)
     if(!nova_control_set_interaction(control,NOVA_INTERACTION_PRESSED,true,false)){
         ++diagnostics.rejected_actions;return false;}
     control->action_fired = true;
+    nova_control_event_t click={.type=NOVA_CONTROL_EVENT_CLICK,.value=(int32_t)control->action};
+    (void)nova_control_dispatch_event(control,&click);
     if (action) *action = control->action;
     return true;
 }
@@ -1011,6 +1206,14 @@ static int32_t text_prefix_width(const nova_control_t *control,uint16_t bytes)
     for(uint16_t i=0;i<bytes;++i)prefix[i]=control->text[i];
     prefix[bytes]=0;
     return nova_text_measure(prefix,32767).width;
+}
+
+static int32_t password_prefix_width(const nova_control_t *control,uint16_t bytes)
+{
+    if(bytes>control->text_length)bytes=control->text_length;
+    uint16_t position=0,glyphs=0;
+    while(position<bytes){position=next_boundary(control,position);++glyphs;}
+    return (int32_t)glyphs*10;
 }
 
 void nova_control_render(nova_control_t *control, nova_surface_t *surface)
@@ -1045,8 +1248,9 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
         if(!control->text_length&&control->placeholder[0])
             nova_text_draw(surface,b.x+pad,text_y,b.width-pad*2,control->placeholder,
                            control->style.disabled,NOVA_TEXT_LEFT,true);
-        else if(control->type==NOVA_CONTROL_PASSWORD_FIELD||
-                (control->flags&NOVA_CONTROL_FLAG_PASSWORD)){
+        else if((control->type==NOVA_CONTROL_PASSWORD_FIELD||
+                (control->flags&NOVA_CONTROL_FLAG_PASSWORD))&&
+                !(control->flags&NOVA_CONTROL_FLAG_REVEALED)){
             int32_t x=b.x+pad;
             const char *cursor=control->text;uint32_t cp;
             while(*cursor){const char *before=cursor;
@@ -1067,8 +1271,10 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
         }
         if((control->flags&NOVA_CONTROL_FLAG_FOCUSED)&&
            !(control->flags&NOVA_CONTROL_FLAG_READONLY)){
-            int32_t caret_x=b.x+pad+(control->type==NOVA_CONTROL_PASSWORD_FIELD?
-                (int32_t)control->caret*10:text_prefix_width(control,control->caret));
+            int32_t caret_x=b.x+pad+(control->type==NOVA_CONTROL_PASSWORD_FIELD&&
+                !(control->flags&NOVA_CONTROL_FLAG_REVEALED)?
+                password_prefix_width(control,control->caret):
+                text_prefix_width(control,control->caret));
             if(caret_x<b.x+b.width-pad)
                 nova_surface_rect(surface,(nova_rect_t){caret_x,b.y+5,1,b.height-10},
                                   control->style.accent);
@@ -1365,3 +1571,136 @@ void nova_control_render(nova_control_t *control, nova_surface_t *surface)
 }
 
 const nova_control_diagnostics_t *nova_control_diagnostics(void) { return &diagnostics; }
+
+bool nova_control_test_initialize(void)
+{
+    for(uint8_t i=0;i<NOVA_CONTROL_TEST_CAPACITY;++i)
+        test_results[i]=(nova_control_test_result_t){0};
+    test_summary=(nova_control_test_summary_t){.initialized=true,.isolated=true,
+        .deterministic=true,.configuration_unchanged=true};return true;
+}
+
+static nova_control_type_t tested_type(uint32_t test_case)
+{
+    static const nova_control_type_t types[10]={NOVA_CONTROL_BUTTON,NOVA_CONTROL_BUTTON,
+        NOVA_CONTROL_CHECKBOX,NOVA_CONTROL_BUTTON,NOVA_CONTROL_LIST,NOVA_CONTROL_BUTTON,
+        NOVA_CONTROL_TEXT_FIELD,NOVA_CONTROL_SLIDER,NOVA_CONTROL_PROGRESS,NOVA_CONTROL_SCROLLBAR};
+    return test_case<10?types[test_case]:NOVA_CONTROL_BUTTON;
+}
+
+bool nova_control_test_execute(uint32_t test_case)
+{
+    if(!test_summary.initialized||test_case>=NOVA_CONTROL_TEST_CAPACITY||
+       test_summary.count==NOVA_CONTROL_TEST_CAPACITY)return false;
+    nova_control_diagnostics_t saved_diag=diagnostics;uint16_t saved_focus=focused_id;
+    nova_control_test_result_t result={.interaction_id=test_case,.status=NOVA_CONTROL_TEST_FAILED,
+        .input_device=(uint8_t)(test_case==NOVA_CONTROL_TEST_DIALOG?1:2),
+        .event_order_valid=true,.accessibility_valid=true};
+    if(test_case==NOVA_CONTROL_TEST_RADIO_BUTTON||test_case==NOVA_CONTROL_TEST_COMBOBOX){
+        result.status=NOVA_CONTROL_TEST_SKIPPED;goto finish;
+    }
+    if(test_case==NOVA_CONTROL_TEST_DIALOG){
+        const nova_dialog_test_summary_t *s=nova_dialog_test_summary();
+        if(s->initialized&&s->passed==NOVA_DIALOG_TEST_CAPACITY&&!s->failed)
+            result.status=NOVA_CONTROL_TEST_PASSED;
+        else result.detected_errors=1u;
+        result.event_count=10;goto finish;
+    }
+    if(test_case==NOVA_CONTROL_TEST_NAVIGATION){
+        const nova_navigation_test_summary_t *s=nova_navigation_test_summary();
+        if(s->initialized&&s->passed==8&&!s->failed)
+            result.status=NOVA_CONTROL_TEST_PASSED;
+        else result.detected_errors=1u;
+        result.event_count=8;goto finish;
+    }
+    nova_control_t *control=nova_control_create(tested_type(test_case));
+    if(!control){result.detected_errors=1u;goto finish;}
+    result.control_id=control->id;
+    if(!nova_control_set_state(control,NOVA_CONTROL_INITIALIZED)||
+       !nova_control_set_state(control,NOVA_CONTROL_VISIBLE)||
+       !nova_control_set_bounds(control,(nova_rect_t){8,8,120,32})||
+       !nova_control_set_accessibility(control,1,"Controltest",false)||
+       !nova_control_focus(control)){result.detected_errors|=2u;goto destroy;}
+    result.focus_changed=true;result.state_mask|=1u|2u|4u;result.event_count=5;
+    if(!nova_control_set_interaction(control,NOVA_INTERACTION_HOVER,true,true)||
+       !nova_control_set_interaction(control,NOVA_INTERACTION_PRESSED,true,false)||
+       !nova_control_set_interaction(control,NOVA_INTERACTION_PRESSED,false,false))
+        result.detected_errors|=4u;
+    else result.state_mask|=8u|16u;
+    if(test_case==NOVA_CONTROL_TEST_BUTTON||test_case==NOVA_CONTROL_TEST_TOGGLE_BUTTON){
+        uint32_t action=0;nova_button_set_action(control,77);
+        if(test_case==NOVA_CONTROL_TEST_TOGGLE_BUTTON)nova_button_set_type(control,NOVA_BUTTON_TOGGLE);
+        if(!nova_control_invoke(control,&action)||action!=77||nova_control_invoke(control,&action))
+            result.detected_errors|=8u;
+        nova_control_release(control);
+    }else if(test_case==NOVA_CONTROL_TEST_CHECKBOX){
+        if(!nova_control_toggle(control)||!(control->flags&NOVA_CONTROL_FLAG_CHECKED))
+            result.detected_errors|=8u;
+    }else if(test_case==NOVA_CONTROL_TEST_LIST){
+        nova_control_t *item=nova_control_create(NOVA_CONTROL_LIST_ITEM);
+        if(!item||!nova_control_set_state(item,NOVA_CONTROL_INITIALIZED)||
+           !nova_control_set_state(item,NOVA_CONTROL_VISIBLE)||
+           !nova_list_add_item(control,item)||nova_list_count(control)!=1||
+           !nova_list_set_selection_mode(control,NOVA_LIST_SELECTION_SINGLE)||
+           !nova_list_select(control,0)||nova_list_selected_index(control)!=0)
+            result.detected_errors|=8u;
+        if(item){(void)nova_list_remove_item(control,0);nova_control_destroy(item);}
+    }else if(test_case==NOVA_CONTROL_TEST_TEXT_FIELD){
+        if(!nova_text_field_insert(control,'N')||!nova_text_field_insert(control,0x00e4)||
+           control->text_length!=3||!nova_text_field_backspace(control))result.detected_errors|=8u;
+    }else if(test_case==NOVA_CONTROL_TEST_SLIDER){
+        if(!nova_control_set_range(control,0,100,50)||!nova_control_set_step(control,10)||
+           !nova_control_adjust(control,2)||control->value!=70)result.detected_errors|=8u;
+    }else if(test_case==NOVA_CONTROL_TEST_PROGRESS){
+        if(!nova_control_set_range(control,0,1000,0)||!nova_control_set_value(control,500))
+            result.detected_errors|=8u;
+    }else if(test_case==NOVA_CONTROL_TEST_SCROLLBAR){
+        nova_control_t *view=nova_control_create(NOVA_CONTROL_SCROLL_VIEW);
+        if(!view||!nova_scroll_view_configure(view,100,100,100,300)||
+           !nova_scrollbar_attach(control,view,NOVA_SCROLLBAR_VERTICAL)||
+           !nova_scroll_view_scroll_to(view,0,100))result.detected_errors|=8u;
+        if(view)nova_control_destroy(view);
+    }
+    result.event_count+=5;result.visual_invalidated=(control->flags&NOVA_CONTROL_FLAG_DIRTY)!=0;
+    if(!result.visual_invalidated)result.detected_errors|=16u;
+    if(!result.detected_errors)result.status=NOVA_CONTROL_TEST_PASSED;
+destroy:
+    (void)nova_control_destroy(control);
+finish:
+    diagnostics=saved_diag;focused_id=saved_focus;result.configuration_changed=false;
+    test_results[test_summary.count++]=result;
+    if(result.status==NOVA_CONTROL_TEST_PASSED)++test_summary.passed;
+    else if(result.status==NOVA_CONTROL_TEST_SKIPPED)++test_summary.skipped;
+    else ++test_summary.failed;
+    test_summary.configuration_unchanged=diagnostics.active==saved_diag.active&&focused_id==saved_focus;
+    return result.status!=NOVA_CONTROL_TEST_FAILED;
+}
+
+const nova_control_test_result_t *nova_control_test_results(void){return test_results;}
+const nova_control_test_summary_t *nova_control_test_summary(void){return &test_summary;}
+static bool control_report_text(uint8_t *o,uint32_t c,uint32_t *p,const char *s)
+{while(*s){if(*p+1>=c)return false;o[(*p)++]=(uint8_t)*s++;}o[*p]=0;return true;}
+static bool control_report_u32(uint8_t *o,uint32_t c,uint32_t *p,uint32_t v)
+{char d[10];uint8_t n=0;do{d[n++]=(char)('0'+v%10u);v/=10u;}while(v&&n<10);
+ while(n){if(*p+1>=c)return false;o[(*p)++]=(uint8_t)d[--n];}o[*p]=0;return true;}
+bool nova_control_test_generate_report(bool authorized,uint8_t *output,
+                                       uint32_t capacity,uint32_t *written)
+{
+    if(written)*written=0;
+    if(!authorized||!output||capacity<128||!written||!test_summary.initialized)return false;
+    uint32_t p=0;
+    if(!control_report_text(output,capacity,&p,"NOVA_CONTROL_TEST_REPORT\ncount=")||
+       !control_report_u32(output,capacity,&p,test_summary.count)||
+       !control_report_text(output,capacity,&p," passed=")||
+       !control_report_u32(output,capacity,&p,test_summary.passed)||
+       !control_report_text(output,capacity,&p," skipped=")||
+       !control_report_u32(output,capacity,&p,test_summary.skipped)||
+       !control_report_text(output,capacity,&p,"\n"))return false;
+    for(uint8_t i=0;i<test_summary.count;++i){const nova_control_test_result_t *r=&test_results[i];
+        if(!control_report_text(output,capacity,&p,"case=")||!control_report_u32(output,capacity,&p,r->interaction_id)||
+           !control_report_text(output,capacity,&p," status=")||!control_report_u32(output,capacity,&p,r->status)||
+           !control_report_text(output,capacity,&p," events=")||!control_report_u32(output,capacity,&p,r->event_count)||
+           !control_report_text(output,capacity,&p," errors=")||!control_report_u32(output,capacity,&p,r->detected_errors)||
+           !control_report_text(output,capacity,&p,"\n"))return false;}
+    *written=p;++test_summary.reports;return true;
+}

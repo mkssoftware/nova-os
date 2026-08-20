@@ -12,6 +12,7 @@
 #define NOVA_LIST_ITEM_CAPACITY 64u
 #define NOVA_STYLE_CAPACITY 32u
 #define NOVA_TEMPLATE_CAPACITY 64u
+#define NOVA_CONTROL_TEST_CAPACITY 12u
 
 typedef enum {
     NOVA_CONTROL_BUTTON, NOVA_CONTROL_ICON_BUTTON, NOVA_CONTROL_MENU_BUTTON,
@@ -92,7 +93,8 @@ enum {
     , NOVA_CONTROL_FLAG_CHECKED = 1024u, NOVA_CONTROL_FLAG_INDETERMINATE = 2048u,
     NOVA_CONTROL_FLAG_BUSY = 4096u, NOVA_CONTROL_FLAG_ERROR = 8192u,
     NOVA_CONTROL_FLAG_READONLY = 16384u, NOVA_CONTROL_FLAG_LOCKED = 32768u,
-    NOVA_CONTROL_FLAG_EXPANDED = 65536u
+    NOVA_CONTROL_FLAG_EXPANDED = 65536u,
+    NOVA_CONTROL_FLAG_REVEALED = 131072u
 };
 
 typedef struct {
@@ -132,13 +134,51 @@ typedef struct {
 typedef struct {
     uint16_t active, focused, created, destroyed;
     uint32_t invalid_transitions, rejected_actions, hit_tests, value_changes,
-             toggles, renders, fallback_renders;
+             toggles, renders, fallback_renders,events_dispatched,events_handled,
+             events_bubbled,event_errors;
 } nova_control_diagnostics_t;
+typedef enum {NOVA_CONTROL_EVENT_CREATE,NOVA_CONTROL_EVENT_DESTROY,
+    NOVA_CONTROL_EVENT_FOCUS,NOVA_CONTROL_EVENT_BLUR,NOVA_CONTROL_EVENT_MOUSE_ENTER,
+    NOVA_CONTROL_EVENT_MOUSE_LEAVE,NOVA_CONTROL_EVENT_MOUSE_MOVE,
+    NOVA_CONTROL_EVENT_MOUSE_DOWN,NOVA_CONTROL_EVENT_MOUSE_UP,NOVA_CONTROL_EVENT_CLICK,
+    NOVA_CONTROL_EVENT_DOUBLE_CLICK,NOVA_CONTROL_EVENT_KEY_DOWN,NOVA_CONTROL_EVENT_KEY_UP,
+    NOVA_CONTROL_EVENT_CHARACTER_INPUT,NOVA_CONTROL_EVENT_VALUE_CHANGED,
+    NOVA_CONTROL_EVENT_STATE_CHANGED,NOVA_CONTROL_EVENT_LAYOUT_CHANGED,
+    NOVA_CONTROL_EVENT_THEME_CHANGED,NOVA_CONTROL_EVENT_CAPTURE_CANCEL}
+nova_control_event_type_t;
+typedef enum {NOVA_CONTROL_EVENT_TARGET,NOVA_CONTROL_EVENT_BUBBLE}
+nova_control_event_phase_t;
+typedef struct {nova_control_event_type_t type;nova_control_event_phase_t phase;
+    uint16_t target_id,current_id;uint16_t route_depth;uint32_t device_id,key,character;
+    int32_t x,y,value;bool handled;} nova_control_event_t;
+typedef bool (*nova_control_event_handler_t)(nova_control_t *control,
+    nova_control_event_t *event,void *context);
+typedef struct {uint32_t field_id,input_length,focus_changes,failed_attempts,
+    validation_errors,errors,clears,reveals;bool reveal_enabled,revealed,
+    content_exposed_to_accessibility;} nova_password_diagnostics_t;
+
+typedef enum {NOVA_CONTROL_TEST_PASSED,NOVA_CONTROL_TEST_FAILED,
+    NOVA_CONTROL_TEST_SKIPPED} nova_control_test_outcome_t;
+typedef enum {NOVA_CONTROL_TEST_BUTTON,NOVA_CONTROL_TEST_TOGGLE_BUTTON,
+    NOVA_CONTROL_TEST_CHECKBOX,NOVA_CONTROL_TEST_RADIO_BUTTON,NOVA_CONTROL_TEST_LIST,
+    NOVA_CONTROL_TEST_COMBOBOX,NOVA_CONTROL_TEST_TEXT_FIELD,NOVA_CONTROL_TEST_SLIDER,
+    NOVA_CONTROL_TEST_PROGRESS,NOVA_CONTROL_TEST_SCROLLBAR,NOVA_CONTROL_TEST_DIALOG,
+    NOVA_CONTROL_TEST_NAVIGATION} nova_control_test_case_t;
+typedef struct {uint32_t control_id,interaction_id;nova_control_test_outcome_t status;
+    uint64_t duration_us;uint32_t state_mask,event_count,detected_errors;
+    uint8_t input_device;bool focus_changed,event_order_valid,visual_invalidated,
+    accessibility_valid,configuration_changed;} nova_control_test_result_t;
+typedef struct {uint8_t count,passed,failed,skipped;uint32_t reports;
+    bool initialized,isolated,deterministic,configuration_unchanged;
+} nova_control_test_summary_t;
 
 void nova_controls_initialize(const nova_control_style_t *base_style);
 nova_control_t *nova_control_create(nova_control_type_t type);
 bool nova_control_destroy(nova_control_t *control);
 bool nova_control_set_parent(nova_control_t *child, nova_control_t *parent);
+bool nova_control_set_event_handler(nova_control_t *control,
+    nova_control_event_handler_t handler,void *context);
+bool nova_control_dispatch_event(nova_control_t *target,nova_control_event_t *event);
 bool nova_control_set_state(nova_control_t *control, nova_control_state_t state);
 bool nova_control_set_interaction(nova_control_t *control,
     nova_interaction_state_t state,bool active,bool pointer_device);
@@ -154,6 +194,18 @@ bool nova_text_field_delete(nova_control_t *control);
 bool nova_text_field_move(nova_control_t *control, int16_t codepoints, bool extend);
 bool nova_text_field_select_all(nova_control_t *control);
 void nova_text_field_clear(nova_control_t *control);
+nova_control_t *nova_password_field_create(void);
+bool nova_password_field_set_placeholder(nova_control_t *field,const char *placeholder);
+bool nova_password_field_enable_reveal(nova_control_t *field,bool enabled);
+bool nova_password_field_set_revealed(nova_control_t *field,bool revealed,
+                                      uint32_t duration_ms);
+bool nova_password_field_tick(nova_control_t *field,uint32_t elapsed_ms);
+bool nova_password_field_validate(nova_control_t *field,uint16_t minimum_length,
+    bool require_uppercase,bool require_lowercase,bool require_digit);
+void nova_password_field_clear(nova_control_t *field);
+bool nova_password_field_empty(const nova_control_t *field);
+const nova_password_diagnostics_t *nova_password_field_diagnostics(
+    const nova_control_t *field);
 bool nova_control_set_accessibility(nova_control_t *control, uint16_t role,
                                     const char *name, bool decorative);
 bool nova_control_set_range(nova_control_t *control, int32_t minimum,
@@ -234,11 +286,19 @@ bool nova_control_set_style(nova_control_t *control,
                             const nova_control_style_t *style);
 bool nova_control_invalidate(nova_control_t *control);
 bool nova_control_focus(nova_control_t *control);
+bool nova_control_focusable(const nova_control_t *control);
+nova_control_t *nova_control_get(uint16_t id);
 nova_control_t *nova_control_hit_test(int32_t x, int32_t y);
 bool nova_control_invoke(nova_control_t *control, uint32_t *action);
 void nova_control_release(nova_control_t *control);
 void nova_control_render(nova_control_t *control, nova_surface_t *surface);
 bool nova_controls_sync_scene(void);
 const nova_control_diagnostics_t *nova_control_diagnostics(void);
+bool nova_control_test_initialize(void);
+bool nova_control_test_execute(uint32_t test_case);
+const nova_control_test_result_t *nova_control_test_results(void);
+const nova_control_test_summary_t *nova_control_test_summary(void);
+bool nova_control_test_generate_report(bool authorized,uint8_t *output,
+                                       uint32_t capacity,uint32_t *written);
 
 #endif

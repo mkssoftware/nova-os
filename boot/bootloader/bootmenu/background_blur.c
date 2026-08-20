@@ -145,6 +145,7 @@ static bool cache_matches(const nova_blur_region_t *region)
     if(!diagnostics.cache_valid||!same_rect(region->bounds,cached_region.bounds)||
        region->quality!=cached_region.quality||region->kernel!=cached_region.kernel||
        region->mask_scope!=cached_region.mask_scope||region->radius!=cached_region.radius||
+       region->source_generation!=cached_region.source_generation||
        (region->rounded_geometry!=0)!=(cached_region.rounded_geometry!=0))return false;
     return !region->rounded_geometry||(same_rect(region->rounded_geometry->bounds,cached_geometry.bounds)&&
         same_corners(region->rounded_geometry->corners,cached_geometry.corners));

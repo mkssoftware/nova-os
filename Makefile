@@ -58,7 +58,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check asset-pipeline-check uefi-firmware-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image run test test-uefi test-uefi-input test-uefi-dialog test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check asset-pipeline-check uefi-firmware-runtime-check uefi-pointer-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image test-firmware-compatibility run test test-uefi test-uefi-input test-uefi-dialog test-uefi-confirmation test-uefi-warning test-uefi-password test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -126,6 +126,7 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/state_model.c \
 		boot/bootloader/bootmenu/navigation.c \
 		boot/bootloader/bootmenu/dialog.c \
+		boot/bootloader/bootmenu/test_architecture.c \
 		boot/bootloader/bootmenu/page.c \
 		-o $(BUILD_DIR)/boot-ui-runtime-test.exe
 	$(BUILD_DIR)/boot-ui-runtime-test.exe
@@ -137,6 +138,14 @@ uefi-firmware-runtime-check: | $(BUILD_DIR)
 		boot/bootloader/uefi/firmware.c -o $(BUILD_DIR)/uefi-firmware-runtime-test.exe
 	$(BUILD_DIR)/uefi-firmware-runtime-test.exe
 
+uefi-pointer-runtime-check: | $(BUILD_DIR)
+	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
+		"$(HOST_CC)" -O2 -std=c11 -Wall -Wextra -Werror -DNOVA_HOST_TEST \
+		-Iboot/bootloader/uefi -Iboot/bootloader/bootmenu \
+		tests/uefi_pointer_runtime.c boot/bootloader/uefi/pointer.c \
+		-o $(BUILD_DIR)/uefi-pointer-runtime-test.exe
+	$(BUILD_DIR)/uefi-pointer-runtime-test.exe
+
 bootloader:
 	$(MAKE) -C boot/bootloader NASM=$(NASM)
 
@@ -146,7 +155,7 @@ kernel:
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c \
+$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/pointer.h boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c \
 		boot/bootloader/uefi/uefi_min.h boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/ui.h \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/motion.h \
@@ -193,6 +202,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/state_model.c boot/bootloader/bootmenu/state_model.h \
 		boot/bootloader/bootmenu/navigation.c boot/bootloader/bootmenu/navigation.h \
 		boot/bootloader/bootmenu/dialog.c boot/bootloader/bootmenu/dialog.h \
+		boot/bootloader/bootmenu/test_architecture.c boot/bootloader/bootmenu/test_architecture.h \
 		boot/bootloader/bootmenu/page.c boot/bootloader/bootmenu/page.h \
 		$(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) \
 		boot/bootloader/uefi/startup.nsh | $(BUILD_DIR)
@@ -245,6 +255,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/state_model.c \
 		boot/bootloader/bootmenu/navigation.c \
 		boot/bootloader/bootmenu/dialog.c \
+		boot/bootloader/bootmenu/test_architecture.c \
 		boot/bootloader/bootmenu/page.c \
 		-Wl,--subsystem,10 -Wl,--entry,efi_main -Wl,--image-base,0x400000 \
 		-Wl,--dynamicbase -o $(UEFI_APP)
@@ -277,6 +288,14 @@ test-uefi-image: uefi
 	grep -F "UEFI:GAL-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:GAL-PRESENT" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:SCALING-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:ALIGNMENT-SPACING-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:STACK-LAYOUT-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:GRID-LAYOUT-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:OVERLAY-LAYOUT-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:CONSTRAINT-SIZING-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESPONSIVE-LAYOUT-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:SAFE-DISPLAY-AREA-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:DPI-RESOLUTION-SCALING-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:DESIGN-COMPATIBILITY-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:SEMANTIC-DESIGN-TOKENS-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:EFFECT-MOTION-TOKENS-READY" build/qemu-uefi-image-debug.log
@@ -290,6 +309,37 @@ test-uefi-image: uefi
 	grep -F "UEFI:MOTION-BUDGET-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:FRAME-BUDGET-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:MEMORY-BUDGET-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:STARTUP-BUDGET-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:ADAPTIVE-QUALITY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:LOW-END-PROFILE-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:HIGH-QUALITY-FALLBACK-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:DIAGNOSTICS-FRAMEWORK-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RENDERING-STATISTICS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:INPUT-EVENT-TRACING-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:ANIMATION-DIAGNOSTICS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOURCE-LOADING-DIAGNOSTICS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:PERFORMANCE-REGRESSION-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOURCE-CORRUPTION-TESTS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:FALLBACK-MODE-TESTS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RESOLUTION-COMPATIBILITY-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RENDER-REFERENCE-TESTS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:BOOT-TEST-ARCHITECTURE-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:PASSWORD-FIELD-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:CONTROL-EVENT-ROUTING-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:FOCUS-SCOPE-MANAGER-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:DIRECTIONAL-FOCUS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:KEYBOARD-SHORTCUTS-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:INPUT-REPEAT-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:DOUBLE-CLICK-DETECTION-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:INPUT-HOT-DETECTION-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:INPUT-DEVICE-MONITOR-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:POINTER-SPEED-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:POINTER-CAPTURE-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:POINTER-CAPTURE-CANCEL-EVENT-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:DIALOG-CAPTURE-CANCEL-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:RECOVERY-CAPTURE-CANCEL-READY" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:BASE-SURFACE-CACHE-HIT" build/qemu-uefi-image-debug.log
+	grep -F "UEFI:PARTIAL-INTERACTION-FRAME" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:UI-ARCHITECTURE-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:SCENE-GRAPH-READY" build/qemu-uefi-image-debug.log
 	grep -F "UEFI:RENDER-COMMANDS-READY" build/qemu-uefi-image-debug.log
@@ -350,6 +400,10 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:MOTION-BUDGET-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:FRAME-BUDGET-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:MEMORY-BUDGET-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:STARTUP-BUDGET-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:ADAPTIVE-QUALITY-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:LOW-END-PROFILE-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:HIGH-QUALITY-FALLBACK-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:UI-ARCHITECTURE-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:SCENE-GRAPH-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RENDER-COMMANDS-READY" $(UEFI_DEBUG_LOG)
@@ -391,7 +445,10 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:POWER-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:DIAGNOSTICS-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:NAVIGATION-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:NAVIGATION-TESTS-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:DIALOG-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:DIALOG-TESTS-READY" $(UEFI_DEBUG_LOG)
+	grep -F "UEFI:CONTROL-INTERACTION-TESTS-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:PAGES-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RUNTIME-RUNNING" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RUNTIME-FRAME-COMPLETE" $(UEFI_DEBUG_LOG)
@@ -428,6 +485,8 @@ test-uefi-input: uefi
 	grep -F "UEFI:PAGE-RESTORED" $(UEFI_INPUT_DEBUG_LOG)
 	grep -F "UEFI:DIALOG-PAGE-ACTIVE" $(UEFI_INPUT_DEBUG_LOG)
 	grep -F "UEFI:HELP-VIEW" $(UEFI_INPUT_DEBUG_LOG)
+	grep -F "UEFI:CONTROL-INPUT-EVENTS-READY" $(UEFI_INPUT_DEBUG_LOG)
+	grep -F "UEFI:CONTROL-KEY-EVENT-BUBBLED" $(UEFI_INPUT_DEBUG_LOG)
 	grep -F "UEFI:BACK" $(UEFI_INPUT_DEBUG_LOG)
 	test -s build/uefi-help.ppm
 	@echo "QEMU UEFI Event-Queue-, Navigation-, Unteransichten- und Hilfe-Test erfolgreich"
@@ -450,6 +509,18 @@ test-uefi-dialog: uefi
 		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
 		-DebugLog build/qemu-uefi-dialog-debug.log
 
+test-uefi-confirmation: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/test-uefi-confirmation.ps1 -Qemu "$(QEMU64)" \
+		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-confirmation-debug.log
+
+test-uefi-warning: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/test-uefi-warning.ps1 -Qemu "$(QEMU64)" \
+		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-warning-debug.log
+
 test-uefi-software-renderer: uefi
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \
 		-File scripts/test-uefi-software-renderer.ps1 -Qemu "$(QEMU64)" \
@@ -464,6 +535,17 @@ test-uefi-software-renderer: uefi
 	grep -F "UEFI:DIALOG-RESULT-CANCEL" build/qemu-uefi-dialog-debug.log
 	test -s build/uefi-dialog.ppm
 	@echo "QEMU UEFI Modal-, Fokus- und Abbruchdialog-Test erfolgreich"
+
+test-uefi-password: uefi
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/test-uefi-password.ps1 -Qemu "$(QEMU64)" \
+		-Firmware $(UEFI_FIRMWARE) -FatDirectory $(UEFI_DIR) \
+		-DebugLog build/qemu-uefi-password-debug.log
+	grep -F "UEFI:PASSWORD-FIELD-DIALOG-OPEN" build/qemu-uefi-password-debug.log
+	grep -F "UEFI:PASSWORD-FIELD-INPUT" build/qemu-uefi-password-debug.log
+	grep -F "UEFI:PASSWORD-FIELD-FRAME-READY" build/qemu-uefi-password-debug.log
+	test -s build/uefi-password.ppm
+	@echo "QEMU UEFI Password-Field-Test erfolgreich"
 
 test-uefi-context: uefi
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \
@@ -622,6 +704,8 @@ test-uefi-themes: uefi
 	grep -F "UEFI:THEME-DARK" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:MENU-BUTTON-OPEN" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:MENU-BUTTON-SELECTION" $(UEFI_THEME_DEBUG_LOG)
+	grep -F "UEFI:QUALITY-MENU-OPEN" $(UEFI_THEME_DEBUG_LOG)
+	grep -F "UEFI:QUALITY-SELECTION" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:REDUCED-MOTION-ON" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:CONFIGURATION-COMMIT" $(UEFI_THEME_DEBUG_LOG)
 	grep -F "UEFI:NAV-REDUCED-FADE" $(UEFI_THEME_DEBUG_LOG)
@@ -640,6 +724,7 @@ test-uefi-resolutions: $(UEFI_FIRMWARE)
 	grep -F "UEFI:GOP-MODES-VALIDATED" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:LAYOUT-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:SCALING-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:RESOLUTION-COMPATIBILITY-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:GAL-PRESENT" $(UEFI_RESOLUTION_DEBUG_LOG)
 	test -s build/uefi-800x600.ppm
 	$(MAKE) uefi UEFI_DIR=build/uefi-1280 UEFI_FIRMWARE=$(UEFI_FIRMWARE) \
@@ -651,6 +736,7 @@ test-uefi-resolutions: $(UEFI_FIRMWARE)
 	grep -F "UEFI:GOP-MODES-VALIDATED" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:LAYOUT-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:SCALING-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:RESOLUTION-COMPATIBILITY-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:GAL-PRESENT" $(UEFI_RESOLUTION_DEBUG_LOG)
 	test -s build/uefi-1280x720.ppm
 	$(MAKE) uefi UEFI_DIR=build/uefi-1920 UEFI_FIRMWARE=$(UEFI_FIRMWARE) \
@@ -662,8 +748,10 @@ test-uefi-resolutions: $(UEFI_FIRMWARE)
 	grep -F "UEFI:GOP-MODES-VALIDATED" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:LAYOUT-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:SCALING-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
+	grep -F "UEFI:RESOLUTION-COMPATIBILITY-READY" $(UEFI_RESOLUTION_DEBUG_LOG)
 	grep -F "UEFI:GAL-PRESENT" $(UEFI_RESOLUTION_DEBUG_LOG)
 	test -s build/uefi-1920x1080.ppm
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/report-uefi-resolutions.ps1
 	@echo "QEMU UEFI 800x600-, 1280x720- und 1920x1080-Layout-Test erfolgreich"
 
 $(KERNEL_ELF): $(KERNEL) scripts/build-elf32.ps1
@@ -855,6 +943,12 @@ test-bios-vbe-fallback: image
 	grep -F "BIOS:VBE-TEXT-FALLBACK" $(VBE_FALLBACK_DEBUG_LOG)
 	grep -F "NOVA_KERNEL_READY" $(VBE_FALLBACK_SERIAL_LOG)
 	@echo "QEMU BIOS-VBE-Textmodus-Fallback erfolgreich"
+
+test-firmware-compatibility: test-platform test-uefi-image
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-firmware-compatibility.ps1 \
+		-BiosDebugLog $(PLATFORM_DEBUG_LOG) -BiosSerialLog $(PLATFORM_SERIAL_LOG) \
+		-UefiDebugLog build/qemu-uefi-image-debug.log \
+		-OutputReport build/firmware-compatibility-report.md
 
 test-elf: image $(KERNEL_ELF)
 	cp $(DISK_IMAGE) $(DIRECT_ELF_IMAGE)

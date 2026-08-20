@@ -43,13 +43,22 @@ static nova_surface_t *interaction_surface;
 static nova_surface_handle_t base_surface_handle,interaction_surface_handle;
 static nova_layer_handle_t managed_layers[NOVA_LAYER_CUSTOM];
 static bool initialized;
+static bool base_cache_valid,base_dirty_requested=true,previous_complex_frame;
+static bool first_present_pending=true,overlay_reset_requested=true;
+static UINTN previous_selection=(UINTN)-1;
+static uint8_t previous_frame_opacity=255;
+static nova_bootmenu_view_t cached_base_view;
+static nova_theme_id_t cached_base_theme=NOVA_THEME_COUNT;
+static uint32_t cached_base_width,cached_base_height,cached_base_scale;
+static uint32_t base_cache_generation;
+static int32_t previous_pointer_x,previous_pointer_y;
 static nova_control_t *menu_list;
 static nova_control_t *menu_items[6];
 static nova_control_t *recovery_tiles[6];
 static nova_control_t *recovery_badges[6];
 static nova_control_t *settings_accessories[4];
 static nova_control_t *context_menu;
-static nova_control_t *context_items[3];
+static nova_control_t *context_items[6];
 static nova_control_t *tooltip_control;
 static nova_control_t *breadcrumb_control;
 static nova_control_t *breadcrumb_home_button;
@@ -59,6 +68,7 @@ static bool breadcrumb_root_hovered;
 static bool breadcrumb_root_requested;
 static nova_control_t *help_search_field;
 static nova_control_t *dialog_spinner;
+static nova_control_t *dialog_password_field;
 static nova_control_t *dialog_buttons[NOVA_DIALOG_BUTTON_CAPACITY];
 static nova_control_t *diagnostic_scroll_view;
 static nova_control_t *diagnostic_scrollbar;
@@ -69,15 +79,28 @@ static nova_control_t *status_label;
 static nova_control_t *section_separator;
 static nova_control_t *item_icons[6];
 static bool diagnostic_scroll_dragging;
+static uint32_t routed_menu_event_count;
+static bool bootmenu_list_event(nova_control_t *control,nova_control_event_t *event,void *context)
+{(void)control;(void)context;
+ if(event->type==NOVA_CONTROL_EVENT_KEY_DOWN){
+    nova_debug_string("UEFI:CONTROL-KEY-EVENT-BUBBLED\n");return false;}
+ if(event->type>=NOVA_CONTROL_EVENT_MOUSE_ENTER&&event->type<=NOVA_CONTROL_EVENT_MOUSE_UP){
+    nova_debug_string("UEFI:CONTROL-POINTER-EVENT-BUBBLED\n");return false;}
+ if(event->type!=NOVA_CONTROL_EVENT_CLICK)return false;
+ ++routed_menu_event_count;nova_debug_string("UEFI:CONTROL-EVENT-BUBBLED\n");return true;}
 static int32_t pointer_x;
 static int32_t pointer_y;
 static bool pointer_left;
 static bool pointer_right;
+static nova_control_t *pointer_event_target;
+static uint32_t pointer_clock_ms;
 static bool context_visible;
 static uint8_t context_focus;
 static uint16_t context_target;
-typedef enum { NOVA_CONTEXT_ACTIONS, NOVA_CONTEXT_THEMES } nova_context_kind_t;
+typedef enum { NOVA_CONTEXT_ACTIONS, NOVA_CONTEXT_THEMES,
+    NOVA_CONTEXT_QUALITY } nova_context_kind_t;
 static nova_context_kind_t context_kind;
+static uint8_t context_count=3;
 static uint32_t tooltip_elapsed_ms;
 static bool tooltip_visible;
 static bool tooltips_enabled=true;
@@ -89,8 +112,11 @@ static nova_bootmenu_view_t tooltip_view=NOVA_VIEW_MAIN;
 static const char *const context_action_text[3] = {
     "Details anzeigen", "Erweiterte Optionen", "Schließen"
 };
-static const char *const context_theme_text[3] = {
-    "Dark", "Light", "Hoher Kontrast"
+static const char *const context_theme_text[4] = {
+    "Dark", "Light", "Hoher Kontrast", "GrafikqualitÃ¤t ..."
+};
+static const char *const context_quality_text[6] = {
+    "Automatisch", "Ultra", "High", "Balanced", "Low", "Safe"
 };
 static const char *const main_tooltips[6]={
     "NovaOS mit bevorzugtem Kernel starten.",
@@ -280,6 +306,7 @@ static void sync_active_page(void)
 
 bool bootmenu_initialize(void)
 {
+    (void)nova_boot_budget_begin(NOVA_BOOT_PHASE_UI);
     nova_architecture_initialize();
     for(uint8_t subsystem=0;subsystem<NOVA_ARCH_SUBSYSTEM_COUNT;++subsystem)
         if(!nova_architecture_register((nova_architecture_subsystem_t)subsystem))return false;
@@ -339,6 +366,7 @@ bool bootmenu_initialize(void)
                 nova_surface_manager_emergency()))return false;
         nova_debug_string("UEFI:SURFACE-MANAGER-READY\n");
         nova_debug_string("UEFI:LAYER-MANAGER-READY\n");
+        (void)nova_boot_budget_begin(NOVA_BOOT_PHASE_RESOURCES);
         if(!nova_resource_loader_initialize(NOVA_RESOURCE_DEFAULT_CACHE_BUDGET))return false;
         if(!nova_resource_cache_configure(512u*1024u,NOVA_RESOURCE_DEFAULT_CACHE_BUDGET,
                                           512u*1024u,7u*1024u*1024u))return false;
@@ -432,6 +460,7 @@ bool bootmenu_initialize(void)
            png_probe_image->pixels[2]!=0||png_probe_image->pixels[3]!=0xff000000u)
             return false;
         nova_debug_string("UEFI:PNG-DECODER-READY\n");
+        (void)nova_boot_budget_begin(NOVA_BOOT_PHASE_THEME);
         if (!nova_theme_initialize()) return false;
         const nova_boot_configuration_t *initial_configuration=
             nova_configuration_effective();
@@ -459,12 +488,14 @@ bool bootmenu_initialize(void)
            !nova_theme_validate(NOVA_THEME_HIGH_CONTRAST))return false;
         nova_debug_string("UEFI:HIGH-CONTRAST-THEME-READY\n");
         nova_theme_set_reduced_motion(initial_configuration->reduced_motion);
+        (void)nova_boot_budget_end(NOVA_BOOT_PHASE_THEME);
         tooltips_enabled=initial_configuration->tooltips;
         tooltip_delay_ms=initial_configuration->tooltip_delay_ms;
         nova_layout_initialize();
         if (!nova_layout_compute(nova_graphics_width(),nova_graphics_height(),
                                  false, &current_layout)) return false;
         nova_unicode_initialize();
+        nova_text_layout_initialize();
         if (!nova_text_register_font_resource() ||
             !nova_font_resource_load(NOVA_SYSTEM_FONT_ID))
             return false;
@@ -536,6 +567,7 @@ bool bootmenu_initialize(void)
         nova_debug_string("UEFI:RESOURCE-CACHE-READY\n");
         nova_debug_string("UEFI:RESOURCE-PRELOAD-READY\n");
         nova_debug_string("UEFI:RESOURCES-READY\n");
+        (void)nova_boot_budget_end(NOVA_BOOT_PHASE_RESOURCES);
         nova_page_model_initialize();
         static const char *const page_titles[7]={"NovaOS Bootmanager","Einstellungen",
             "Boot-Diagnose","Recovery","Ausschalten / Neustarten","Hilfe",
@@ -559,6 +591,7 @@ bool bootmenu_initialize(void)
         if (!menu_list) return false;
         nova_control_set_state(menu_list, NOVA_CONTROL_INITIALIZED);
         nova_control_set_state(menu_list, NOVA_CONTROL_VISIBLE);
+        if(!nova_control_set_event_handler(menu_list,bootmenu_list_event,0))return false;
         for (uint16_t i = 0; i < 6; ++i) {
             menu_items[i] = nova_control_create(NOVA_CONTROL_LIST_ITEM);
             if (!menu_items[i] || !nova_list_add_item(menu_list,menu_items[i])) return false;
@@ -614,15 +647,16 @@ bool bootmenu_initialize(void)
         nova_control_set_state(context_menu,NOVA_CONTROL_VISIBLE);
         nova_control_set_flags(context_menu,NOVA_CONTROL_FLAG_VISIBLE |
                                             NOVA_CONTROL_FLAG_MODAL);
-        for(uint16_t i=0;i<3;++i){
+        for(uint16_t i=0;i<6;++i){
             context_items[i]=nova_control_create(NOVA_CONTROL_LIST_ITEM);
             if(!context_items[i]||!nova_control_set_parent(context_items[i],context_menu))
                 return false;
             context_items[i]->action=i;
             nova_control_set_state(context_items[i],NOVA_CONTROL_INITIALIZED);
             nova_control_set_state(context_items[i],NOVA_CONTROL_VISIBLE);
-            nova_control_set_text(context_items[i],context_action_text[i]);
-            nova_control_set_accessibility(context_items[i],2,context_action_text[i],false);
+            const char *initial=i<3?context_action_text[i]:"";
+            nova_control_set_text(context_items[i],initial);
+            nova_control_set_accessibility(context_items[i],2,initial,false);
         }
         if(!nova_menu_button_bind(settings_accessories[0],context_menu)||
            !nova_control_set_text(settings_accessories[0],"Dark")||
@@ -633,6 +667,7 @@ bool bootmenu_initialize(void)
         breadcrumb_home_button=nova_control_create(NOVA_CONTROL_ICON_BUTTON);
         help_search_field=nova_control_create(NOVA_CONTROL_TEXT_FIELD);
         dialog_spinner=nova_control_create(NOVA_CONTROL_SPINNER);
+        dialog_password_field=nova_password_field_create();
         diagnostic_scroll_view=nova_control_create(NOVA_CONTROL_SCROLL_VIEW);
         diagnostic_scrollbar=nova_control_create(NOVA_CONTROL_SCROLLBAR);
         page_card=nova_control_create(NOVA_CONTROL_CARD);
@@ -642,6 +677,7 @@ bool bootmenu_initialize(void)
         section_separator=nova_control_create(NOVA_CONTROL_SEPARATOR);
         for(uint8_t i=0;i<6;++i)item_icons[i]=nova_control_create(NOVA_CONTROL_ICON);
         if(!tooltip_control||!breadcrumb_control||!breadcrumb_home_button||!help_search_field||!dialog_spinner||
+           !dialog_password_field||
            !diagnostic_scroll_view||!diagnostic_scrollbar||!page_card||!brand_image||
            !brand_label||!status_label||!section_separator)return false;
         for(uint8_t i=0;i<6;++i)if(!item_icons[i])return false;
@@ -698,6 +734,13 @@ bool bootmenu_initialize(void)
         nova_text_field_set_maximum(help_search_field,48);
         nova_control_set_accessibility(help_search_field,7,"Hilfethemen durchsuchen",false);
         nova_control_set_state(dialog_spinner,NOVA_CONTROL_INITIALIZED);
+        nova_control_set_state(dialog_password_field,NOVA_CONTROL_INITIALIZED);
+        nova_control_set_state(dialog_password_field,NOVA_CONTROL_VISIBLE);
+        nova_control_set_flags(dialog_password_field,NOVA_CONTROL_FLAG_VISIBLE|
+            NOVA_CONTROL_FLAG_ENABLED|NOVA_CONTROL_FLAG_FOCUSED);
+        nova_password_field_set_placeholder(dialog_password_field,"Passwort eingeben");
+        nova_password_field_enable_reveal(dialog_password_field,false);
+        nova_control_set_accessibility(dialog_password_field,9,"Passwortfeld",false);
         nova_control_set_state(dialog_spinner,NOVA_CONTROL_VISIBLE);
         nova_control_set_flags(dialog_spinner,NOVA_CONTROL_FLAG_VISIBLE|NOVA_CONTROL_FLAG_ENABLED|
                                               NOVA_CONTROL_FLAG_DECORATIVE);
@@ -799,9 +842,49 @@ bool bootmenu_initialize(void)
         nova_animation_resource_set_reduced(initial_configuration->reduced_motion);
         nova_debug_string("UEFI:ANIMATION-RESOURCE-READY\n");
         if(!nova_render_quality_initialize(true,64ull*1024u*1024u))return false;
+        nova_quality_telemetry_t adaptive_probe={.frame_time_us=16000,
+            .width=nova_graphics_width(),.height=nova_graphics_height(),
+            .available_memory=64ull*1024u*1024u,.cache_used=
+                nova_resource_diagnostics()->cached_bytes,
+            .cache_budget=nova_resource_diagnostics()->cache_budget,
+            .cpu_score=50,.gpu_load_percent=0,.gpu_available=false,
+            .software_renderer=true,.firmware_limited=false};
+        if(!nova_render_quality_observe(&adaptive_probe)||
+           !nova_render_quality_set_auto(adaptive_probe.available_memory,false,true)||
+           !nova_boot_quality_update()||
+           nova_render_quality_get()!=NOVA_RENDER_QUALITY_PERFORMANCE||
+           !nova_boot_quality_status()->state_preserved||
+           !nova_boot_quality_status()->security_preserved||
+           nova_boot_quality_status()->parameters.animation_frame_step!=3)return false;
+        for(uint8_t profile=0;profile<NOVA_RENDER_QUALITY_COUNT;++profile)
+            if(!nova_boot_quality_set((nova_boot_quality_t)profile))return false;
+        if(!nova_boot_quality_set(NOVA_BOOT_QUALITY_AUTO))return false;
+        nova_debug_string("UEFI:ADAPTIVE-QUALITY-READY\n");
+        if(!nova_low_end_profile_initialize()||
+           !nova_low_end_profile_detect(1,1000,32ull*1024u*1024u,false,false)||
+           !nova_low_end_profile_status()->enabled||
+           nova_low_end_profile_status()->target_fps!=30||
+           nova_memory_budget_status()->total_budget!=32ull*1024u*1024u||
+           nova_memory_budget_status()->area_budget[NOVA_MEMORY_AREA_RESOURCE_CACHE]!=
+                6ull*1024u*1024u||
+           nova_memory_budget_status()->area_budget[NOVA_MEMORY_AREA_GLYPH_CACHE]!=
+                2ull*1024u*1024u||
+           nova_memory_budget_status()->area_budget[NOVA_MEMORY_AREA_SVG_CACHE]!=
+                2ull*1024u*1024u||
+           nova_memory_budget_status()->area_budget[NOVA_MEMORY_AREA_THEME_CACHE]!=
+                512ull*1024u||
+           nova_render_quality_get()!=NOVA_RENDER_QUALITY_PERFORMANCE)return false;
+        nova_debug_string("UEFI:LOW-END-PROFILE-READY\n");
+        if(!nova_high_quality_profile_initialize()||
+           nova_high_quality_profile_detect(8,16ull*1024u*1024u*1024u,
+                512ull*1024u*1024u,true,true)||
+           nova_high_quality_profile_status()->enabled||
+           nova_high_quality_profile_status()->gpu_acceleration||
+           !nova_high_quality_profile_status()->software_fallback_available)return false;
+        nova_debug_string("UEFI:HIGH-QUALITY-FALLBACK-READY\n");
         nova_debug_string("UEFI:RENDER-QUALITY-READY\n");
         nova_sw_renderer_configuration_t software={nova_graphics_width(),
-            nova_graphics_height(),64ull*1024u*1024u,true,false,false,
+            nova_graphics_height(),nova_memory_budget_status()->total_budget,true,false,false,
             nova_configuration_effective()->safe_mode};
         if(nova_sw_renderer_initialize(&software)!=NOVA_SW_RENDERER_OK)return false;
         nova_debug_string("UEFI:SOFTWARE-RENDERER-READY\n");
@@ -839,6 +922,7 @@ bool bootmenu_initialize(void)
         nova_debug_string("UEFI:UI-ARCHITECTURE-READY\n");
     }
     if (initialized) nova_debug_string("UEFI:COMPOSITOR-READY\n");
+    (void)nova_boot_budget_end(NOVA_BOOT_PHASE_UI);
     return initialized;
 }
 
@@ -867,9 +951,11 @@ static const nova_icon_token_t *view_icons(void)
 void bootmenu_set_view(nova_bootmenu_view_t view)
 {
     if(view>NOVA_VIEW_FIRMWARE)return;
+    nova_input_pointer_cancel_all();
+    diagnostic_scroll_dragging=false;settings_slider_dragging=false;
     if(view!=NOVA_VIEW_HELP){help_search_editing=false;
         if(help_search_field)help_search_field->flags&=~NOVA_CONTROL_FLAG_FOCUSED;}
-    current_view = view;
+    current_view = view;base_dirty_requested=true;
     if(!dialog_page&&nova_page_active()!=view_pages[view]){
         nova_page_activate(view_pages[view]);
         nova_page_set_focus(view_pages[view],view_content[view]);
@@ -926,6 +1012,7 @@ void bootmenu_set_firmware_info(const char *vendor,uint32_t revision,
     firmware_line(4,"",setup_supported?"Firmware-Setup öffnen":
                                       "Firmware-Setup nicht verfügbar");
     firmware_setup_available=setup_supported;
+    base_dirty_requested=true;
 }
 
 static void tooltip_delay_status(void)
@@ -955,6 +1042,14 @@ bool bootmenu_configuration_select_theme(uint8_t theme)
     if(!nova_design_tokens_reload())return false;
     nova_animation_resource_set_reduced(nova_theme_reduced_motion());
     return true;
+}
+
+bool bootmenu_configuration_select_quality(uint8_t quality)
+{
+    if(!initialized||quality>NOVA_QUALITY_AUTO||
+       !configuration_commit(NOVA_CONFIG_QUALITY,quality))return false;
+    nova_diag_set_quality((nova_quality_t)quality,quality==NOVA_QUALITY_AUTO);
+    return nova_diag_quality()->quality<=NOVA_QUALITY_SAFE;
 }
 
 bool bootmenu_settings_toggle_reduced_motion(void)
@@ -1097,6 +1192,7 @@ bool bootmenu_context_open(uint64_t selection)
     bootmenu_tooltip_hide();
     nova_menu_button_close(settings_accessories[0]);
     context_kind=NOVA_CONTEXT_ACTIONS;
+    context_count=3;
     for(uint8_t i=0;i<3;++i){
         nova_control_set_text(context_items[i],context_action_text[i]);
         nova_control_set_accessibility(context_items[i],2,context_action_text[i],false);
@@ -1111,9 +1207,10 @@ bool bootmenu_theme_menu_open(void)
 {
     if(!initialized||nova_dialog_active()||current_view!=NOVA_VIEW_SETTINGS||
        !nova_menu_button_open(settings_accessories[0]))return false;
-    bootmenu_tooltip_hide();context_kind=NOVA_CONTEXT_THEMES;context_visible=true;
+    bootmenu_tooltip_hide();context_kind=NOVA_CONTEXT_THEMES;context_count=4;
+    context_visible=true;
     context_focus=(uint8_t)nova_theme_active();context_target=0;
-    for(uint8_t i=0;i<3;++i){
+    for(uint8_t i=0;i<context_count;++i){
         nova_control_set_text(context_items[i],context_theme_text[i]);
         nova_control_set_accessibility(context_items[i],2,context_theme_text[i],false);
     }
@@ -1121,12 +1218,28 @@ bool bootmenu_theme_menu_open(void)
     nova_debug_string("UEFI:MENU-BUTTON-OPEN\n");return true;
 }
 
+bool bootmenu_quality_menu_open(void)
+{
+    if(!initialized||nova_dialog_active()||current_view!=NOVA_VIEW_SETTINGS||
+       !nova_menu_button_open(settings_accessories[0]))return false;
+    bootmenu_tooltip_hide();context_kind=NOVA_CONTEXT_QUALITY;context_count=6;
+    context_visible=true;context_target=0;
+    nova_quality_t configured=nova_configuration_effective()->quality;
+    context_focus=configured==NOVA_QUALITY_AUTO?0:(uint8_t)configured+1;
+    for(uint8_t i=0;i<context_count;++i){
+        nova_control_set_text(context_items[i],context_quality_text[i]);
+        nova_control_set_accessibility(context_items[i],2,context_quality_text[i],false);
+    }
+    nova_input_focus_set(context_items[context_focus]);
+    nova_debug_string("UEFI:QUALITY-MENU-OPEN\n");return true;
+}
+
 bool bootmenu_context_active(void){return context_visible;}
 
 bool bootmenu_context_move(int8_t direction)
 {
     if(!context_visible||!direction)return false;
-    context_focus=(uint8_t)((context_focus+(direction>0?1:2))%3);
+    context_focus=(uint8_t)((context_focus+(direction>0?1:context_count-1))%context_count);
     nova_input_focus_set(context_items[context_focus]);
     return true;
 }
@@ -1134,16 +1247,18 @@ bool bootmenu_context_move(int8_t direction)
 bool bootmenu_context_edge(bool end)
 {
     if(!context_visible)return false;
-    context_focus=end?2:0;nova_input_focus_set(context_items[context_focus]);
+    context_focus=end?(uint8_t)(context_count-1):0;
+    nova_input_focus_set(context_items[context_focus]);
     nova_debug_string(end?"UEFI:CONTEXT-END\n":"UEFI:CONTEXT-HOME\n");return true;
 }
 
 bool bootmenu_context_activate(uint8_t *action)
 {
     if(!context_visible||!action)return false;
-    *action=(uint8_t)(context_focus|(context_kind==NOVA_CONTEXT_THEMES?0x80u:0u));
+    *action=(uint8_t)(context_focus|(context_kind==NOVA_CONTEXT_THEMES?0x80u:
+        context_kind==NOVA_CONTEXT_QUALITY?0x40u:0u));
     context_visible=false;
-    if(context_kind==NOVA_CONTEXT_THEMES){
+    if(context_kind==NOVA_CONTEXT_THEMES||context_kind==NOVA_CONTEXT_QUALITY){
         nova_menu_button_close(settings_accessories[0]);
         nova_input_focus_set(settings_accessories[0]);
     }
@@ -1155,7 +1270,7 @@ void bootmenu_context_close(void)
 {
     if(context_visible)nova_debug_string("UEFI:CONTEXT-CLOSE\n");
     context_visible=false;
-    if(context_kind==NOVA_CONTEXT_THEMES){
+    if(context_kind==NOVA_CONTEXT_THEMES||context_kind==NOVA_CONTEXT_QUALITY){
         nova_menu_button_close(settings_accessories[0]);
         nova_input_focus_set(settings_accessories[0]);
         nova_debug_string("UEFI:MENU-BUTTON-FOCUS-RESTORED\n");
@@ -1164,6 +1279,7 @@ void bootmenu_context_close(void)
 
 void bootmenu_tooltip_hide(void)
 {
+    if(tooltip_visible)overlay_reset_requested=true;
     tooltip_visible=false;tooltip_elapsed_ms=0;
 }
 
@@ -1220,9 +1336,58 @@ bool bootmenu_runtime_self_test(void)
     nova_debug_string("UEFI:RUNTIME-LIFECYCLE-SELF-TEST\n");return true;
 }
 
+bool bootmenu_diagnostics_refresh(void)
+{
+    if(!initialized||current_view!=NOVA_VIEW_DIAGNOSTICS)return false;
+    nova_diag_snapshot();
+    const nova_diag_statistics_t *diagnostics=nova_diag_statistics();
+    const nova_render_statistics_t *render=nova_render_statistics_current();
+    static char summary[96];uint32_t p=0;
+    const char *prefix=diagnostics->errors?"Fehler | ":diagnostics->warnings?"Warnung | ":"Bereit | ";
+    while(prefix[p]&&p+1<sizeof(summary)){summary[p]=prefix[p];++p;}summary[p]=0;
+    const char *fps="Rendering: ";for(uint32_t i=0;fps[i]&&p+1<sizeof(summary);++i)summary[p++]=fps[i];
+    uint32_t values[3]={render->fps,(uint32_t)(render->frame_time_us/1000u),render->draw_calls};
+    const char *suffix[3]={" FPS | "," ms | "," Draw Calls"};
+    for(uint8_t v=0;v<3;++v){char digits[10];uint8_t n=0;
+        if(!values[v])digits[n++]='0';else while(values[v]&&n<sizeof(digits)){
+            digits[n++]=(char)('0'+values[v]%10u);values[v]/=10u;}
+        while(n&&p+1<sizeof(summary))summary[p++]=digits[--n];
+        for(uint32_t i=0;suffix[v][i]&&p+1<sizeof(summary);++i)summary[p++]=suffix[v][i];}
+    summary[p]=0;bootmenu_set_status(summary);
+    nova_debug_string("UEFI:DIAGNOSTICS-REFRESH\n");return true;
+}
+
+bool bootmenu_diagnostics_export(void)
+{
+    static uint8_t report[8192],input_report[8192],animation_report[8192],resource_report[65536];
+    uint32_t written=0,input_written=0,animation_written=0,resource_written=0;
+    if(!nova_input_trace_enabled()){
+        if(!nova_input_trace_set_enabled(true,true))return false;
+        bootmenu_set_status("Eingabe-Tracing aktiv - Ereignisse erneut wählen, um Berichte zu exportieren");
+        nova_debug_string("UEFI:INPUT-TRACE-ENABLED\n");return true;
+    }
+    if(!initialized||current_view!=NOVA_VIEW_DIAGNOSTICS||
+       !nova_diag_export(NOVA_DIAG_EXPORT_NDF,true,report,sizeof(report),&written)||
+       !nova_input_trace_export(NOVA_INPUT_TRACE_NDF,true,input_report,
+            sizeof(input_report),&input_written)||
+       !nova_animation_diag_export(NOVA_ANIMATION_EXPORT_NDF,true,animation_report,
+            sizeof(animation_report),&animation_written)||
+       !nova_resource_diag_export(NOVA_RESOURCE_EXPORT_NDF,true,resource_report,
+            sizeof(resource_report),&resource_written)){
+        bootmenu_set_status("Diagnosebericht konnte nicht im lokalen Exportpuffer erstellt werden");
+        return false;
+    }
+    (void)nova_input_trace_set_enabled(false,true);
+    bootmenu_set_status("Diagnose-, Eingabe-, Animations- und Ressourcenbericht als NDF erstellt");
+    nova_debug_string("UEFI:INPUT-TRACE-EXPORT\n");
+    nova_debug_string("UEFI:DIAGNOSTICS-EXPORT\n");return written>0;
+}
+
 bool bootmenu_tick(uint32_t elapsed_ms)
 {
     nova_runtime_tick(elapsed_ms);
+    nova_input_advance_time(elapsed_ms);
+    pointer_clock_ms+=elapsed_ms;
     if(!initialized||!tooltips_enabled||context_visible||nova_dialog_active()||transition_input_locked||
        tooltip_selection>=bootmenu_item_count())return false;
     if(tooltip_visible)return false;
@@ -1247,7 +1412,7 @@ static const char *view_title(void)
 bool bootmenu_breadcrumb_focus(bool focused)
 {
     if(!initialized||current_view==NOVA_VIEW_MAIN)return false;
-    breadcrumb_root_focused=focused;
+    breadcrumb_root_focused=focused;base_dirty_requested=true;
     if(focused){breadcrumb_home_button->flags|=NOVA_CONTROL_FLAG_FOCUSED;
         nova_input_focus_set(breadcrumb_home_button);}
     else breadcrumb_home_button->flags&=~NOVA_CONTROL_FLAG_FOCUSED;
@@ -1309,24 +1474,117 @@ bool bootmenu_tile_move(uint16_t scan_code,UINTN *selection)
     nova_debug_string("UEFI:TILE-NAVIGATION\n");return true;
 }
 
-bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
-                            UINTN *selection, bool *activate)
+static bool point_in_control(const nova_control_t *control,int32_t x,int32_t y)
+{
+    if(!control||(control->flags&(NOVA_CONTROL_FLAG_VISIBLE|NOVA_CONTROL_FLAG_ENABLED))!=
+       (NOVA_CONTROL_FLAG_VISIBLE|NOVA_CONTROL_FLAG_ENABLED))return false;
+    nova_rect_t b=control->bounds;
+    return x>=b.x&&y>=b.y&&x<b.x+b.width&&y<b.y+b.height;
+}
+
+static nova_control_t *bootmenu_pointer_target_at(int32_t x,int32_t y)
+{
+    /* Decorative icons are created after the list items and therefore win the
+       generic reverse-order hit test. Map the complete visual item back to its
+       semantic, invokable control. */
+    nova_control_t *captured=nova_input_pointer_capture_owner(0);
+    if(captured)return captured;
+    if(nova_dialog_active())for(uint8_t i=0;i<NOVA_DIALOG_BUTTON_CAPACITY;++i)
+        if(point_in_control(dialog_buttons[i],x,y))return dialog_buttons[i];
+    if(context_visible)for(uint8_t i=0;i<context_count;++i)
+        if(point_in_control(context_items[i],x,y))return context_items[i];
+    if(current_view!=NOVA_VIEW_MAIN&&point_in_control(breadcrumb_home_button,x,y))
+        return breadcrumb_home_button;
+    if(current_view==NOVA_VIEW_HELP&&point_in_control(help_search_field,x,y))
+        return help_search_field;
+    if(current_view==NOVA_VIEW_SETTINGS)for(uint8_t i=0;i<4;++i)
+        if(point_in_control(settings_accessories[i],x,y))return settings_accessories[i];
+    for(uint8_t i=0;i<6;++i){
+        nova_control_t *item=current_view==NOVA_VIEW_RECOVERY?recovery_tiles[i]:menu_items[i];
+        if(point_in_control(item,x,y))return item;
+    }
+    return nova_control_hit_test(x,y);
+}
+
+static void route_pointer_events(nova_control_t *target,bool left,bool right)
+{
+    uint32_t buttons=(left?1u:0u)|(right?2u:0u);
+    if(target!=pointer_event_target){
+        if(pointer_event_target){nova_control_event_t leave={
+            .type=NOVA_CONTROL_EVENT_MOUSE_LEAVE,.device_id=2,.x=pointer_x,.y=pointer_y,
+            .value=(int32_t)buttons};
+            (void)nova_control_dispatch_event(pointer_event_target,&leave);}
+        if(target){nova_control_event_t enter={.type=NOVA_CONTROL_EVENT_MOUSE_ENTER,
+            .device_id=2,.x=pointer_x,.y=pointer_y,.value=(int32_t)buttons};
+            (void)nova_control_dispatch_event(target,&enter);}
+        pointer_event_target=target;
+    }
+    if(target){
+        nova_control_event_t move={.type=NOVA_CONTROL_EVENT_MOUSE_MOVE,.device_id=2,
+            .x=pointer_x,.y=pointer_y,.value=(int32_t)buttons};
+        (void)nova_control_dispatch_event(target,&move);
+        bool pressed=(left&&!pointer_left)||(right&&!pointer_right);
+        bool released=(!left&&pointer_left)||(!right&&pointer_right);
+        if(pressed){nova_control_event_t button={.type=NOVA_CONTROL_EVENT_MOUSE_DOWN,
+            .device_id=2,.x=pointer_x,.y=pointer_y,.value=(int32_t)buttons};
+            (void)nova_control_dispatch_event(target,&button);
+            if(left&&!pointer_left&&nova_input_pointer_click_update(2,0,target,
+               pointer_x,pointer_y,pointer_clock_ms,true,
+               nova_configuration_effective()->double_click_time_ms,
+               (uint32_t)nova_dlu_to_pixels(4,current_layout.scale_milli))){
+                nova_control_event_t double_click={
+                    .type=NOVA_CONTROL_EVENT_DOUBLE_CLICK,.device_id=2,
+                    .x=pointer_x,.y=pointer_y,.value=(int32_t)buttons};
+                (void)nova_control_dispatch_event(target,&double_click);
+                nova_debug_string("UEFI:CONTROL-DOUBLE-CLICK\n");
+            }}
+        if(released){nova_control_event_t button={.type=NOVA_CONTROL_EVENT_MOUSE_UP,
+            .device_id=2,.x=pointer_x,.y=pointer_y,.value=(int32_t)buttons};
+            (void)nova_control_dispatch_event(target,&button);
+            if(!left&&pointer_left)(void)nova_input_pointer_click_update(2,0,target,
+                pointer_x,pointer_y,pointer_clock_ms,false,
+                nova_configuration_effective()->double_click_time_ms,
+                (uint32_t)nova_dlu_to_pixels(4,current_layout.scale_milli));}
+    }
+}
+
+bool bootmenu_key_event(uint16_t scan_code,uint32_t unicode)
+{
+    if(!initialized||(!scan_code&&!unicode))return false;
+    nova_control_t *target=nova_input_focus_get();
+    if(!target)return false;
+    nova_control_event_t key={.type=NOVA_CONTROL_EVENT_KEY_DOWN,.device_id=1,
+        .key=scan_code,.character=unicode};
+    bool dispatched=nova_control_dispatch_event(target,&key);
+    /* Editable controls emit CharacterInput at the point where insertion is
+       accepted, avoiding duplicate text events for rejected characters. */
+    if(unicode>=0x20&&target->type!=NOVA_CONTROL_TEXT_FIELD&&
+       target->type!=NOVA_CONTROL_PASSWORD_FIELD){nova_control_event_t character={
+        .type=NOVA_CONTROL_EVENT_CHARACTER_INPUT,.device_id=1,.key=scan_code,
+        .character=unicode};
+        dispatched=nova_control_dispatch_event(target,&character)&&dispatched;}
+    return dispatched;
+}
+
+static bool bootmenu_pointer_apply(int32_t first,int32_t second,bool absolute,
+                                   bool left,bool right,UINTN *selection,bool *activate)
 {
     if (!initialized || !selection || !activate) return false;
     if (transition_input_locked) return false;
     bootmenu_tooltip_hide();
     int32_t width = (int32_t)nova_graphics_width();
     int32_t height = (int32_t)nova_graphics_height();
-    int32_t step_x = dx / 8;
-    int32_t step_y = dy / 8;
-    if (dx && !step_x) step_x = dx < 0 ? -1 : 1;
-    if (dy && !step_y) step_y = dy < 0 ? -1 : 1;
-    pointer_x += step_x;
-    pointer_y += step_y;
+    uint16_t pointer_speed=nova_configuration_effective()->mouse_speed_percent;
+    if(absolute){pointer_x=first;pointer_y=second;}
+    else{
+        pointer_x+=nova_input_pointer_scale_delta(first,pointer_speed);
+        pointer_y+=nova_input_pointer_scale_delta(second,pointer_speed);
+    }
     if (pointer_x < 0) pointer_x = 0;
     if (pointer_y < 0) pointer_y = 0;
     if (pointer_x >= width) pointer_x = width - 1;
     if (pointer_y >= height) pointer_y = height - 1;
+    route_pointer_events(bootmenu_pointer_target_at(pointer_x,pointer_y),left,right);
 
     nova_dialog_t *dialog = nova_dialog_active();
     if (dialog) {
@@ -1370,9 +1628,9 @@ bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
     pointer_right=right;
     if(context_visible){
         nova_rect_t bounds=context_bounds();
-        int32_t row_h=bounds.height/3;
+        int32_t row_h=bounds.height/context_count;
         bool inside=false;
-        for(uint8_t i=0;i<3;++i)if(pointer_x>=bounds.x&&pointer_x<bounds.x+bounds.width&&
+        for(uint8_t i=0;i<context_count;++i)if(pointer_x>=bounds.x&&pointer_x<bounds.x+bounds.width&&
            pointer_y>=bounds.y+i*row_h&&pointer_y<bounds.y+(i+1)*row_h){
             inside=true;
             context_focus=i;nova_input_focus_set(context_items[i]);
@@ -1387,6 +1645,7 @@ bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
         bool over=pointer_x>=breadcrumb_root_bounds.x&&pointer_y>=breadcrumb_root_bounds.y&&
             pointer_x<breadcrumb_root_bounds.x+breadcrumb_root_bounds.width&&
             pointer_y<breadcrumb_root_bounds.y+breadcrumb_root_bounds.height;
+        if(breadcrumb_root_hovered!=over)base_dirty_requested=true;
         breadcrumb_root_hovered=over;
         if(left&&!pointer_left&&over){
             breadcrumb_root_focused=true;
@@ -1395,13 +1654,17 @@ bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
             nova_debug_string("UEFI:BREADCRUMB-POINTER\n");
         }
         if(over){pointer_left=left;return true;}
-    }else breadcrumb_root_hovered=false;
+    }else{if(breadcrumb_root_hovered)base_dirty_requested=true;
+        breadcrumb_root_hovered=false;}
 
     if(current_view==NOVA_VIEW_DIAGNOSTICS){
         nova_rect_t bar=diagnostic_scrollbar->bounds;
         bool over=pointer_x>=bar.x&&pointer_y>=bar.y&&pointer_x<bar.x+bar.width&&
                   pointer_y<bar.y+bar.height;
-        if(left&&!pointer_left&&over)diagnostic_scroll_dragging=true;
+        if(left&&!pointer_left&&over){
+            diagnostic_scroll_dragging=nova_input_pointer_capture(0,diagnostic_scrollbar);
+            if(diagnostic_scroll_dragging)nova_debug_string("UEFI:POINTER-CAPTURE-BEGIN\n");
+        }
         if(diagnostic_scroll_dragging&&left){
             int32_t relative=pointer_y-bar.y;
             int32_t target=bar.height>1?(int32_t)((int64_t)relative*
@@ -1413,9 +1676,12 @@ bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
             *selection=nearest;
             nova_debug_string("UEFI:SCROLL-DRAG\n");
         }
-        if(!left)diagnostic_scroll_dragging=false;
+        if(diagnostic_scroll_dragging&&!left){diagnostic_scroll_dragging=false;
+            nova_input_pointer_release(0);
+            nova_debug_string("UEFI:POINTER-CAPTURE-END\n");}
         if(over||diagnostic_scroll_dragging){pointer_left=left;return true;}
-    }else diagnostic_scroll_dragging=false;
+    }else if(diagnostic_scroll_dragging){diagnostic_scroll_dragging=false;
+        nova_input_pointer_cancel(0);}
 
     if(current_view==NOVA_VIEW_SETTINGS){
         nova_rect_t checkbox=settings_accessories[2]->bounds;
@@ -1430,7 +1696,10 @@ bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
             nova_debug_string("UEFI:SETTINGS-CHECKBOX-POINTER\n");
             pointer_left=left;return true;
         }
-        if(left&&!pointer_left&&over_slider)settings_slider_dragging=true;
+        if(left&&!pointer_left&&over_slider){
+            settings_slider_dragging=nova_input_pointer_capture(0,settings_accessories[3]);
+            if(settings_slider_dragging)nova_debug_string("UEFI:POINTER-CAPTURE-BEGIN\n");
+        }
         if(settings_slider_dragging&&left){
             int32_t local=pointer_x-slider.x;
             if(local<0)local=0;
@@ -1447,6 +1716,8 @@ bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
             pointer_left=left;return true;
         }
         if(settings_slider_dragging&&!left){settings_slider_dragging=false;
+            nova_input_pointer_release(0);
+            nova_debug_string("UEFI:POINTER-CAPTURE-END\n");
             nova_debug_string("UEFI:SETTINGS-SLIDER-POINTER-END\n");}
     }
     if(current_view==NOVA_VIEW_HELP&&help_search_field){
@@ -1488,17 +1759,48 @@ bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
     return true;
 }
 
+bool bootmenu_pointer_event(int32_t dx,int32_t dy,bool left,bool right,
+                            UINTN *selection,bool *activate)
+{return bootmenu_pointer_apply(dx,dy,false,left,right,selection,activate);}
+
+bool bootmenu_pointer_absolute_event(int32_t x,int32_t y,bool left,bool right,
+                                     UINTN *selection,bool *activate)
+{return bootmenu_pointer_apply(x,y,true,left,right,selection,activate);}
+
+static bool pointer_uses_accessibility_size(void)
+{
+    /* High contrast is the existing user-selectable accessibility profile.
+       Keep the ordinary pointer compact in the normal themes, but enlarge it
+       together with the already enlarged accessible layout. */
+    return current_layout.accessibility||nova_theme_is_high_contrast();
+}
+
+static nova_rect_t pointer_damage_bounds(int32_t x,int32_t y)
+{
+    int32_t scale=pointer_uses_accessibility_size()?2:1;
+    return (nova_rect_t){x-2,y-2,24*scale,30*scale};
+}
+
+static nova_rect_t pointer_layer_bounds(void)
+{
+    int32_t scale=pointer_uses_accessibility_size()?2:1;
+    return (nova_rect_t){pointer_x,pointer_y,18*scale,24*scale};
+}
+
 static void draw_pointer(nova_surface_t *surface,int32_t offset_x,int32_t offset_y)
 {
-    /* Kleine, alpha-faehige Pfeilform; zentrale Darstellung im Interaction-Layer. */
+    /* Alpha-faehige zentrale Pfeilform. Der Hochkontrastmodus erhält dieselbe
+       Geometrie in zweifacher Größe, ohne den Pointer-Hotspot zu verschieben. */
     uint32_t pointer_color = nova_theme_tokens()->focus;
+    int32_t scale=pointer_uses_accessibility_size()?2:1;
     for (int32_t row = 0; row < 14; ++row) {
         int32_t span = row < 9 ? row / 2 + 1 : 3;
-        nova_surface_rect(surface, (nova_rect_t){pointer_x-offset_x, pointer_y-offset_y+row, span, 1},
-                          pointer_color);
+        for(int32_t pixel_row=0;pixel_row<scale;++pixel_row)
+            nova_surface_rect(surface,(nova_rect_t){pointer_x-offset_x,
+                pointer_y-offset_y+row*scale+pixel_row,span*scale,1},pointer_color);
     }
-    nova_surface_rect(surface, (nova_rect_t){pointer_x-offset_x+3, pointer_y-offset_y+9, 2, 7},
-                      pointer_color);
+    nova_surface_rect(surface,(nova_rect_t){pointer_x-offset_x+3*scale,
+        pointer_y-offset_y+9*scale,2*scale,7*scale},pointer_color);
 }
 
 static nova_rect_t dialog_bounds(void)
@@ -1532,13 +1834,13 @@ static nova_rect_t context_bounds(void)
 {
     int32_t row_h=nova_dlu_to_pixels(40,current_layout.scale_milli);
     int32_t width=nova_dlu_to_pixels(250,current_layout.scale_milli);
-    int32_t height=row_h*3;
+    int32_t height=row_h*context_count;
     int32_t target_y=current_layout.list.y+context_target*
                      (current_layout.item_height+current_layout.item_gap);
     int32_t x=current_layout.list.x+current_layout.list.width-width-
               current_layout.item_padding;
     int32_t y=target_y+current_layout.item_height/2;
-    if(context_kind==NOVA_CONTEXT_THEMES){
+    if(context_kind==NOVA_CONTEXT_THEMES||context_kind==NOVA_CONTEXT_QUALITY){
         nova_rect_t anchor=settings_accessories[0]->bounds;
         x=anchor.x;y=anchor.y+anchor.height;
     }
@@ -1554,13 +1856,13 @@ static void draw_context_menu(nova_surface_t *surface)
     if(!context_visible)return;
     const nova_theme_tokens_t *theme=nova_theme_tokens();
     nova_rect_t bounds=context_bounds();
-    int32_t row_h=bounds.height/3;
+    int32_t row_h=bounds.height/context_count;
     rounded_panel(surface,bounds.x-2,bounds.y-2,bounds.width+4,bounds.height+4,
                   theme->border);
     rounded_panel(surface,bounds.x,bounds.y,bounds.width,bounds.height,
                   theme->surface_secondary);
     nova_control_set_bounds(context_menu,bounds);
-    for(uint8_t i=0;i<3;++i){
+    for(uint8_t i=0;i<context_count;++i){
         nova_control_t *item=context_items[i];
         nova_control_set_bounds(item,(nova_rect_t){bounds.x,bounds.y+i*row_h,
                                                    bounds.width,row_h});
@@ -1585,8 +1887,21 @@ static void draw_tooltip(nova_surface_t *surface)
     if(!tooltip_visible||context_visible||nova_dialog_active()||
        tooltip_selection>=bootmenu_item_count())return;
     const nova_theme_tokens_t *theme=nova_theme_tokens();
-    int32_t width=nova_dlu_to_pixels(370,current_layout.scale_milli);
-    int32_t height=nova_dlu_to_pixels(42,current_layout.scale_milli);
+    int32_t maximum_width=nova_dlu_to_pixels(370,current_layout.scale_milli);
+    nova_text_layout_request_t text_request={.utf8=tooltip_control->text,
+        .available_width=maximum_width-nova_dlu_to_pixels(24,current_layout.scale_milli),
+        .scale_milli=current_layout.scale_milli,.maximum_lines=1,
+        .wrap=NOVA_TEXT_WRAP_NONE,.ellipsis=NOVA_TEXT_ELLIPSIS_END,
+        .accessibility=current_layout.accessibility};
+    nova_text_layout_metrics_t text_metrics;
+    nova_rect_t desired;
+    if(!nova_layout_apply_text(&text_request,(nova_layout_insets_t){12,11,12,11},
+        0,0,&desired,&text_metrics))return;
+    int32_t minimum_width=nova_dlu_to_pixels(180,current_layout.scale_milli);
+    int32_t minimum_height=nova_dlu_to_pixels(42,current_layout.scale_milli);
+    int32_t width=desired.width<minimum_width?minimum_width:desired.width;
+    int32_t height=desired.height<minimum_height?minimum_height:desired.height;
+    if(width>maximum_width)width=maximum_width;
     int32_t item_y=current_layout.list.y+tooltip_selection*
         (current_layout.item_height+current_layout.item_gap);
     int32_t x=current_layout.list.x+current_layout.item_padding;
@@ -1603,6 +1918,7 @@ static void draw_tooltip(nova_surface_t *surface)
         y+(height-nova_dlu_to_pixels(20,current_layout.scale_milli))/2,
         width-pad*2,tooltip_control->text,theme->text_primary,NOVA_TEXT_LEFT,true,
         current_layout.scale_milli);
+    nova_debug_string("UEFI:TEXT-AWARE-TOOLTIP-READY\n");
     nova_debug_string("UEFI:TOOLTIP-FRAME-READY\n");
 }
 
@@ -1638,6 +1954,8 @@ static void draw_dialog(nova_surface_t *surface,int32_t x,int32_t y,
 {
     nova_dialog_t *dialog = nova_dialog_active();
     if (!dialog) return;
+    if(dialog->type!=NOVA_DIALOG_CREDENTIAL&&dialog_password_field->text_length)
+        nova_password_field_clear(dialog_password_field);
     nova_rect_t card = {x,y,width,height};
     const nova_theme_tokens_t *theme = nova_theme_tokens();
     const nova_shadow_style_t *shadow=nova_shadow_get(NOVA_ELEVATION_LEVEL4);
@@ -1645,6 +1963,25 @@ static void draw_dialog(nova_surface_t *surface,int32_t x,int32_t y,
     nova_round_rect_t shadow_geometry;
     nova_effect_object_t shadow_object;
     const nova_render_quality_parameters_t *quality=nova_render_quality_parameters();
+    uint32_t semantic_border=material->border;
+    nova_icon_token_t semantic_icon=NOVA_ICON_INFORMATION;
+    if(dialog->type==NOVA_DIALOG_CONFIRMATION){
+        if(dialog->confirmation_level==NOVA_CONFIRM_WARNING){semantic_border=theme->warning;
+            semantic_icon=NOVA_ICON_WARNING;}
+        else if(dialog->confirmation_level==NOVA_CONFIRM_CRITICAL){semantic_border=theme->error;
+            semantic_icon=NOVA_ICON_ERROR;}
+        else if(dialog->confirmation_level==NOVA_CONFIRM_SECURITY){semantic_border=theme->error;
+            semantic_icon=NOVA_ICON_LOCK;}
+        else semantic_border=theme->information;
+    }else if(dialog->type==NOVA_DIALOG_WARNING){
+        semantic_border=dialog->warning_level==NOVA_WARNING_LOW?theme->information:
+            dialog->warning_level==NOVA_WARNING_MEDIUM?theme->warning:theme->error;
+        static const nova_icon_token_t warning_icons[NOVA_WARNING_ICON_COUNT]={
+            NOVA_ICON_WARNING,NOVA_ICON_DIAGNOSTICS,NOVA_ICON_LOCK,
+            NOVA_ICON_FORWARD,NOVA_ICON_RECOVERY,NOVA_ICON_ERROR};
+        semantic_icon=dialog->warning_icon<NOVA_WARNING_ICON_COUNT?
+            warning_icons[dialog->warning_icon]:NOVA_ICON_WARNING;
+    }
     if(dialog_effects_enabled&&!nova_motion_is_reduced()&&quality&&quality->shadows_enabled&&
        shadow&&!shadow->disabled&&
        nova_round_rect_create(&shadow_geometry,card.x,card.y,card.width,card.height,
@@ -1665,18 +2002,49 @@ static void draw_dialog(nova_surface_t *surface,int32_t x,int32_t y,
              (nova_rect_t){0,0,(int32_t)surface->width,(int32_t)surface->height},0);}
     rounded_panel(surface, card.x - 2, card.y - 2, card.width + 4, card.height + 4,
                   dialog_color(dialog->type == NOVA_DIALOG_ERROR ? theme->error :
-                  dialog->type == NOVA_DIALOG_WARNING ? theme->warning : material->border));
+                  dialog->type == NOVA_DIALOG_WARNING ? theme->warning : semantic_border));
     rounded_panel(surface, card.x, card.y, card.width, card.height,
                   dialog_color(material->surface));
+    int32_t light_inset=nova_dlu_to_pixels(16,current_layout.scale_milli);
+    alpha_over_rect(surface,(nova_rect_t){card.x+light_inset,card.y+1,
+        card.width-light_inset*2,1},(material->border&0x00ffffffu)|0x59000000u);
     int32_t padding = nova_dlu_to_pixels(20, current_layout.scale_milli);
-    nova_text_draw_scaled(surface, card.x + padding, card.y + padding,
-                          card.width - padding * 2, dialog->title,
+    int32_t title_x=card.x+padding;
+    if(dialog->type==NOVA_DIALOG_CONFIRMATION||dialog->type==NOVA_DIALOG_WARNING){
+        int32_t icon_size=nova_dlu_to_pixels(22,current_layout.scale_milli);
+        nova_icon_draw(surface,semantic_icon,title_x,card.y+padding,
+                       (uint16_t)icon_size,dialog_color(semantic_border));
+        title_x+=icon_size+nova_dlu_to_pixels(8,current_layout.scale_milli);
+        nova_debug_string(dialog->type==NOVA_DIALOG_CONFIRMATION?
+            "UEFI:CONFIRMATION-DIALOG-FRAME-READY\n":
+            "UEFI:WARNING-DIALOG-FRAME-READY\n");
+    }
+    nova_text_draw_scaled(surface, title_x, card.y + padding,
+                          card.x+card.width-padding-title_x, dialog->title,
                           dialog_color(theme->text_primary), NOVA_TEXT_LEFT, true,
                           current_layout.scale_milli);
     nova_text_draw_wrapped_scaled(surface, card.x + padding,
                           card.y + padding + nova_dlu_to_pixels(38,current_layout.scale_milli),
                           card.width - padding * 2, 3, dialog->message,
                           dialog_color(theme->text_secondary), current_layout.scale_milli);
+    if(dialog->type==NOVA_DIALOG_WARNING){
+        int32_t detail_y=card.y+padding+nova_dlu_to_pixels(92,current_layout.scale_milli);
+        if(dialog->recommendation[0])
+            nova_text_draw_wrapped_scaled(surface,card.x+padding,detail_y,
+                card.width-padding*2,2,dialog->recommendation,
+                dialog_color(theme->text_primary),current_layout.scale_milli);
+        if(dialog->warning_code){
+            char code[24]="Warncode: W-";uint8_t p=12;uint32_t value=dialog->warning_code;
+            char reverse[10];uint8_t count=0;
+            do{reverse[count++]=(char)('0'+value%10u);value/=10u;}while(value&&count<10);
+            while(count){code[p++]=reverse[--count];}
+            code[p]=0;
+            nova_text_draw_scaled(surface,card.x+padding,detail_y+
+                nova_dlu_to_pixels(22,current_layout.scale_milli),card.width-padding*2,
+                code,dialog_color(theme->text_secondary),NOVA_TEXT_LEFT,true,
+                current_layout.scale_milli);
+        }
+    }
     if (dialog->type == NOVA_DIALOG_PROGRESS) {
         int32_t bar_x = card.x + padding;
         int32_t bar_y = card.y + padding + nova_dlu_to_pixels(88,current_layout.scale_milli);
@@ -1722,14 +2090,24 @@ static void draw_dialog(nova_surface_t *surface,int32_t x,int32_t y,
         int32_t field_y=card.y+padding+nova_dlu_to_pixels(82,current_layout.scale_milli);
         int32_t field_w=card.width-padding*2;
         int32_t field_h=nova_dlu_to_pixels(38,current_layout.scale_milli);
-        rounded_panel(surface,field_x,field_y,field_w,field_h,theme->surface);
-        int32_t dot=nova_dlu_to_pixels(5,current_layout.scale_milli);
-        int32_t gap=nova_dlu_to_pixels(10,current_layout.scale_milli);
-        uint16_t visible=(uint16_t)((field_w-16)/gap);
-        if (visible > dialog->credential_glyphs) visible=dialog->credential_glyphs;
-        for (uint16_t i=0;i<visible;++i)
-            rounded_panel(surface,field_x+10+i*gap,field_y+(field_h-dot)/2,dot,dot,
-                          theme->text_primary);
+        if(dialog_password_field->text_length!=dialog->credential_glyphs){
+            nova_password_field_clear(dialog_password_field);
+            for(uint16_t i=0;i<dialog->credential_glyphs&&
+                i<dialog_password_field->maximum_length;++i)
+                (void)nova_text_field_insert(dialog_password_field,'x');
+        }
+        nova_control_set_bounds(dialog_password_field,
+            (nova_rect_t){field_x,field_y,field_w,field_h});
+        dialog_password_field->style.background=theme->surface;
+        dialog_password_field->style.foreground=theme->text_primary;
+        dialog_password_field->style.accent=theme->focus;
+        dialog_password_field->style.disabled=theme->border;
+        dialog_password_field->style.error=theme->error;
+        dialog_password_field->style.corner_dlu=theme->radius_small;
+        dialog_password_field->style.padding_dlu=(uint16_t)nova_dlu_to_pixels(10,
+            current_layout.scale_milli);
+        nova_control_render(dialog_password_field,surface);
+        nova_debug_string("UEFI:PASSWORD-FIELD-FRAME-READY\n");
     }
     if (dialog->destructive_armed)
         nova_text_draw_scaled(surface, card.x + padding,
@@ -1782,6 +2160,14 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
                               main_tooltips[selection]:
                               "Enter öffnet diese Option. Esc kehrt zurück.");
     }
+    /* Selection markers and tooltips live on the transparent interaction
+       surface. Painting only the new state cannot erase old opaque pixels,
+       because transparent pixels intentionally preserve the framebuffer. */
+    bool selection_changed=previous_selection!=selection;
+    UINTN invalidated_selection=previous_selection;
+    if(selection_changed){
+        overlay_reset_requested=true;
+    }
     sync_active_page();
     int32_t width = (int32_t)nova_graphics_width();
     const nova_theme_tokens_t *theme = nova_theme_tokens();
@@ -1816,12 +2202,18 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
         if(!dialog_page&&view_content[current_view])
             nova_view_set_layout(view_content[current_view],current_layout.panel);
     }
+    bool rebuild_base=!base_cache_valid||base_dirty_requested||
+        cached_base_view!=current_view||cached_base_theme!=nova_theme_active()||
+        cached_base_width!=(uint32_t)width||cached_base_height!=nova_graphics_height()||
+        cached_base_scale!=current_layout.scale_milli;
     if(!nova_render_begin_frame()||
-       !nova_render_clear(base_surface,theme->background,NOVA_RENDER_BACKGROUND)||
+       (rebuild_base&&!nova_render_clear(base_surface,theme->background,NOVA_RENDER_BACKGROUND))||
        !nova_render_execute()){
         if(runtime_frame)nova_runtime_frame_abort();
         return;
     }
+    if(rebuild_base){
+    ++base_cache_generation;
     nova_control_set_bounds(page_card,current_layout.panel);
     page_card->style.background=theme->surface;
     page_card->style.foreground=theme->text_primary;
@@ -1900,8 +2292,60 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
         nova_debug_string("UEFI:BREADCRUMB-FRAME-READY\n");
         nova_debug_string("UEFI:ICONBUTTON-FRAME-READY\n");
     }
+    base_cache_valid=true;base_dirty_requested=false;cached_base_view=current_view;
+    cached_base_theme=nova_theme_active();cached_base_width=(uint32_t)width;
+    cached_base_height=nova_graphics_height();cached_base_scale=current_layout.scale_milli;
+    nova_debug_string("UEFI:BASE-SURFACE-CACHE-MISS\n");
+    }else nova_debug_string("UEFI:BASE-SURFACE-CACHE-HIT\n");
 
-    nova_surface_clear(interaction_surface, 0x00000000u);
+    bool complex_frame=nova_dialog_active()||tooltip_visible||context_visible||
+        transition_offset_dlu!=0||transition_opacity!=255;
+    bool opacity_changed=first_present_pending||previous_frame_opacity!=opacity;
+    if(opacity_changed){
+        /* The composed framebuffer is persistent.  A layer opacity change is
+           therefore damage even when none of the cached base pixels changed.
+           Without this, the entrance frame at opacity zero permanently left
+           the brand, top bar and background outside the control panel black. */
+        base_surface->full_damage=true;
+        interaction_surface->full_damage=true;
+    }
+    if(first_present_pending||overlay_reset_requested||complex_frame||
+       previous_complex_frame||rebuild_base){
+        nova_surface_clear(interaction_surface,0x00000000u);
+        /* Transparent pixels in the overlay intentionally do not overwrite the
+           framebuffer.  Recompose the cached base first so pixels removed by
+           a tooltip, context menu or previous selection cannot remain stale. */
+        base_surface->full_damage=true;
+        overlay_reset_requested=false;
+    }else{
+        nova_rect_t cursor_old=pointer_damage_bounds(previous_pointer_x,previous_pointer_y);
+        nova_rect_t cursor_new=pointer_damage_bounds(pointer_x,pointer_y);
+        nova_surface_rect(interaction_surface,current_layout.panel,0x00000000u);
+        nova_surface_rect(interaction_surface,current_layout.status,0x00000000u);
+        nova_surface_rect(interaction_surface,cursor_old,0x00000000u);
+        nova_surface_rect(interaction_surface,cursor_new,0x00000000u);
+        nova_damage_add(base_surface,current_layout.panel);
+        nova_damage_add(base_surface,current_layout.status);
+        nova_damage_add(base_surface,cursor_old);nova_damage_add(base_surface,cursor_new);
+        nova_debug_string("UEFI:PARTIAL-INTERACTION-FRAME\n");
+    }
+    if(selection_changed){
+        /* Keep the old and new selection areas damaged through tooltip state
+           changes.  Clearing the transparent overlay alone changes pixels,
+           but those pixels must also be replayed by the compositor so the old
+           accent marker is restored from the base layer. */
+        int32_t stride=current_layout.item_height+current_layout.item_gap;
+        if(invalidated_selection<bootmenu_item_count())
+            nova_damage_add(interaction_surface,(nova_rect_t){current_layout.list.x,
+                current_layout.list.y+(int32_t)invalidated_selection*stride,
+                current_layout.list.width,current_layout.item_height});
+        if(selection<bootmenu_item_count())
+            nova_damage_add(interaction_surface,(nova_rect_t){current_layout.list.x,
+                current_layout.list.y+(int32_t)selection*stride,
+                current_layout.list.width,current_layout.item_height});
+        previous_selection=selection;
+        nova_debug_string("UEFI:SELECTION-OLD-NEW-DAMAGED\n");
+    }
     const nova_icon_token_t *icons=view_icons();
     int32_t scroll_offset=0;
     int32_t diagnostic_viewport_bottom=0;
@@ -2128,6 +2572,7 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
     if(nova_dialog_active()){
         nova_rect_t card=dialog_bounds();
         nova_round_rect_t blur_geometry;
+        bool glass_blur_applied=false;
         if(!dialog_effects_enabled)
             nova_debug_string("UEFI:BACKGROUND-BLUR-LIFECYCLE-SKIP\n");
         else if(!render_quality->blur_enabled)
@@ -2145,23 +2590,33 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
                 render_quality->maximum_blur_radius:requested);
             nova_blur_region_t blur_region={card,radius,
                 render_quality->blur_quality,NOVA_BLUR_KERNEL_BOX,
-                &blur_geometry,0};
+                &blur_geometry,0,base_cache_generation};
             uint32_t blur_hits=nova_blur_diagnostics()->cache_hits;
             nova_blur_result_t blur_result=nova_blur_render(&blur_region,base_surface,
                                                             interaction_surface);
             if(blur_result==NOVA_BLUR_OK){
+                glass_blur_applied=true;
                 nova_debug_string("UEFI:BACKGROUND-BLUR-FRAME\n");
                 nova_debug_string(nova_blur_diagnostics()->cache_hits>blur_hits?
                     "UEFI:BACKGROUND-BLUR-CACHE-HIT\n":"UEFI:BACKGROUND-BLUR-CACHE-MISS\n");
             }else nova_debug_string("UEFI:BACKGROUND-BLUR-FAILED\n");
           }else nova_debug_string("UEFI:BACKGROUND-BLUR-GEOMETRY-FAILED\n");
         }
-        const nova_material_style_t *overlay=nova_material_get(NOVA_DESIGN_MATERIAL_OVERLAY);
-        uint8_t backdrop=render_quality->transparency_enabled&&!overlay->opaque?
-            (uint8_t)((uint16_t)overlay->opacity*dialog_opacity/255u):255u;
-        alpha_over_rect(interaction_surface,(nova_rect_t){0,0,width,(int32_t)nova_graphics_height()},
-                        (uint32_t)backdrop<<24);
+        if(nova_modal_dialog_backdrop_active()){
+            const nova_material_style_t *overlay=nova_material_get(NOVA_DESIGN_MATERIAL_OVERLAY);
+            uint8_t backdrop=render_quality->transparency_enabled&&!overlay->opaque?
+                (uint8_t)((uint16_t)overlay->opacity*dialog_opacity/255u):255u;
+            alpha_over_rect(interaction_surface,
+                (nova_rect_t){0,0,width,(int32_t)nova_graphics_height()},
+                (uint32_t)backdrop<<24);
+            nova_debug_string("UEFI:MODAL-BACKDROP-FRAME\n");
+        }
         draw_dialog(interaction_surface,card.x,card.y,card.width,card.height);
+        const nova_material_style_t *glass=nova_material_get(NOVA_DESIGN_MATERIAL_DIALOG);
+        if(glass_blur_applied)nova_debug_string("UEFI:GLASS-DIALOG-FRAME\n");
+        else if(glass&&glass->opaque)
+            nova_debug_string("UEFI:GLASS-DIALOG-OPAQUE-FALLBACK\n");
+        else nova_debug_string("UEFI:GLASS-DIALOG-TRANSPARENT-FALLBACK\n");
         draw_pointer(interaction_surface,0,0);
     }else draw_pointer(interaction_surface,0,0);
 
@@ -2178,7 +2633,7 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
        !nova_managed_layer_set_bounds(managed_layers[NOVA_LAYER_DIALOG],dialog_bounds())||
        !nova_managed_layer_set_bounds(managed_layers[NOVA_LAYER_OVERLAY],viewport)||
        !nova_managed_layer_set_bounds(managed_layers[NOVA_LAYER_CURSOR],
-            (nova_rect_t){pointer_x,pointer_y,18,24})||
+            pointer_layer_bounds())||
        !nova_managed_layer_set_visible(managed_layers[NOVA_LAYER_DIALOG],nova_dialog_active())||
        !nova_managed_layer_set_opacity(managed_layers[NOVA_LAYER_BACKGROUND],
             (uint16_t)((uint32_t)opacity*1000u/255u))||
@@ -2206,6 +2661,7 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
         (uint8_t)((uint16_t)opacity * transition_opacity / 255u),
         NOVA_MATERIAL_NONE, true, true, false, true
     };
+    interaction.modal=nova_modal_dialog_active();
     int32_t offset_px=nova_dlu_to_pixels(transition_offset_dlu,current_layout.scale_milli);
     if (offset_px) nova_debug_string("UEFI:NAV-TRANSFORMED-FRAME\n");
     if (offset_px > 0 && offset_px < width) {
@@ -2258,6 +2714,8 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
         nova_debug_string("UEFI:STATUS-BADGE-FRAME-READY\n");
     if(context_visible&&context_kind==NOVA_CONTEXT_THEMES)
         nova_debug_string("UEFI:MENU-BUTTON-FRAME-READY\n");
+    if(pointer_uses_accessibility_size())
+        nova_debug_string("UEFI:ACCESSIBLE-CURSOR-FRAME\n");
     if (nova_dialog_active()) nova_debug_string("UEFI:DIALOG-FRAME-READY\n");
     if(frame_safe&&nova_memory_validate_pointer(frame_safe,NOVA_MEMORY_FRAME,
        sizeof(nova_rect_t)))nova_debug_string("UEFI:MEMORY-FRAME-READY\n");
@@ -2266,6 +2724,10 @@ void bootmenu_draw(UINTN selection, uint8_t opacity)
         nova_debug_string("UEFI:RUNTIME-LIFECYCLE-SELF-TEST-FRAME\n");
     if(state_model_self_test_active)
         nova_debug_string("UEFI:STATE-MODEL-SELF-TEST-FRAME\n");
+    previous_pointer_x=pointer_x;previous_pointer_y=pointer_y;
+    previous_complex_frame=complex_frame;
+    previous_frame_opacity=opacity;
+    first_present_pending=false;
     if(runtime_frame){nova_runtime_frame_step(NOVA_FRAME_DIAGNOSTICS);
         nova_diag_frame(16667,500,500,8000,4000);nova_diag_snapshot();
         if(nova_runtime_frame_end())nova_debug_string("UEFI:RUNTIME-FRAME-COMPLETE\n");}

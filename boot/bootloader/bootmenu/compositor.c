@@ -29,6 +29,15 @@ static nova_rect_t clip(nova_rect_t r, uint32_t width, uint32_t height)
     return r;
 }
 
+static nova_rect_t intersect(nova_rect_t a,nova_rect_t b)
+{
+    int32_t left=a.x>b.x?a.x:b.x,top=a.y>b.y?a.y:b.y;
+    int32_t right=a.x+a.width<b.x+b.width?a.x+a.width:b.x+b.width;
+    int32_t bottom=a.y+a.height<b.y+b.height?a.y+a.height:b.y+b.height;
+    if(right<=left||bottom<=top)return (nova_rect_t){0};
+    return (nova_rect_t){left,top,right-left,bottom-top};
+}
+
 bool nova_compositor_initialize(uint32_t width, uint32_t height)
 {
     if (!width || !height || width > NOVA_SURFACE_WIDTH || height > NOVA_SURFACE_HEIGHT)
@@ -59,6 +68,17 @@ void nova_damage_add(nova_surface_t *surface, nova_rect_t rect)
     if (!surface || !rect_valid(rect)) return;
     rect = clip(rect, surface->width, surface->height);
     if (!rect_valid(rect)) return;
+    for(uint8_t i=0;i<surface->damage_count;++i){nova_rect_t *existing=&surface->damage[i];
+        int32_t er=existing->x+existing->width,eb=existing->y+existing->height;
+        int32_t rr=rect.x+rect.width,rb=rect.y+rect.height;
+        if(rect.x>=existing->x&&rect.y>=existing->y&&rr<=er&&rb<=eb)return;
+        if(rect.x<=er&&rect.y<=eb&&rr>=existing->x&&rb>=existing->y){
+            int32_t left=rect.x<existing->x?rect.x:existing->x;
+            int32_t top=rect.y<existing->y?rect.y:existing->y;
+            int32_t right=rr>er?rr:er,bottom=rb>eb?rb:eb;
+            *existing=(nova_rect_t){left,top,right-left,bottom-top};return;
+        }
+    }
     if (surface->damage_count == NOVA_DAMAGE_CAPACITY) {
         surface->full_damage = true;
         ++diagnostics.damage_overflows;
@@ -198,37 +218,61 @@ static uint32_t material_pixel(const nova_layer_t *layer, uint32_t source,
     return blend(backdrop, source, layer->opacity);
 }
 
+static void compose_region(nova_layer_t *layer,nova_rect_t destination,nova_rect_t damage)
+{
+    for (int32_t y = 0; y < damage.height; ++y) {
+        for (int32_t x = 0; x < damage.width; ++x) {
+            int32_t dx = damage.x + x, dy = damage.y + y;
+            int32_t sx = layer->source.x + dx - destination.x;
+            int32_t sy = layer->source.y + dy - destination.y;
+            if (sx < 0 || sy < 0 || (uint32_t)sx >= layer->surface->width ||
+                (uint32_t)sy >= layer->surface->height) continue;
+            uint32_t source = layer->surface->pixels[sy * layer->surface->stride + sx];
+            if(layer->material==NOVA_MATERIAL_NONE&&layer->opacity==255u){
+                uint32_t alpha=source>>24;
+                if(!alpha)continue;
+                if(alpha==255u){composed[dy*NOVA_SURFACE_WIDTH+dx]=source;continue;}
+            }
+            uint32_t back = composed[dy * NOVA_SURFACE_WIDTH + dx];
+            composed[dy * NOVA_SURFACE_WIDTH + dx]=material_pixel(layer,source,back,dx,dy);
+        }
+    }
+    ++diagnostics.composed_regions;nova_dirty_add(&damage);
+}
+
+static void restore_lower_layers(uint8_t upper_index,nova_rect_t damage)
+{
+    /* A transparent pixel means "show the layer below".  Replaying only the
+       changed overlay would otherwise leave its old opaque pixel in the
+       persistent composed buffer.  Restore every lower layer in precisely the
+       overlay's damaged area before applying the new overlay pixels. */
+    for(uint8_t lower=0;lower<upper_index;++lower){
+        nova_layer_t *layer=&layers[lower];
+        nova_rect_t destination=clip(layer->destination,output_width,output_height);
+        nova_rect_t restored=intersect(destination,damage);
+        if(rect_valid(restored))compose_region(layer,destination,restored);
+    }
+}
+
 bool nova_compositor_compose(void)
 {
     for (uint8_t index = 0; index < layer_count; ++index) {
         nova_layer_t *layer = &layers[index];
         nova_rect_t destination = clip(layer->destination, output_width, output_height);
         if (!rect_valid(destination)) continue;
-        nova_rect_t damage = destination;
-        if (!layer->surface->full_damage && layer->surface->damage_count) {
-            nova_damage_merge(layer->surface);
-            damage = layer->surface->damage[0];
-            damage.x += destination.x;
-            damage.y += destination.y;
-            damage = clip(damage, output_width, output_height);
-        }
-        for (int32_t y = 0; y < damage.height; ++y) {
-            for (int32_t x = 0; x < damage.width; ++x) {
-                int32_t dx = damage.x + x, dy = damage.y + y;
-                int32_t sx = layer->source.x + dx - destination.x;
-                int32_t sy = layer->source.y + dy - destination.y;
-                if (sx < 0 || sy < 0 || (uint32_t)sx >= layer->surface->width ||
-                    (uint32_t)sy >= layer->surface->height) continue;
-                uint32_t source = layer->surface->pixels[sy * layer->surface->stride + sx];
-                uint32_t back = composed[dy * NOVA_SURFACE_WIDTH + dx];
-                uint32_t result = material_pixel(layer, source, back, dx, dy);
-                composed[dy * NOVA_SURFACE_WIDTH + dx] = result;
+        if(layer->surface->full_damage){
+            if(index)restore_lower_layers(index,destination);
+            compose_region(layer,destination,destination);
+            nova_dirty_force_full(NOVA_DIRTY_FULL_FORCED);
+        }else for(uint8_t region=0;region<layer->surface->damage_count;++region){
+            nova_rect_t damage=layer->surface->damage[region];
+            damage.x+=destination.x;damage.y+=destination.y;
+            damage=clip(damage,output_width,output_height);
+            if(rect_valid(damage)){
+                if(index)restore_lower_layers(index,damage);
+                compose_region(layer,destination,damage);
             }
         }
-        ++diagnostics.composed_regions;
-        if(layer->surface->full_damage)
-            nova_dirty_force_full(NOVA_DIRTY_FULL_FORCED);
-        else if(rect_valid(damage))nova_dirty_add(&damage);
         nova_damage_clear(layer->surface);
     }
     ++diagnostics.frames;

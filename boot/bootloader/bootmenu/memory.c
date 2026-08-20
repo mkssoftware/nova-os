@@ -56,9 +56,11 @@ static void refresh_budget(void)
 bool nova_memory_budget_configure(nova_memory_profile_t profile)
 {
     if(profile!=NOVA_MEMORY_PROFILE_MINIMAL&&profile!=NOVA_MEMORY_PROFILE_STANDARD&&
-       profile!=NOVA_MEMORY_PROFILE_COMFORT)return false;
+       profile!=NOVA_MEMORY_PROFILE_COMFORT&&profile!=NOVA_MEMORY_PROFILE_HIGH_QUALITY)
+        return false;
+    bool runtime_locked=memory_budget.runtime_locked;
     memory_budget=(nova_memory_budget_t){.total_budget=(uint64_t)profile*1024u*1024u,
-        .profile=profile,.within_budget=true};
+        .profile=profile,.within_budget=true,.runtime_locked=runtime_locked};
     for(uint8_t i=0;i<NOVA_MEMORY_AREA_COUNT;++i)
         memory_budget.area_budget[i]=(uint64_t)standard_area_mib[i]*1024u*1024u*
             (uint32_t)profile/(uint32_t)NOVA_MEMORY_PROFILE_STANDARD;
@@ -67,6 +69,42 @@ bool nova_memory_budget_configure(nova_memory_profile_t profile)
 
 bool nova_memory_budget_initialize(void)
 {return nova_memory_budget_configure(NOVA_MEMORY_PROFILE_STANDARD);}
+bool nova_memory_budget_configure_low_end(void)
+{
+    if(!nova_memory_budget_configure(NOVA_MEMORY_PROFILE_MINIMAL))return false;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_RENDERING]=4ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_RESOURCE_CACHE]=6ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_GLYPH_CACHE]=2ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_SVG_CACHE]=2ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_THEME_CACHE]=512ull*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_ANIMATION_POOL]=512ull*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_CONTROL_POOL]=2ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_LAYOUT_POOL]=1ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_DIAGNOSTICS]=1ull*1024u*1024u;
+    uint64_t assigned=0;for(uint8_t i=0;i<NOVA_MEMORY_AREA_RESERVE;++i)
+        assigned+=memory_budget.area_budget[i];
+    memory_budget.area_budget[NOVA_MEMORY_AREA_RESERVE]=
+        memory_budget.total_budget-assigned;
+    refresh_budget();return true;
+}
+bool nova_memory_budget_configure_high_quality(void)
+{
+    if(!nova_memory_budget_configure(NOVA_MEMORY_PROFILE_HIGH_QUALITY))return false;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_RENDERING]=32ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_RESOURCE_CACHE]=64ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_GLYPH_CACHE]=16ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_SVG_CACHE]=16ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_THEME_CACHE]=4ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_ANIMATION_POOL]=16ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_CONTROL_POOL]=16ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_LAYOUT_POOL]=4ull*1024u*1024u;
+    memory_budget.area_budget[NOVA_MEMORY_AREA_DIAGNOSTICS]=4ull*1024u*1024u;
+    uint64_t assigned=0;for(uint8_t i=0;i<NOVA_MEMORY_AREA_RESERVE;++i)
+        assigned+=memory_budget.area_budget[i];
+    memory_budget.area_budget[NOVA_MEMORY_AREA_RESERVE]=
+        memory_budget.total_budget-assigned;
+    refresh_budget();return true;
+}
 const nova_memory_budget_t *nova_memory_budget_status(void){refresh_budget();return &memory_budget;}
 bool nova_memory_budget_available(uint64_t bytes)
 {refresh_budget();return bytes<=memory_budget.free_memory;}

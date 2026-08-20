@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #define NOVA_MOTION_CAPACITY 256u
+#define NOVA_ANIMATION_DIAG_CAPACITY 256u
 
 typedef enum {
     NOVA_MOTION_CREATED,
@@ -100,6 +101,43 @@ typedef struct {
 typedef enum {NOVA_ANIMATION_GENERAL,NOVA_ANIMATION_TIMELINE,NOVA_ANIMATION_SPRING,
     NOVA_ANIMATION_MATERIAL,NOVA_ANIMATION_PROGRESS,NOVA_ANIMATION_TYPE_COUNT}
     nova_animation_type_t;
+typedef enum {NOVA_ANIMATION_DIAG_STARTED,NOVA_ANIMATION_DIAG_PAUSED,
+    NOVA_ANIMATION_DIAG_RESUMED,NOVA_ANIMATION_DIAG_COMPLETED,
+    NOVA_ANIMATION_DIAG_CANCELLED,NOVA_ANIMATION_DIAG_REPEATED,
+    NOVA_ANIMATION_DIAG_FAILED} nova_animation_diag_event_t;
+typedef enum {NOVA_ANIMATION_EXPORT_NDF,NOVA_ANIMATION_EXPORT_JSON,
+    NOVA_ANIMATION_EXPORT_CSV,NOVA_ANIMATION_EXPORT_BINARY}
+    nova_animation_export_format_t;
+typedef struct {
+    uint64_t event_id,timestamp_us,start_us,end_us;
+    uint32_t animation_id,target_id,parent_id,transition_id,motion_token;
+    nova_animation_diag_event_t event;
+    nova_animation_type_t type;
+    nova_property_t property;
+    nova_easing_t easing;
+    nova_motion_state_t state;
+    uint32_t planned_duration_us,actual_duration_us,start_latency_us,
+             completion_latency_us,frame_time_us,render_time_us,compositor_time_us,
+             layout_time_us,cpu_time_us,gpu_time_us,rendered_frames,window_id,dialog_id;
+    uint16_t group;
+    uint8_t repeats,priority,quality,hardware_profile;
+    bool software_renderer,error,budget_exceeded;
+} nova_animation_trace_t;
+typedef struct {
+    nova_animation_type_t type;uint32_t window_id,dialog_id,motion_token;
+    uint8_t priority;uint32_t minimum_duration_us,maximum_duration_us;
+    bool use_type,use_window,use_dialog,use_token,use_priority,use_duration,
+         errors_only;
+} nova_animation_diag_filter_t;
+typedef struct {
+    uint32_t recorded,overwritten,started,paused,resumed,completed,cancelled,
+             repeated,failed,dropped_frames,duplicate_frames,skipped_frames,
+             synchronization_errors,jitter_events,token_violations,
+             conflicts,infinite_loops,budget_violations,exports,denied_exports;
+    uint16_t count,active,peak_active,groups;
+    uint32_t last_frame_us,average_frame_us,maximum_jitter_us;
+    bool initialized,passive,read_only,boot_unaffected;
+} nova_animation_diag_status_t;
 
 void nova_motion_initialize(void);
 nova_animation_t *nova_motion_create(const nova_animation_t *description);
@@ -135,5 +173,16 @@ const nova_motion_budget_t *nova_motion_budget_get(void);
 bool nova_motion_budget_can_allocate(nova_animation_type_t type);
 void nova_motion_budget_apply_fallback(void);
 const nova_motion_budget_t *nova_motion_budget(void);
+bool nova_animation_diag_initialize(void);
+const nova_animation_trace_t *nova_animation_diag_get(uint32_t chronological_index);
+const nova_animation_trace_t *nova_animation_diag_query(
+    const nova_animation_diag_filter_t *filter,uint32_t matching_index);
+void nova_animation_diag_frame(uint32_t frame_time_us,uint32_t render_time_us,
+    uint32_t compositor_time_us,uint32_t layout_time_us,bool software_renderer,
+    uint8_t quality,uint8_t hardware_profile);
+bool nova_animation_diag_export(nova_animation_export_format_t format,
+    bool user_authorized,uint8_t *output,uint32_t capacity,uint32_t *written);
+void nova_animation_diag_reset(void);
+const nova_animation_diag_status_t *nova_animation_diag_status(void);
 
 #endif

@@ -6,6 +6,7 @@
 #include "motion.h"
 
 #define NOVA_NAVIGATION_CAPACITY 64u
+#define NOVA_NAVIGATION_TEST_CAPACITY 10u
 
 typedef enum {
     NOVA_NAV_PUSH,
@@ -50,6 +51,21 @@ typedef struct {
     bool reduced_motion;
 } nova_navigation_visual_t;
 
+typedef enum {NOVA_NAVIGATION_TEST_PASSED,NOVA_NAVIGATION_TEST_FAILED,
+    NOVA_NAVIGATION_TEST_SKIPPED} nova_navigation_test_outcome_t;
+typedef enum {NOVA_NAV_TEST_BOOT_MANAGER,NOVA_NAV_TEST_RECOVERY,
+    NOVA_NAV_TEST_INSTALLER,NOVA_NAV_TEST_DIAGNOSTICS,NOVA_NAV_TEST_DIALOG,
+    NOVA_NAV_TEST_LIST,NOVA_NAV_TEST_MENU,NOVA_NAV_TEST_KEYBOARD,
+    NOVA_NAV_TEST_POINTER,NOVA_NAV_TEST_TOUCH} nova_navigation_test_route_t;
+typedef struct {uint32_t route_id,step_count;nova_navigation_test_outcome_t status;
+    uint64_t duration_us;uint16_t start_page,target_page,start_focus,target_focus;
+    uint16_t focus_path;uint8_t input_device;uint32_t detected_errors;
+    bool back_restored,dead_end,loop_detected,configuration_changed;
+} nova_navigation_test_result_t;
+typedef struct {uint8_t count,passed,failed,skipped;uint32_t reports;
+    bool initialized,isolated,deterministic,configuration_unchanged;
+} nova_navigation_test_summary_t;
+
 void nova_navigation_initialize(nova_navigation_entry_t root);
 bool nova_navigation_push(nova_navigation_entry_t entry,
                           nova_navigation_transition_t transition);
@@ -67,5 +83,11 @@ void nova_navigation_visual_complete(void);
 void nova_navigation_visual_cancel(void);
 const nova_navigation_visual_t *nova_navigation_visual(void);
 const nova_navigation_diagnostics_t *nova_navigation_diagnostics(void);
+bool nova_navigation_test_initialize(void);
+bool nova_navigation_test_execute(uint32_t route_id);
+const nova_navigation_test_result_t *nova_navigation_test_results(void);
+const nova_navigation_test_summary_t *nova_navigation_test_summary(void);
+bool nova_navigation_test_generate_report(bool authorized,uint8_t *output,
+                                          uint32_t capacity,uint32_t *written);
 
 #endif

@@ -1,4 +1,5 @@
 #include "resources.h"
+#include "memory.h"
 
 static nova_resource_t registry[NOVA_RESOURCE_CAPACITY];
 static bool used[NOVA_RESOURCE_CAPACITY];
@@ -8,6 +9,33 @@ _Alignas(64) static uint8_t decoded_pool[NOVA_RESOURCE_DECODE_BLOCK_SIZE*
 static bool decoded_blocks[NOVA_RESOURCE_DECODE_BLOCK_COUNT];
 static nova_resource_diagnostics_t diagnostics;
 static uint64_t use_clock;
+static nova_resource_trace_t resource_trace[NOVA_RESOURCE_TRACE_CAPACITY];
+static uint16_t resource_trace_head,resource_trace_count;
+static uint64_t resource_trace_sequence,resource_trace_clock;
+static nova_resource_diag_status_t resource_diag;
+static nova_resource_corruption_result_t corruption_results[NOVA_CORRUPTION_RESULT_CAPACITY];
+static nova_resource_corruption_status_t corruption_status;
+static uint8_t corruption_buffer[NOVA_CORRUPTION_BUFFER_CAPACITY];
+
+static void resource_trace_event(const nova_resource_t *resource,uint64_t id,
+    nova_resource_event_type_t event,nova_resource_result_t result,bool cache_hit)
+{
+    nova_resource_trace_t trace={.timestamp_us=++resource_trace_clock,
+        .resource_id=resource?resource->id:id,.event=event,
+        .resource_type=resource?resource->type:NOVA_RESOURCE_BINARY,.result=result,
+        .state=resource?resource->state:NOVA_RESOURCE_INVALID,
+        .compression=resource?resource->compression:NOVA_COMPRESSION_NONE,
+        .integrity=resource?resource->trust:NOVA_RESOURCE_TRUST_UNKNOWN,
+        .version=resource?resource->version:0,.packed_size=resource?resource->packed_size:0,
+        .original_size=resource?resource->size:0,.cache_bytes=diagnostics.cached_bytes,
+        .peak_cache_bytes=diagnostics.peak_cached_bytes,.cache_hit=cache_hit,
+        .integrity_ok=resource&&resource->trust!=NOVA_RESOURCE_TRUST_INVALID&&
+            resource->trust!=NOVA_RESOURCE_TRUST_CORRUPTED,
+        .checksum_ok=resource&&resource->integrity_verified,
+        .signature_ok=resource&&resource->signature!=NOVA_SIGNATURE_INVALID,
+        .version_ok=resource&&resource->version>0};
+    (void)nova_resource_diag_record(&trace);
+}
 
 static uint64_t next_use(void)
 {
@@ -82,6 +110,8 @@ bool nova_resource_loader_initialize(uint64_t cache_budget)
     for(uint16_t i=0;i<NOVA_RESOURCE_HASH_CAPACITY;++i)hash_slots[i]=-1;
     for(uint8_t i=0;i<NOVA_RESOURCE_DECODE_BLOCK_COUNT;++i)decoded_blocks[i]=false;
     diagnostics=(nova_resource_diagnostics_t){0};use_clock=0;
+    (void)nova_resource_diag_initialize();
+    (void)nova_resource_corruption_initialize();
     diagnostics.cache_budget=cache_budget?cache_budget:NOVA_RESOURCE_DEFAULT_CACHE_BUDGET;
     diagnostics.cache_critical=diagnostics.cache_budget-(diagnostics.cache_budget/8u);
     diagnostics.initialized=nova_compression_initialize()&&
@@ -209,6 +239,7 @@ static bool evict_for(uint64_t required,int16_t protected_index)
         }
         if(candidate<0)return false;
         diagnostics.cached_bytes-=registry[candidate].size;
+        nova_memory_budget_record_eviction(registry[candidate].size);
         if(registry[candidate].decoded_block_count){
             for(uint8_t block=0;block<registry[candidate].decoded_block_count;++block)
                 decoded_blocks[registry[candidate].decoded_block+block]=false;
@@ -269,6 +300,7 @@ static bool evict_decoded_for(int16_t protected_index)
     }
     if(candidate<0)return false;
     diagnostics.cached_bytes-=registry[candidate].size;
+    nova_memory_budget_record_eviction(registry[candidate].size);
     release_decoded(&registry[candidate]);registry[candidate].state=NOVA_RESOURCE_UNLOADED;
     registry[candidate].integrity_verified=false;
     ++diagnostics.evictions;
@@ -383,18 +415,38 @@ nova_resource_result_t nova_resource_load_mode(uint64_t id,nova_resource_load_mo
                                                 const nova_resource_t **result)
 {
     if(result)*result=0;
-    if(!diagnostics.initialized)return NOVA_RESOURCE_INVALID_STATE;
+    resource_trace_event(0,id,NOVA_RESOURCE_EVENT_REQUEST,NOVA_RESOURCE_OK,false);
+    if(!diagnostics.initialized){resource_trace_event(0,id,NOVA_RESOURCE_EVENT_ERROR,
+        NOVA_RESOURCE_INVALID_STATE,false);return NOVA_RESOURCE_INVALID_STATE;}
     if(!id||mode>NOVA_LOAD_BACKGROUND){++diagnostics.invalid_requests;
+        resource_trace_event(0,id,NOVA_RESOURCE_EVENT_ERROR,NOVA_RESOURCE_INVALID_ARGUMENT,false);
         return NOVA_RESOURCE_INVALID_ARGUMENT;}
     if(mode==NOVA_LOAD_BACKGROUND){++diagnostics.unsupported_requests;
+        resource_trace_event(0,id,NOVA_RESOURCE_EVENT_ERROR,NOVA_RESOURCE_UNSUPPORTED,false);
         return NOVA_RESOURCE_UNSUPPORTED;}
-    if(diagnostics.busy)return NOVA_RESOURCE_BUSY;
+    if(diagnostics.busy){resource_trace_event(0,id,NOVA_RESOURCE_EVENT_ERROR,
+        NOVA_RESOURCE_BUSY,false);return NOVA_RESOURCE_BUSY;}
     diagnostics.busy=true;
-    int16_t index=lookup_index(id);uint64_t visiting[2]={0};
+    int16_t index=lookup_index(id);nova_resource_t *requested=index>=0?&registry[index]:0;
+    resource_trace_event(requested,id,NOVA_RESOURCE_EVENT_LOAD_BEGIN,NOVA_RESOURCE_OK,false);
+    uint32_t validations=nova_integrity_diagnostics()->verifications;
+    uint32_t decompressions=diagnostics.decompressions;
+    bool was_cached=requested&&(requested->reference_count||
+        requested->state==NOVA_RESOURCE_CACHED||requested->state==NOVA_RESOURCE_RELEASED);
+    uint64_t visiting[2]={0};
     nova_resource_result_t status=load_index(index,visiting,1,result);
     if(status!=NOVA_RESOURCE_OK&&index>=0&&registry[index].fallback_id){
         ++diagnostics.fallback_uses;status=load_index(lookup_index(registry[index].fallback_id),
                                                      visiting,1,result);}
+    const nova_resource_t *loaded=result&&*result?*result:requested;
+    if(nova_integrity_diagnostics()->verifications>validations)
+        resource_trace_event(loaded,id,NOVA_RESOURCE_EVENT_VALIDATE,status,false);
+    if(diagnostics.decompressions>decompressions)
+        resource_trace_event(loaded,id,NOVA_RESOURCE_EVENT_DECOMPRESS,status,false);
+    resource_trace_event(loaded,id,was_cached?NOVA_RESOURCE_EVENT_CACHE_HIT:
+        NOVA_RESOURCE_EVENT_CACHE_MISS,status,was_cached);
+    resource_trace_event(loaded,id,status==NOVA_RESOURCE_OK?NOVA_RESOURCE_EVENT_LOAD_COMPLETE:
+        NOVA_RESOURCE_EVENT_ERROR,status,was_cached);
     diagnostics.busy=false;return status;
 }
 
@@ -427,10 +479,12 @@ bool nova_resource_release(uint64_t id)
     int16_t index=lookup_index(id);if(index<0||!registry[index].reference_count)return false;
     nova_resource_t *resource=&registry[index];--resource->reference_count;++diagnostics.releases;
     if(diagnostics.current_references)--diagnostics.current_references;
-    if(resource->reference_count){resource->state=NOVA_RESOURCE_IN_USE;return true;}
+    if(resource->reference_count){resource->state=NOVA_RESOURCE_IN_USE;
+        resource_trace_event(resource,id,NOVA_RESOURCE_EVENT_RELEASE,NOVA_RESOURCE_OK,true);return true;}
     resource->state=NOVA_RESOURCE_RELEASED;resource->last_use=next_use();
     for(uint8_t i=0;i<resource->dependency_count;++i)
         (void)nova_resource_release(resource->dependencies[i]);
+    resource_trace_event(resource,id,NOVA_RESOURCE_EVENT_RELEASE,NOVA_RESOURCE_OK,true);
     return true;
 }
 
@@ -480,7 +534,9 @@ uint32_t nova_resource_cache_collect(void)
                 if(better){candidate=i;frequency=registry[i].access_count;
                     oldest=registry[i].last_use;}}
             if(candidate<0)break;
+            uint64_t evicted_size=registry[candidate].size;
             if(nova_resource_unload(registry[candidate].id)!=NOVA_RESOURCE_OK)break;
+            nova_memory_budget_record_eviction(evicted_size);
             ++collected;++diagnostics.evictions;
             if(policy==NOVA_CACHE_LRU)++diagnostics.lru_evictions;
             else ++diagnostics.lfu_evictions;
@@ -494,3 +550,200 @@ uint32_t nova_resource_cache_collect(void)
 }
 
 const nova_resource_diagnostics_t *nova_resource_diagnostics(void){return &diagnostics;}
+
+bool nova_resource_diag_initialize(void)
+{
+    for(uint16_t i=0;i<NOVA_RESOURCE_TRACE_CAPACITY;++i)
+        resource_trace[i]=(nova_resource_trace_t){0};
+    resource_trace_head=resource_trace_count=0;resource_trace_sequence=0;
+    resource_trace_clock=0;
+    resource_diag=(nova_resource_diag_status_t){.initialized=true,.passive=true,
+        .read_only=true,.boot_unaffected=true};
+    return true;
+}
+bool nova_resource_diag_record(const nova_resource_trace_t *input)
+{
+    if(!resource_diag.initialized||!input||input->event>NOVA_RESOURCE_EVENT_ERROR)return false;
+    uint16_t out=(uint16_t)((resource_trace_head+resource_trace_count)%NOVA_RESOURCE_TRACE_CAPACITY);
+    if(resource_trace_count==NOVA_RESOURCE_TRACE_CAPACITY){out=resource_trace_head;
+        resource_trace_head=(uint16_t)((resource_trace_head+1)%NOVA_RESOURCE_TRACE_CAPACITY);
+        ++resource_diag.overwritten;}else ++resource_trace_count;
+    nova_resource_trace_t trace=*input;trace.sequence=++resource_trace_sequence;
+    if(!trace.timestamp_us)trace.timestamp_us=++resource_trace_clock;
+    if(trace.event==NOVA_RESOURCE_EVENT_LOAD_COMPLETE){
+        for(uint32_t i=resource_trace_count-1;i>0;--i){const nova_resource_trace_t *previous=
+            &resource_trace[(resource_trace_head+i-1)%NOVA_RESOURCE_TRACE_CAPACITY];
+            if(previous->resource_id==trace.resource_id&&previous->event==NOVA_RESOURCE_EVENT_LOAD_BEGIN){
+                trace.load_begin_us=previous->timestamp_us;trace.load_end_us=trace.timestamp_us;
+                trace.total_time_us=trace.timestamp_us>=previous->timestamp_us?
+                    trace.timestamp_us-previous->timestamp_us:0;break;}}
+        resource_diag.total_load_us+=trace.total_time_us;
+        if(!resource_diag.fastest_load_us||trace.total_time_us<resource_diag.fastest_load_us)
+            resource_diag.fastest_load_us=trace.total_time_us;
+        if(trace.total_time_us>resource_diag.slowest_load_us)
+            resource_diag.slowest_load_us=trace.total_time_us;}
+    resource_trace[out]=trace;++resource_diag.recorded;resource_diag.count=resource_trace_count;
+    resource_diag.cache_bytes=trace.cache_bytes;
+    if(trace.peak_cache_bytes>resource_diag.peak_cache_bytes)
+        resource_diag.peak_cache_bytes=trace.peak_cache_bytes;
+    if(trace.event==NOVA_RESOURCE_EVENT_REQUEST)++resource_diag.requests;
+    else if(trace.event==NOVA_RESOURCE_EVENT_LOAD_COMPLETE)++resource_diag.loads;
+    else if(trace.event==NOVA_RESOURCE_EVENT_VALIDATE)++resource_diag.validations;
+    else if(trace.event==NOVA_RESOURCE_EVENT_DECOMPRESS)++resource_diag.decompressions;
+    else if(trace.event==NOVA_RESOURCE_EVENT_CACHE_HIT)++resource_diag.cache_hits;
+    else if(trace.event==NOVA_RESOURCE_EVENT_CACHE_MISS)++resource_diag.cache_misses;
+    else if(trace.event==NOVA_RESOURCE_EVENT_RELEASE)++resource_diag.releases;
+    else if(trace.event==NOVA_RESOURCE_EVENT_ERROR)++resource_diag.errors;
+    return true;
+}
+const nova_resource_trace_t *nova_resource_diag_get(uint32_t chronological_index)
+{
+    if(chronological_index>=resource_trace_count)return 0;
+    return &resource_trace[(resource_trace_head+chronological_index)%NOVA_RESOURCE_TRACE_CAPACITY];
+}
+static bool resource_trace_matches(const nova_resource_trace_t *trace,
+    const nova_resource_diag_filter_t *filter)
+{
+    if(!filter)return true;
+    if(filter->use_type&&trace->resource_type!=filter->type)return false;
+    if(filter->use_result&&trace->result!=filter->result)return false;
+    if(filter->use_integrity&&trace->integrity!=filter->integrity)return false;
+    if(filter->use_time&&(trace->timestamp_us<filter->start_us||
+       trace->timestamp_us>filter->end_us))return false;
+    if(filter->use_boot_phase&&trace->boot_phase!=filter->boot_phase)return false;
+    if(filter->use_module&&trace->module_id!=filter->module_id)return false;
+    if(filter->cache_hits_only&&!trace->cache_hit)return false;
+    return !filter->errors_only||trace->event==NOVA_RESOURCE_EVENT_ERROR;
+}
+const nova_resource_trace_t *nova_resource_diag_query(
+    const nova_resource_diag_filter_t *filter,uint32_t matching_index)
+{
+    for(uint32_t i=0;i<resource_trace_count;++i){const nova_resource_trace_t *trace=
+        nova_resource_diag_get(i);if(resource_trace_matches(trace,filter)){
+            if(!matching_index)return trace;
+            --matching_index;}}
+    return 0;
+}
+static bool resource_put(char *output,uint32_t capacity,uint32_t *position,char value)
+{if(*position>=capacity)return false;output[(*position)++]=value;return true;}
+static bool resource_text(char *output,uint32_t capacity,uint32_t *position,const char *value)
+{while(*value)if(!resource_put(output,capacity,position,*value++))return false;return true;}
+static bool resource_number(char *output,uint32_t capacity,uint32_t *position,uint64_t value)
+{char digits[24];uint8_t count=0;do{digits[count++]=(char)('0'+value%10u);value/=10u;}while(value);
+ while(count){if(!resource_put(output,capacity,position,digits[--count]))return false;}return true;}
+bool nova_resource_diag_export(nova_resource_export_format_t format,
+    bool authorized,uint8_t *output,uint32_t capacity,uint32_t *written)
+{
+    if(written)*written=0;
+    if(!authorized||!output||!written){++resource_diag.denied_exports;return false;}
+    uint32_t position=0;
+    if(format==NOVA_RESOURCE_EXPORT_BINARY){uint32_t required=
+        (uint32_t)resource_trace_count*sizeof(nova_resource_trace_t);if(required>capacity)return false;
+        for(uint32_t i=0;i<resource_trace_count;++i){const uint8_t *source=
+            (const uint8_t*)nova_resource_diag_get(i);for(uint32_t j=0;j<sizeof(nova_resource_trace_t);++j)
+                output[position++]=source[j];}}
+    else {char *text=(char*)output;
+        if(format==NOVA_RESOURCE_EXPORT_NDF&&!resource_text(text,capacity,&position,"NDF-RESOURCE-1\n"))return false;
+        if(format==NOVA_RESOURCE_EXPORT_JSON&&!resource_text(text,capacity,&position,"{\"resources\":["))return false;
+        if(format==NOVA_RESOURCE_EXPORT_CSV&&!resource_text(text,capacity,&position,"sequence,timestamp,id,event,type,result,duration,cache_hit\n"))return false;
+        for(uint32_t i=0;i<resource_trace_count;++i){const nova_resource_trace_t *trace=nova_resource_diag_get(i);
+            if(format==NOVA_RESOURCE_EXPORT_JSON){if(i&&!resource_put(text,capacity,&position,','))return false;
+                if(!resource_text(text,capacity,&position,"{\"sequence\":"))return false;}
+            uint64_t values[7]={trace->sequence,trace->timestamp_us,trace->resource_id,
+                trace->event,trace->resource_type,trace->result,trace->total_time_us};
+            for(uint8_t v=0;v<7;++v){if(!resource_number(text,capacity,&position,values[v]))return false;
+                if(v<6&&!resource_put(text,capacity,&position,format==NOVA_RESOURCE_EXPORT_CSV?',':' '))return false;}
+            if(format==NOVA_RESOURCE_EXPORT_JSON){if(!resource_text(text,capacity,&position,"}"))return false;}
+            else {if(!resource_put(text,capacity,&position,format==NOVA_RESOURCE_EXPORT_CSV?',':' '))return false;
+                if(!resource_number(text,capacity,&position,trace->cache_hit?1u:0u)||
+                   !resource_put(text,capacity,&position,'\n'))return false;}}
+        if(format==NOVA_RESOURCE_EXPORT_JSON&&!resource_text(text,capacity,&position,"]}"))return false;
+        if(position<capacity)text[position]=0;}
+    *written=position;++resource_diag.exports;return true;
+}
+void nova_resource_diag_reset(void){(void)nova_resource_diag_initialize();}
+const nova_resource_diag_status_t *nova_resource_diag_status(void){return &resource_diag;}
+
+bool nova_resource_corruption_initialize(void)
+{
+    for(uint8_t i=0;i<NOVA_CORRUPTION_RESULT_CAPACITY;++i)
+        corruption_results[i]=(nova_resource_corruption_result_t){0};
+    corruption_status=(nova_resource_corruption_status_t){.initialized=true,.isolated=true,
+        .deterministic=true,.heap_free=true,.productive_data_unchanged=true};
+    return true;
+}
+bool nova_resource_corruption_execute(uint64_t resource_id,nova_corruption_type_t corruption)
+{
+    if(!corruption_status.initialized||!resource_id||corruption==NOVA_CORRUPTION_NONE||
+       corruption>=NOVA_CORRUPTION_TYPE_COUNT||corruption_status.count==NOVA_CORRUPTION_RESULT_CAPACITY)
+        return false;
+    int16_t index=lookup_index(resource_id);if(index<0)return false;
+    const nova_resource_t *source=&registry[index];if(!source->packed_data||
+       source->packed_size>NOVA_CORRUPTION_BUFFER_CAPACITY)return false;
+    for(uint64_t i=0;i<source->packed_size;++i)
+        corruption_buffer[i]=((const uint8_t*)source->packed_data)[i];
+    nova_resource_descriptor_t descriptor={.uri="test://corruption/probe",
+        .type=source->type,.version=source->version,.data=corruption_buffer,
+        .size=source->packed_size,.checksum=source->packed_checksum,
+        .fallback_id=source->fallback_id,.origin=source->origin,.priority=source->priority,
+        .cache_policy=source->cache_policy,.compression=source->compression,
+        .original_size=source->size,.original_checksum=source->checksum,
+        .packed_sha256=source->packed_sha256,.original_sha256=source->original_sha256,
+        .signature=source->signature};
+    if(corruption==NOVA_CORRUPTION_BIT_ERROR)corruption_buffer[source->packed_size/2]^=1u;
+    else if(corruption==NOVA_CORRUPTION_TRUNCATED)descriptor.size=source->packed_size-1u;
+    else if(corruption==NOVA_CORRUPTION_EMPTY)descriptor.size=0;
+    else if(corruption==NOVA_CORRUPTION_INVALID_HEADER)corruption_buffer[0]^=0xffu;
+    else if(corruption==NOVA_CORRUPTION_INVALID_SIGNATURE)descriptor.signature=NOVA_SIGNATURE_INVALID;
+    else if(corruption==NOVA_CORRUPTION_INVALID_CHECKSUM)descriptor.checksum^=0xffffffffu;
+    else if(corruption==NOVA_CORRUPTION_INVALID_VERSION)descriptor.version=0;
+    else {descriptor.type=NOVA_RESOURCE_TYPE_COUNT;}
+    uint64_t before=diagnostics.cached_bytes;uint32_t registered_before=diagnostics.registered;
+    nova_resource_result_t result=nova_resource_register_descriptor(&descriptor,0);
+    bool detected=result!=NOVA_RESOURCE_OK;
+    bool fallback=detected&&source->fallback_id&&lookup_index(source->fallback_id)>=0;
+    nova_resource_corruption_result_t record={.resource_id=resource_id,
+        .fallback_id=source->fallback_id,.resource_type=source->type,.corruption=corruption,
+        .classification=fallback?NOVA_CORRUPTION_RECOVERABLE:
+            source->priority<=NOVA_RESOURCE_PRIORITY_HIGH?NOVA_CORRUPTION_CRITICAL:
+            NOVA_CORRUPTION_WARNING,.error_code=result,.source_size=source->packed_size,
+        .test_size=descriptor.size,.memory_before=before,.memory_after=diagnostics.cached_bytes,
+        .integrity_detected=detected,.fallback_successful=fallback,.boot_continued=detected,
+        .source_unchanged=nova_resource_checksum(source->packed_data,source->packed_size)==
+            source->packed_checksum,.pool_consistent=detected&&diagnostics.registered==registered_before,
+        .manipulated_used=!detected};
+    corruption_results[corruption_status.count++]=record;++corruption_status.executed;
+    if(detected)++corruption_status.detected;
+    if(fallback)++corruption_status.fallbacks;
+    if(record.boot_continued)++corruption_status.continued;
+    if(record.classification==NOVA_CORRUPTION_WARNING)++corruption_status.warnings;
+    else if(record.classification==NOVA_CORRUPTION_RECOVERABLE)++corruption_status.recoverable;
+    else if(record.classification==NOVA_CORRUPTION_CRITICAL)++corruption_status.critical;
+    else ++corruption_status.fatal;
+    if(!record.source_unchanged||!record.pool_consistent||record.manipulated_used)
+        corruption_status.productive_data_unchanged=false;
+    return detected&&record.source_unchanged&&record.pool_consistent&&!record.manipulated_used;
+}
+const nova_resource_corruption_result_t *nova_resource_corruption_results(void)
+{return corruption_results;}
+const nova_resource_corruption_status_t *nova_resource_corruption_status(void)
+{return &corruption_status;}
+bool nova_resource_corruption_generate_report(bool authorized,uint8_t *output,
+    uint32_t capacity,uint32_t *written)
+{
+    if(written)*written=0;
+    if(!authorized||!output||!written)return false;
+    const char *header="NOVA-RESOURCE-CORRUPTION-1\nid type corruption detected fallback continued class error\n";
+    uint32_t position=0;while(*header){if(position>=capacity)return false;
+        output[position++]=(uint8_t)*header++;}
+    for(uint8_t i=0;i<corruption_status.count;++i){const nova_resource_corruption_result_t *record=
+        &corruption_results[i];uint64_t values[8]={record->resource_id,record->resource_type,
+        record->corruption,record->integrity_detected,record->fallback_successful,
+        record->boot_continued,record->classification,record->error_code};
+        for(uint8_t v=0;v<8;++v){char digits[24];uint8_t count=0;
+            do{digits[count++]=(char)('0'+values[v]%10u);values[v]/=10u;}while(values[v]);
+            while(count){if(position>=capacity)return false;output[position++]=(uint8_t)digits[--count];}
+            if(position>=capacity)return false;
+            output[position++]=(uint8_t)(v==7?'\n':' ');}}
+    *written=position;++corruption_status.reports;return true;
+}

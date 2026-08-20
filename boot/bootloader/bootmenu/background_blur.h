@@ -17,6 +17,7 @@ typedef struct {
     nova_blur_kernel_t kernel;
     const nova_round_rect_t *rounded_geometry;
     uint16_t mask_scope;
+    uint32_t source_generation;
 } nova_blur_region_t;
 typedef enum {NOVA_BLUR_OK,NOVA_BLUR_INVALID,NOVA_BLUR_NOT_INITIALIZED,
     NOVA_BLUR_RECURSIVE,NOVA_BLUR_NO_MEMORY} nova_blur_result_t;

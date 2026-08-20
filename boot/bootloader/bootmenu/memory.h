@@ -10,7 +10,8 @@
 typedef enum {
     NOVA_MEMORY_PROFILE_MINIMAL=32,
     NOVA_MEMORY_PROFILE_STANDARD=64,
-    NOVA_MEMORY_PROFILE_COMFORT=128
+    NOVA_MEMORY_PROFILE_COMFORT=128,
+    NOVA_MEMORY_PROFILE_HIGH_QUALITY=256
 } nova_memory_profile_t;
 
 typedef enum {
@@ -105,6 +106,8 @@ typedef struct {
 void nova_memory_initialize(void);
 bool nova_memory_budget_initialize(void);
 bool nova_memory_budget_configure(nova_memory_profile_t profile);
+bool nova_memory_budget_configure_low_end(void);
+bool nova_memory_budget_configure_high_quality(void);
 const nova_memory_budget_t *nova_memory_budget_status(void);
 bool nova_memory_budget_available(uint64_t bytes);
 bool nova_memory_budget_reset(void);

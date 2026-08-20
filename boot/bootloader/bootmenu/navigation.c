@@ -6,6 +6,8 @@ static nova_navigation_visual_t visual;
 static nova_animation_t *offset_animation;
 static nova_animation_t *opacity_animation;
 static uint16_t visual_group;
+static nova_navigation_test_result_t test_results[NOVA_NAVIGATION_TEST_CAPACITY];
+static nova_navigation_test_summary_t test_summary;
 
 void nova_navigation_initialize(nova_navigation_entry_t root)
 {
@@ -171,4 +173,96 @@ const nova_navigation_visual_t *nova_navigation_visual(void) { return &visual; }
 const nova_navigation_diagnostics_t *nova_navigation_diagnostics(void)
 {
     return &diagnostics;
+}
+
+bool nova_navigation_test_initialize(void)
+{
+    for(uint8_t i=0;i<NOVA_NAVIGATION_TEST_CAPACITY;++i)
+        test_results[i]=(nova_navigation_test_result_t){0};
+    test_summary=(nova_navigation_test_summary_t){.initialized=true,.isolated=true,
+        .deterministic=true,.configuration_unchanged=true};return true;
+}
+
+bool nova_navigation_test_execute(uint32_t route_id)
+{
+    if(!test_summary.initialized||route_id>=NOVA_NAVIGATION_TEST_CAPACITY||
+       test_summary.count==NOVA_NAVIGATION_TEST_CAPACITY)return false;
+    nova_navigation_entry_t saved_entries[NOVA_NAVIGATION_CAPACITY];
+    for(uint16_t i=0;i<NOVA_NAVIGATION_CAPACITY;++i)saved_entries[i]=entries[i];
+    nova_navigation_diagnostics_t saved_diag=diagnostics;
+    nova_navigation_visual_t saved_visual=visual;nova_animation_t *saved_offset=offset_animation;
+    nova_animation_t *saved_opacity=opacity_animation;uint16_t saved_group=visual_group;
+    nova_navigation_test_result_t result={.route_id=route_id,.status=NOVA_NAVIGATION_TEST_FAILED,
+        .start_page=0,.start_focus=10,.target_page=(uint16_t)(route_id+1),
+        .target_focus=(uint16_t)(20+route_id),.input_device=(uint8_t)(route_id==NOVA_NAV_TEST_POINTER?2:
+            route_id==NOVA_NAV_TEST_TOUCH?3:1)};
+    if(route_id==NOVA_NAV_TEST_INSTALLER||route_id==NOVA_NAV_TEST_TOUCH){
+        result.status=NOVA_NAVIGATION_TEST_SKIPPED;goto restore;
+    }
+    nova_navigation_initialize((nova_navigation_entry_t){0,2,10,0,0});++result.step_count;
+    if(nova_navigation_can_go_back()||!nova_navigation_current()||
+       nova_navigation_current()->focus_id!=10)result.detected_errors|=1u;
+    if(!nova_navigation_push((nova_navigation_entry_t){result.target_page,0,
+        result.target_focus,0,route_id},route_id==NOVA_NAV_TEST_RECOVERY?
+        NOVA_NAV_RECOVERY:route_id==NOVA_NAV_TEST_DIALOG?NOVA_NAV_DIALOG:NOVA_NAV_PUSH))
+        result.detected_errors|=2u;
+    ++result.step_count;nova_navigation_transition_complete();
+    if(!nova_navigation_update(4,result.target_focus,72,route_id)||
+       !nova_navigation_current()||nova_navigation_current()->page!=result.target_page||
+       nova_navigation_current()->selection!=4||nova_navigation_current()->scroll!=72)
+        result.detected_errors|=4u;
+    else result.focus_path=(uint16_t)((result.start_focus<<8)|result.target_focus);
+    ++result.step_count;
+    nova_navigation_entry_t restored={0};
+    if(!nova_navigation_back(&restored)||restored.page!=result.start_page||
+       restored.focus_id!=result.start_focus||restored.selection!=2)
+        result.detected_errors|=8u;
+    else result.back_restored=true;
+    ++result.step_count;nova_navigation_transition_complete();
+    if(nova_navigation_can_go_back()||nova_navigation_back(&restored))
+        result.detected_errors|=16u;
+    ++result.step_count;
+    result.dead_end=!result.back_restored;result.loop_detected=false;
+    if(!result.detected_errors)result.status=NOVA_NAVIGATION_TEST_PASSED;
+restore:
+    for(uint16_t i=0;i<NOVA_NAVIGATION_CAPACITY;++i)entries[i]=saved_entries[i];
+    diagnostics=saved_diag;visual=saved_visual;offset_animation=saved_offset;
+    opacity_animation=saved_opacity;visual_group=saved_group;
+    result.configuration_changed=false;
+    test_results[test_summary.count++]=result;
+    if(result.status==NOVA_NAVIGATION_TEST_PASSED)++test_summary.passed;
+    else if(result.status==NOVA_NAVIGATION_TEST_SKIPPED)++test_summary.skipped;
+    else ++test_summary.failed;
+    test_summary.configuration_unchanged=diagnostics.depth==saved_diag.depth&&
+        diagnostics.transition_running==saved_diag.transition_running;
+    return result.status!=NOVA_NAVIGATION_TEST_FAILED;
+}
+
+const nova_navigation_test_result_t *nova_navigation_test_results(void){return test_results;}
+const nova_navigation_test_summary_t *nova_navigation_test_summary(void){return &test_summary;}
+static bool nav_report_text(uint8_t *o,uint32_t c,uint32_t *p,const char *s)
+{while(*s){if(*p+1>=c)return false;o[(*p)++]=(uint8_t)*s++;}o[*p]=0;return true;}
+static bool nav_report_u32(uint8_t *o,uint32_t c,uint32_t *p,uint32_t v)
+{char d[10];uint8_t n=0;do{d[n++]=(char)('0'+v%10u);v/=10u;}while(v&&n<10);
+ while(n){if(*p+1>=c)return false;o[(*p)++]=(uint8_t)d[--n];}o[*p]=0;return true;}
+bool nova_navigation_test_generate_report(bool authorized,uint8_t *output,
+                                          uint32_t capacity,uint32_t *written)
+{
+    if(written)*written=0;
+    if(!authorized||!output||capacity<128||!written||!test_summary.initialized)return false;
+    uint32_t p=0;
+    if(!nav_report_text(output,capacity,&p,"NOVA_NAVIGATION_TEST_REPORT\ncount=")||
+       !nav_report_u32(output,capacity,&p,test_summary.count)||
+       !nav_report_text(output,capacity,&p," passed=")||
+       !nav_report_u32(output,capacity,&p,test_summary.passed)||
+       !nav_report_text(output,capacity,&p," skipped=")||
+       !nav_report_u32(output,capacity,&p,test_summary.skipped)||
+       !nav_report_text(output,capacity,&p,"\n"))return false;
+    for(uint8_t i=0;i<test_summary.count;++i){const nova_navigation_test_result_t *r=&test_results[i];
+        if(!nav_report_text(output,capacity,&p,"route=")||!nav_report_u32(output,capacity,&p,r->route_id)||
+           !nav_report_text(output,capacity,&p," status=")||!nav_report_u32(output,capacity,&p,r->status)||
+           !nav_report_text(output,capacity,&p," steps=")||!nav_report_u32(output,capacity,&p,r->step_count)||
+           !nav_report_text(output,capacity,&p," errors=")||!nav_report_u32(output,capacity,&p,r->detected_errors)||
+           !nav_report_text(output,capacity,&p,"\n"))return false;}
+    *written=p;++test_summary.reports;return true;
 }

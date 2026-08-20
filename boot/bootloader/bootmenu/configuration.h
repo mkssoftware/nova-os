@@ -7,7 +7,7 @@
 #include "diagnostics.h"
 
 #define NOVA_CONFIGURATION_VERSION_MAJOR 1u
-#define NOVA_CONFIGURATION_VERSION_MINOR 0u
+#define NOVA_CONFIGURATION_VERSION_MINOR 2u
 #define NOVA_CONFIGURATION_VERSION_PATCH 0u
 
 typedef enum {
@@ -24,6 +24,8 @@ typedef enum {
     NOVA_CONFIG_WATCHDOG_TIMEOUT,
     NOVA_CONFIG_KEY_REPEAT_DELAY,
     NOVA_CONFIG_KEY_REPEAT_RATE,
+    NOVA_CONFIG_MOUSE_SPEED,
+    NOVA_CONFIG_DOUBLE_CLICK_TIME,
     NOVA_CONFIG_DEBUG_OVERLAY,
     NOVA_CONFIG_KEY_COUNT
 } nova_configuration_key_t;
@@ -37,6 +39,8 @@ typedef struct {
     uint16_t watchdog_timeout_ms;
     uint16_t key_repeat_delay_ms;
     uint16_t key_repeat_rate_ms;
+    uint16_t mouse_speed_percent;
+    uint16_t double_click_time_ms;
     uint8_t recovery_retries;
     bool reduced_motion;
     bool tooltips;

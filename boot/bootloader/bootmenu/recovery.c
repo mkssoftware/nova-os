@@ -1,4 +1,5 @@
 #include "recovery.h"
+#include "input.h"
 #include "diagnostics.h"
 
 typedef struct {
@@ -76,6 +77,9 @@ bool nova_recovery_report(uint32_t code, nova_ui_subsystem_t subsystem,
 {
     if(!code||subsystem>=NOVA_RECOVERY_WATCHDOG_COUNT||severity>NOVA_UI_ERROR_FATAL||
        preferred>NOVA_RECOVERY_TEXT_MODE){++diagnostics.rejected;return false;}
+    /* Recovery replaces the current interaction context even when the
+       selected recovery level can complete automatically. */
+    nova_input_pointer_cancel_all();
     ++diagnostics.reports;diagnostics.state=NOVA_RECOVERY_FAILURE;
     active_code=code;active_subsystem=subsystem;active_severity=severity;
     nova_recovery_level_t level=preferred;

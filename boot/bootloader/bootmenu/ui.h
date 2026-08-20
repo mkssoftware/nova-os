@@ -28,6 +28,7 @@ bool bootmenu_transition_input_locked(void);
 bool bootmenu_settings_toggle_tooltips(void);
 bool bootmenu_settings_toggle_reduced_motion(void);
 bool bootmenu_configuration_select_theme(uint8_t theme);
+bool bootmenu_configuration_select_quality(uint8_t quality);
 bool bootmenu_settings_adjust_tooltip_delay(int32_t steps);
 bool bootmenu_settings_set_tooltip_delay_edge(bool maximum);
 bool bootmenu_help_search_begin(void);
@@ -47,8 +48,12 @@ void bootmenu_set_firmware_info(const char *vendor,uint32_t revision,
     bool setup_supported);
 bool bootmenu_pointer_event(int32_t dx, int32_t dy, bool left, bool right,
                             uint64_t *selection, bool *activate);
+bool bootmenu_pointer_absolute_event(int32_t x,int32_t y,bool left,bool right,
+                                     uint64_t *selection,bool *activate);
+bool bootmenu_key_event(uint16_t scan_code,uint32_t unicode);
 bool bootmenu_context_open(uint64_t selection);
 bool bootmenu_theme_menu_open(void);
+bool bootmenu_quality_menu_open(void);
 bool bootmenu_context_active(void);
 bool bootmenu_context_move(int8_t direction);
 bool bootmenu_context_edge(bool end);
@@ -59,5 +64,7 @@ void bootmenu_tooltip_hide(void);
 bool bootmenu_recovery_self_test(void);
 bool bootmenu_memory_self_test(void);
 bool bootmenu_runtime_self_test(void);
+bool bootmenu_diagnostics_refresh(void);
+bool bootmenu_diagnostics_export(void);
 
 #endif

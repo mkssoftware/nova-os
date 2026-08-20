@@ -29,6 +29,284 @@ Die zugehörigen QEMU-Nachweise sind die Make-Ziele `test`, `test-mouse`,
 Der UEFI-Test weist EFI-Einstieg, GOP-Initialisierung,
 GUI-Zeichnung und die automatische Standardauswahl nach fünf Sekunden nach.
 
+## Zentrales Boot-UI-Diagnoseframework
+
+NPSPEC-BOOTDIAG-0001 besitzt nun eine zentrale, heapfreie Diagnose-API. Elf
+Standardbereiche und weitere fest begrenzte Module lassen sich registrieren.
+Ereignisse tragen Sequenz, Zeit, sechs Schweregrade, Kategorie, Modul, Quelle,
+Beschreibung, Metadaten sowie optional Fehlerklasse, Bootphase, Ursache und
+Empfehlung. Der chronologische Ringpuffer ist bis 256 Einträge konfigurierbar;
+Abfragen filtern Zeitraum, Modul, Schweregrad, Kategorie, Bootphase und
+Fehlerklasse.
+
+Performance-, Speicher- und Ressourcen-Snapshots liefern unter anderem FPS,
+Frame-/Render-/Layout-/Inputzeit, CPU-/GPU-Telemetrie, Speicher, Peak,
+Fragmentierung, Cachebelegung, Evictions und Budgetverletzungen. Als sensibel
+markierte oder durch die Schutzregel erkannte Passwörter, private Schlüssel,
+Secrets und Token werden vor der Speicherung redigiert. NDF/1, JSON, Plain
+Text und ein versioniertes Binärformat werden ausschließlich nach expliziter
+Benutzerfreigabe in einen vom Aufrufer bereitgestellten Puffer exportiert.
+Live-Diagnose ist standardmäßig aus und ebenfalls autorisierungspflichtig.
+
+Die Diagnoseansicht aktualisiert die Datensicht über Übersicht und erzeugt
+über Ereignisse ausdrücklich einen lokalen NDF-Bericht. Hosttests decken
+Ringüberlauf, Module, strukturierten Fehlerkontext, sämtliche Filter,
+Redaktion, vier Exportformate, Autorisierung, Live-Gate und Reset ab. Das reale
+GPT/FAT32-Abbild meldet unter OVMF/QEMU
+`UEFI:DIAGNOSTICS-FRAMEWORK-READY` vor dem ersten vollständigen Menüframe.
+
+Offen bleiben ein persistentes Exportziel mit Dateiauswahl, echte Firmware-
+Sensoren für CPU-/GPU-Auslastung, Datenträger-/Netzwerkdiagnose, Expertenmodus,
+der vollständige Tab-/Detailaufbau aus BOOTMANAGER-UI-0014, BIOS-Parität und
+eine belastbare Overheadmessung auf physischer Hardware.
+
+## Rendering Statistics
+
+NPSPEC-BOOTDIAG-0002 verwendet einen vorallokierten Ring für 600 Frames. Jeder
+Eintrag enthält Frame-ID, Start, Ende, Dauer, Draw Calls, Dirty Regions und
+deren Fläche sowie die Layeranzahl. Die API liefert den aktuellen Frame,
+rollierende Werte für eine und zehn Sekunden und die gesamte Sitzung mit FPS,
+Minimum, Maximum und Mittelwert. Compositor, Renderqueue, Dirty-/Layer-Manager,
+Framebuffer, Effects, Blur, Image Renderer, Motion, Resources und Memory
+speisen ihre vorhandenen Zähler in einen gemeinsamen Snapshot ein.
+
+Die Diagnoseübersicht zeigt nach ausdrücklichem Aktualisieren FPS, Framezeit
+und Draw Calls. Renderingdaten können auf Benutzeranforderung heapfrei als
+NDF, JSON, CSV oder versioniertes Binärformat in einen bereitgestellten Puffer
+exportiert werden. Hosttests prüfen zwei unterschiedliche Frameklassen,
+Sitzungsaggregation, Software-Renderer, Speicherwerte und alle vier Formate.
+Das GPT/FAT32-Image meldet in OVMF/QEMU
+`UEFI:RENDERING-STATISTICS-READY`.
+
+Noch nicht verfügbar sind echte GPU-Zeit, Transferzeit und GPU-Speicher, weil
+QEMU und der aktuelle Bootmanager kein Hardware-GPU-Backend besitzen. Ebenso
+fehlen SVG-Zähler wegen des dokumentierten unvollständigen SVG-Vertrags,
+Font-/Glyph-Detailcounter, per-Layer/-Fenster-Zeitmessung, physische Langzeit-
+und Overheadtests sowie dieselbe Pipeline im BIOS-Pfad.
+
+## Input Event Tracing und sichtbare GUI-Reaktionszeit
+
+NPSPEC-BOOTDIAG-0003 besitzt nun einen vollständig vorallokierten, passiven
+256er Trace-Ring für Tastatur, Repeat, Pointer, Wheel, Touch, Controller,
+Fokuswechsel und Shortcuts. Er speichert Geräte-, Control-, Fenster- und
+Dialogkontext sowie Capture-, Dispatch-, Handler- und Abschlusszeiten,
+Queuezustand und Renderauslösung. Filter, Fehlerzähler und nutzerautorisierter
+NDF-/JSON-/CSV-/Binärexport sind integriert. Tracing ist standardmäßig aus;
+Secure-Eingaben unterdrücken Unicode vor der Speicherung. Die Ereignisaktion
+aktiviert es ausdrücklich und exportiert/deaktiviert es beim nächsten Aufruf.
+
+Nach dem gemeldeten sichtbaren Stocken wurde außerdem der reale Softwarepfad
+optimiert: Das 5-ms-Polling ersetzt die frühere 20-ms-Schleife, Low-End-
+Animationsframes warten nur noch 1 statt 30 ms, vollständig transparente
+Pixel werden im Compositor übersprungen, opaque Pixel direkt übernommen und
+BGRA-GOP-Zeilen ohne allgemeine Pixelkonvertierung kopiert. Die statische
+Grundfläche wird pro View/Theme/Auflösung/Skalierung gecacht. Normale Auswahl-
+und Pointerframes rasterisieren nur Interaktionspanel, Status sowie alte und
+neue Cursorfläche; der Compositor erhält und präsentiert mehrere getrennte
+Dirty Regions. Dialoge, Tooltips und Übergänge behalten sicherheitshalber den
+Vollbildpfad.
+
+Der UEFI-Hotpath bündelt jetzt außerdem die häufigen relativen
+Simple-Pointer-Pakete zu höchstens einem sichtbaren Bewegungsframe je 15 ms.
+Die Eingabeabfrage selbst bleibt bei 5 ms. Tastenflanken, Loslassen und
+Mausrad werden sofort verarbeitet, während reine Bewegungen akkumuliert
+werden. Dadurch lösen QEMU-Mauspakete nicht mehr jeweils ein vollständiges
+Software-Compositing aus; der Marker `POINTER-FRAME-COALESCED` macht den
+produktiven Pfad diagnostizierbar.
+
+Ein Startframefehler in derselben Cachepipeline ist behoben: Zuvor wurde die
+statische Basisebene im ersten Entrance-Frame mit Deckkraft null präsentiert
+und ihre Dirty Regions dabei verbraucht. Dadurch konnten Nova-Dark-Hintergrund,
+linkes Branding und oberer Nova-Blau-Balken dauerhaft schwarz beziehungsweise
+unsichtbar bleiben. Die Basisebene wird jetzt sofort deckend präsentiert; nur
+der interaktive Inhalt verwendet den Entrance-Fade. Der reale 1280x720-QEMU-
+Framebuffer enthält danach 633.722 Pixel in `#101113` und 15.943 Pixel in
+`#267CC1`, bei keinem vollständig schwarzen Pixel.
+
+## Boot UI Test Architecture
+
+NPSPEC-BOOTTEST-0001 besitzt jetzt eine zentrale, heapfreie Testarchitektur
+mit einem vorreservierten 64er Registry-/Result-Pool. Testfaelle tragen eine
+stabile ID, Suite, versionierte Testdaten, Name, Beschreibung, Erwartungswert,
+Modul, Bootphase, Prioritaet, Hardware- und Qualitaetsprofil sowie Testebene
+und Testart. Der Runner filtert Suites, plant sie in stabiler
+Registrierungsreihenfolge, erfasst Pending/Running/Passed/Failed/Skipped,
+Fehlercode, Ist-/Sollwert, Laufzeit, Wiederholungen, Gesamt-/Durchschnittszeit
+und prueft ueber einen Zustandsfingerabdruck die Isolation jedes Falls.
+
+Der Hosttest belegt Registrierung, Duplicate-Abweisung, zwei PASS, einen
+SKIPPED, deterministische 25-us-Messwerte, autorisiertes Reporting sowie die
+Erkennung eines Erwartungsfehlers. Im GPT/FAT32-UEFI-Boot sammelt derselbe
+Runner die bereits separat validierten Control-, Navigation-, Dialog- und
+Rendering-Suites und meldet `BOOT-TEST-ARCHITECTURE-READY` vor dem Start der
+interaktiven Runtime.
+
+Noch offen sind produktive Installer-/Self-Healing-/Touch-/ARM64-Suites,
+echte Stackinformationen, persistente CI-Artefakte, Nightly-/PR-/Release-
+Workflowdefinitionen, ein vollstaendiger Coverage-Analyzer auf API- und
+Zustandsebene, Stresslaeufe auf physischer Hardware sowie die gemeinsame
+Anbindung der Legacy-BIOS-Tests an denselben C-Runner.
+
+## Rendering Reference Tests
+
+NPSPEC-BOOTTEST-0002 besitzt jetzt einen heapfreien, rendererunabhaengigen
+Referenzbild-Comparator mit einem festen 32er Ergebnispool. Versionierte und
+schreibgeschuetzte Metadaten enthalten Referenz-ID, Version, Aufloesung, DPI,
+Theme, Hardwareprofil und Erstellungszeit. Der Vergleich wertet RGB und Alpha
+mit der normativen Kanalabweichung von maximal eins aus, erlaubt eine
+Positionsabweichung von einem Pixel, unterstuetzt Masken und erzeugt fuer jede
+nicht tolerierte Abweichung einen magentafarbenen Differenzpixel. Ergebnis und
+autorisierter Bericht enthalten Referenz-/Test-ID, abweichende Pixel, groesste
+Kanalabweichung, erste Fehlerposition und Aehnlichkeit.
+
+Der Hosttest prueft exakte, Farb-, Positions-, Fehler- und Maskenframes sowie
+das Export-Gate. Dieselbe API laeuft vor der UEFI-Runtime mit zwei PASS- und
+einem absichtlich erkannten FAIL-Fall; das reale GPT/FAT32-QEMU-Image meldet
+`RENDER-REFERENCE-TESTS-READY`. Bestehende QEMU-Skripte erzeugen reale Frames
+fuer Dark/Light/High Contrast, Dialog, Tooltip, Recovery und 800x600,
+1280x720 sowie 1920x1080.
+
+Noch fehlt ein freigegebener, versionierter und schreibgeschuetzter
+Vollbild-Baselinebestand, der diese QEMU-Frames automatisch in allen drei
+Themes, den fuenf Pflichtaufloesungen und allen fuenf Hardwareprofilen mit dem
+Comparator verbindet. Ebenso fehlen persistente Heatmapdateien und
+Bereichsbeschreibungen, produktives SVG-/GPU-Rendering, von QEMU-OVMF
+angebotene 1024x768-/4K-GOP-Modi, physische Hardware und BIOS-Paritaet. Diese
+Punkte werden deshalb weiterhin nicht als bestanden ausgewiesen.
+
+## Dialog Tests
+
+NPSPEC-BOOTTEST-0005 besitzt nun eine isolierte, heapfreie 10er Testsuite samt
+Ergebnis-, Summary- und autorisierter Report-API. Information, Warning, Error,
+Confirmation, Progress, Credential, Recovery, Network, Firmware und Custom
+werden über den produktiven Dialogpfad geöffnet. Die Suite prüft Modal-Falle,
+deterministischen Fokusumlauf, Tastatur-/Escape-Abschluss, Progresszustand,
+UTF-8-Credentials und sichere Löschung. Dialogpool, IDs und Diagnosezustand
+werden nach jedem Fall exakt restauriert. Hosttest und GPT/FAT32-UEFI-Start
+prüfen zehn erfolgreiche Fälle und den Marker `DIALOG-TESTS-READY`.
+
+Touch/Double-Tap/Long-Press, Screenreader, echte Zeitmessung, Referenzbilder für
+alle zehn Typen, sämtliche Theme-/Scale-Kombinationen und BIOS-Parität bleiben
+offen. Netzwerk- und Firmwaretypen besitzen den gemeinsamen produktiven
+Dialogvertrag, aber noch keine eigenen fachlichen Backends.
+
+## Navigation Tests
+
+NPSPEC-BOOTTEST-0004 besitzt nun eine isolierte, heapfreie 10er Routenregistry
+mit Ergebnis-, Summary- und autorisierter Report-API. Bootmanager, Recovery,
+Diagnose, Dialog, Liste, Menü, Tastatur und Pointer laufen über den produktiven
+Navigation Stack. Jede Route prüft Startzustand, Push, Transitionabschluss,
+Zielseite, Selection/Fokus/Scroll/Kontext, Back-Restore, Root-Grenze,
+Sackgasse und Schleifenindikator. Stack, Visualzustand, Motionzeiger und
+Diagnosewerte werden nach jedem Lauf exakt restauriert. Installer und Touch
+werden mangels produktivem Backend reproduzierbar als `SKIPPED` statt als
+Scheinerfolg ausgewiesen. Host und GPT/FAT32-UEFI validieren acht PASS, zwei
+SKIPPED und `NAVIGATION-TESTS-READY`; der bestehende interaktive QEMU-Test
+belegt zusätzlich reale Unterseiten, Dialoge, Hilfe, Rücknavigation sowie
+Slide-/Fade-Transitions.
+
+Offen bleiben produktive Installer-/Touchrouten, Screenreader, Double Click,
+Gesten/Long Press, echte Laufzeitmessung, vollständige Screenshots pro Route,
+Self-Healing/Snapshotfachlogik, physische Eingabegeräte und BIOS-Parität.
+
+## Routed Control Events
+
+NPSPEC-BOOTCONTROL-0001 besitzt jetzt ein gemeinsames heapfreies
+Ereignissystem fuer alle 18 definierten Control-Ereignisse von Create bis
+ThemeChanged. Jeder der 128 Control-Slots besitzt genau einen Handler plus
+Kontext. Dispatch beginnt am Target und leitet ein unbehandeltes Ereignis in
+stabiler Reihenfolge iterativ ueber Parent, Dialogcontainer und Anwendung nach
+oben. Die Route wird vor Ausfuehrung validiert; ungueltige Handles, zerstoerte
+Controls, Zyklen und Tiefenueberlauf werden ohne Rekursion abgewiesen.
+
+Focus erzeugt Blur/Focus, Invoke erzeugt Click. Der produktive UEFI-Pfad
+erzeugt ausserdem MouseEnter, MouseLeave, MouseMove, MouseDown, MouseUp und
+KeyDown; CharacterInput wird erst nach akzeptierter Texteingabe erzeugt.
+Treffer auf dekorativen Icons werden auf das vollstaendige semantische
+ListItem beziehungsweise Tile normalisiert. Die Bootmanager-Liste empfaengt
+dadurch Maus- und Tastaturereignisse als gebubbelte Item-Ereignisse.
+Lifecyclewechsel erzeugen StateChanged, Bounds LayoutChanged, Text-/Range-/
+Slider-/Toggle-Aenderungen ValueChanged, Texteingabe CharacterInput und die
+zentrale Theme-Neubindung ThemeChanged. Damit muessen spezialisierte Controls
+diese Ereignisse nicht mehr manuell oder uneinheitlich ausloesen.
+Beim Destroy wird ein letztes Ereignis zugestellt, der Handler entfernt und
+das Control jetzt korrekt aus der Siblingkette des Parents ausgehaengt. Die
+Diagnose zaehlt Dispatches, behandelte und gebubbelte Ereignisse sowie Fehler.
+Host und GPT/FAT32-UEFI pruefen fuer sieben reale Eingabeereignistypen die
+Target-Parent-Reihenfolge sowie Stop bei handled, Exactly-once-Invoke,
+Zyklenschutz und sauberen Child/Parent-Abbau. QEMU meldet
+`CONTROL-INPUT-EVENTS-READY` und weist fuer gesendete Tasten produktive
+`CONTROL-KEY-EVENT-BUBBLED`-Ereignisse nach.
+
+Die gemeinsame Input-Laufzeit erkennt DoubleClick nur nach einem vollstaendigen
+ersten Klick auf demselben Control, innerhalb der konfigurierten 200..1000 ms
+und hoechstens 4 DLU Bewegung. Nach einem erkannten Paar wird die folgende
+Freigabe unterdrueckt, damit ein TripleClick keine ueberlappenden Paare bildet.
+Das Ereignis wird geroutet, diagnostisch gezaehlt und bei autorisiertem Trace
+mit Geraet, Pointer, Ziel, Position und Zeit gespeichert. Host und QEMU-UEFI
+pruefen positive sowie Zeit-, Ziel- und Distanz-Negativfaelle.
+
+Noch fehlen KeyUp aus UEFI SimpleTextInput, produktive
+Touch-/Controller-Erzeuger, ein separates Preview/Capture-Modell, asynchrone
+Quellen, BIOS-Anbindung und physische Eingabegeraetetests. Die NPSPEC fordert
+fuer den normativen Fluss nur Target-zu-Parent-Bubbling; Capture ist daher eine
+Erweiterung und kein vorgetaeschtes Akzeptanzkriterium.
+
+## Secure Password Field
+
+NPSPEC-BOOTCONTROL-PASSWORD-0001 besitzt jetzt eine spezialisierte
+Password-Control-API auf dem festen Control-Pool. Generisches SetText wird fuer
+Passwortfelder abgewiesen; Eingabe erfolgt codepointweise ohne Heap, wird
+unmittelbar maskiert und beim Clear volatil ueber den gesamten 96-Byte-Puffer
+geloescht. Unterstuetzt sind UTF-8-sichere Caret-/Delete-/Backspace-Grenzen,
+Mindestlaenge, Upper-/Lowercase-/Ziffernregeln, Error-Zustand, private
+Accessibility, Diagnose ohne Inhalt sowie ein explizit opt-in und auf maximal
+zehn Sekunden begrenztes Reveal mit automatischem Timeout. Ungueltige Zeichen,
+UTF-8 oder Overflow loeschen den sicheren Puffer sofort.
+
+Der Credential-Dialog zeichnet nun das produktive Password Control statt einer
+separaten Punktprimitive. Der Dialogpuffer bleibt die einzige Klartextquelle;
+das Control erhaelt ausschliesslich einen synthetischen Maskenzaehler. Der
+UEFI-Eingabepfad verarbeitet Zeichen und Backspace direkt im aktiven
+Credential-Dialog. Ein automatisierter QEMU-Test navigiert zur Diagnose,
+oeffnet den F12-Sicherheitsdialog, sendet fuenf Zeichen, wartet auf fuenf reale
+Inputmarker und prueft einen stabilen Screenshot mit fuenf Maskierungspunkten.
+
+Touch-/Controller-Tastatur, Clipboard- und Drag-and-Drop-Backends existieren
+weiterhin nicht und koennen daher nur durch Abwesenheit abgesichert werden.
+Ein externes Authentifizierungs-, TPM-/Datentraegerverschluesselungsbackend,
+geschuetzte physische Speicherseiten, Screenreader-Hardwaretest, BIOS-Paritaet
+und ein produktiver Reveal-Button bleiben offen.
+
+## Control Interaction Tests
+
+NPSPEC-BOOTTEST-0003 besitzt nun eine isolierte, heapfreie 12er Ergebnis- und
+Report-API. Button, Toggle Button, Checkbox, List, TextField, Slider,
+ProgressBar und Scrollbar laufen direkt über die produktiven Control-APIs;
+Dialog und Navigation binden die spezialisierten Testsuites ein. Geprüft werden
+Lifecycle, Bounds, Accessibility, Focus, Hover/Pressed, Dirty-/Visualzustand,
+Ereignisreihenfolge, Exactly-once-Aktion, UTF-8-Text, Auswahl, Range/Step und
+Scrollkopplung. Radio Button und ComboBox werden mangels produktiver Typen
+ehrlich als `SKIPPED` geführt. Host und GPT/FAT32-UEFI validieren zehn PASS,
+zwei SKIPPED und `CONTROL-INTERACTION-TESTS-READY`.
+
+Der Tooltip-QEMU-Test deckte außerdem eine reale Overlay-Regression auf: Bei
+einem komplexen transparenten Frame wurde der Overlaypuffer zwar geleert, die
+darunterliegende gecachte Basisebene jedoch nicht erneut zusammengesetzt.
+Dadurch konnten alte Selektionsmarker sichtbar bleiben. Tooltip, Kontextmenü,
+Dialog und der jeweils erste Folgeframe erzwingen jetzt die Rekonstruktion der
+Basisebene. Der neue QEMU-Tooltipframe zeigt ausschließlich den aktuellen
+Selektionsmarker.
+
+Radio Button, ComboBox, Tree View, Touch, Screenreader, vollständige
+Modifier-/Repeatmatrix, Pixelreferenzen aller Zustände und BIOS-Parität fehlen.
+
+Hosttests und der vollständige interaktive UEFI-Navigationstest bestehen. Das
+GPT/FAT32-QEMU-Abbild weist `BASE-SURFACE-CACHE-HIT` und
+`PARTIAL-INTERACTION-FRAME` nach. Ein objektiver 30-/60-FPS-Nachweis auf
+physischer Hardware, GPU-Beschleunigung, weitere engere Item-Damage-Rechtecke
+und BIOS-Parität bleiben offen.
+
 ## Semantische Interaction States
 
 Die UEFI-Control-Laufzeit besitzt nun die zwölf in
@@ -151,6 +429,145 @@ aktuelle Firmwarepfad besitzt keine phasenweise Hochpräzisionsmessung und der
 vollständig softwaregerenderte QEMU-Debugaufbau ist deutlich langsamer als
 100 ms bis zum ersten Frame. Reale 30/60-FPS- sowie Startup-Grenzen benötigen
 optimierten Releasecode und Tests auf repräsentativer physischer Hardware.
+
+## Deterministisches Speicherbudget
+
+Der zentrale Memory Manager besitzt nun konfigurierbare Minimal-, Standard-
+und Comfort-Profile mit 32, 64 und 128 MiB. Rendering, Ressourcen-, Glyph-,
+SVG- und Themecache, Animationen, Controls, Layout, Diagnose und Reserve haben
+jeweils feste Budgets. Die Diagnose liefert Gesamt-, Frei-, Peak-, Pool- und
+Cacheverbrauch, Fragmentierung, Evictions, Budgetverletzungen und
+Speicherdruckstufe. Der vorhandene feste Arena-Allocator sperrt reguläre
+Session-Allokationen nach Eintritt in die UI-Laufzeit; nur der vorallokierte
+Framepool bleibt pro Frame nutzbar. Cache-Evictions aus dem Resource Manager
+werden zentral bilanziert, und sensible Puffer können über eine gegen
+Wegoptimieren geschützte Zeroisierung bereinigt werden.
+
+Hosttests decken alle drei Profile, die exakte Bereichssumme, Überlauf,
+fünfstufigen Speicherdruck, Laufzeitsperre, Frame-Reset und sichere Löschung
+ab. Das aktuelle GPT/FAT32-Abbild meldet unter EDK2/QEMU
+`UEFI:MEMORY-BUDGET-READY`.
+
+Noch nicht vollständig angebunden sind die separaten Verbrauchszähler aller
+spezialisierten Glyph-, SVG-, Theme-, Layout- und Draw-Command-Pools sowie die
+automatische Ausführung jeder konkreten Degradationsaktion. Crypto-, TPM- und
+Recovery-Schlüsselverbraucher existieren noch nicht; ihre sichere Löschung
+kann daher nur auf API-Ebene, nicht im End-to-End-Fluss belegt werden.
+
+## Startup-Time Budget
+
+Die Diagnose verwaltet nun feste Zeitbudgets für Stage 1/2, Hardware, Grafik,
+Ressourcen, Theme, UI, Bootmanager, Kernelladen und Kernelübergabe. Jeder
+Phaseneintrag enthält Start, Ende, Dauer, Sollwert, Abschlussstatus und
+Verletzungen. Zusätzlich werden Gesamtzeit, Standard-/Recovery-/Diagnoseziel,
+Hardwareklasse, Performanceklasse A bis E, Optimierungshinweise und die Zeit
+vom Abschluss der UI-Initialisierung bis zum ersten vollständigen Frame
+geführt. Eine Überschreitung erzeugt ein Diagnoseereignis, unterbricht den
+Bootvorgang aber nicht und setzt keine Sicherheitsprüfung außer Kraft.
+
+Der UEFI-Pfad misst Entry, Grafik, Ressourcen, Theme, UI, Bootmanager und den
+ersten Frame mit einem monotonen TSC-Zeitgeber. Hosttests prüfen sämtliche
+exakten Phasengrenzen, die 50-ms-Erstframegrenze, Überschreitungsdiagnose und
+alle Klassen A bis E. Das GPT/FAT32-Abbild bootet unter EDK2/QEMU bis zur
+vollständigen Oberfläche und meldet `UEFI:STARTUP-BUDGET-READY`.
+
+Stage 1 liegt vor dem Eintritt in `BOOTX64.EFI`; Kernelladen und Handoff werden
+erst bei einem tatsächlich gestarteten Systemeintrag abgeschlossen. Außerdem
+ist der 1-GHz-TSC-Fallback für virtuelle Maschinen nur eine Schätzung. Die
+normativen Echtzeitziele benötigen deshalb weiterhin einen kalibrierten
+Hardwaretimer sowie Kalt-, Warm-, Recovery-, Netzwerk-, Installer- und
+Slow-Disk-Messungen auf repräsentativer physischer Hardware.
+
+## Adaptive Quality Management
+
+Der Quality Manager verarbeitet nun CPU-Score, GPU-Verfügbarkeit und -Last,
+Software-Rendering, freien Speicher, Framezeit, Cachefüllung und Auflösung.
+Auto, Ultra, High, Balanced, Low und Safe definieren Blur, Schatten, Glow,
+Transparenz, Antialiasing, Sampling, Rasterstufen für SVG/Glyphen/Icons,
+Animationsschritt, Cachebudget und Compositor-Fallback. Drei dauerhaft
+langsame Frames lösen eine Degradation aus; eine Erholung erfolgt erst nach
+120 stabil schnellen Frames und jeweils nur um eine Stufe. Dadurch führen
+kurze Lastspitzen nicht zu sichtbarem Profilflattern.
+
+Profilwechsel arbeiten ohne Heapallokation, invalidieren betroffene Caches,
+erzwingen einen vollständigen Folgeframe und erhalten Theme, Farben, Layout,
+Controls, Navigation, Eingabe und Sicherheitsstatus. Unter
+„Darstellung → Grafikqualität …“ sind alle sechs Modi per Tastatur und Maus
+auswählbar und werden atomar in der Bootkonfiguration gespeichert. Hosttests
+decken alle Profile, Autoauswahl, Dauerlast, Erholung, Speichermangel,
+GPU-Ausfall, Software-Rendering, feste Benutzerwahl und ungültige Telemetrie
+ab. Der UEFI-Selbsttest meldet `UEFI:ADAPTIVE-QUALITY-READY`; der interaktive
+QEMU-Test öffnet das Untermenü, wählt Safe und weist
+`UEFI:QUALITY-SELECTION` sowie `UEFI:CONFIGURATION-COMMIT` nach.
+
+Im aktuellen Firmwarepfad existieren noch keine echten CPU- oder
+GPU-Auslastungssensoren. SVG-Rendering ist weiterhin normativ blockiert;
+SVG- und Glyph-Rasterstufen bleiben daher zunächst durchgängige Policywerte,
+nicht vollständig angebundene Cache-Implementierungen. Physische
+Hardwareprofile, Installer/Self-Healing und BIOS-Parität fehlen ebenfalls.
+
+## Low-End Hardware Profile
+
+Das eigenständige LEHP erkennt einen Kern, höchstens 1 GHz, höchstens 32 MiB
+für die Boot-UI, fehlende GPU sowie Recovery/Safe Mode. Es kann unabhängig
+davon manuell aktiviert und deaktiviert werden. Aktivierung koordiniert das
+AQM-Low-Profil, den Software-Renderer, Dirty Regions, Double Buffering,
+ereignisgetriebenen Leerlauf, reduzierte pflichterhaltende Animationen,
+vereinfachten Blur und maximal eine Schattenebene. Recovery und Safe Mode
+verwenden innerhalb desselben Profils die Safe-Qualität.
+
+Das Speicherprofil umfasst exakt 32 MiB. Davon entfallen 6 MiB auf Ressourcen,
+je 2 MiB auf Glyphen, SVG und Controls sowie je 512 KiB auf Theme und
+Animationen; die übrigen festen Managerbudgets und die Reserve werden
+deterministisch berechnet. Nach dem Aufbau der Oberfläche wird der reguläre
+Runtime-Heap gesperrt, während die vorallokierte Frame-Arena weiterarbeitet.
+Die Diagnose meldet Profilstatus, Aktivierungsart, Softwarepfad, Ziel- und
+Ist-FPS, Framezeit, Speicher, Cache sowie den Erhalt von Layout, Funktion und
+Sicherheit.
+
+Hosttests prüfen automatische und manuelle Aktivierung, moderne Hardware ohne
+Autoaktivierung, sämtliche exakten Teilbudgets, Recovery→Safe und die
+Runtime-Sperre. Das reale GPT/FAT32-Abbild aktiviert das Profil im
+GPU-unabhängigen Softwarepfad und meldet `UEFI:LOW-END-PROFILE-READY`, bevor
+die vollständige Oberfläche und der Countdown erscheinen.
+
+Nicht als erfüllt gewertet wird das reale 30-FPS-/80-ms-/150-ms-Ziel: Der
+instrumentierte QEMU-Debugbuild rendert vollständig in Software und ist dafür
+nicht repräsentativ. Ein optimierter Releasebuild auf physischer
+1-GHz-/512-MiB-Hardware, HDD/USB-I/O-Tests, Touch, externe SVG-/Glyph-Caches,
+Embedded-Systeme und BIOS-End-to-End-Parität bleiben offen.
+
+## High-Quality Hardware Profile
+
+Das HQHP besitzt eine eigene Hardware- und Policy-API. Automatische
+Aktivierung verlangt mindestens vier Kerne, 8 GiB System-RAM, 256 MiB freien
+Boot-UI-Speicher, einen schnellen Datenträger und vor allem ein tatsächlich
+registriertes GPU-Backend. Ohne dieses Backend wird Hardwarebeschleunigung
+nicht behauptet. Bei Aktivierung koordiniert das Profil Ultra-Qualität,
+hochwertiges Antialiasing und Sampling, vollständige Motion Tokens,
+erweiterten Blur, mehrstufige Schatten, Transparenz, Layer-/Resource-Caching,
+Dirty Regions und Double Buffering. Die barrierefreie Einstellung
+„Reduzierte Bewegung“ behält dabei immer Vorrang.
+
+Das feste Budget beträgt 256 MiB: Ressourcen erhalten 64 MiB, Glyphen und SVG
+je 16 MiB, Theme 4 MiB, Animationen und Controls je 16 MiB. Rendering, Layout,
+Diagnose und Reserve vervollständigen das Budget deterministisch. Die
+Runtime-Heapsperre bleibt auch bei Profilwechseln erhalten. Diagnosewerte
+umfassen GPU-Backend, Beschleunigungsstatus und -Last, FPS, Framezeit,
+Speicher, Cache, Materialmerkmale und Fallbackstatus.
+
+Hosttests verwenden einen explizit simulierten GPU-Backendvertrag und prüfen
+Erkennung, Ultra, sämtliche Budgets, 60-FPS-Diagnose, Reduced Motion und einen
+GPU-Ausfall mit vollständigem Software-Fallback. QEMU stellt in der gewählten
+Konfiguration kein NovaOS-GPU-Backend bereit; das reale GPT/FAT32-Abbild weist
+daher korrekt `UEFI:HIGH-QUALITY-FALLBACK-READY` nach und zeichnet die
+Oberfläche weiterhin vollständig per Software.
+
+Nicht implementiert und deshalb nicht als erfüllt markiert sind echte
+GPU-Beschleunigung für Compositing, Blur, Alpha, Skalierung und Vektoren sowie
+ein physischer 60-FPS-/4K-/Ultra-Wide-/NVMe-Nachweis. Subpixeltext, externe
+SVG-/Glyph-Caches, Touch, Präzisions-Touchpad, Stift und BIOS-Parität bleiben
+ebenfalls offen.
 
 ## Externe Funktionsblocker
 
@@ -863,9 +1280,11 @@ UEFI-Seiten und die gemeinsame BIOS-Anbindung.
 ## Boot-UI Runtime Configuration
 
 Der technisch eindeutig definierte Runtime-Anteil von `NPSPEC-BOOTUI-0009`
-ist jetzt zentral implementiert. Die feste Konfiguration trägt Version 1.0.0,
+ist jetzt zentral implementiert. Die feste Konfiguration trägt Version 1.2.0,
 Theme, Qualitätsprofil, Skalierung, Motion, Tooltips, Tooltip-Verzögerung,
-Recovery-, Watchdog-, Eingabe- und Debugwerte. Sichere Defaults funktionieren
+eine validierte Doppelklickzeit von 200 bis 1000 ms, eine lineare
+Mausgeschwindigkeit von 25 bis 400 Prozent sowie Recovery-, Watchdog-,
+Eingabe- und Debugwerte. Sichere Defaults funktionieren
 ohne externe Datei; jeder Wert besitzt einen geprüften Bereich und die
 Runtime-Struktur eine deterministische interne Integritätsprüfsumme.
 
@@ -876,12 +1295,51 @@ gezählt. Explizites Rollback, Default-Reset, Generation, Änderungsmeldungen un
 temporäre Overrides sind heapfrei implementiert. Overrides verändern die
 Basiswerte nicht und können gemeinsam entfernt werden.
 
-Themeauswahl, Reduced Motion, Tooltip-Schalter und Tooltip-Verzögerung sind an
-diesen Manager angebunden. Die bestehenden QEMU-Tests für Settings und Themes
+Themeauswahl, Reduced Motion, Tooltip-Schalter, Tooltip-Verzögerung,
+Doppelklickerkennung und die produktive UEFI-Mausbewegung sind an diesen
+Manager angebunden. Bei 100 Prozent bleibt die bisherige Firmware-
+Normalisierung `/8` exakt erhalten; 25 und 400 Prozent bilden die validierten
+Grenzen, und sehr kleine Rohbewegungen bleiben mindestens ein Pixel. Eine
+nichtlineare Beschleunigungskurve ist nicht normativ festgelegt und wird daher
+nicht erfunden. Die bestehenden QEMU-Tests für Settings und Themes
 weisen jeden produktiven Commit mit `UEFI:CONFIGURATION-COMMIT` nach und zeigen
 den finalen Zustand in `build/uefi-settings-controls.ppm`. Hosttests prüfen
 zusätzlich verschachtelte Transaktionen, ungültige Werte, Rollback, Reset,
-Override-Isolation und eine beschädigte Prüfsumme.
+Override-Isolation, eine beschädigte Prüfsumme und die Pointerwerte 25, 100 und
+400 Prozent. Der GPT/FAT32-QEMU-Test fordert `POINTER-SPEED-READY`.
+
+## Productive Pointer Capture
+
+NPSPEC-BOOTINPUT-0007 verwendet jetzt eine direkt per Pointer-ID adressierte
+feste Acht-Slot-Tabelle. Begin, Owner-Abfrage, Status, Routing, Release und
+Cancel sind damit O(1). Doppel-Capture, ungültige IDs sowie Null- oder
+zerstörte Controls werden abgewiesen und diagnostisch gezählt. Capture hat
+Vorrang vor Hit Testing; Geräteverlust und Seitenwechsel brechen aktive
+Captures ab.
+
+Der Tooltip-Delay-Slider und die Diagnose-Scrollbar übernehmen Pointer 0 beim
+Drag-Beginn. Dadurch erhalten sie Bewegungen auch außerhalb ihrer Bounds. Bei
+Pointer-Up erfolgt `Released`, bei Geräte- oder Szenenverlust `Cancelled`.
+Hosttests prüfen Exklusivität, Owner, Out-of-bounds-Routing, Release,
+Invalid-ID und Hot-Removal-Cancel. Das reale GPT/FAT32-QEMU-Image muss
+`POINTER-CAPTURE-READY` melden.
+
+Jeder Slot führt zusätzlich Pointer-ID, letzten Owner, Begin, Ende, Dauer,
+Release-, Cancel- und Fehlerzähler. Bei einem Abbruch wird vor dem Entfernen
+des Owners ein `CaptureCancel`-Ereignis vom Target zum Parent geroutet. Der
+Hosttest misst 25 ms für eine normale Freigabe und 40 ms für Geräteverlust;
+QEMU validiert ein 45-ms-Cancel und fordert
+`POINTER-CAPTURE-CANCEL-EVENT-READY`.
+
+Dialogöffnung und Recovery-Eintritt rufen den zentralen Cancel-Pfad jetzt vor
+dem Kontextwechsel auf. Host und QEMU prüfen dafür unabhängige Zeitwerte und
+die geroutete Ereignisreihenfolge; die QEMU-Gates heißen
+`DIALOG-CAPTURE-CANCEL-READY` und `RECOVERY-CAPTURE-CANCEL-READY`.
+
+Noch offen sind Touch/Pen, BIOS-Parität,
+automatisierte HMP-Mausinjektion und physische Hardware. `Pending` bleibt für
+zukünftige asynchrone Quellen reserviert; die aktuelle Bootlaufzeit entscheidet
+Capture-Anforderungen synchron.
 
 Nicht umgesetzt ist weiterhin die externe binäre Persistenz. Die Spezifikation
 nennt keine Magic/Formatkennung, Headergröße, Feldoffsets, Endianness,
@@ -999,6 +1457,22 @@ sie die konservative Relation zur Full-HD-Referenz. Automatik ist der sichere
 Default; die Konfiguration akzeptiert zusätzlich erzwungene 100 bis 300
 Prozent. Ungültige Auflösung oder Skalierung wird abgewiesen, ungültige DPI
 fällt auf 96 DPI mit Auflösungsheuristik zurück.
+
+NPSPEC-BOOTTEST-0006 wird durch eine vorallokierte 80er Testregistry ergänzt.
+Der Hostlauf prüft 65 isolierte Kombinationen: zehn Pflichtauflösungen sowie
+5:4, 21:9 und 32:9 jeweils bei 100, 125, 150, 175 und 200 Prozent. Validiert
+werden Auflösungs- und Seitenverhältnisklasse, Safe Area, logische DLU-Fläche,
+Layout, Renderfähigkeit, erreichbare Controls, Dialog/Text und die vollständige
+Wiederherstellung der aktiven Konfiguration. EDK2/QEMU erzeugt zusätzlich
+echte P6-Framebuffer in 800x600, 1280x720 und 1920x1080. Der automatisierte
+Bericht prüft deren Abmessungen und protokolliert SHA-256-Werte in
+`build/resolution-compatibility-report.md`.
+
+Nicht als vollständig erfüllt gelten reale GOP-Aufnahmen aller Pflicht- und
+Ultra-Wide-/4K-Modi, ein Difference Analyzer mit normativ bezifferter
+Pixelbaseline und Toleranz, vollständige per-Control-Clipping-/Textüberlauf-
+Introspektion, sämtliche Themes je Matrixfall, Installer/Self-Healing,
+physische Hardware sowie BIOS-Parität.
 
 DLU-zu-Pixel und Pixel-zu-DLU runden deterministisch auf ganze Pixel. Layout,
 Text, Icons, Abstände, Radien, Dialoge und Motion-Distanzen verwenden denselben
@@ -1831,3 +2305,458 @@ Registry; diese Migration bleibt offen. Ebenfalls fehlen ein normatives
 externes Animations-Wire-Format, eine eindeutige Darstellung von Color-
 Keyframes und Triggerpayloads, Lade-/Auswertungszeitmessung sowie dieselbe
 Registry im BIOS-Pfad.
+
+## Animation Diagnostics und Frame-Spitzen
+
+NPSPEC-BOOTDIAG-0004 ist als passive, heapfreie Messschicht in die Motion Engine und den realen Framepfad integriert. Ein vorallokierter 256er Ring zeichnet Start, Pause, Fortsetzung, Wiederholung, Abschluss, Abbruch und Fehler samt Motion Token, Property, Easing, Soll-/Ist-Dauer, Latenz, Gruppe, Priorität, Qualitäts- und Hardwareprofil auf.
+
+Die Frameanalyse erfasst Budgetüberschreitungen, ausgelassene oder doppelte Frames und Jitter sowie Render-, Compositor-, Layout- und CPU-Anteile. Der lokale Diagnoseexport enthält nun zusätzlich den Animationsbericht; NDF, JSON, CSV und Binärformat sind nur nach ausdrücklicher Nutzeraktion verfügbar. Hosttests decken Lifecycle, Filter, Frameabweichungen, Exportautorisierung und Reset ab. Das aktuelle GPT/FAT32-Image weist die Integration in EDK2/QEMU mit `UEFI:ANIMATION-DIAGNOSTICS-READY` nach.
+
+Noch offen sind eine grafische Timeline-/Graph-Detailansicht, echte GPU-Zeit, allgemeine Window-/Dialog-ID-Zuordnung, persistente Exportziele, physische Langzeit-/Overheadmessungen und BIOS-Parität.
+
+## Resource Loading Diagnostics
+
+NPSPEC-BOOTDIAG-0005 ist in den Resource Manager eingebunden. Ein vorallokierter 256er Ring protokolliert Anfrage, Ladestart, Integritätsprüfung, Dekomprimierung, Cache Hit/Miss, Abschluss, Freigabe und Fehler. Jeder Eintrag enthält Ressourcen-ID, Typ, Version, Zustand, Ergebnis, Kompressions- und Truststatus, Größen-, Speicher- und Zeitfelder. Filter stehen für Typ, Ergebnis, Integrität, Zeit, Bootphase, Modul, Cache Hits und Fehler bereit.
+
+Der explizite Diagnoseexport erzeugt zusätzlich einen Ressourcenbericht als NDF; die API unterstützt autorisiert auch JSON, CSV und Binärformat. Hosttests verwenden den echten LZ4-, Integritäts-, Cache-, Fehler- und Fallbackpfad. Das aktuelle GPT/FAT32-Image bestätigt die produktive Integration in EDK2/QEMU mit `UEFI:RESOURCE-LOADING-DIAGNOSTICS-READY`.
+
+Offen bleiben Firmware-Hochpräzisionsmessungen für jede einzelne Loaderphase, allgemeine Parent-/Bootphasen-/Modulzuordnung, SVG-Diagnose bis zum normativen SVG-Vertrag, persistente Exportziele, physische Overheadmessungen und BIOS-Parität.
+
+## Performance Regression Tests
+
+NPSPEC-BOOTTEST-0008 besitzt nun einen heapfreien Baseline Manager für Bootzeit, FPS, Framezeit, Speicher, Ressourcenladen, Animation, Eingabelatenz und Cache-Hit-Rate. Jede Baseline führt Build-ID, Version, Hardwareprofil, Firmwaretyp, Richtung und Schwelle. Abweichungen werden deterministisch in Basispunkten berechnet und nach den normativen 5-Prozent- beziehungsweise FPS-3-Prozent-Grenzen als None, Minor, Major oder Critical klassifiziert.
+
+Der Runner kann die vorhandenen Startup-, Rendering-, Memory-, Resource-, Animation- und Inputdiagnosen automatisch übernehmen. Ein autorisierter CI-lesbarer Bericht enthält Benchmark, Baseline, Messwert, Abweichung und Klasse. Hosttests prüfen die exakten Grenzwerte und sämtliche Regressionsklassen; EDK2/QEMU bestätigt die Integration mit `UEFI:PERFORMANCE-REGRESSION-READY`.
+
+Offen bleiben persistente Vergleichsdaten für den letzten erfolgreichen Build und Releases, Diagrammdateien, echte Nightly-/Pull-Request-/Release-Workflows, Installer-End-to-End-Benchmarks, eine physische Hardwarematrix und BIOS-Parität.
+
+## Resource Corruption Tests
+
+NPSPEC-BOOTTEST-0009 besitzt eine isolierte, heapfreie Korruptionssuite mit statischem 64-KiB-Manipulationspuffer und festem Ergebnisarray. Sie erzeugt reproduzierbar Bitfehler, abgeschnittene und leere Daten sowie ungültige Header, Signaturen, Prüfsummen, Versionen und Metadaten. Jede manipulierte Kopie durchläuft den produktiven Integritäts- und Registrierungsweg; Produktivbytes werden nicht verändert.
+
+Die Ergebnisse enthalten Ressource, Fallback, Korruptionsart, Fehlercode, Speicherzustand, Erkennung, Bootfortsetzung und Poolkonsistenz. Hosttests prüfen alle acht Arten, einen CI-lesbaren Bericht sowie die Unverändertheit von Registry und Cache. Bereits vorhandene Tests ergänzen PNG-CRC/Header, SHA-256, LZ4-Fehler/Fallback, Fonts, Themes, Animationen und Konfiguration. Das GPT/FAT32-Image führt acht isolierte Proben gegen die Logoressource aus und meldet `UEFI:RESOURCE-CORRUPTION-TESTS-READY`.
+
+SVG und Asset Packages bleiben mangels normativer Formate blockiert. Außerdem fehlen echte kryptografische Signaturprüfung, Random-Fuzzing, persistente Reports, vollständige Recovery-UI-Matrix, Installer und BIOS-Parität.
+
+## Fallback Mode Tests
+
+NPSPEC-BOOTTEST-0010 besitzt eine gemeinsame heapfreie Test-API für Software-/Textausgabe, Standardtheme, Systemschrift, Platzhaltergrafik, Standardanimation, Recovery, Safe Mode, Minimalmodus und Low-End-Profil. Die Suite ruft die produktiven Subsystem-APIs auf und erfasst Aktivierung, Erfolg, automatische Umschaltung, Bedienbarkeit, Integritäts- und Sicherheitserhalt, Recovery-Verfügbarkeit sowie Speicher vor und nach dem Wechsel.
+
+Hosttests aktivieren alle neun Ketten und erzeugen einen autorisierten CI-Bericht. Das reale GPT/FAT32-Image führt dieselbe Suite aus, stellt die temporär veränderten Recovery-, Compositor- und Motionzustände anschließend wieder her und meldet `UEFI:FALLBACK-MODE-TESTS-READY`.
+
+Offen bleiben echte GPU-/GOP-/VESA-Fehlerinjektion auf physischer Hardware beziehungsweise im BIOS-Pfad, SVG-Fallback bis zum normativen Vektorvertrag, Touch, Installer, Self-Healing, hochpräzise Umschaltzeiten und eine echte Secure-Boot-Zustandsabfrage.
+
+## Input Repeat
+
+NPSPEC-BOOTINPUT-0011 besitzt nun eine zentrale, heapfreie Tabelle aus acht
+parallelen Repeat-Kontexten. Jeder Kontext speichert die vollständige
+Unified-Eventvorlage, Input- und Device-ID, gebundenes Fokusziel, Start,
+nächsten Termin, Stop, Dauer, Anzahl, Fehler und einen der Zustände `Idle`,
+`Waiting`, `Repeating`, `Paused` oder `Stopped`.
+
+Keyboard-, Character-, Navigations-, Controller- und optionale Pointer-Wheel-
+Ereignisse sind zulässig; kritische Einmalaktionen werden abgewiesen. Initial
+Delay von 100 bis 5000 ms und Intervall von 20 bis 2000 ms sind zentral
+konfigurierbar. Accessibility kann Repeat vollständig deaktivieren, das Delay
+verlängern und die Frequenz reduzieren. Fokus- und Geräteverlust stoppen aktive
+Kontexte. Hosttests prüfen Timing, mehrere Kontexte und Eventtypen, Pause/Resume,
+kritische Aktionen, Fokus, Geräteverlust und Accessibility. Das GPT/FAT32-Abbild
+meldet unter QEMU `UEFI:INPUT-REPEAT-READY`.
+
+Offen bleiben die produktive KeyUp-Anbindung unter UEFI SimpleTextInput,
+Controller-/Analog-HAL, automatisches Ende an echten Listengrenzen,
+Konfigurationspersistenz, BIOS-Parität und physische Tests.
+
+## Keyboard Shortcuts
+
+NPSPEC-BOOTINPUT-0010 besitzt nun eine zentrale, heapfreie Hash-Registry mit 64
+Slots für maximal 32 Shortcuts. Ein Eintrag enthält Taste, Modifier, Command,
+Global-/Kontext-/Dialog-/Developer-Scope, Kontext-ID und optional eine
+Fokusbindung. Die Auflösung erfolgt deterministisch in der Reihenfolge Dialog,
+autorisierter Developer, Kontext und Global und liefert ausschließlich eine
+Command-ID an den registrierten Dispatcher.
+
+Gleichrangige Duplikate werden bei der Registrierung als Konflikt abgewiesen.
+Unregister verwendet Tombstones, Entwickler-Shortcuts erfordern eine explizite
+Autorisierung und rekursiver Command-Dispatch wird blockiert. Diagnosen erfassen
+Registrierung, Entfernen, Ausführung, Konflikte, Fehlschläge, unautorisierte und
+rekursive Aufrufe sowie die letzte Kombination, Scope, Command, Kontext und den
+Fokus. Hosttests prüfen alle Scopes, Priorität, Konflikt, Autorisierung, Dispatch,
+Rekursion und Entfernen. Das GPT/FAT32-Abbild meldet unter QEMU
+`UEFI:KEYBOARD-SHORTCUTS-READY`.
+
+Offen bleiben echte Mehrtasten-Sequenzen jenseits von Modifier-Chords, eine
+zentral konfigurierbare Standardbelegung, Sticky-/Slow-Keys-Provider, die
+produktive Command-Anbindung sämtlicher Views, BIOS-Parität und physische Tests.
+
+## Directional Focus Navigation
+
+NPSPEC-BOOTINPUT-0009 verwendet nun einen statischen, direkt adressierten
+Navigationsgraphen mit sechs Zielslots je Control. Explizite Nachbarn besitzen
+Vorrang. Für Up, Down, Left und Right werden geometrische Kandidaten aus den
+logischen Control-Bounds, dem Abstand auf der Hauptachse und der Querabweichung
+beim Aufbau des Scope-Graphen vorbestimmt. Forward und Backward verwenden die
+Scope-Reihenfolge. Lookup und Navigation laufen dadurch in O(1); nur der seltene
+Graphaufbau arbeitet quadratisch über maximal 32 Scope-Controls.
+
+Randverhalten kann auf Stop oder Wrap gesetzt werden; benutzerdefinierte
+Weiterleitung entsteht über explizite Kanten. Vor jedem Wechsel werden Ziel,
+Fokusfähigkeit und aktiver Scope erneut validiert, rekursive Navigation wird
+gesperrt. Diagnosen enthalten Quelle, Ziel, Richtung, Scope, explizite und
+geometrische Treffer, Wraps, Fehler und Fehlschläge. Hosttests prüfen expliziten
+Vorrang, horizontale und vertikale Geometrie, Wrap und Scope-Isolation. Das
+GPT/FAT32-Abbild meldet unter QEMU `UEFI:DIRECTIONAL-FOCUS-READY`.
+
+Offen bleiben ein eigenes Navigationsprioritätsfeld am Control,
+Analogstick-Deadzone und -Repeat, ein echter Screenreader, BIOS-Parität und
+physische Controller-Tests.
+
+## Focus Management
+
+NPSPEC-BOOTINPUT-0008 besitzt nun einen heapfreien Stack aus acht Focus Scopes
+mit bis zu 32 vorregistrierten Controls je Scope. Jeder Scope definiert einen
+Default-Fokus oder verwendet deterministisch sein erstes Element. `Enter` und
+`Leave` isolieren verschachtelte Dialog-/Overlaybereiche und stellen den zuvor
+aktiven Fokus atomar wieder her. Vorwärts- und Rückwärtsnavigation arbeiten über
+den aktuellen Index in O(1) und schließen zyklisch.
+
+Nur lebende, sichtbare, aktivierte und nicht dekorative Controls innerhalb des
+aktiven Scope können Fokus erhalten. Focus/Blur-Ereignisse, Themezustand,
+Accessibility-Trace und Announcement-Zähler sowie Fokus-, Scope-, Navigations-,
+Restore- und Fehlerdiagnosen sind angebunden. Hosttests prüfen Default, Reihenfolge,
+Wrap, modale Isolation, Fremdfokus, Restore und ungültige Controls. Das reale
+GPT/FAT32-Abbild meldet unter QEMU `UEFI:FOCUS-SCOPE-MANAGER-READY`.
+
+Offen bleiben ein einheitliches Control-Backing für alle produktiven
+Dialogschaltflächen, Layout-/Dokument-Fallbackreihenfolge, ein echter
+Screenreader-Provider, eine Firmware-Latenzzeitquelle, BIOS-Parität und physische
+Accessibility-Tests.
+
+## Input Device Hot Detection
+
+NPSPEC-BOOTINPUT-0012 besitzt nun eine feste, heapfreie 16er Registry mit direkt
+adressiertem O(1)-Lookup. Der definierte Lebenszyklus `Detected`, `Initializing`,
+`Ready`, `Disconnected` und `Error` wird durch `Device Added`, `Changed`, `Ready`,
+`Removed` und `Error` als Unified-Systemereignisse sichtbar. Nur `Ready`-Geräte
+dürfen normale Eingaben liefern. Entfernung beendet Pointer Capture und Repeat,
+erhält jedoch den UI-Fokus; Wiederanmeldung ist ohne Neustart möglich.
+
+Hosttests prüfen Ereignisreihenfolge, mehrere Geräte, Zustands- und Count-Abfragen,
+Entfernung, Fokus, gesperrte Eingaben, Typfehler und ID-Slotkollision. Das reale
+GPT/FAT32-Abbild prüft denselben Lebenszyklus unter EDK2/QEMU und meldet
+`UEFI:INPUT-HOT-DETECTION-READY`.
+
+Die UEFI-Schicht registriert zusätzlich einen hardwareunabhängigen Scanner beim
+Input Manager. Er fragt `EFI_SIMPLE_POINTER_PROTOCOL` alle 250 ms erneut ab,
+synchronisiert Hinzufügen und Entfernen und verwirft bei Geräteverlust noch
+ausstehende Pointerbewegungen und Tastenstände. Unified-Geräteereignisse werden
+beim Lesen der Tastatur kontrolliert übersprungen und können daher keine
+Tastaturdaten verfälschen. Ein isolierter Firmware-Mock prüft unveränderte Scans,
+Entfernen und erneutes Hinzufügen; QEMU meldet
+`UEFI:INPUT-DEVICE-MONITOR-READY`.
+
+Offen bleiben echte Firmwareprovider für Hersteller-, Produkt- und
+Firmwareinformationen sowie Bluetooth, Touch, Controller, BIOS-Parität und
+physische Hotplugtests.
+
+## BIOS-/UEFI-Kompatibilitätsmatrix
+
+NPSPEC-BOOTTEST-0007 besitzt nun einen gemeinsamen automatisierten Runner. `make test-firmware-compatibility` baut und startet den Legacy-BIOS-Pfad unter SeaBIOS sowie den UEFI-Pfad unter EDK2/OVMF. Anschließend entsteht [firmware-compatibility-report.md](../../build/firmware-compatibility-report.md) mit getrennten Ergebnissen und einem expliziten Paritätsfeld für Firmwareentry, Grafik, Fallback, Bootmanager, Ressourcen, Eingabe, Recovery, Kernelhandoff, Secure Boot und ExitBootServices.
+
+Nachgewiesen sind VBE und GOP, beide Bootmanagerstarts, BIOS-NBHP/BIB samt Kernelstart sowie die vollständige UEFI-GUI mit Input, Ressourcen, Diagnose und Fallbacks. Der Bericht behauptet bewusst keine vollständige Parität: BIOS und UEFI verwenden noch getrennte UI-, Resource-, Input- und Recoverypipelines. Der produktive UEFI-Kernelhandoff einschließlich Memory Map und ExitBootServices fehlt weiterhin.
+
+Weitere klare Restlücken sind CSM, UEFI Class 2/3, Secure Boot, TPM, Touch, Installer, VirtualBox/VMware/Hyper-V, physische Referenzhardware und pixelidentische Ausgabe.
+## Alignment und Spacing (NPSPEC-BOOTLAYOUT-0002)
+
+Die Layoutlaufzeit unterstützt jetzt horizontale und vertikale Ausrichtung,
+Stretch, Baseline-Ausrichtung, getrennte Margins und Paddings sowie feste und
+gleichmäßige Verteilung. Alle Maße werden als DLU entgegengenommen und mit der
+zentralen Ganzzahlskalierung berechnet; bei aktivierter Barrierefreiheit gilt
+eine Mindestskalierung von 125 %. Die Implementierung benötigt keinen Heap und
+verteilt mehrere Elemente in O(n).
+
+Der Hosttest deckt Center, Stretch, Baseline, Accessibility, Space-Between,
+Space-Evenly und ungültige Insets ab. Der UEFI-Selbsttest prüft die identische
+Laufzeit im GPT/FAT32-Abbild und meldet `UEFI:ALIGNMENT-SPACING-READY`.
+Noch offen sind die vollständige Migration aller produktiven Controls, echte
+Font-Baselines, verschachtelte Container, BIOS-Parität und physische Tests.
+## Stack Layout (NPSPEC-BOOTLAYOUT-0003)
+
+Die Layoutlaufzeit besitzt nun feste, heapfreie Stackcontainer für vertikale
+und horizontale Anordnung. Bis zu 16 Kinder werden in stabiler Reihenfolge mit
+DLU-Padding und -Spacing, Alignment, Stretch, Constraints und allen definierten
+Verteilungsmodi berechnet. Unsichtbare Kinder belegen keinen Platz.
+Verschachtelung ist bis zu einer festen Tiefe möglich; doppelte IDs, mehrfach
+eingehängte Container und Zyklen werden vor dem Layout abgewiesen.
+
+Hosttests prüfen Stretch, Sichtbarkeit, Accessibility, Verschachtelung sowie
+Duplikat- und Zyklusschutz. Der UEFI-Selbsttest meldet im GPT/FAT32-Abbild
+`UEFI:STACK-LAYOUT-READY`. Offen bleiben die vollständige Migration der
+produktiven Seiten, BIOS-Parität, die Recovery-/Auflösungsmatrix und reale
+Zeitmessung.
+## Grid Layout (NPSPEC-BOOTLAYOUT-0004)
+
+Die Layoutlaufzeit unterstützt jetzt heapfreie Grids mit Auto-, Fixed-, Star-
+und Percentage-Tracks. Je Grid stehen feste Listen für acht Zeilen, acht
+Spalten und 32 Kinder zur Verfügung. RowSpan, ColumnSpan, DLU-Abstände,
+Margin, Padding, Constraints, Zellalignment, Stretch und optional reservierte
+unsichtbare Zellen werden deterministisch berechnet. Duplikate, überlappende
+Zellen, ungültige Indizes, Mehrfacheinhängung und Zyklen werden abgewiesen.
+
+Hosttests decken alle Tracktypen, Spans, Accessibility und Überlappungsschutz
+ab. Der Firmware-Selbsttest meldet im GPT/FAT32-Abbild
+`UEFI:GRID-LAYOUT-READY`. Offen bleiben die Migration produktiver Dialoge und
+Formulare, explizite Render-Z-Sortierung, BIOS-Parität, eine vollständige
+Auflösungsmatrix und reale Zeitmessung.
+## Overlay Layout (NPSPEC-BOOTLAYOUT-0005)
+
+Die Layoutlaufzeit besitzt nun eine feste, heapfreie Overlayliste mit sieben
+Layerprioritäten und zusätzlichem Z-Index. Kinder unterstützen DLU-Padding,
+Margin und absolute Offsets, Alignment, Stretch, optionales Clipping,
+Visible/Hidden/Collapsed, Accessibility-Mindestflächen und Materialmetadaten
+für Glass, Acrylic und Solid. Modale Ebenen sperren niedrigere Eingabeziele;
+der Hit-Test läuft von der obersten sichtbaren interaktiven Ebene abwärts.
+
+Duplikate, gleich priorisierte modale Ebenen, Mehrfacheinhängung, Zyklen und
+Überläufe werden abgewiesen. Hosttests prüfen Layer-/Z-Reihenfolge, Clipping,
+Materialien, Modalität, Hit-Testing und Sichtbarkeitswechsel. Der UEFI-Test
+meldet `UEFI:OVERLAY-LAYOUT-READY`. Offen bleiben die vollständige Migration
+der produktiven Dialog-/Tooltip-Pfade, BIOS-Parität, physische Auflösungstests
+und reale Zeitmessung.
+## Constraint-Based Sizing (NPSPEC-BOOTLAYOUT-0006)
+
+Die bisherige Min/Preferred/Max-Hilfsfunktion wurde um eine vollständige
+DLU-Constraint-Engine erweitert. Unterstützt werden Auto, Fixed, Content,
+Percentage, Stretch und Remaining Space sowie Margin, Padding, Min/Max,
+Preferred und feste Seitenverhältnisse. Konflikte werden in der definierten
+Priorität Min, Max, Aspect, Preferred, Stretch und Percentage aufgelöst.
+Beschädigte Regeln liefern einen sicheren Standardbereich und einen Fehlerstatus.
+
+Accessibility erzwingt für interaktive Elemente mindestens 44 DLU und eine
+Skalierung von 125 %. Stack, Grid und Overlay können adaptive Constraints im
+Measure-Pass direkt verwenden. Hosttests prüfen alle zentralen Größenarten,
+Prioritäten, 16:9, Accessibility, Fehlerfallback und Containerintegration. Das
+UEFI-Abbild meldet `UEFI:CONSTRAINT-SIZING-READY`. Offen sind verbleibende
+direkte Layouttokens der Hauptseite, proportionale Mehrfach-Stretchgewichte,
+vollständige Controlmigration, BIOS-Parität sowie Recovery-/DPI-Hardwaretests.
+## Responsive Boot Layout (NPSPEC-BOOTLAYOUT-0007)
+
+Die UI verwendet nun eine zentrale responsive Policy auf Basis der logischen
+DLU-Breite. Die Breakpoints liegen exakt bei Compact unter 800 DLU, Standard
+von 800 bis 1279 DLU und Wide ab 1280 DLU. Dieselbe Policy entscheidet über
+Stacked/Side-by-Side-Reflow, adaptive Abstände, begrenzte Control- und
+Dialogbreiten und erkennt Ultrawide. Auflösung, DPI, Skalierung,
+Accessibility, Breakpointwechsel und Generation werden diagnostiziert.
+
+Dialoge werden zentriert und nötigenfalls vollständig in die Safe Area
+verkleinert. Der produktive Hauptlayoutpfad bezieht Layoutklasse, Panelbreite,
+Innen- und Zeilenabstände aus der Policy. Hosttests prüfen 640×480, die exakten
+800-/1280-DLU-Grenzen, 4K, Accessibility, 21:9 und übergroße Dialoge; zusätzlich
+bleibt die 65-Fall-Auflösungs-/Skalierungsmatrix aktiv. QEMU meldet auf der
+realen GOP-Fläche `UEFI:RESPONSIVE-LAYOUT-READY`. Offen sind die Migration
+einzelner Recovery-/Passwort-Bounds-Helfer, physische Rotation/Displaywechsel
+und BIOS-Pixelparität.
+## Safe Display Areas (NPSPEC-BOOTLAYOUT-0008)
+
+Der Resolution Manager verwaltet jetzt genau eine aktive, heapfreie Safe Area.
+Standardmäßig werden an jeder Kante 5 % reserviert. UEFI darf diese Reserve
+explizit deaktivieren; BIOS-Overscan erzwingt mindestens 7 %, Remote-Ausgabe
+mindestens 6 %. Asymmetrische Firmware-Insetdaten werden je Kante mit dem
+größeren Sicherheitswert kombiniert. Accessibility erweitert die nutzbare
+Fläche kontrolliert, ohne gemeldete Hardwareinsets zu unterschreiten.
+
+Die Policy erzeugt Pixel- und DLU-Koordinaten in O(1), besitzt ein Contains-Gate
+für interaktive Bounds und fällt bei beschädigten Daten auf die vollständige
+Bildschirmfläche zurück. Responsive Policy, Hauptlayout und Dialog-Fit verwenden
+ausschließlich diese Safe Area. Hosttests prüfen GOP, BIOS 800×600, Overscan,
+asymmetrische Insets, Accessibility und Fehlerfallback; QEMU meldet auf der
+realen GOP-Fläche `UEFI:SAFE-DISPLAY-AREA-READY`. Offen sind automatische
+Hardwareprofilerkennung, die Prüfung jedes produktiven Control-Bounds,
+physischer Overscan und BIOS-Pixelparität.
+## DPI and Resolution Scaling (NPSPEC-BOOTLAYOUT-0009)
+
+Der Resolution Manager stellt nun eine zentrale Scaling-Information mit
+DPI X/Y, globalem Faktor, Accessibility-Faktor, effektivem Faktor und
+Generation bereit. Verlässliche Firmware-DPI werden bevorzugt; fehlende oder
+unglaubwürdige Werte führen explizit zu 96 DPI. Unterstützt werden 100, 125,
+150, 175, 200, 250 und 300 % sowie freie Zwischenwerte. Accessibility wird
+nach dem globalen Faktor mit 125 % angewandt und bei 300 % begrenzt.
+
+Die Umrechnung nutzt auf allen Pfaden dieselbe symmetrische Ganzzahlrundung,
+saturiert bei `int32`-Überlauf und kann Intervalle über gemeinsam gerundete
+Kanten ohne Lücken zwischen Nachbarelementen snappen. Alignment, Constraints,
+Stack, Grid, Overlay und das produktive Layout nutzen den effektiven Faktor;
+Responsive-Breakpoints bleiben unabhängig davon logisch. Hosttests prüfen DPI,
+alle Stufen, 137,5 %, Accessibility, Rundung, Snapping und Überlauf. QEMU meldet
+`UEFI:DPI-RESOLUTION-SCALING-READY`. Offen sind physische GOP-Displaymaße,
+die Vereinheitlichung einzelner Text-/Icon-Scale-Einstiege, 8K-QEMU,
+Display-Hotplug und BIOS-Pixelparität.
+
+## Text-Aware Layout (NPSPEC-BOOTLAYOUT-0010)
+
+Die Textmessung liefert nun intrinsische Mindest- und Maximalbreite,
+Zeilenhöhe, Ascender, Descender, Baseline und Wortabstand. Word Wrap,
+Character Wrap, No Wrap, Mehrzeilen-Autohöhe und eine maximale Zeilenzahl
+werden in einem deterministischen Durchlauf ausgewertet. DPI,
+Accessibility-Skalierung und Zeichenabstand fließen vor dem Measure Pass ein.
+Ungültiges UTF-8 sowie fehlende Glyphen aktivieren den Ersatzfont und werden
+diagnostiziert.
+
+Ein fester Cache mit 24 Einträgen speichert Textmetriken ohne Heap und prüft
+kurze Texte über einen exakten UTF-8-Schlüssel. `nova_layout_apply_text`
+kombiniert die Metriken mit Iconbreite, Iconabstand und Padding. Stack-Kinder
+können diese Messung vor Constraints und Arrange anfordern und führen die
+berechnete Baseline mit. Der produktive Tooltip berechnet Breite und
+Mindesthöhe ebenfalls aus der neuen API. Hosttests prüfen lokalisierte lange
+Texte, Wrap, Cachetreffer, Baseline, Accessibility, No Wrap, beschädigtes
+UTF-8 sowie die Stackintegration. Der QEMU-Test meldet
+`UEFI:TEXT-AWARE-TOOLTIP-READY`.
+
+Der Renderer besitzt getrennte Pfade für keine Kürzung sowie End-, Middle- und
+Start-Ellipsis. Die Breite der drei Punkte wird vor der Auswahl von Präfix und
+Suffix reserviert. Auch Grid-Auto-Tracks und Overlay-Kinder verwenden jetzt
+die intrinsischen Text-, Icon- und Paddinggrößen vor ihrem Arrange-Pass.
+
+Noch offen sind RTL-Shaping, die vollständige Migration aller Controls sowie
+identische Pixelresultate im Legacy-BIOS-Pfad.
+
+## Boot Dialog Architecture (NPSPEC-BOOTDIALOG-0001)
+
+Der feste Viererpool besitzt nun getrennte O(1)-Operationen für Create, Show
+und Close. Jeder Dialog erhält eine stabile Root-View-ID, einen eigenen
+Navigationskontext, gespeicherten Vorfokus, Öffnungs- und Schließzeit sowie
+eine Lifecycle-Bitmaske. Zustandswechsel akzeptieren ausschließlich die Folge
+Created, Initialized, Opening, Visible, Active, Closing und Destroyed.
+
+Mehrere nichtmodale Dialoge können auf dem separaten Stack liegen und geben
+nach dem Schließen den darunterliegenden Dialog wieder frei. Solange ein
+modaler Dialog aktiv ist, kann kein nichtmodaler Dialog darüber geöffnet
+werden; dadurch bleiben Modalität und Fokuspriorität eindeutig. Ergebnisse
+werden genau einmal typisiert gespeichert, sichere Eingaben vor Destroyed
+gelöscht und Pointer-Captures vor einem Kontextwechsel abgebrochen.
+
+Hosttests prüfen den vollständigen Lifecycle, Root- und Navigationsidentität,
+zwei nichtmodale Ebenen, Timing, Ergebnis und Modalpriorität. Die isolierte
+Zehn-Typen-Suite validiert dieselbe Architektur im UEFI-Build. QEMU meldet
+`UEFI:DIALOG-ARCHITECTURE-READY` und öffnet sowie schließt weiterhin den realen
+Dialogframe. Offen bleiben produktive nichtmodale Hinweise,
+Touch-/Controller-/Screenreaderprovider und Legacy-BIOS-Parität.
+
+## Glass Dialog (NPSPEC-BOOTDIALOG-0003)
+
+Standarddialoge verwenden die zentralen Glass-Material-, Radius-, Border- und
+Shadowtokens. Zusätzlich zur gerundeten Außenkontur besitzt die Dialogfläche
+nun eine dezente obere Lichtkante. Der Softwareblur arbeitet ausschließlich
+in der gerundeten Region hinter dem Dialog und verwendet feste Ring- und
+512×512-Cachepuffer.
+
+Der Blur-Cacheschlüssel enthält jetzt die Generation der statischen
+Basisebene. Eine neue Seite oder ein neu aufgebautes Theme kann deshalb keine
+geometrisch passende, aber inhaltlich veraltete Blurfläche übernehmen. Der
+Hosttest prüft neben echten Blurpixeln und Rundungscoverage auch Cachehit,
+Generationswechsel, Dirty-Invalidierung, Speicherdegradation und Alpha-Maske.
+
+Der produktive Pfad unterscheidet diagnostisch zwischen echtem Glass-Blur,
+transparentem No-Blur-Fallback und vollständig opakem Fallback. QEMU besitzt
+kein GPU-Backend und aktiviert das Low-End-Profil; der reale Bildtest weist
+deshalb korrekt `UEFI:GLASS-DIALOG-TRANSPARENT-FALLBACK` nach. Der Test-Gate
+akzeptiert alle drei normativen Materialpfade. Offen bleiben ein
+beschleunigter QEMU-Blurframe, physische GPU-/High-Contrast-Referenzbilder und
+Legacy-BIOS-Parität.
+
+## Modal Dialog (NPSPEC-BOOTDIALOG-0002)
+
+Modalität ist jetzt ein expliziter Managerzustand statt nur ein Darstellungsflag.
+Ein O(1)-Gate akzeptiert Eingaben ausschließlich für die ID des aktiven
+Modaldialogs. NavigateTo, Back und Root prüfen zusätzlich eine zentrale
+Navigationssperre. Der Fokus bleibt durch zyklisches Vor-/Zurückschalten in
+der Buttonliste; Wraps werden diagnostiziert.
+
+Das Backdrop wird beim Aktivieren atomar gesetzt und beim Schließen entfernt.
+Die GUI zeichnet es ausschließlich für modale Dialoge und übergibt den
+Modalstatus an den tatsächlichen Compositor-Layer. Abbrechbare Dialoge
+behandeln Back als Cancel, ohne die Seite zu verlassen. Nicht abbrechbare
+Sicherheits- und Fortschrittsdialoge blockieren Back sowie Seitennavigation.
+
+Hosttests prüfen Input-ID, Navigationsblockade, Backdrop-Lifecycle, Fokusfalle
+und beide Backvarianten. Der UEFI-Selbsttest meldet
+`UEFI:MODAL-DIALOG-READY`; der reale QEMU-Lauf belegt Enter, Modalframe,
+Backdrop, Escape-Close und Wiederherstellung der Seite. Offen bleiben
+Touch-/Controller-/Screenreaderprovider und Legacy-BIOS-Parität.
+
+## Confirmation Dialog (NPSPEC-BOOTDIALOG-0004)
+
+Bestätigungen besitzen nun einen eigenen statischen Vertrag für Information,
+Warning, Critical und Security. Der Dialog wird mitsamt seiner festen
+Buttonliste atomar validiert; ungültige Stufen, leere Inhalte, fehlende
+Standardaktionen und ungültige Ergebnisse werden sicher abgewiesen. Bei
+Information liegt der Fokus auf der harmlosen Bestätigung, bei allen
+zustandsändernden Stufen stets auf Abbrechen. Critical und Security verlangen
+nach der bewussten Fokusbewegung zusätzlich eine zweite Aktivierung.
+
+Alle acht definierten Ergebnisse einschließlich Continue sind typisiert. Eine
+Entscheidung kann nur einmal geschlossen und abgefragt werden. Stufe, Titel,
+Entscheidung, Fehler, Fokuswechsel sowie Öffnungs- und Schließzeit werden ohne
+Heap erfasst. Semantische Information-, Warning-, Error- und Lock-Icons sowie
+Warnfarben werden mit Glass, Modal Backdrop, Safe Area, High Contrast und
+Reduced Motion kombiniert. Herunterfahren, Neustart und Firmware-Setup nutzen
+den neuen Pfad produktiv.
+
+Hosttests prüfen alle vier Stufen, fehlerhafte Requests, sicheren Fokus,
+Modalität, Doppelaktivierung und Diagnosen. Der gezielte QEMU-Test navigiert
+bis zum realen Herunterfahren-Dialog und belegt `CONFIRMATION-SAFE-DEFAULT`,
+`MODAL-BACKDROP-FRAME`, einen stabilen Confirmation-Frame sowie Escape als
+Cancel; das Referenzbild liegt in `build/uefi-confirmation.png`. Offen bleiben
+die optionale Verkettung mit Passwort-/Bestätigungstextdialogen,
+Screenreader-/Touch-/Controllerprovider und Legacy-BIOS-Parität.
+
+## Warning Dialog (NPSPEC-BOOTDIALOG-0005)
+
+Warnungen besitzen nun einen spezialisierten statischen Vertrag für Low,
+Medium, High und Critical. Sechs feste Ursachenklassen wählen semantisch
+zwischen allgemeiner Warnung, Datenträger, Sicherheit, Netzwerk, Speicher und
+Temperatur. Nachricht, empfohlene Maßnahme und optionaler Warncode werden
+innerhalb der Safe Area dargestellt. Low fokussiert das harmlose OK;
+Medium, High und Critical fokussieren Abbrechen. Critical verwendet zusätzlich
+das Zweifach-Arming vor einer Fortsetzung.
+
+Der Dialog kann modal oder nichtmodal geöffnet werden. Modale Warnungen nutzen
+Backdrop und vollständige Eingabe-/Navigationssperre, nichtmodale Warnungen
+lassen den Seitenkontext aktiv. Ungültige Stufen, Symbole, Nulltexte oder
+beschädigte Requests werden nicht still verworfen: stattdessen erscheint eine
+generische sichere Warnung mit Diagnoseempfehlung. Stufe, Symbol, Code,
+Entscheidung, Zeit, Fokus und Fehlerzähler bleiben heapfrei erfasst.
+
+Recovery-, Firmware- und nicht verfügbare Neustartziele nutzen den Pfad
+produktiv. Hosttests prüfen alle Stufen, beide Modalitätsarten, sicheren Fokus,
+Fehlerfallback und Exactly-once-Ergebnisse. Der QEMU-Test navigiert zum realen
+Recovery-Hinweis und belegt `WARNING-DIALOG-OPEN`, den stabilen Warning-Frame,
+Modal Backdrop und Escape als Cancel. Das Referenzbild liegt unter
+`build/uefi-warning.png`. Offen bleiben ein aufklappbarer technischer
+Detailbereich, reale Hardwarewarnprovider, Screenreader-/Touch-/Controller und
+Legacy-BIOS-Parität.
+
+## UEFI-Pointerbewegung
+
+Der Firmwareadapter bindet nicht länger nur das erste von `LocateProtocol`
+gelieferte Zeigegerät. Er enumeriert bis zu acht relative Simple-Pointer- und
+acht Absolute-Pointer-Handles und pollt alle aktiven Geräte. Dadurch kann ein
+vorhandener, aber inaktiver PS/2-Handle eine tatsächlich verwendete USB-Maus
+oder ein virtuelles Tablet nicht mehr verdecken. Hotplug ersetzt die feste
+Handlemenge atomar und setzt Geräte nur bei einer wirklichen Änderung zurück.
+
+Absolute Firmwarekoordinaten werden anhand der Min-/Max-Werte des UEFI-Modus
+direkt auf die aktuelle GOP-Auflösung normalisiert. Relative Geräte durchlaufen
+weiterhin den konfigurierbaren linearen Geschwindigkeitspfad. Dessen bisherige
+Fehlskalierung wurde korrigiert: 100 Prozent entsprechen jetzt exakt 1:1 statt
+12,5 Prozent; 25 und 400 Prozent entsprechen 0,25x und 4x. Kleine Deltas bleiben
+mindestens einen Pixel sichtbar. Beide Protokolle verwenden anschließend
+dasselbe Hit Testing, Hover-, Klick-, Capture- und Damage-System.
+
+Der isolierte Firmwaretest deckt relative und absolute Protokolle,
+Bildschirmnormalisierung, beide Buttons, Entfernung und Wiederanmeldung ab.
+Der Boot-UI-Test prüft die neue Prozentsemantik; das aktualisierte GPT/FAT32-
+Image durchläuft den vollständigen OVMF/QEMU-Smoke-Test. Eine automatisierte
+headless QEMU-Mausbewegung bleibt durch die Eingabekonsole dieser QEMU/OVMF-
+Kombination nicht zuverlässig reproduzierbar und wird deshalb nicht als
+erfolgreicher Hardwaretest ausgegeben.

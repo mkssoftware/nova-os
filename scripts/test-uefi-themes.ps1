@@ -67,7 +67,13 @@ try {
         $writer.WriteLine('screendump build/uefi-theme-light.ppm'); Start-Sleep -Milliseconds 800
         Send-Key 'ret'; Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:THEME-HIGH-CONTRAST'; Start-Sleep -Milliseconds 1000
         $writer.WriteLine('screendump build/uefi-theme-high-contrast.ppm'); Start-Sleep -Milliseconds 800
-        Send-Key 'ret'; Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:THEME-DARK'
+        Send-Key 'ret'; Send-Key 'down'; Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:THEME-DARK'
+        # The fourth presentation entry opens the six-profile AQM submenu.
+        Send-Key 'ret'; Send-Key 'down'; Send-Key 'down'; Send-Key 'down'; Send-Key 'ret'
+        Wait-Marker 'UEFI:QUALITY-MENU-OPEN'
+        # Default is Balanced (index 3); move to Safe (index 5) and persist it.
+        Send-Key 'down'; Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:QUALITY-SELECTION'
+        Wait-Marker 'UEFI:CONFIGURATION-COMMIT'
         Send-Key 'down'; Send-Key 'ret'; Wait-Marker 'UEFI:REDUCED-MOTION-ON'
         Wait-Marker 'UEFI:SETTINGS-SWITCH-UPDATED'
         Send-Key 'esc'; Wait-Marker 'UEFI:NAV-REDUCED-FADE'

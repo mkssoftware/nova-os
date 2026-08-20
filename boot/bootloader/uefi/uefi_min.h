@@ -159,6 +159,32 @@ struct EFI_SIMPLE_POINTER_PROTOCOL {
     EFI_SIMPLE_POINTER_MODE *Mode;
 };
 
+typedef struct {
+    uint64_t CurrentX;
+    uint64_t CurrentY;
+    uint64_t CurrentZ;
+    uint32_t ActiveButtons;
+} EFI_ABSOLUTE_POINTER_STATE;
+
+typedef struct {
+    uint64_t AbsoluteMinX;
+    uint64_t AbsoluteMinY;
+    uint64_t AbsoluteMinZ;
+    uint64_t AbsoluteMaxX;
+    uint64_t AbsoluteMaxY;
+    uint64_t AbsoluteMaxZ;
+    uint32_t Attributes;
+} EFI_ABSOLUTE_POINTER_MODE;
+
+typedef struct EFI_ABSOLUTE_POINTER_PROTOCOL EFI_ABSOLUTE_POINTER_PROTOCOL;
+struct EFI_ABSOLUTE_POINTER_PROTOCOL {
+    EFI_STATUS (EFIAPI *Reset)(EFI_ABSOLUTE_POINTER_PROTOCOL *, BOOLEAN);
+    EFI_STATUS (EFIAPI *GetState)(EFI_ABSOLUTE_POINTER_PROTOCOL *,
+                                  EFI_ABSOLUTE_POINTER_STATE *);
+    EFI_EVENT WaitForInput;
+    EFI_ABSOLUTE_POINTER_MODE *Mode;
+};
+
 #ifdef NOVA_HOST_TEST
 static inline void nova_debug_byte(uint8_t value) { (void)value; }
 #else

@@ -91,13 +91,17 @@ try {
             $renderFailures=([regex]::Matches($content,'UEFI:BACKGROUND-BLUR-FAILED')).Count
             $blocks=([regex]::Matches($content,'UEFI:DIALOG-BLUR-BLOCK')).Count
             $dialogFrames=([regex]::Matches($content,'UEFI:DIALOG-FRAME-READY')).Count
+            $transparentFallbacks=([regex]::Matches($content,'UEFI:GLASS-DIALOG-TRANSPARENT-FALLBACK')).Count
+            $opaqueFallbacks=([regex]::Matches($content,'UEFI:GLASS-DIALOG-OPAQUE-FALLBACK')).Count
             Write-Host "Dialog open-only: dialog-frames=$dialogFrames blocks=$blocks blur frames=$frames hits=$hits misses=$misses lifecycle-skips=$lifecycleSkips contrast-skips=$contrastSkips geometry-failures=$geometryFailures render-failures=$renderFailures"
             $dialogMarker=$content.LastIndexOf('UEFI:DIALOG-FRAME-READY')
             if($dialogMarker -ge 0){
                 $markerStart=[Math]::Max(0,$dialogMarker-900)
                 Write-Host $content.Substring($markerStart,$dialogMarker-$markerStart+25)
             }
-            if($frames -lt 1){throw 'Der stabile Dialog hat keinen Background-Blur-Frame ausgefuehrt.'}
+            if($frames -lt 1 -and $transparentFallbacks -lt 1 -and $opaqueFallbacks -lt 1){
+                throw 'Der stabile Dialog hat weder Glass-Blur noch einen definierten Materialfallback ausgefuehrt.'
+            }
             return
         }
         $writer.WriteLine('cont'); Start-Sleep -Milliseconds 750
