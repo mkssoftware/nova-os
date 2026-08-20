@@ -5,6 +5,8 @@
 static EFI_SIMPLE_POINTER_PROTOCOL *pointers[NOVA_UEFI_POINTER_CAPACITY];
 static EFI_ABSOLUTE_POINTER_PROTOCOL *absolute_pointers[NOVA_UEFI_POINTER_CAPACITY];
 static uint8_t pointer_count,absolute_pointer_count;
+typedef EFI_STATUS (EFIAPI *check_event_fn)(EFI_EVENT event);
+static check_event_fn check_event;
 static EFI_GUID pointer_guid = {
     0x31878c87, 0x0b75, 0x11d5,
     {0x9a,0x4f,0x00,0x90,0x27,0x3f,0xc1,0x4d}
@@ -18,6 +20,8 @@ static bool pointer_scan(void *context)
 bool uefi_pointer_initialize(EFI_SYSTEM_TABLE *system_table)
 {
     pointer_count=absolute_pointer_count=0;
+    check_event=(system_table&&system_table->BootServices)?
+        (check_event_fn)system_table->BootServices->CheckEvent:0;
     if(!nova_input_device_scanner_set(pointer_scan,system_table))return false;
     if(!uefi_pointer_refresh(system_table)){
         pointer_count=absolute_pointer_count=0;
@@ -102,6 +106,16 @@ static int32_t normalize_absolute(uint64_t value,uint64_t minimum,uint64_t maxim
     return (int32_t)(((value-minimum)*(extent-1u))/(maximum-minimum));
 }
 
+static bool pointer_input_ready(EFI_EVENT wait_event)
+{
+    /* UEFI pointer drivers signal WaitForInput once a state change is ready.
+       Checking it first keeps polling non-blocking and, importantly, lets
+       drivers that advance their state through the event contract expose the
+       next packet.  Minimal firmware mocks without CheckEvent retain the
+       direct GetState fallback. */
+    return !check_event||!wait_event||!EFI_ERROR(check_event(wait_event));
+}
+
 bool uefi_pointer_poll(uint32_t viewport_width,uint32_t viewport_height,
                        uefi_pointer_event_t *event)
 {
@@ -109,6 +123,7 @@ bool uefi_pointer_poll(uint32_t viewport_width,uint32_t viewport_height,
     *event=(uefi_pointer_event_t){0};
     for(uint8_t i=0;i<absolute_pointer_count;++i){
         EFI_ABSOLUTE_POINTER_PROTOCOL *absolute_pointer=absolute_pointers[i];
+        if(!pointer_input_ready(absolute_pointer->WaitForInput))continue;
         EFI_ABSOLUTE_POINTER_STATE state;
         EFI_STATUS status=absolute_pointer->GetState(absolute_pointer,&state);
         if(!EFI_ERROR(status)){
@@ -123,6 +138,7 @@ bool uefi_pointer_poll(uint32_t viewport_width,uint32_t viewport_height,
         }
     }
     for(uint8_t i=0;i<pointer_count;++i){EFI_SIMPLE_POINTER_PROTOCOL *pointer=pointers[i];
+        if(!pointer_input_ready(pointer->WaitForInput))continue;
         EFI_SIMPLE_POINTER_STATE state;
         EFI_STATUS status = pointer->GetState(pointer, &state);
         if (EFI_ERROR(status)) continue;
