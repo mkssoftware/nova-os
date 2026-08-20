@@ -2,7 +2,9 @@
 static bool add(nova_vector_path_t *p,nova_vector_point_t a,nova_vector_point_t b)
 {if(!p||p->count==NOVA_VECTOR_SEGMENT_CAPACITY){if(p)p->overflow=true;return false;}
  p->segments[p->count++]=(nova_vector_segment_t){a,b};return true;}
-void nova_vector_path_reset(nova_vector_path_t *p){if(p)*p=(nova_vector_path_t){0};}
+void nova_vector_path_reset(nova_vector_path_t *p)
+{if(!p)return;volatile uint8_t *bytes=(volatile uint8_t *)p;
+ for(uint32_t i=0;i<sizeof(*p);++i)bytes[i]=0;}
 bool nova_vector_move_to(nova_vector_path_t *p,int32_t x,int32_t y)
 {if(!p)return false;p->current=p->first=(nova_vector_point_t){x,y};p->open=true;return true;}
 bool nova_vector_line_to(nova_vector_path_t *p,int32_t x,int32_t y)
