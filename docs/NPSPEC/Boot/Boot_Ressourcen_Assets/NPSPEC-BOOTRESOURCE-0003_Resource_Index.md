@@ -178,6 +178,21 @@ Eigenschaften:
 - 32-Bit oder 64-Bit
 - systemweit eindeutig innerhalb des Boot Managers
 
+## Verbindliches Indexformat BAP-1
+
+Header: 40 Byte `NOVAIDX\0`, Version u16=1, Headergröße u16=40,
+Eintragsgröße u16=64, Eintragsanzahl u16, Tabellengröße u32 (Zweierpotenz),
+Entry-Offset u32, Hash-Offset u32, CRC32 u32 (beim Rechnen null), reserviert
+u64=0. Einträge enthalten ID u64, Typ/Flags/Version/Kompression je u32,
+Datenoffset/gepackte/entpackte Größe je u64, CRC32 u32, Dependency-Offset u32,
+Dependency-Anzahl u16, reserviert u16 und reserviert u32. Der Datenoffset ist
+absolut ab Paketanfang.
+
+Die ID ist FNV-1a-64 über den kanonischen UTF-8-URI (ASCII-klein, `/`, keine
+`.` oder `..`). Die Hash-Tabelle enthält u32-Indices oder `0xffffffff` und
+nutzt lineares Open Addressing. Doppelte IDs, Offsetüberlauf, CRC-Fehler oder
+mehr als 70 Prozent Last sind abzulehnen.
+
 Die ID dient als primärer Schlüssel.
 
 ---

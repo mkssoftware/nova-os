@@ -33,6 +33,7 @@
 #include "../boot/bootloader/bootmenu/clip_mask.h"
 #include "../boot/bootloader/bootmenu/transform2d.h"
 #include "../boot/bootloader/bootmenu/rounded_geometry.h"
+#include "../boot/bootloader/bootmenu/vector_geometry.h"
 #include "../boot/bootloader/bootmenu/effects.h"
 #include "../boot/bootloader/bootmenu/background_blur.h"
 #include "../boot/bootloader/bootmenu/image_renderer.h"
@@ -88,6 +89,27 @@ static int check(int condition, const char *message)
     if (!condition) { fprintf(stderr, "FAIL: %s\n", message); return 1; }
     return 0;
 }
+static void put16(uint8_t *p,uint16_t v){p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);}
+static void put32(uint8_t *p,uint32_t v)
+{for(uint8_t i=0;i<4;++i)p[i]=(uint8_t)(v>>(i*8));}
+static void put64(uint8_t *p,uint64_t v)
+{for(uint8_t i=0;i<8;++i)p[i]=(uint8_t)(v>>(i*8));}
+static uint32_t crc_zero(const uint8_t *p,uint32_t size,uint32_t zero)
+{uint32_t crc=0xffffffffu;for(uint32_t i=0;i<size;++i){uint8_t v=i>=zero&&i<zero+4?0:p[i];
+ crc^=v;for(uint8_t bit=0;bit<8;++bit)crc=(crc>>1)^(0xedb88320u&(0u-(crc&1u)));}return ~crc;}
+static void make_bap(uint8_t package[192])
+{memset(package,0,192);memcpy(package,"NOVABAP",7);put16(package+8,1);put16(package+10,64);
+ put32(package+12,192);put64(package+16,0x1234);put32(package+28,1);
+ put32(package+32,64);put32(package+36,112);put32(package+40,176);put32(package+44,8);
+ put32(package+48,184);put32(package+52,8);
+ uint8_t *index=package+64;memcpy(index,"NOVAIDX",7);put16(index+8,1);put16(index+10,40);
+ put16(index+12,64);put16(index+14,1);put32(index+16,2);put32(index+20,40);put32(index+24,104);
+ uint64_t id=0x1001;uint8_t *entry=index+40;put64(entry,id);put32(entry+8,NOVA_RESOURCE_ICON);
+ put32(entry+16,1);put32(entry+20,NOVA_COMPRESSION_NONE);put64(entry+24,176);
+ put64(entry+32,4);put64(entry+40,4);package[176]=1;package[177]=2;package[178]=3;package[179]=4;
+ put32(entry+48,nova_resource_checksum(package+176,4));put32(index+104,UINT32_MAX);
+ put32(index+108,UINT32_MAX);put32(index+104+((uint32_t)id&1u)*4u,0);
+ put32(index+28,crc_zero(index,112,28));put32(package+56,crc_zero(package,192,56));}
 
 static bool page_event_handler(nova_view_t *view,uint32_t event,void *context)
 {
@@ -104,6 +126,28 @@ static bool scene_visit(nova_scene_node_t *node,void *context)
 int main(void)
 {
     int failed = 0;
+    uint8_t bap[192];nova_bap_info_t bap_info;uint16_t bap_entries=0;make_bap(bap);
+    failed|=check(nova_bap_validate(bap,sizeof(bap),&bap_info)&&bap_info.resource_count==1&&
+        nova_bap_index_validate(bap+64,112,&bap_entries)&&bap_entries==1,
+        "BAP-1-Header, Index, Hash und Ressourcendaten werden validiert");
+    bap[64+104+((0x1001u)&1u)*4u]=0xff;
+    failed|=check(!nova_bap_index_validate(bap+64,112,0),
+        "Ein fehlender Resource-Index-Hash-Eintrag wird abgelehnt");
+    nova_vector_path_t vector_path;
+    nova_vector_path_reset(&vector_path);
+    failed|=check(nova_vector_move_to(&vector_path,0,0)&&
+        nova_vector_line_to(&vector_path,2<<16,0)&&
+        nova_vector_line_to(&vector_path,2<<16,2<<16)&&
+        nova_vector_line_to(&vector_path,0,2<<16)&&nova_vector_close(&vector_path)&&
+        nova_vector_coverage(&vector_path,0,0,NOVA_VECTOR_NONZERO)==255&&
+        nova_vector_coverage(&vector_path,3,3,NOVA_VECTOR_NONZERO)==0,
+        "Vector Geometry rasterisiert einen geschlossenen 16.16-DLU-Pfad");
+    nova_vector_path_reset(&vector_path);
+    failed|=check(nova_vector_move_to(&vector_path,0,0)&&
+        nova_vector_quad_to(&vector_path,1<<16,2<<16,2<<16,0)&&
+        nova_vector_cubic_to(&vector_path,3<<16,-(2<<16),4<<16,2<<16,5<<16,0)&&
+        vector_path.count==40&&!vector_path.overflow,
+        "Quadratische und kubische Kurven werden deterministisch abgeflacht");
     nova_transform2d_t transform=nova_transform_identity();
     nova_point2d_t transformed_point_value={0},round_trip={0};
     failed|=check(nova_transform_scale(&transform,2.0f,3.0f)&&
@@ -2220,6 +2264,13 @@ int main(void)
         overlay->pixels[1*overlay->stride+1]==0xff101010u&&
         overlay->pixels[2*overlay->stride+2]!=0xff101010u,
         "Bilineares Image Rendering respektiert Clip und Alpha");
+    nova_surface_clear(overlay,0x40000040u);
+    image_options=(nova_image_render_options_t){.destination={0,0,2,2},
+        .clip={0,0,8,8},.sampling=NOVA_IMAGE_SAMPLE_NEAREST,
+        .transform=nova_transform_fixed_identity(),.opacity=1000,.tint=0xffffffffu};
+    failed|=check(nova_image_render(raw_image,overlay,&image_options)==NOVA_IMAGE_OK&&
+        overlay->pixels[1*overlay->stride+1]==0xa08080a0u,
+        "Premultipliziertes SrcOver bleibt auch auf transparentem Ziel premultipliziert");
     nova_transform2d_t image_transform=nova_transform_identity();
     nova_fixed_transform2d_t fixed_image_transform={0};
     failed|=check(nova_transform_translate(&image_transform,2,1)&&
@@ -2364,7 +2415,7 @@ int main(void)
         nova_image_load("test://image/corrupt",&bmp_image)==NOVA_IMAGE_UNSUPPORTED,
         "Beschaedigten BMP-Header sicher abweisen");
     failed|=check(nova_image_destroy(raw_image)&&nova_image_destroy(raw_cached)&&
-        nova_image_diagnostics()->cache_hits>=1&&nova_image_diagnostics()->renders==2,
+        nova_image_diagnostics()->cache_hits>=1&&nova_image_diagnostics()->renders==3,
         "Image-Referenzen und Diagnosen verwalten");
     failed|=check(nova_render_quality_initialize(false,64ull*1024u*1024u)&&
         nova_render_quality_get()==NOVA_RENDER_QUALITY_STANDARD&&

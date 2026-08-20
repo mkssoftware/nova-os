@@ -450,21 +450,16 @@ static uint32_t source_over(uint32_t destination,uint32_t premultiplied_source)
 {
     uint32_t sa=premultiplied_source>>24,da=destination>>24,inverse=255u-sa;
     if(sa==255)return premultiplied_source;
-    if(da==255){uint32_t result=0xff000000u;
-        for(uint8_t shift=0;shift<24;shift+=8){
-            uint32_t source=(premultiplied_source>>shift)&255u;
-            uint32_t dest=(destination>>shift)&255u;
-            result|=(source+(dest*inverse+127u)/255u)<<shift;
-        }
-        return result;
-    }
-    uint32_t out_a=sa+(da*inverse+127)/255u;if(!out_a)return 0;
+    uint32_t out_a=sa+(da*inverse+127u)/255u;if(!out_a)return 0;
     uint32_t result=out_a<<24;
-    for(uint8_t shift=0;shift<24;shift+=8){uint32_t source=(premultiplied_source>>shift)&255u;
+    for(uint8_t shift=0;shift<24;shift+=8){
+        uint32_t source=(premultiplied_source>>shift)&255u;
         uint32_t dest=(destination>>shift)&255u;
-        uint32_t premult=source+(dest*da*inverse+32512u)/65025u;
-        uint32_t straight=(premult*255u+out_a/2)/out_a;if(straight>255)straight=255;
-        result|=straight<<shift;}return result;
+        uint32_t channel=source+(dest*inverse+127u)/255u;
+        if(channel>out_a)channel=out_a;
+        result|=channel<<shift;
+    }
+    return result;
 }
 nova_image_result_t nova_image_render(const nova_image_t *image,nova_surface_t *surface,
                                       const nova_image_render_options_t *o)

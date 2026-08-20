@@ -58,13 +58,20 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check asset-pipeline-check uefi-firmware-runtime-check uefi-pointer-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image test-firmware-compatibility run test test-uefi test-uefi-input test-uefi-dialog test-uefi-confirmation test-uefi-warning test-uefi-password test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check vector-geometry-runtime-check asset-pipeline-check uefi-firmware-runtime-check uefi-pointer-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image test-firmware-compatibility run test test-uefi test-uefi-input test-uefi-dialog test-uefi-confirmation test-uefi-warning test-uefi-password test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
 abi-check:
 	PATH=/ucrt64/bin:/usr/bin "$(HOST_CC)" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
 		tests/boot_protocol_layout.c
+
+vector-geometry-runtime-check: | $(BUILD_DIR)
+	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
+		"$(HOST_CC)" -O2 -std=c11 -Wall -Wextra -Werror \
+		-Iboot/bootloader/bootmenu tests/vector_geometry_runtime.c \
+		boot/bootloader/bootmenu/vector_geometry.c -o $(BUILD_DIR)/vector-geometry-runtime-test.exe
+	$(BUILD_DIR)/vector-geometry-runtime-test.exe
 
 asset-pipeline-check:
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-boot-asset-pipeline.ps1
@@ -109,6 +116,7 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/clip_mask.c \
 		boot/bootloader/bootmenu/transform2d.c \
 		boot/bootloader/bootmenu/rounded_geometry.c \
+		boot/bootloader/bootmenu/vector_geometry.c \
 		boot/bootloader/bootmenu/effects.c \
 		boot/bootloader/bootmenu/background_blur.c \
 		boot/bootloader/bootmenu/image_renderer.c \
@@ -185,6 +193,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/clip_mask.c boot/bootloader/bootmenu/clip_mask.h \
 		boot/bootloader/bootmenu/transform2d.c boot/bootloader/bootmenu/transform2d.h \
 		boot/bootloader/bootmenu/rounded_geometry.c boot/bootloader/bootmenu/rounded_geometry.h \
+		boot/bootloader/bootmenu/vector_geometry.c boot/bootloader/bootmenu/vector_geometry.h \
 		boot/bootloader/bootmenu/effects.c boot/bootloader/bootmenu/effects.h \
 		boot/bootloader/bootmenu/background_blur.c boot/bootloader/bootmenu/background_blur.h \
 		boot/bootloader/bootmenu/image_renderer.c boot/bootloader/bootmenu/image_renderer.h \
@@ -238,6 +247,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/clip_mask.c \
 		boot/bootloader/bootmenu/transform2d.c \
 		boot/bootloader/bootmenu/rounded_geometry.c \
+		boot/bootloader/bootmenu/vector_geometry.c \
 		boot/bootloader/bootmenu/effects.c \
 		boot/bootloader/bootmenu/background_blur.c \
 		boot/bootloader/bootmenu/image_renderer.c \
@@ -269,13 +279,15 @@ $(UEFI_FIRMWARE): scripts/compose-edk2-firmware.ps1 | $(BUILD_DIR)
 
 uefi: $(UEFI_APP) $(UEFI_FIRMWARE)
 
-uefi-image: uefi
+uefi-image: uefi $(KERNEL_IMAGE)
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-uefi-image.ps1 \
-		-EfiApplication $(UEFI_APP) -OutputImage build/nova-uefi.img
+		-EfiApplication $(UEFI_APP) -KernelImage $(KERNEL_IMAGE) -KernelElf $(KERNEL_ELF) \
+		-OutputImage build/nova-uefi.img
 
-test-uefi-image: uefi
+test-uefi-image: uefi $(KERNEL_IMAGE)
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-uefi-image.ps1 \
-		-EfiApplication $(UEFI_APP) -OutputImage build/nova-uefi-test.img
+		-EfiApplication $(UEFI_APP) -KernelImage $(KERNEL_IMAGE) -KernelElf $(KERNEL_ELF) \
+		-OutputImage build/nova-uefi-test.img
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-uefi-image.ps1 \
 		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -Image build/nova-uefi-test.img \
 		-DebugLog build/qemu-uefi-image-debug.log

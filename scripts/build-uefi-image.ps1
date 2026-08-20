@@ -1,7 +1,22 @@
 param([Parameter(Mandatory=$true)][string]$EfiApplication,
-      [Parameter(Mandatory=$true)][string]$OutputImage)
+      [Parameter(Mandatory=$true)][string]$OutputImage,
+      [string]$KernelImage,
+      [string]$KernelElf)
 $ErrorActionPreference='Stop'
 $efi=[IO.File]::ReadAllBytes([IO.Path]::GetFullPath($EfiApplication))
+$payloadFiles=@(
+    @{Name='BOOTX64';Ext='EFI';Data=$efi;Cluster=0}
+)
+if($KernelImage){
+    $kernelPath=[IO.Path]::GetFullPath($KernelImage)
+    if(!(Test-Path -LiteralPath $kernelPath)){throw "NKI-Kernel fehlt: $kernelPath"}
+    $payloadFiles+=@{Name='NOVA';Ext='NKI';Data=[IO.File]::ReadAllBytes($kernelPath);Cluster=0}
+}
+if($KernelElf){
+    $elfPath=[IO.Path]::GetFullPath($KernelElf)
+    if(!(Test-Path -LiteralPath $elfPath)){throw "ELF-Kernel fehlt: $elfPath"}
+    $payloadFiles+=@{Name='KERNEL';Ext='ELF';Data=[IO.File]::ReadAllBytes($elfPath);Cluster=0}
+}
 $ss=512;$total=131072L;$partFirst=2048L;$partLast=$total-34;$partSectors=$partLast-$partFirst+1
 $image=[byte[]]::new($total*$ss)
 function W16([byte[]]$b,[long]$o,[long]$v){$b[$o]=[byte]($v-band255);$b[$o+1]=[byte](($v-shr8)-band255)}
@@ -38,13 +53,28 @@ $image[$boot+510]=0x55;$image[$boot+511]=0xAA;[Array]::Copy($image,$boot,$image,
 $fs=($partFirst+1)*$ss;W32 $image $fs 0x41615252;W32 $image ($fs+484) 0x61417272;W32 $image ($fs+488) 0xffffffff;W32 $image ($fs+492) 0xffffffff;W32 $image ($fs+508) 0xaa550000
 $fat=[byte[]]::new($spf*$ss);function F([long]$c,[long]$v){W32 $fat ($c*4) $v}
 F 0 0x0ffffff8;F 1 0x0fffffff;F 2 0x0fffffff;F 3 0x0fffffff;F 4 0x0fffffff
-$first=5;$count=[long][Math]::Ceiling($efi.Length/$ss);$last=$first+$count-1
-for($c=$first;$c-le$last;$c++){F $c $(if($c-eq$last){0x0fffffff}else{$c+1})}
+$nextCluster=5
+foreach($file in $payloadFiles){
+    $count=[long][Math]::Ceiling($file.Data.Length/$ss)
+    if($count-lt1){$count=1}
+    $file.Cluster=$nextCluster;$last=$nextCluster+$count-1
+    for($c=$nextCluster;$c-le$last;$c++){F $c $(if($c-eq$last){0x0fffffff}else{$c+1})}
+    $nextCluster=$last+1
+}
 for($i=0;$i-lt$fatCount;$i++){[Array]::Copy($fat,0,$image,($fatStart+$i*$spf)*$ss,$fat.Length)}
 $root=$dataStart*$ss;$efiDir=($dataStart+1)*$ss;$bootDir=($dataStart+2)*$ss
 Entry $image $root 'EFI' '' 0x10 3 0
 Entry $image $efiDir '.' '' 0x10 3 0;Entry $image ($efiDir+32) '..' '' 0x10 2 0;Entry $image ($efiDir+64) 'BOOT' '' 0x10 4 0
-Entry $image $bootDir '.' '' 0x10 4 0;Entry $image ($bootDir+32) '..' '' 0x10 3 0;Entry $image ($bootDir+64) 'BOOTX64' 'EFI' 0x20 $first $efi.Length
-$fileOffset=($dataStart+($first-2))*$ss;[Array]::Copy($efi,0,$image,$fileOffset,$efi.Length)
+Entry $image $bootDir '.' '' 0x10 4 0;Entry $image ($bootDir+32) '..' '' 0x10 3 0
+Entry $image ($bootDir+64) 'BOOTX64' 'EFI' 0x20 $payloadFiles[0].Cluster $payloadFiles[0].Data.Length
+for($i=1;$i-lt$payloadFiles.Count;$i++){
+    $file=$payloadFiles[$i]
+    Entry $image ($root+$i*32) $file.Name $file.Ext 0x20 $file.Cluster $file.Data.Length
+}
+foreach($file in $payloadFiles){
+    $fileOffset=($dataStart+($file.Cluster-2))*$ss
+    [Array]::Copy($file.Data,0,$image,$fileOffset,$file.Data.Length)
+}
 $out=[IO.Path]::GetFullPath($OutputImage);[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($out))|Out-Null;[IO.File]::WriteAllBytes($out,$image)
 Write-Host "UEFI-IMG: $out";Write-Host "Groesse: $($image.Length) Bytes";Write-Host "ESP: FAT32 / GPT";Write-Host "BOOTX64.EFI: $($efi.Length) Bytes"
+foreach($file in $payloadFiles|Select-Object -Skip 1){Write-Host ("{0}.{1}: {2} Bytes" -f $file.Name,$file.Ext,$file.Data.Length)}

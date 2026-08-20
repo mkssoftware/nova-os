@@ -17,6 +17,82 @@ static nova_resource_corruption_result_t corruption_results[NOVA_CORRUPTION_RESU
 static nova_resource_corruption_status_t corruption_status;
 static uint8_t corruption_buffer[NOVA_CORRUPTION_BUFFER_CAPACITY];
 
+static uint16_t read_u16(const uint8_t *p){return (uint16_t)p[0]|(uint16_t)p[1]<<8;}
+static uint32_t read_u32(const uint8_t *p){return (uint32_t)p[0]|(uint32_t)p[1]<<8|
+    (uint32_t)p[2]<<16|(uint32_t)p[3]<<24;}
+static uint64_t read_u64(const uint8_t *p){return (uint64_t)read_u32(p)|
+    (uint64_t)read_u32(p+4)<<32;}
+static bool region_valid(uint32_t offset,uint32_t length,uint32_t total)
+{return !(offset&7u)&&offset<=total&&length<=total-offset;}
+static uint32_t checksum_zeroed(const uint8_t *p,uint32_t size,uint32_t zero,uint32_t count)
+{uint32_t crc=0xffffffffu;for(uint32_t i=0;i<size;++i){uint8_t v=i>=zero&&i<zero+count?0:p[i];
+ crc^=v;for(uint8_t b=0;b<8;++b)crc=(crc>>1)^(0xedb88320u&(0u-(crc&1u)));}return ~crc;}
+
+bool nova_bap_index_validate(const void *data,uint32_t size,uint16_t *count)
+{
+    const uint8_t *p=data;if(count)*count=0;
+    if(!p||size<40||p[0]!='N'||p[1]!='O'||p[2]!='V'||p[3]!='A'||
+       p[4]!='I'||p[5]!='D'||p[6]!='X'||p[7]||read_u16(p+8)!=1||
+       read_u16(p+10)!=40||read_u16(p+12)!=64||read_u32(p+32)||read_u32(p+36)||
+       checksum_zeroed(p,size,28,4)!=read_u32(p+28))return false;
+    uint16_t entries=read_u16(p+14);uint32_t table=read_u32(p+16),eo=read_u32(p+20),ho=read_u32(p+24);
+    if(!table||(table&(table-1))||entries*10u>table*7u||
+       !region_valid(eo,(uint32_t)entries*64u,size)||
+       !region_valid(ho,table*4u,size))return false;
+    for(uint16_t i=0;i<entries;++i){
+        const uint8_t *entry=p+eo+(uint32_t)i*64u;uint64_t id=read_u64(entry);
+        uint16_t dependencies=read_u16(entry+56);uint32_t dependency_offset=read_u32(entry+52);
+        if(!id||read_u32(entry+16)==0||read_u32(entry+8)>=NOVA_RESOURCE_TYPE_COUNT||
+           read_u32(entry+20)>=NOVA_COMPRESSION_COUNT||read_u16(entry+58)||
+           read_u32(entry+60)||!read_u64(entry+32)||!read_u64(entry+40)||
+           (read_u32(entry+20)==NOVA_COMPRESSION_NONE&&read_u64(entry+32)!=read_u64(entry+40))||
+           (dependencies&&(!region_valid(dependency_offset,(uint32_t)dependencies*8u,size))))
+            return false;
+        for(uint16_t prior=0;prior<i;++prior)
+            if(read_u64(p+eo+(uint32_t)prior*64u)==id)return false;
+    }
+    for(uint32_t slot=0;slot<table;++slot){uint32_t index=read_u32(p+ho+slot*4u);
+        if(index!=UINT32_MAX&&index>=entries)return false;
+        if(index!=UINT32_MAX)for(uint32_t prior=0;prior<slot;++prior)
+            if(read_u32(p+ho+prior*4u)==index)return false;}
+    for(uint16_t i=0;i<entries;++i){uint64_t id=read_u64(p+eo+(uint32_t)i*64u);
+        uint32_t slot=(uint32_t)id&(table-1u),probes=0;
+        while(probes<table&&read_u32(p+ho+slot*4u)!=i){
+            if(read_u32(p+ho+slot*4u)==UINT32_MAX)return false;
+            slot=(slot+1u)&(table-1u);++probes;}
+        if(probes==table)return false;}
+    if(count)*count=entries;
+    return true;
+}
+
+static bool overlaps(uint32_t ao,uint32_t as,uint32_t bo,uint32_t bs)
+{return as&&bs&&ao<bo+bs&&bo<ao+as;}
+
+bool nova_bap_validate(const void *data,uint32_t size,nova_bap_info_t *out)
+{
+    const uint8_t *p=data;if(out)*out=(nova_bap_info_t){0};
+    if(!p||size<64||p[0]!='N'||p[1]!='O'||p[2]!='V'||p[3]!='A'||p[4]!='B'||
+       p[5]!='A'||p[6]!='P'||p[7]||read_u16(p+8)!=1||read_u16(p+10)!=64||
+       read_u32(p+12)!=size||(read_u32(p+24)&~3u)||read_u32(p+60)||
+       checksum_zeroed(p,size,56,4)!=read_u32(p+56))return false;
+    uint32_t io=read_u32(p+32),is=read_u32(p+36),d=read_u32(p+40),ds=read_u32(p+44),
+             m=read_u32(p+48),ms=read_u32(p+52);
+    if(!region_valid(io,is,size)||!region_valid(d,ds,size)||!region_valid(m,ms,size)||
+       overlaps(io,is,d,ds)||overlaps(io,is,m,ms)||overlaps(d,ds,m,ms)||
+       !nova_bap_index_validate(p+io,is,0)||read_u16(p+io+14)!=read_u32(p+28))return false;
+    uint16_t entries=read_u16(p+io+14);uint32_t eo=read_u32(p+io+20);
+    for(uint16_t i=0;i<entries;++i){const uint8_t *entry=p+io+eo+(uint32_t)i*64u;
+        uint64_t offset=read_u64(entry+24),packed=read_u64(entry+32);
+        if(offset<d||offset>(uint64_t)d+ds||packed>(uint64_t)d+ds-offset||
+           packed>UINT32_MAX||nova_resource_checksum(p+(uint32_t)offset,packed)!=read_u32(entry+48))
+            return false;
+        for(uint16_t prior=0;prior<i;++prior){const uint8_t *other=p+io+eo+(uint32_t)prior*64u;
+            uint64_t oo=read_u64(other+24),os=read_u64(other+32);
+            if(offset<oo+os&&oo<offset+packed)return false;}}
+    if(out)*out=(nova_bap_info_t){read_u64(p+16),read_u32(p+24),read_u32(p+28),io,is,d,ds,m,ms};
+    return true;
+}
+
 static void resource_trace_event(const nova_resource_t *resource,uint64_t id,
     nova_resource_event_type_t event,nova_resource_result_t result,bool cache_hit)
 {

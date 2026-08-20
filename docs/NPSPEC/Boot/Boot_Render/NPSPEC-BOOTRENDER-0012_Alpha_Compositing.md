@@ -1,10 +1,10 @@
-# NPSPEC-BOOTRENDER-0011
-# 2D Transformations
+# NPSPEC-BOOTRENDER-0012
+# Alpha Compositing
 
 | Feld | Wert |
 |---|---|
-| Dokument-ID | NPSPEC-BOOTRENDER-0011 |
-| Titel | 2D Transformations |
+| Dokument-ID | NPSPEC-BOOTRENDER-0012 |
+| Titel | Alpha Compositing |
 | Version | 1.0 |
 | Status | Draft |
 | Kategorie | Bootmanager / Rendering |
@@ -15,6 +15,23 @@
 ---
 
 # 1. Ziel
+
+> **Normative Korrektur:** Für dieses Dokument gelten ausschließlich die
+> folgenden Alpha-Regeln; Abschnitte, die 2D-Transformationen beschreiben,
+> sind redaktioneller Altbestand und nicht normativ.
+
+Alle Surfaces verwenden RGBA8 in linearisiertem sRGB mit premultipliziertem
+Alpha. `src-over` ist verpflichtend: `out.rgb=src.rgb+dst.rgb*(1-src.a)` und
+`out.a=src.a+dst.a*(1-src.a)`, gerundet auf das nächste Byte (0,5 aufwärts).
+Eingabe mit Straight Alpha wird vor Clipping und Blend genau einmal
+premultipliziert. Transparentes Schwarz ist `(0,0,0,0)`; Komponenten dürfen
+Alpha nie überschreiten. Copy, Clear und SrcOver sind die einzigen BAP-1-
+Operatoren. Ungültige Farbwerte oder nicht-premultiplizierte interne Daten
+führen zu einem kontrollierten Renderfehler.
+
+Akzeptanz: Referenzpixel für transparenten Hintergrund, halbtransparentes
+Rot über Blau, verschachtelte drei Layer und Clipping müssen BIOS und UEFI
+bitidentisch liefern.
 
 Diese Spezifikation definiert das vollständige **2D-Transformationssystem** der NovaOS Boot Rendering Engine.
 

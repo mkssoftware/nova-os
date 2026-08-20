@@ -154,6 +154,18 @@ Nicht unterstützte Elemente werden ignoriert oder führen – abhängig von ihr
 
 # 8. Unterstützte Elemente
 
+## Verbindliche SVG-Untermenge
+
+UTF-8 ohne DTD, Entity, Namespace, externe Referenz oder `style`-Block ist
+zulässig. Attribute sind nur `viewBox`, `fill`, `fill-rule`, `stroke`,
+`stroke-width`, `stroke-linecap`, `stroke-linejoin`, `transform`, `d`, `x`,
+`y`, `width`, `height`, `cx`, `cy`, `r`, `rx`, `ry`, `x1`, `y1`, `x2`, `y2`
+und `points`. Farben sind `#RRGGBB`, `#RRGGBBAA`, `none` oder
+`var(--nova-accent|--nova-text|--nova-error)`. Höchstens 64 Elemente,
+4096 Pathsegmente und 64 KiB XML sind erlaubt. Jeder unbekannte Elementtyp
+oder jedes unbekannte Attribut ist ein Validierungsfehler. Path-, Fill- und
+Stroke-Semantik folgen NPSPEC-BOOTRENDER-0013; Compositing folgt 0012.
+
 Pflicht:
 
 - svg

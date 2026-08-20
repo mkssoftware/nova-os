@@ -42,6 +42,11 @@ typedef enum {NOVA_RESOURCE_OK,NOVA_RESOURCE_NOT_FOUND,NOVA_RESOURCE_INVALID_ARG
     NOVA_RESOURCE_BUSY,NOVA_RESOURCE_UNSUPPORTED,NOVA_RESOURCE_INVALID_STATE}
 nova_resource_result_t;
 
+typedef struct {uint64_t package_id;uint32_t flags,resource_count,index_offset,
+    index_size,data_offset,data_size,manifest_offset,manifest_size;} nova_bap_info_t;
+bool nova_bap_validate(const void *package,uint32_t size,nova_bap_info_t *info);
+bool nova_bap_index_validate(const void *index,uint32_t size,uint16_t *entry_count);
+
 typedef struct {
     const char *uri;
     nova_resource_type_t type;

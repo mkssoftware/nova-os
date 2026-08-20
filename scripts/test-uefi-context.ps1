@@ -54,17 +54,19 @@ try {
         } while(!$stable -and [DateTime]::UtcNow -lt $deadline)
         if(!(Test-Path -LiteralPath $shotPath)){throw 'Kein Context-Menu-Screenshot erzeugt.'}
         $writer.WriteLine('cont');Start-Sleep -Milliseconds 100
-        $writer.WriteLine('sendkey down');Start-Sleep -Milliseconds 200
+        # The first context action is the boot-entry detail dialog.  Keep this
+        # as a runtime check, because its visible data must stay wired to the
+        # UEFI boot flow rather than only existing as a static rendering path.
         $writer.WriteLine('sendkey ret')
         $deadline=[DateTime]::UtcNow.AddSeconds(10)
         do {
             Start-Sleep -Milliseconds 150
             [string]$content=Get-Content -LiteralPath $logPath -Raw
-        } while(($content -notlike '*UEFI:CONTEXT-ADVANCED*' -or
+        } while(($content -notlike '*UEFI:CONTEXT-DETAILS*' -or
                  $content -notlike '*UEFI:DIALOG-FRAME-READY*') -and
                 [DateTime]::UtcNow -lt $deadline)
-        if($content -notlike '*UEFI:CONTEXT-ADVANCED*' -or $content -notlike '*UEFI:DIALOG-FRAME-READY*'){
-            throw 'Context-Menu-Aktion hat den sicheren Hinweisdialog nicht geöffnet.'
+        if($content -notlike '*UEFI:CONTEXT-DETAILS*' -or $content -notlike '*UEFI:DIALOG-FRAME-READY*'){
+            throw 'Context-Menu-Aktion hat den Boot-Eintragsdialog nicht geöffnet.'
         }
     } finally {$client.Dispose()}
 } finally {

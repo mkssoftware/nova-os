@@ -178,6 +178,17 @@ Das Manifest beschreibt:
 - Sprachinformationen
 - Mindestversionen
 
+## Verbindliches BAP-1-Wire-Format
+
+Alle Integer sind Little Endian. Der Header ist exakt 64 Byte: `NOVABAP\0`
+(0..7), Version u16 (8), Headergröße u16=64 (10), Gesamtgröße u32 (12),
+Package-ID u64 (16), Flags u32 (24), Resource-Anzahl u32 (28), Index-Offset/
+Größe u32 (32/36), Daten-Offset/Größe u32 (40/44), Manifest-Offset/Größe u32
+(48/52), CRC32 u32 (56; beim Rechnen null) und reserviert u32=0 (60).
+Bereiche sind 8-Byte-ausgerichtet, vollständig innerhalb der Gesamtgröße und
+überlappen nicht. Bit0=`SIGNED`, Bit1=`COMPRESSED_INDEX`; unbekannte Bits
+sind abzulehnen. Ohne Signatur ist CRC32 verpflichtend.
+
 Das Manifest wird vor allen anderen Daten eingelesen.
 
 ---

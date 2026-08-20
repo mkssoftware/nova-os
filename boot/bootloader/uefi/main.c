@@ -510,8 +510,12 @@ static void handle_context_action(UINTN selection)
     if(action==0){
         nova_debug_string("UEFI:CONTEXT-DETAILS\n");
         show_notice(NOVA_DIALOG_INFORMATION,"Eintragsdetails",
-            selection==0?"NovaOS wird mit der bevorzugten NKI-Datei gestartet.":
-                         "Für diesen Eintrag stehen derzeit keine weiteren Details bereit.");
+            selection==0?
+            "NovaOS\nVersion: Entwicklungsabbild\nKernel: bevorzugt NKI, ELF-Fallback\n"
+            "Architektur: x86_64 UEFI\nDatenträger: lokale EFI-Systempartition\n"
+            "Bootmodus: geprüft\nStandardstart: Ja\nStatus: startbereit\n\n"
+            "Der Eintrag wird ausschließlich lesend dargestellt.":
+            "Für diesen Eintrag stehen derzeit keine weiteren Details bereit.");
     }else if(action==1){
         nova_debug_string("UEFI:CONTEXT-ADVANCED\n");
         show_notice(NOVA_DIALOG_INFORMATION,"Erweiterte Optionen",
