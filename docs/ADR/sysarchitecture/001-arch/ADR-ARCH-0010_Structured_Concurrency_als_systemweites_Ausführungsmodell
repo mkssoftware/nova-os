@@ -1,0 +1,3737 @@
+# ADR-ARCH-0010 – Structured Concurrency als systemweites Ausführungsmodell
+
+## Status
+
+Angenommen
+
+## Kategorie
+
+Systemarchitektur / Concurrency / Task Management / Scheduling / Execution / Lifecycle
+
+## Kontext
+
+Moderne Betriebssysteme führen eine große Zahl gleichzeitig aktiver Operationen aus.
+
+Dazu gehören unter anderem:
+
+- Threads
+- Prozesse
+- Tasks
+- Futures
+- Promises
+- Worker
+- Hintergrundjobs
+- Timer
+- I/O-Operationen
+- Netzwerkoperationen
+- GPU-Workloads
+- NPU-Workloads
+- Device Requests
+- Pipeline Nodes
+- System Services
+- KI-Agenten
+- Recovery Tasks
+- Update Tasks.
+
+Klassische Concurrency-Modelle erlauben häufig, neue Arbeit unabhängig vom Lebenszyklus ihres Erzeugers zu starten.
+
+Beispiel:
+
+```text
+Application
+    │
+    ├── Task A
+    │
+    ├── Task B
+    │
+    └── Background Task C
+```
+
+Wenn die Anwendung beendet wird, ist nicht immer eindeutig:
+
+- ob Task C ebenfalls beendet wird,
+- wem Task C gehört,
+- wer auf Task C wartet,
+- wohin Fehler propagiert werden,
+- wer Ressourcen von Task C freigibt,
+- welche Cancellation-Regeln gelten,
+- ob Task C weiterhin Dateien oder Geräte verwendet,
+- ob Task C noch Netzwerkzugriffe ausführt.
+
+Dadurch entstehen sogenannte:
+
+```text
+Orphan Tasks
+Detached Tasks
+Zombie Work
+Leaked Work
+```
+
+und schwer nachvollziehbare Lebenszyklen.
+
+Ein weiteres Problem entsteht durch ad-hoc erzeugte Parallelität.
+
+Beispiel:
+
+```text
+Request
+   │
+   ├── Start Worker
+   │      └── Start Worker
+   │             └── Start Async I/O
+   │
+   └── Start Timer
+```
+
+Wenn der ursprüngliche Request fehlschlägt oder abgebrochen wird, kann die darunter erzeugte Arbeit weiterlaufen.
+
+Das erschwert:
+
+- Cancellation,
+- Resource Accounting,
+- Deadlines,
+- Fehlerbehandlung,
+- Recovery,
+- Security,
+- Debugging,
+- Determinism,
+- Shutdown,
+- Hot Replacement.
+
+NovaOS verwendet bereits beziehungsweise plant:
+
+- Declarative System Model,
+- Execution Contracts,
+- transaktionale Systemoperationen,
+- systemweite Resource Economy,
+- Zero-Copy,
+- Location Transparency,
+- Semantic Types,
+- einheitliches Daten- und Objekt-Pipelining,
+- Deterministic Mode,
+- Hot Replacement / Live Evolution,
+- Architecture Introspection,
+- Capability Security,
+- Nova.Trust,
+- Nova.Resilience.
+
+Diese Architektur benötigt ein gemeinsames Modell dafür, wie gleichzeitig ausgeführte Arbeit:
+
+- erzeugt,
+- gruppiert,
+- kontrolliert,
+- abgebrochen,
+- beendet,
+- beobachtet
+
+wird.
+
+## Entscheidung
+
+NovaOS verwendet **Structured Concurrency als systemweites Ausführungsmodell**.
+
+Das fundamentale Prinzip lautet:
+
+```text
+Every concurrent operation belongs to an explicit execution scope.
+```
+
+Parallel gestartete Arbeit besitzt grundsätzlich einen strukturierten Lebenszyklus.
+
+Ein Parent Scope erzeugt Child Tasks:
+
+```text
+Execution Scope
+      │
+      ├── Task A
+      ├── Task B
+      └── Task C
+```
+
+Der Scope gilt grundsätzlich erst dann als abgeschlossen, wenn seine relevanten Child Tasks:
+
+```text
+Completed
+Failed
+Cancelled
+```
+
+sind.
+
+Das Modell lautet:
+
+```text
+Enter Scope
+     │
+     ├── Start Child A
+     ├── Start Child B
+     └── Start Child C
+     │
+     ▼
+Wait / Coordinate
+     │
+     ▼
+Children Terminated
+     │
+     ▼
+Leave Scope
+```
+
+Unstrukturierte, unbegrenzt detached laufende Arbeit ist **nicht das Standardmodell**.
+
+## Architekturprinzip
+
+NovaOS verwendet:
+
+```text
+Structured by default,
+detached only by explicit ownership transfer.
+```
+
+Eine Operation darf ihren ursprünglichen Scope nur überleben, wenn ihre Ownership explizit an einen langlebigeren Scope übertragen wird.
+
+## Execution Tree
+
+Ausführungsarbeit wird logisch als Baum beziehungsweise strukturierter Graph von Execution Scopes dargestellt.
+
+Beispiel:
+
+```text
+System
+│
+├── Session
+│   │
+│   ├── Application
+│   │   │
+│   │   ├── Window
+│   │   │   ├── Render Task
+│   │   │   └── Input Task
+│   │   │
+│   │   └── Document Operation
+│   │       ├── Load Task
+│   │       └── Decode Task
+│   │
+│   └── Notification Service
+│
+└── System Services
+```
+
+Dieser Execution Tree ist nicht zwingend identisch mit:
+
+- Process Tree,
+- Thread Tree,
+- Capability Graph,
+- Object Graph.
+
+Er beschreibt den **logischen Ownership- und Lifecycle-Zusammenhang von Arbeit**.
+
+## Execution Scope
+
+Die zentrale Abstraktion ist der `ExecutionScope`.
+
+Konzeptionell:
+
+```text
+ExecutionScope {
+    Identity
+    Parent
+    Owner
+    Children
+    ExecutionContract
+    ResourceBudget
+    Deadline
+    Cancellation
+    FailurePolicy
+    SecurityContext
+    TrustContext
+    State
+}
+```
+
+Nicht jedes Feld muss physisch in jedem Scope gespeichert werden.
+
+Ein Scope kann Eigenschaften von seinem Parent erben.
+
+## Scope Identity
+
+Jeder relevante Scope kann eine eindeutige Identität besitzen.
+
+Beispiel:
+
+```text
+ScopeId = scope-72F1
+```
+
+Dies ermöglicht:
+
+- Introspection,
+- Resource Accounting,
+- Tracing,
+- Cancellation,
+- Recovery.
+
+## Scope Parent
+
+Ein Scope besitzt grundsätzlich einen definierten Parent.
+
+Beispiel:
+
+```text
+ApplicationScope
+      ↓
+DocumentScope
+      ↓
+DecodeScope
+```
+
+Der Root Scope des Systems bildet eine Ausnahme.
+
+## Scope Owner
+
+Ein Scope besitzt einen logischen Owner.
+
+Beispiele:
+
+```text
+System
+Service
+Application
+Request
+Transaction
+Pipeline
+Agent
+Session
+```
+
+Ownership ist nicht zwingend mit dem ausführenden Thread identisch.
+
+## Scope State
+
+Ein Execution Scope besitzt einen definierten Lifecycle.
+
+Mindestens folgende Zustände sollen modellierbar sein:
+
+```text
+Created
+Preparing
+Running
+Cancelling
+Completing
+Completed
+Failed
+Cancelled
+```
+
+Zusätzliche Zustände können subsystemabhängig existieren.
+
+## Child Tasks
+
+Ein Scope kann Child Tasks erzeugen.
+
+```text
+Scope
+├── Child A
+├── Child B
+└── Child C
+```
+
+Child Tasks gehören grundsätzlich zum Lebenszyklus ihres Parent Scope.
+
+## Child Scopes
+
+Ein Scope kann weitere Scopes erzeugen.
+
+```text
+Scope A
+   │
+   ├── Scope B
+   │     ├── Task B1
+   │     └── Task B2
+   │
+   └── Scope C
+```
+
+Dadurch kann komplexe Ausführung hierarchisch strukturiert werden.
+
+## Scope Completion
+
+Ein Scope darf grundsätzlich nicht erfolgreich abgeschlossen werden, solange relevante Children noch aktiv sind.
+
+Das Standardmodell lautet:
+
+```text
+Parent Completion
+        ↓
+Wait for Children
+        ↓
+All Children Terminated
+        ↓
+Parent Completed
+```
+
+## Join
+
+Child Tasks werden strukturiert gejoint.
+
+Beispiel:
+
+```text
+scope {
+    task A
+    task B
+    task C
+}
+
+return
+```
+
+impliziert logisch:
+
+```text
+Start A
+Start B
+Start C
+Wait A/B/C
+Leave Scope
+```
+
+sofern keine andere explizite Scope-Semantik definiert wurde.
+
+## Join Policies
+
+Scopes können unterschiedliche Join Policies besitzen.
+
+Beispiele:
+
+```text
+All
+Any
+FirstSuccess
+FirstResult
+Quorum
+Custom
+```
+
+## All
+
+```text
+All
+```
+
+wartet auf alle relevanten Child Tasks.
+
+## Any
+
+```text
+Any
+```
+
+kann nach Abschluss eines Child Tasks fortfahren.
+
+Die verbleibenden Tasks müssen anschließend gemäß Policy:
+
+- weiterlaufen,
+- gecancelt,
+- übertragen
+
+werden.
+
+Sie dürfen nicht implizit orphaned werden.
+
+## FirstSuccess
+
+Bei:
+
+```text
+FirstSuccess
+```
+
+können mehrere alternative Tasks gestartet werden.
+
+Beispiel:
+
+```text
+Scope
+├── Provider A
+├── Provider B
+└── Provider C
+```
+
+Der erste erfolgreiche Provider gewinnt.
+
+Andere Tasks können danach kontrolliert gecancelt werden.
+
+## Quorum
+
+Verteilte Operationen können einen Quorum Join verwenden.
+
+Beispiel:
+
+```text
+5 Replica Tasks
+Required = 3 Successes
+```
+
+## Failure Policy
+
+Scopes besitzen definierte Failure Policies.
+
+Beispiele:
+
+```text
+FailFast
+Collect
+Isolate
+Retry
+Fallback
+Supervisor
+Custom
+```
+
+## FailFast
+
+Bei:
+
+```text
+FailFast
+```
+
+kann der Fehler eines kritischen Child Tasks den Scope fehlschlagen lassen.
+
+Andere Children werden anschließend kontrolliert gecancelt.
+
+## Collect
+
+Bei:
+
+```text
+Collect
+```
+
+können mehrere Child-Fehler gesammelt werden.
+
+Beispiel:
+
+```text
+Task A = Success
+Task B = Failure X
+Task C = Failure Y
+```
+
+Ergebnis:
+
+```text
+AggregateFailure {
+    X
+    Y
+}
+```
+
+## Isolate
+
+Ein isolierter Child-Fehler muss nicht den gesamten Parent Scope fehlschlagen lassen.
+
+Dies muss explizit durch die Failure Policy erlaubt sein.
+
+## Supervisor Scope
+
+Langlaufende Services können Supervisor Scopes verwenden.
+
+Beispiel:
+
+```text
+ServiceSupervisor
+├── Worker A
+├── Worker B
+└── Worker C
+```
+
+Der Supervisor kann definieren:
+
+```text
+Restart Child
+Replace Child
+Escalate Failure
+Degrade Service
+```
+
+## Supervision ist strukturiert
+
+Supervisor-Modelle sind keine Ausnahme von Structured Concurrency.
+
+Auch ein neu gestarteter Worker gehört weiterhin zu einem definierten Supervisor Scope.
+
+## Error Propagation
+
+Fehler propagieren entlang definierter Scope-Grenzen.
+
+Beispiel:
+
+```text
+Child Task
+    ↓ error
+Child Scope
+    ↓
+Parent Scope
+```
+
+Die jeweilige Failure Policy entscheidet über die konkrete Behandlung.
+
+## Typed Errors
+
+Fehler sollen soweit möglich strukturiert beziehungsweise typisiert sein.
+
+Beispiele:
+
+```text
+Timeout
+Cancelled
+ResourceUnavailable
+PermissionDenied
+ProviderFailure
+DeviceFailure
+DeadlineMiss
+```
+
+## Error Context
+
+Fehler können Scope Context enthalten.
+
+Beispiel:
+
+```text
+Failure {
+    scope
+    task
+    capability
+    provider
+    operation
+    cause
+}
+```
+
+## Cancellation
+
+Cancellation ist ein fundamentales Element von Structured Concurrency.
+
+Cancellation wird nicht als außergewöhnlicher Sonderfall betrachtet.
+
+Das Modell lautet:
+
+```text
+Cancel Scope
+     │
+     ├── Cancel Child A
+     ├── Cancel Child B
+     └── Cancel Child C
+```
+
+## Hierarchische Cancellation
+
+Cancellation propagiert standardmäßig von Parent zu Children.
+
+```text
+Parent Cancelled
+       ↓
+Children Cancelled
+```
+
+## Upward Cancellation
+
+Ein Child darf seinen Parent nicht automatisch beliebig canceln.
+
+Stattdessen meldet es:
+
+```text
+Failure
+Cancellation Request
+Result
+```
+
+und die Parent Policy entscheidet.
+
+## Cancellation Token
+
+Scopes können einen Cancellation Context beziehungsweise Token bereitstellen.
+
+Konzeptionell:
+
+```text
+CancellationContext {
+    requested
+    reason
+    deadline
+}
+```
+
+## Cancellation Reason
+
+Cancellation sollte einen Grund besitzen können.
+
+Beispiele:
+
+```text
+UserRequested
+ParentCancelled
+DeadlineExceeded
+ResourceRevoked
+Shutdown
+ProviderFailure
+PolicyChange
+HotReplacement
+```
+
+## Cooperative Cancellation
+
+Normale Tasks sollen Cancellation kooperativ behandeln.
+
+Das bedeutet:
+
+```text
+Observe Cancellation
+        ↓
+Stop New Work
+        ↓
+Release Resources
+        ↓
+Finish Safe Cleanup
+        ↓
+Terminate
+```
+
+## Forced Termination
+
+Nicht kooperierende Tasks können unter bestimmten Bedingungen zwangsweise beendet beziehungsweise isoliert werden.
+
+Dies ist jedoch eine Recovery- beziehungsweise Containment-Maßnahme und nicht der bevorzugte normale Cancellation-Pfad.
+
+## Cancellation Safety
+
+Cancellation darf Systeminvarianten nicht beschädigen.
+
+Kritische Abschnitte können kurzfristig Cancellation verzögern.
+
+Beispiel:
+
+```text
+Enter Critical Commit
+        ↓
+Cancellation Deferred
+        ↓
+Reach Safe Point
+        ↓
+Cancellation Applied
+```
+
+## Cancellation Points
+
+Längere Operationen sollen definierte Cancellation Points besitzen.
+
+Beispiele:
+
+- I/O waits,
+- queue waits,
+- sleep,
+- pipeline boundaries,
+- iteration checkpoints.
+
+## Non-Cancellable Regions
+
+Nicht abbrechbare Regionen müssen:
+
+- klein,
+- begründet,
+- bounded
+
+sein.
+
+Unbounded non-cancellable work ist für normale Tasks unzulässig.
+
+## Deadlines
+
+Execution Scopes können Deadlines besitzen.
+
+Beispiel:
+
+```text
+Deadline = T + 20 ms
+```
+
+Children erben beziehungsweise erhalten daraus abgeleitete Deadlines.
+
+## Deadline Propagation
+
+Beispiel:
+
+```text
+Request Deadline = 100 ms
+
+├── Parse       10 ms
+├── Compute     60 ms
+└── Serialize   20 ms
+```
+
+mit verbleibender Reserve.
+
+Die tatsächliche Budgetverteilung kann durch Policy erfolgen.
+
+## Deadline ist nicht Timeout
+
+NovaOS unterscheidet konzeptionell:
+
+```text
+Deadline
+```
+
+als absoluten zeitlichen Endpunkt und:
+
+```text
+Timeout
+```
+
+als maximal erlaubte Dauer einer Operation.
+
+Beispiel:
+
+```text
+Deadline = 12:00:00.100
+Timeout  = 50 ms
+```
+
+## Deadline Expiration
+
+Wenn eine Deadline abläuft, kann abhängig vom Contract:
+
+```text
+Cancel
+Degrade
+Fallback
+ContinueAndReport
+Fail
+```
+
+erfolgen.
+
+## Execution Contract
+
+Execution Scopes integrieren `Nova.ExecutionContract`.
+
+Beispiel:
+
+```text
+ExecutionContract {
+    latency      <= 16 ms
+    memory       <= 128 MiB
+    determinism  = Required
+    sovereignty  = LocalOnly
+    trust        >= Verified
+}
+```
+
+Children dürfen die Hard Constraints ihres Parent Contracts nicht unzulässig abschwächen.
+
+## Contract Inheritance
+
+Execution Contracts können entlang des Scope Trees vererbt werden.
+
+Beispiel:
+
+```text
+Parent:
+    sovereignty = LocalOnly
+
+Child:
+    sovereignty = LocalOnly
+```
+
+Ein Child darf nicht ohne entsprechende Autorisierung daraus:
+
+```text
+CloudAllowed
+```
+
+machen.
+
+## Contract Refinement
+
+Children dürfen Constraints verschärfen.
+
+Beispiel:
+
+```text
+Parent:
+    memory <= 512 MiB
+
+Child:
+    memory <= 128 MiB
+```
+
+## Contract Composition
+
+Wenn Parent- und Child-Contract kombiniert werden, gilt grundsätzlich die zulässige Schnittmenge der Hard Constraints.
+
+## Resource Economy
+
+Structured Concurrency wird direkt mit der systemweiten Resource Economy verbunden.
+
+Jeder relevante Scope kann ein Resource Budget besitzen.
+
+Beispiel:
+
+```text
+ResourceBudget {
+    cpu     <= 20 %
+    memory  <= 256 MiB
+    io      <= 100 MiB/s
+    network <= 50 MiB/s
+}
+```
+
+## Hierarchical Resource Accounting
+
+Ressourcenverbrauch wird hierarchisch zugeordnet.
+
+Beispiel:
+
+```text
+Application Scope
+    Memory = 300 MiB
+
+├── UI Scope
+│   Memory = 50 MiB
+│
+├── Document Scope
+│   Memory = 150 MiB
+│
+└── AI Scope
+    Memory = 100 MiB
+```
+
+Damit kann NovaOS erkennen:
+
+```text
+who caused resource usage
+```
+
+anstatt nur:
+
+```text
+which process allocated memory
+```
+
+## Budget Inheritance
+
+Child Scopes erhalten Budgets aus dem Parent Budget.
+
+Beispiel:
+
+```text
+Parent:
+    memory <= 1 GiB
+
+Child A:
+    memory <= 256 MiB
+
+Child B:
+    memory <= 512 MiB
+```
+
+Die Summe aktiver Reservations darf Parent Constraints nicht unzulässig überschreiten.
+
+## Reservations
+
+Scopes können Ressourcen reservieren.
+
+Beispiele:
+
+```text
+CPU Time
+Memory
+I/O Bandwidth
+GPU Time
+NPU Time
+Network Bandwidth
+Energy
+Thermal Headroom
+```
+
+## Resource Revocation
+
+Best-Effort-Ressourcen können unter bestimmten Policies widerrufen werden.
+
+Der Scope erhält dann beispielsweise:
+
+```text
+ResourceRevoked
+```
+
+und kann:
+
+- degradieren,
+- Ressourcen reduzieren,
+- fallbacken,
+- terminieren.
+
+## Resource Cleanup
+
+Beim Ende eines Scope müssen scopegebundene Ressourcen freigegeben werden.
+
+Beispiel:
+
+```text
+Scope Ends
+    ↓
+Cancel Children
+    ↓
+Close Handles
+    ↓
+Release Buffers
+    ↓
+Release Reservations
+    ↓
+Revoke Temporary Capabilities
+```
+
+## Scope-bound Resources
+
+Ressourcen können explizit an einen Scope gebunden werden.
+
+Beispiele:
+
+```text
+File Handle
+Socket
+Buffer
+Temporary Capability
+GPU Allocation
+Device Reservation
+```
+
+## RAII-ähnliche Semantik
+
+NovaLang und System APIs dürfen eine RAII-/Scope-basierte Ressourcenverwaltung bereitstellen.
+
+Die konkrete Sprachsyntax wird separat definiert.
+
+## Capabilities
+
+Capabilities können scopegebunden sein.
+
+Beispiel:
+
+```text
+Scope
+    └── Capability<Device42, Read>
+```
+
+Beim Scope-Ende kann die Capability automatisch widerrufen beziehungsweise ungültig werden.
+
+## Capability Delegation
+
+Ein Parent kann einem Child eine abgeleitete Capability geben.
+
+Beispiel:
+
+```text
+Parent:
+    ReadWrite
+
+Child:
+    ReadOnly
+```
+
+## Capability Lifetime
+
+Capability Lifetime darf an Scope Lifetime gekoppelt sein.
+
+Dadurch kann ein beendeter Task nicht unbeabsichtigt weiterhin privilegierte Ressourcen verwenden.
+
+## Security Context
+
+Scopes besitzen beziehungsweise erben einen Security Context.
+
+Beispiel:
+
+```text
+SecurityContext {
+    identity
+    capabilities
+    labels
+    isolation
+}
+```
+
+## Least Privilege
+
+Child Scopes sollen nur die minimal benötigten Rechte erhalten.
+
+## Privilege Narrowing
+
+Children dürfen standardmäßig Privilegien reduzieren.
+
+Eine Privilegienerhöhung erfordert explizite Autorisierung.
+
+## Trust Context
+
+Nova.Trust kann Trust-Anforderungen an Scopes binden.
+
+Beispiel:
+
+```text
+TrustRequirement {
+    provider >= Verified
+}
+```
+
+Alle ausgewählten Provider müssen diese Anforderung erfüllen.
+
+## Data Sovereignty
+
+Data-Sovereignty-Anforderungen propagieren in Child Scopes.
+
+Beispiel:
+
+```text
+Parent:
+    GermanyOnly
+
+Child RemoteTask:
+    must remain GermanyOnly
+```
+
+## Information Flow
+
+Security Labels und Information-Flow-Regeln gelten auch über Concurrency-Grenzen.
+
+Das Starten eines neuen Tasks darf keine Sicherheitsgrenze umgehen.
+
+## Process-unabhängige Struktur
+
+Structured Concurrency ist nicht auf einen einzelnen Prozess beschränkt.
+
+Ein logischer Scope kann Arbeit umfassen in:
+
+```text
+Process A
+Process B
+GPU
+NPU
+Remote Node
+Device
+```
+
+sofern Ownership und Lifecycle strukturiert erhalten bleiben.
+
+## Distributed Structured Concurrency
+
+Remote Work kann Teil eines Scope Trees sein.
+
+Beispiel:
+
+```text
+Local Scope
+    │
+    └── Remote Task
+            │
+            ├── Remote Child A
+            └── Remote Child B
+```
+
+## Remote Cancellation
+
+Cancellation muss über Remote Boundaries propagierbar sein.
+
+Remote Cancellation ist jedoch nicht garantiert sofort erfolgreich.
+
+Das System muss Zustände unterscheiden können wie:
+
+```text
+CancellationRequested
+CancellationAcknowledged
+CancellationCompleted
+RemoteUnknown
+```
+
+## Network Partition
+
+Bei Netzwerkpartition kann der Parent nicht immer feststellen, ob Remote Work beendet wurde.
+
+Dies muss explizit modelliert werden.
+
+NovaOS darf nicht so tun, als wäre Remote Structured Concurrency identisch mit lokaler Ausführung.
+
+## Leases
+
+Remote Tasks beziehungsweise Ressourcen können Leases verwenden.
+
+Beispiel:
+
+```text
+Lease {
+    expires = ...
+}
+```
+
+Wenn die Verbindung dauerhaft verloren geht, kann der Remote Scope nach Lease-Ablauf selbstständig aufräumen.
+
+## Idempotency
+
+Remote Retry sollte nach Möglichkeit idempotente Operationen verwenden.
+
+## Detached Work
+
+Detached Work ist erlaubt, aber nicht implizit.
+
+Beispiel:
+
+```text
+Application Scope
+      │
+      └── Task
+            ↓ detach
+System Background Scope
+```
+
+Dabei findet eine explizite Ownership-Übertragung statt.
+
+## Ownership Transfer
+
+Ein Task darf seinen ursprünglichen Scope nur überleben, wenn ein anderer Scope die Ownership übernimmt.
+
+Das Modell lautet:
+
+```text
+Old Scope
+    │
+    └── Task
+          │
+          │ Transfer Ownership
+          ▼
+New Scope
+```
+
+## Fire-and-Forget
+
+Unkontrolliertes:
+
+```text
+fireAndForget(task)
+```
+
+ohne Owner ist kein reguläres NovaOS-Ausführungsmodell.
+
+Stattdessen muss beispielsweise angegeben werden:
+
+```text
+BackgroundServiceScope.spawn(task)
+```
+
+## Background Services
+
+Langlaufende Hintergrundarbeit gehört zu langlebigen Service Scopes.
+
+Beispiel:
+
+```text
+SystemServiceScope
+    └── IndexingService
+          ├── WatchTask
+          └── IndexTask
+```
+
+## Daemons
+
+Klassische Daemons werden im NovaOS-Modell als Services mit definierten:
+
+- Scope,
+- Owner,
+- Lifecycle,
+- Budget,
+- Capabilities,
+- Failure Policy
+
+behandelt.
+
+## System Scope
+
+NovaOS besitzt einen Root beziehungsweise System Execution Scope.
+
+Darunter können unter anderem liegen:
+
+```text
+System
+├── Kernel Services
+├── Device Services
+├── User Sessions
+├── Background Services
+└── Recovery Services
+```
+
+## Session Scope
+
+Eine Benutzersitzung besitzt einen eigenen Scope.
+
+Beim Session-Ende können alle sessiongebundenen Tasks strukturiert beendet werden.
+
+## Application Scope
+
+Jede Anwendung besitzt mindestens einen logischen Application Scope.
+
+Beim regulären Beenden der Anwendung wird dieser Scope geschlossen.
+
+## Window Scope
+
+UI-Elemente dürfen eigene Scopes besitzen.
+
+Beispiel:
+
+```text
+Application
+    └── Window
+          ├── Input
+          ├── Render
+          └── Async Load
+```
+
+Beim Schließen des Fensters können windowgebundene Tasks automatisch gecancelt werden.
+
+## Request Scope
+
+Requests erhalten eigene Scopes.
+
+Beispiel:
+
+```text
+HTTP Request
+    ├── Database Query
+    ├── Authorization
+    └── Rendering
+```
+
+Wenn der Client die Verbindung beendet, kann der Request Scope gecancelt werden.
+
+## Transaction Scope
+
+Systemtransaktionen integrieren Structured Concurrency.
+
+Beispiel:
+
+```text
+TransactionScope
+├── Stage Files
+├── Validate Config
+└── Prepare Service
+```
+
+Fehler beziehungsweise Cancellation werden mit der Transaction State Machine koordiniert.
+
+## Commit Regions
+
+Während kritischer Commit-Phasen kann Cancellation kontrolliert verzögert werden.
+
+Beispiel:
+
+```text
+Prepare
+    ↓
+Cancellation Allowed
+    ↓
+Commit Critical Section
+    ↓
+Cancellation Deferred
+    ↓
+Commit Complete
+    ↓
+Cancellation Observed
+```
+
+## Pipeline Scope
+
+Das einheitliche Daten- und Objekt-Pipelining verwendet Structured Concurrency.
+
+Beispiel:
+
+```text
+PipelineScope
+├── Decode
+├── Transform
+├── Inference
+└── Render
+```
+
+Pipeline Branches können Child Scopes bilden.
+
+## Pipeline Cancellation
+
+Wird eine Pipeline beendet, werden alle pipelinegebundenen Tasks strukturiert beendet.
+
+## Capability Invocation Scope
+
+Capability-Aufrufe können Execution Scopes erzeugen beziehungsweise bestehende Scopes verwenden.
+
+Beispiel:
+
+```text
+ApplicationScope
+      ↓
+CapabilityInvocation
+      ↓
+ProviderTask
+```
+
+## Provider Scope
+
+Provider können eigene interne Child Scopes erzeugen.
+
+Sie dürfen die Parent-Lifecycle-Regeln nicht ohne explizite Ownership-Übertragung umgehen.
+
+## Algorithm Selection
+
+Wenn mehrere Algorithmen spekulativ parallel ausgeführt werden, können sie in einem gemeinsamen Scope liegen.
+
+Beispiel:
+
+```text
+SelectionScope
+├── Algorithm A
+├── Algorithm B
+└── Algorithm C
+```
+
+Nach Auswahl eines Ergebnisses werden verbleibende Tasks kontrolliert beendet.
+
+## Speculative Execution
+
+Spekulative Ausführung ist erlaubt.
+
+Sie muss:
+
+- budgetiert,
+- cancellable,
+- introspektierbar
+
+sein.
+
+## Hedged Requests
+
+NovaOS darf bei latenzkritischen Operationen mehrere Provider parallel anfragen.
+
+Beispiel:
+
+```text
+RequestScope
+├── Provider A
+└── Provider B
+```
+
+Der erste gültige Erfolg gewinnt.
+
+Die zusätzlichen Ressourcenkosten müssen durch Resource Economy berücksichtigt werden.
+
+## Parallel Loops
+
+Parallelisierte Schleifen erzeugen strukturierte Child Work.
+
+Beispiel:
+
+```text
+ParallelScope
+├── Chunk 1
+├── Chunk 2
+├── Chunk 3
+└── Chunk 4
+```
+
+## Work Stealing
+
+Scheduler dürfen Work Stealing verwenden.
+
+Dies verändert nicht die logische Scope Ownership.
+
+Ein Task kann auf einem anderen Core ausgeführt werden und bleibt trotzdem Child desselben Scope.
+
+## Task Migration
+
+Dasselbe gilt für Task Migration.
+
+```text
+Logical Ownership != Physical CPU Location
+```
+
+## Scheduler Integration
+
+Der Scheduler erhält Zugriff auf relevante Scope-Informationen.
+
+Dazu können gehören:
+
+- Priority
+- Deadline
+- Budget
+- Realtime Class
+- Parent Scope
+- Resource Reservation.
+
+## Hierarchical Scheduling
+
+NovaOS soll hierarchisches Scheduling unterstützen können.
+
+Beispiel:
+
+```text
+Application Budget
+      ↓
+Subsystem Budget
+      ↓
+Task Budget
+```
+
+## Fairness
+
+Scheduler Policies können Fairness auf Scope-Ebene berücksichtigen.
+
+Dadurch kann eine Anwendung nicht einfach durch Erzeugen tausender Tasks zusätzliche CPU-Anteile erzwingen.
+
+## Priority
+
+Priority kann an Scopes gebunden sein.
+
+Children dürfen Parent-Prioritäten nicht unkontrolliert erhöhen.
+
+## Priority Inheritance
+
+Bei Synchronisationsproblemen kann Priority Inheritance verwendet werden.
+
+Dies wird durch separate Scheduler-/Synchronization-Spezifikationen geregelt.
+
+## Realtime
+
+Realtime Scopes können besondere Scheduling Guarantees besitzen.
+
+Beispiel:
+
+```text
+RealtimeScope {
+    deadline
+    cpuReservation
+    memoryReservation
+}
+```
+
+## Hard Realtime
+
+Hard-Realtime-Scopes müssen:
+
+- bounded work,
+- bounded cancellation regions,
+- kontrollierte Allokation,
+- vorhersehbare Scheduling Paths
+
+verwenden.
+
+## Admission Control
+
+Vor Aktivierung eines Hard-Realtime-Scope muss geprüft werden, ob seine Garantien erfüllbar sind.
+
+## Deterministic Mode
+
+Structured Concurrency integriert sich direkt mit Deterministic Mode.
+
+Deterministic Mode kann einschränken:
+
+- Task Creation Order
+- Scheduling Order
+- Parallelism
+- Work Stealing
+- Migration
+- Race Resolution
+- Provider Selection
+- Retry Order.
+
+## Deterministic Scope
+
+Ein Scope kann deklarieren:
+
+```text
+Determinism = Required
+```
+
+Der Runtime Planner darf dann nur zulässige Scheduling- und Execution-Strategien wählen.
+
+## Race
+
+Races, die semantische Ergebnisse verändern können, müssen im Deterministic Mode kontrolliert werden.
+
+## Deterministic Join
+
+Join-Reihenfolgen können fixiert werden, wenn sie das Ergebnis beeinflussen.
+
+## Synchronisation
+
+Structured Concurrency ersetzt nicht alle Synchronisationsprimitive.
+
+Weiterhin möglich sind:
+
+- Mutex
+- Semaphore
+- Event
+- Channel
+- Barrier
+- Atomic
+- RCU
+- Lock-free Structures.
+
+Structured Concurrency definiert primär:
+
+```text
+Lifecycle
+Ownership
+Failure
+Cancellation
+```
+
+nicht jede Datenzugriffssynchronisation.
+
+## Channels
+
+Channels sollen scopebewusst sein können.
+
+Beispiel:
+
+```text
+ProducerScope
+      ↓ Channel
+ConsumerScope
+```
+
+Beim Scope-Ende muss klar sein, wie der Channel geschlossen wird.
+
+## Bounded Channels
+
+Bounded Channels werden bevorzugt, um Resource Economy und Backpressure zu unterstützen.
+
+## Actor Model
+
+Actor-basierte Systeme können auf Structured Concurrency aufbauen.
+
+Ein Actor besitzt beispielsweise:
+
+```text
+ActorScope
+├── Mailbox
+└── Worker
+```
+
+Langlaufende Actors gehören zu Supervisor Scopes.
+
+## Event Loops
+
+Event Loops sind mit Structured Concurrency kompatibel.
+
+Ein Event Loop ist ein Ausführungsmechanismus, kein Ersatz für Scope Ownership.
+
+## Async/Await
+
+NovaLang kann `async`/`await` beziehungsweise eine entsprechende NovaLang-Syntax bereitstellen.
+
+Async Tasks müssen jedoch standardmäßig strukturiert sein.
+
+## Futures
+
+Futures beziehungsweise Promises müssen einem Scope zugeordnet werden können.
+
+Ein Future darf nicht allein deshalb seinen Owner überleben, weil sein Handle verloren wurde.
+
+## Task Handle
+
+Ein Task Handle repräsentiert Zugriff auf einen Task.
+
+Beispiel:
+
+```text
+TaskHandle<Result<T>>
+```
+
+Das Verwerfen eines Handles bedeutet nicht automatisch Ownership Transfer.
+
+## Task Result
+
+Tasks liefern strukturierte Ergebnisse.
+
+Beispiel:
+
+```text
+Result<T, Error>
+```
+
+Die endgültige NovaLang-Typdefinition wird separat spezifiziert.
+
+## Lost Result
+
+Wenn ein Result bewusst ignoriert wird, muss der Task trotzdem strukturiert beendet beziehungsweise übertragen werden.
+
+## Task Groups
+
+NovaOS unterstützt Task Groups als praktische Form eines Child Scope.
+
+Beispiel:
+
+```text
+TaskGroup
+├── Task A
+├── Task B
+└── Task C
+```
+
+## Dynamic Task Groups
+
+Task Groups dürfen dynamisch Tasks hinzufügen, solange der Group Scope offen ist.
+
+Nach Beginn der Abschlussphase dürfen keine neuen Children ohne explizite Semantik erzeugt werden.
+
+## Scope Closing
+
+Beim Closing:
+
+```text
+Accept New Children = false
+```
+
+anschließend:
+
+```text
+Wait / Cancel Existing Children
+```
+
+## Race-free Scope Closure
+
+Task Creation und Scope Closure müssen synchronisiert sein.
+
+Es darf kein Child entstehen, nachdem der Parent logisch bereits abgeschlossen wurde.
+
+## Hot Replacement
+
+Structured Concurrency ist zentral für Hot Replacement.
+
+Vor Austausch einer Komponente kann deren Scope:
+
+```text
+Quiesce
+```
+
+werden.
+
+## Quiescence
+
+Quiescence bedeutet beispielsweise:
+
+- keine neuen Tasks annehmen,
+- aktive Tasks kontrolliert abschließen,
+- State stabilisieren,
+- Ressourcenübergabe vorbereiten.
+
+## Hot Replacement Flow
+
+Beispiel:
+
+```text
+Component V1 Scope
+        ↓
+Stop Accepting New Work
+        ↓
+Wait / Cancel Children
+        ↓
+Quiescent
+        ↓
+Transfer State
+        ↓
+Component V2 Scope
+        ↓
+Activate
+```
+
+## Live Evolution
+
+Versionierte Scopes und State Migration unterstützen Live Evolution.
+
+## Shutdown
+
+System Shutdown verwendet strukturierte Scope-Beendigung.
+
+Beispiel:
+
+```text
+System Shutdown
+      ↓
+Stop New Sessions
+      ↓
+Cancel/Close Session Scopes
+      ↓
+Stop Application Scopes
+      ↓
+Stop Service Scopes
+      ↓
+Flush Critical State
+      ↓
+Stop Kernel Services
+```
+
+## Shutdown Deadline
+
+Shutdown kann eine globale Deadline besitzen.
+
+Scopes erhalten daraus Teildeadlines.
+
+## Forced Shutdown
+
+Wenn ein Scope seine Shutdown Deadline überschreitet, können Eskalationsstufen verwendet werden:
+
+```text
+Cooperative Cancel
+      ↓
+Force Isolation
+      ↓
+Force Termination
+```
+
+## Nova.Resilience
+
+Structured Concurrency bildet Failure Domains für Nova.Resilience.
+
+Beispiel:
+
+```text
+Task Failure
+    ↓
+Child Scope Recovery
+    ↓
+Parent remains healthy
+```
+
+## Recovery Scope
+
+Recovery-Aktionen werden selbst in strukturierten Recovery Scopes ausgeführt.
+
+Beispiel:
+
+```text
+RecoveryScope
+├── Collect Diagnostics
+├── Restart Provider
+└── Verify Health
+```
+
+## Retry
+
+Retries müssen einem Scope gehören.
+
+Unbegrenzte Hintergrund-Retry-Loops ohne Owner sind unzulässig.
+
+## Retry Budget
+
+Retries können begrenzt werden durch:
+
+```text
+Count
+Time
+Deadline
+Resource Budget
+```
+
+## Retry Backoff
+
+Backoff-Timer gehören ebenfalls zum Scope und werden bei Cancellation beendet.
+
+## Failure Escalation
+
+Wenn lokale Recovery scheitert, kann der Fehler zur nächsthöheren Failure Domain eskaliert werden.
+
+Beispiel:
+
+```text
+Task
+  ↓
+Component
+  ↓
+Service
+  ↓
+Application
+  ↓
+Session
+```
+
+## Smallest Safe Failure Domain
+
+NovaOS versucht grundsätzlich:
+
+```text
+Recover the smallest safe scope.
+```
+
+## Architecture Introspection
+
+Execution Scopes müssen über Architecture Introspection sichtbar sein.
+
+Beispiel:
+
+```text
+Application: PhotoEditor
+└── Scope: Document42
+    ├── Task: Decode
+    ├── Task: AIEnhance
+    └── Task: PreviewRender
+```
+
+## Scope Introspection
+
+Abhängig von Berechtigungen sollen sichtbar sein können:
+
+```text
+Scope ID
+Owner
+Parent
+Children
+State
+Deadline
+Budget
+Priority
+Execution Contract
+Failure Policy
+Cancellation State
+Resource Usage
+Provider
+Location
+```
+
+## Task Introspection
+
+Für Tasks sollen unter anderem sichtbar sein können:
+
+```text
+State
+Runtime
+Waiting Reason
+Deadline
+CPU
+Provider
+Resource Usage
+Parent Scope
+```
+
+## Waiting Reason
+
+NovaOS soll anzeigen können, warum ein Task wartet.
+
+Beispiele:
+
+```text
+WaitingForIO
+WaitingForChild
+WaitingForLock
+WaitingForResource
+WaitingForDeadline
+WaitingForProvider
+```
+
+## Scope Graph
+
+Entwicklertools können den Scope Tree visualisieren.
+
+Beispiel:
+
+```text
+System
+└── Session 4
+    └── App PhotoEditor
+        └── Export
+            ├── Decode
+            ├── Filter
+            ├── Encode
+            └── Save
+```
+
+## Cancellation Trace
+
+Cancellation muss nachvollziehbar sein.
+
+Beispiel:
+
+```text
+Scope:
+    Export
+
+CancelledBy:
+    User
+
+Propagation:
+    Export
+      → Encode
+      → Save
+
+Cleanup:
+    BufferPool released
+    FileHandle closed
+```
+
+## Failure Trace
+
+Beispiel:
+
+```text
+Task:
+    Decode
+
+Failure:
+    InvalidImageData
+
+Action:
+    FailFast
+
+Parent:
+    ImportScope
+
+Result:
+    Scope Failed
+```
+
+## Resource Trace
+
+Beispiel:
+
+```text
+Scope:
+    AIEnhancement
+
+Memory:
+    220 MiB
+
+GPU:
+    38 %
+
+NPU:
+    0 %
+
+Deadline:
+    8 ms remaining
+```
+
+## Decision Tracing
+
+Automatische Scheduler- beziehungsweise Execution-Entscheidungen sollen erklärbar sein.
+
+Beispiel:
+
+```text
+Task migrated CPU2 → CPU4
+
+Reason:
+    CPU2 overloaded
+
+Allowed:
+    Determinism = Preferred
+
+Deadline:
+    preserved
+```
+
+## Observability
+
+Structured Concurrency liefert eine natürliche Observability-Struktur.
+
+Metriken können auf Scope-Ebene aggregiert werden.
+
+Beispiele:
+
+```text
+CPU Time
+Wall Time
+Memory
+I/O
+Network
+GPU Time
+Energy
+Failures
+Retries
+Cancellations
+Deadline Misses
+```
+
+## Profiling
+
+Profiler sollen Performance entlang des Scope Trees analysieren können.
+
+## Critical Path
+
+Bei parallelen Tasks kann der Critical Path bestimmt werden.
+
+Beispiel:
+
+```text
+Scope Duration = 20 ms
+
+Task A = 5 ms
+Task B = 18 ms
+Task C = 7 ms
+
+Critical Path = Task B
+```
+
+## Leak Detection
+
+Ein Scope, der beendet werden soll, aber aktive Children besitzt, kann als Lifecycle Leak erkannt werden.
+
+## Orphan Detection
+
+Tasks ohne gültigen Owner müssen als Architekturfehler beziehungsweise expliziter Sonderzustand erkannt werden.
+
+## Debug Mode
+
+Entwicklungsmodi dürfen strengere Regeln aktivieren.
+
+Beispiel:
+
+```text
+Detached task without explicit owner
+    → Runtime Error
+```
+
+## Production Mode
+
+Produktionssysteme können sichere Fallbacks verwenden, dürfen aber Ownership-Verlust nicht stillschweigend normalisieren.
+
+## Kernel Integration
+
+Auch Kernel-interne asynchrone Arbeit soll soweit sinnvoll strukturierte Ownership besitzen.
+
+Beispiele:
+
+- Driver Requests
+- Async I/O
+- Deferred Work
+- Recovery Work
+- Device Initialization
+- Power Transitions.
+
+## Interrupt Context
+
+Interrupt Handler selbst sind keine normalen langlaufenden Execution Scopes.
+
+Aus Interrupt Context ausgelagerte Arbeit muss jedoch einem definierten Scope beziehungsweise System Owner zugeordnet werden.
+
+Beispiel:
+
+```text
+Interrupt
+    ↓
+Minimal Handler
+    ↓
+Schedule Deferred Work
+    ↓
+Device Scope
+```
+
+## Deferred Work
+
+Deferred Work darf nicht ownerlos entstehen.
+
+## Driver Scope
+
+Treiber besitzen eigene Execution Scopes.
+
+Beispiel:
+
+```text
+DeviceScope
+├── Interrupt Work
+├── Request Queue
+├── Power Task
+└── Recovery Task
+```
+
+## Device Removal
+
+Wird ein Gerät entfernt:
+
+```text
+Device Removed
+      ↓
+Cancel Device Scope
+      ↓
+Cancel Pending I/O
+      ↓
+Release DMA
+      ↓
+Revoke Device Capabilities
+```
+
+## User-mode Driver
+
+Dasselbe logische Scope-Modell gilt für User-mode Driver.
+
+## I/O Requests
+
+Asynchrone I/O Requests gehören zum Scope ihres Aufrufers beziehungsweise zu einem explizit übertragenen Owner.
+
+## I/O Cancellation
+
+Wenn der Scope endet, sollen ausstehende I/O Requests gecancelt werden, sofern die Operation dies sicher unterstützt.
+
+## Non-cancellable I/O
+
+Kann Hardware-I/O nicht sofort abgebrochen werden, muss der Scope einen Zustand wie:
+
+```text
+CancellationPending
+```
+
+beziehungsweise eine sichere Completion-Strategie unterstützen.
+
+## GPU Work
+
+GPU Commands gehören zu Execution Scopes.
+
+Das System muss nachvollziehen können:
+
+```text
+which scope submitted GPU work
+```
+
+## GPU Cancellation
+
+Nicht jede GPU-Operation kann physisch sofort gecancelt werden.
+
+Der logische Scope kann trotzdem Cancellation anfordern und nach Completion Ergebnisse verwerfen beziehungsweise Ressourcen bereinigen.
+
+## NPU Work
+
+Für NPU gilt dasselbe Prinzip.
+
+## Network Requests
+
+Netzwerkoperationen gehören zu Scopes.
+
+Ein abgebrochener Request darf nicht unbeabsichtigt weiter Netzwerkressourcen verbrauchen.
+
+## AI Agents
+
+KI-Agenten werden nicht als unbegrenzt autonome ownerlose Prozesse behandelt.
+
+Ein Agent besitzt einen Agent Scope.
+
+Beispiel:
+
+```text
+AgentScope
+├── Reasoning Task
+├── Tool Invocation
+├── File Operation
+└── Network Operation
+```
+
+## Agent Tool Invocation
+
+Tool-Aufrufe eines Agents sind Child Operations des Agent Scope beziehungsweise eines Subscope.
+
+## Agent Cancellation
+
+Wird der Agent gestoppt, müssen offene Tool-Aufrufe soweit sicher möglich gecancelt werden.
+
+## Agent Capability Lifetime
+
+Temporäre Agent-Capabilities können an den Agent Scope gebunden werden.
+
+## Agent Budget
+
+Agent Scopes können besitzen:
+
+```text
+CPU Budget
+Memory Budget
+Token/Model Budget
+Network Budget
+Time Budget
+Tool Invocation Budget
+```
+
+## Agent Delegation
+
+Ein Agent darf Subagents erzeugen.
+
+Diese gehören standardmäßig als Child Scopes zum Parent Agent.
+
+```text
+Agent A
+├── Subagent B
+└── Subagent C
+```
+
+## Autonomous Long-running Agents
+
+Soll ein Agent den ursprünglichen User Request überleben, muss seine Ownership explizit an einen persistenten Agent-/Service-Scope übertragen werden.
+
+## Declarative System Model
+
+Execution Scopes können aus Desired State entstehen.
+
+Beispiel:
+
+```text
+DesiredState {
+    Service.Indexer = Running
+}
+```
+
+Der Reconciler erzeugt beziehungsweise erhält den zugehörigen Service Scope.
+
+## Actual State
+
+Actual State kann Scope-Informationen enthalten.
+
+```text
+Indexer {
+    state = Running
+    scope = scope-18A2
+    children = 4
+}
+```
+
+## Reconciliation
+
+Wenn ein erforderlicher Scope unerwartet endet, kann der Reconciler entsprechend Policy:
+
+```text
+Restart
+Replace
+Degrade
+RemainStopped
+```
+
+entscheiden.
+
+## Scope Restart
+
+Ein neuer Scope besitzt grundsätzlich eine neue Runtime Identity, auch wenn er denselben logischen Service repräsentiert.
+
+## Stable Logical Identity
+
+Services können eine stabile logische Identity besitzen, während konkrete Scope Instanzen wechseln.
+
+## Transactions
+
+Structured Concurrency und transaktionale Systemoperationen ergänzen sich.
+
+Structured Concurrency kontrolliert:
+
+```text
+Who owns execution?
+When does execution end?
+How does failure propagate?
+```
+
+Transaktionen kontrollieren:
+
+```text
+When does state become committed?
+How is rollback performed?
+```
+
+Beide Modelle dürfen nicht miteinander verwechselt werden.
+
+## Zero-Copy
+
+Structured Concurrency erleichtert Zero-Copy, weil Buffer Lifetimes an Scopes gebunden werden können.
+
+Beispiel:
+
+```text
+PipelineScope
+    └── SharedBuffer
+```
+
+Der Buffer bleibt gültig, solange relevante Children darauf zugreifen.
+
+## Semantic Types
+
+Task Results und Channels sollen Semantic Types verwenden können.
+
+Beispiel:
+
+```text
+Task<Image<RGBA8>>
+```
+
+statt ausschließlich:
+
+```text
+Task<byte[]>
+```
+
+## Unified Pipelining
+
+Pipeline Nodes werden als strukturierte Tasks beziehungsweise Scopes ausgeführt.
+
+Dadurch entsteht eine direkte Verbindung:
+
+```text
+Pipeline Graph
+      +
+Execution Scope Tree
+```
+
+Der Pipeline Graph beschreibt:
+
+```text
+Data Dependencies
+```
+
+Der Scope Tree beschreibt:
+
+```text
+Execution Ownership
+```
+
+Beide sind nicht identisch, aber miteinander verknüpft.
+
+## Location Transparency
+
+Ein Child Task kann remote ausgeführt werden, ohne dass sich seine logische Ownership ändert.
+
+Die Kosten und Fehler der Remote-Ausführung bleiben jedoch sichtbar.
+
+## Mechanism / Policy Separation
+
+Structured Concurrency definiert primär den Mechanismus für:
+
+- Scope Ownership
+- Cancellation
+- Join
+- Failure Propagation.
+
+Policies bestimmen beispielsweise:
+
+- FailFast oder Collect,
+- Retry,
+- Supervisor Strategy,
+- Scheduling,
+- Budget Distribution.
+
+## No Mandatory Single Runtime
+
+Structured Concurrency bedeutet nicht, dass alle Tasks durch einen einzelnen zentralen Runtime-Prozess verwaltet werden.
+
+Das Modell kann implementiert werden durch:
+
+- Kernel,
+- Runtime,
+- Service Manager,
+- Language Runtime,
+- GPU Runtime,
+- Distributed Runtime.
+
+Die semantischen Regeln bleiben kompatibel.
+
+## Fast Path
+
+Task- und Scope-Verwaltung muss für häufige Operationen effiziente Fast Paths besitzen.
+
+Structured Concurrency darf nicht dazu führen, dass jeder Task Spawn eine globale zentrale Policy Engine synchron aufrufen muss.
+
+## Scope Metadata
+
+Häufig benötigte Scope-Metadaten sollen kompakt und cachefreundlich gehalten werden.
+
+Seltene Metadaten können ausgelagert werden.
+
+## Task Creation Cost
+
+Task Creation muss ausreichend günstig sein, damit feingranulare Parallelität möglich bleibt.
+
+## Lightweight Tasks
+
+NovaOS soll Lightweight Tasks unterstützen können, die wesentlich günstiger als vollständige Prozesse sind.
+
+## Threads
+
+Native Threads bleiben ein grundlegender Scheduling-Mechanismus.
+
+Structured Tasks können:
+
+- 1:1 auf Threads,
+- M:N auf Threads,
+- Event-loop-basiert,
+- hardwarebeschleunigt
+
+ausgeführt werden.
+
+Die logische Concurrency-Struktur ist von der konkreten Thread-Abbildung getrennt.
+
+## Fibers / Coroutines
+
+Fibers beziehungsweise Coroutines dürfen als Ausführungsmechanismus verwendet werden.
+
+## Stackful / Stackless
+
+NovaOS schreibt auf Architekturlevel weder ausschließlich stackful noch stackless Tasks vor.
+
+## Blocking
+
+Blocking APIs bleiben möglich.
+
+Runtimes sollen jedoch vermeiden, dass ein blockierender Lightweight Task unnötig einen wertvollen Execution Worker blockiert, sofern ein asynchroner Mechanismus verfügbar ist.
+
+## Sync/Async Interoperability
+
+Synchroner und asynchroner Code müssen definierte Interoperabilitätsregeln besitzen.
+
+## Blocking Bridge
+
+Ein Async Scope darf bei Bedarf einen Blocking Worker verwenden.
+
+Dieser Worker bleibt Teil des Scope Ownership-Modells.
+
+## Scope Local Storage
+
+Scopes dürfen lokale Context-Daten besitzen.
+
+Beispiele:
+
+```text
+Tracing Context
+Security Context
+Locale
+Deadline
+Cancellation
+Transaction Context
+```
+
+## Context Propagation
+
+Scope Context wird kontrolliert an Children propagiert.
+
+## No Implicit Global Context
+
+Kritische Execution Contexts sollen nicht ausschließlich über unkontrollierte globale beziehungsweise thread-lokale Zustände propagiert werden.
+
+## Thread Local Storage
+
+Thread Local Storage bleibt möglich.
+
+Es darf jedoch nicht als alleinige Grundlage für logischen Scope Context dienen, da Tasks Threads wechseln können.
+
+## Async Local Context
+
+NovaLang beziehungsweise Runtime kann scope-/task-lokale Context Propagation unterstützen.
+
+## Testing
+
+Structured Concurrency verbessert Testbarkeit, weil ein Testscope sicherstellen kann, dass nach Testende keine Child Work mehr aktiv ist.
+
+Beispiel:
+
+```text
+TestScope
+├── Component
+└── MockService
+```
+
+Beim Ende:
+
+```text
+Active Children = 0
+```
+
+## Simulation
+
+Execution Scopes können in simulierten Schedulern ausgeführt werden.
+
+Dies ist insbesondere für:
+
+- Determinism,
+- Race Testing,
+- Timeout Testing,
+- Failure Injection
+
+wichtig.
+
+## Virtual Time
+
+Tests dürfen Virtual Time verwenden.
+
+Dadurch können:
+
+```text
+Timeouts
+Retries
+Backoff
+Deadlines
+```
+
+deterministisch getestet werden.
+
+## Normative Festlegungen
+
+1. NovaOS MUSS Structured Concurrency als systemweites Ausführungsmodell unterstützen.
+
+2. Jede normale concurrent Operation MUSS einem definierten Execution Scope zugeordnet sein.
+
+3. Execution Scopes MÜSSEN einen expliziten Lifecycle besitzen.
+
+4. Relevante Scopes SOLLEN eindeutig identifizierbar sein.
+
+5. Jeder nicht-root Scope MUSS einen definierten Parent oder einen explizit übertragenen langlebigeren Owner besitzen.
+
+6. Scope Ownership MUSS unabhängig von physischer Thread- beziehungsweise CPU-Zuordnung modellierbar sein.
+
+7. Child Tasks MÜSSEN standardmäßig an den Lebenszyklus ihres Parent Scope gebunden sein.
+
+8. Parent Scopes DÜRFEN NICHT erfolgreich abgeschlossen werden, solange relevante Child Work ohne explizite Ownership-Übertragung weiterläuft.
+
+9. Child Scopes MÜSSEN unterstützt werden.
+
+10. Task Groups SOLLEN unterstützt werden.
+
+11. Join Policies MÜSSEN explizit modellierbar sein.
+
+12. Eine `All`-Join-Semantik MUSS unterstützt werden.
+
+13. Alternative Join Policies wie `Any`, `FirstSuccess` oder `Quorum` SOLLEN unterstützt werden können.
+
+14. Verbleibende Tasks nach einem frühen Join DÜRFEN NICHT implizit orphaned werden.
+
+15. Failure Policies MÜSSEN explizit definierbar sein.
+
+16. FailFast MUSS unterstützt werden können.
+
+17. Fehleraggregation SOLL unterstützt werden können.
+
+18. Fehlerisolation MUSS explizit definierbar sein.
+
+19. Supervisor Scopes SOLLEN für langlebige Services unterstützt werden.
+
+20. Supervision DARF Structured Ownership NICHT umgehen.
+
+21. Fehler MÜSSEN entlang definierter Scope-Grenzen propagierbar sein.
+
+22. Fehler SOLLEN strukturiert beziehungsweise typisiert sein.
+
+23. Cancellation MUSS ein fundamentales Element des Execution Models sein.
+
+24. Parent Cancellation MUSS grundsätzlich zu Child Scopes propagierbar sein.
+
+25. Children DÜRFEN Parent Scopes NICHT unkontrolliert implizit canceln.
+
+26. Cancellation SOLL einen strukturierten Reason besitzen können.
+
+27. Tasks SOLLEN Cooperative Cancellation unterstützen.
+
+28. Zwangsbeendigung DARF als Containment- beziehungsweise Recovery-Maßnahme verwendet werden.
+
+29. Cancellation MUSS Systeminvarianten respektieren.
+
+30. Non-cancellable Regions MÜSSEN klein und bounded sein.
+
+31. Unbounded non-cancellable Work DARF im normalen Execution Model NICHT verwendet werden.
+
+32. Längere Operationen SOLLEN Cancellation Points besitzen.
+
+33. Execution Scopes MÜSSEN Deadlines besitzen können.
+
+34. Deadlines MÜSSEN an Child Work propagierbar sein.
+
+35. Deadline und Timeout MÜSSEN semantisch unterscheidbar sein.
+
+36. Deadline Expiration MUSS eine definierte Policy besitzen.
+
+37. Execution Scopes MÜSSEN `Nova.ExecutionContract` integrieren können.
+
+38. Hard Constraints eines Parent Scope DÜRFEN von Children NICHT unautorisiert abgeschwächt werden.
+
+39. Children DÜRFEN Constraints verschärfen.
+
+40. Contract Composition MUSS widersprüchliche Hard Constraints erkennen können.
+
+41. Structured Concurrency MUSS mit der systemweiten Resource Economy integriert werden.
+
+42. Scopes MÜSSEN Resource Budgets besitzen beziehungsweise erben können.
+
+43. Resource Accounting SOLL hierarchisch entlang der Scope-Struktur möglich sein.
+
+44. Child Budgets MÜSSEN Parent Budgets respektieren.
+
+45. Resource Reservations MÜSSEN an Scopes gebunden werden können.
+
+46. Scope-Ende MUSS scopegebundene Resource Reservations freigeben.
+
+47. Scopegebundene Ressourcen SOLLEN automatisch bereinigbar sein.
+
+48. File Handles, Sockets, Buffers und Device Reservations MÜSSEN an Scope Lifetimes bindbar sein.
+
+49. Capabilities MÜSSEN an Scope Lifetimes bindbar sein können.
+
+50. Capability Delegation an Child Scopes MUSS Rights Narrowing unterstützen.
+
+51. Ein Child SOLL nur die minimal erforderlichen Capabilities erhalten.
+
+52. Scope-Ende SOLL temporäre Capabilities widerrufen können.
+
+53. Security Context MUSS entlang von Scope-Grenzen kontrolliert propagierbar sein.
+
+54. Privilege Escalation DARF NICHT allein durch Task Creation erfolgen.
+
+55. Trust Requirements MÜSSEN an Child Execution propagierbar sein.
+
+56. Data-Sovereignty-Constraints MÜSSEN an Child Execution propagierbar sein.
+
+57. Information-Flow-Policies MÜSSEN über Concurrency-Grenzen erhalten bleiben.
+
+58. Structured Concurrency MUSS prozessübergreifend modellierbar sein.
+
+59. Structured Concurrency SOLL Remote Work integrieren können.
+
+60. Remote Cancellation MUSS einen expliziten Status besitzen.
+
+61. Netzwerkpartitionen MÜSSEN als möglicher unbestimmter Remote-Execution-Zustand behandelt werden.
+
+62. Remote Tasks SOLLEN Leases beziehungsweise vergleichbare Cleanup-Mechanismen unterstützen können.
+
+63. Detached Work DARF NICHT implizit entstehen.
+
+64. Detached Work MUSS eine explizite Ownership-Übertragung besitzen.
+
+65. Fire-and-Forget ohne definierten Owner DARF NICHT das reguläre Ausführungsmodell sein.
+
+66. Langlaufende Hintergrundarbeit MUSS einem langlebigen Service- beziehungsweise Background Scope gehören.
+
+67. System Services MÜSSEN definierte Execution Scopes besitzen.
+
+68. User Sessions SOLLEN eigene Session Scopes besitzen.
+
+69. Anwendungen MÜSSEN logische Application Scopes besitzen.
+
+70. UI-Komponenten DÜRFEN eigene Child Scopes besitzen.
+
+71. Request-basierte Operationen SOLLEN Request Scopes verwenden.
+
+72. Systemtransaktionen MÜSSEN Structured Concurrency verwenden können.
+
+73. Kritische Transaction Commit Regions DÜRFEN Cancellation kontrolliert verzögern.
+
+74. Pipeline-Ausführung MUSS Structured Concurrency integrieren.
+
+75. Pipeline Branches SOLLEN als Child Scopes modellierbar sein.
+
+76. Capability Invocations MÜSSEN einem Execution Scope zugeordnet werden können.
+
+77. Provider-interne Child Work MUSS strukturiertes Ownership besitzen.
+
+78. Spekulative Execution MUSS budgetiert und cancellable sein.
+
+79. Hedged Requests DÜRFEN unterstützt werden.
+
+80. Hedged Requests MÜSSEN ihre zusätzlichen Ressourcenkosten berücksichtigen.
+
+81. Parallel Loops MÜSSEN strukturierte Child Work erzeugen können.
+
+82. Work Stealing DARF logische Scope Ownership NICHT verändern.
+
+83. Task Migration DARF logische Scope Ownership NICHT verändern.
+
+84. Scheduler MÜSSEN relevante Scope-Metadaten berücksichtigen können.
+
+85. Hierarchical Scheduling SOLL unterstützt werden können.
+
+86. Task-Erzeugung DARF Parent Resource Limits NICHT umgehen.
+
+87. Child Priority DARF Parent Policy NICHT unautorisiert umgehen.
+
+88. Realtime Scopes MÜSSEN Scheduling Guarantees ausdrücken können.
+
+89. Hard-Realtime-Scopes MÜSSEN bounded Execution Paths unterstützen.
+
+90. Hard-Realtime-Scopes SOLLEN Admission Control verwenden.
+
+91. Structured Concurrency MUSS mit Deterministic Mode integrierbar sein.
+
+92. Deterministic Mode MUSS Task Creation und Scheduling einschränken können.
+
+93. Deterministic Mode MUSS Work Stealing beziehungsweise Migration einschränken können.
+
+94. Ergebnisrelevante Races MÜSSEN im Deterministic Mode kontrollierbar sein.
+
+95. Structured Concurrency DARF klassische Synchronisationsprimitive NICHT ersetzen müssen.
+
+96. Channels SOLLEN scopebewusst sein können.
+
+97. Bounded Channels SOLLEN bevorzugt werden.
+
+98. Actor-Systeme MÜSSEN auf Structured Concurrency abbildbar sein können.
+
+99. Event Loops MÜSSEN mit Scope Ownership kombinierbar sein.
+
+100. Async/Await-Modelle MÜSSEN standardmäßig strukturierte Task Lifetimes unterstützen.
+
+101. Futures beziehungsweise Promises MÜSSEN einem Scope zugeordnet werden können.
+
+102. Das Verwerfen eines Task Handles DARF NICHT automatisch Ownership Transfer bedeuten.
+
+103. Task Results MÜSSEN strukturiert behandelbar sein.
+
+104. Dynamic Task Groups MÜSSEN Scope Closure respektieren.
+
+105. Nach Beginn der Scope-Abschlussphase DÜRFEN nicht unkontrolliert neue Child Tasks entstehen.
+
+106. Task Creation und Scope Closure MÜSSEN race-sicher koordiniert werden.
+
+107. Structured Concurrency MUSS Hot Replacement unterstützen.
+
+108. Komponenten MÜSSEN für Hot Replacement quieszierbar sein können.
+
+109. Quiescence MUSS die Erzeugung neuer relevanter Child Work stoppen können.
+
+110. Aktive Child Work MUSS vor State Transfer abgeschlossen, gecancelt oder explizit migriert werden.
+
+111. Structured Concurrency MUSS systemweiten Shutdown unterstützen.
+
+112. Shutdown MUSS hierarchisch über Scope-Grenzen propagierbar sein.
+
+113. Shutdown Deadlines MÜSSEN unterstützt werden können.
+
+114. Forced Termination DARF nach fehlgeschlagener Cooperative Cancellation verwendet werden.
+
+115. Structured Concurrency MUSS mit Nova.Resilience integrierbar sein.
+
+116. Recovery Work MUSS selbst strukturierte Ownership besitzen.
+
+117. Retries MÜSSEN einem definierten Scope gehören.
+
+118. Unbegrenzte ownerlose Retry-Loops DÜRFEN NICHT verwendet werden.
+
+119. Retry Budgets SOLLEN unterstützt werden.
+
+120. Retry Backoff MUSS durch Scope Cancellation abbrechbar sein.
+
+121. Failure Escalation MUSS entlang definierter Failure Domains möglich sein.
+
+122. Recovery SOLL den kleinsten sicheren Scope verwenden.
+
+123. Execution Scopes MÜSSEN über Architecture Introspection sichtbar sein können.
+
+124. Parent-/Child-Beziehungen SOLLEN introspektierbar sein.
+
+125. Scope State MUSS introspektierbar sein.
+
+126. Deadline und Cancellation State SOLLEN introspektierbar sein.
+
+127. Resource Budget und Resource Usage SOLLEN introspektierbar sein.
+
+128. Task Waiting Reasons SOLLEN introspektierbar sein.
+
+129. Cancellation Propagation SOLL tracebar sein.
+
+130. Failure Propagation SOLL tracebar sein.
+
+131. Scheduler- und Migration Decisions SOLLEN über Decision Tracing erklärbar sein.
+
+132. Scope-basierte Performance Metrics SOLLEN unterstützt werden.
+
+133. Scope-basierte Profiling-Daten SOLLEN aggregierbar sein.
+
+134. Critical Paths SOLLEN über Scope-Strukturen bestimmbar sein.
+
+135. Lifecycle Leaks SOLLEN diagnostizierbar sein.
+
+136. Ownerlose Tasks SOLLEN als Fehler beziehungsweise expliziter Sonderzustand erkannt werden.
+
+137. Kernel-interne asynchrone Arbeit SOLL soweit sinnvoll strukturierte Ownership besitzen.
+
+138. Aus Interrupt Context ausgelagerte Arbeit MUSS einen definierten Owner besitzen.
+
+139. Deferred Work DARF NICHT dauerhaft ownerlos sein.
+
+140. Driver Work SOLL Device beziehungsweise Driver Scopes verwenden.
+
+141. Device Removal MUSS Pending Work strukturiert abbrechen beziehungsweise abschließen können.
+
+142. Device Capabilities SOLLEN beim Device Scope Shutdown widerrufen werden.
+
+143. Asynchrone I/O Requests MÜSSEN einem Scope beziehungsweise expliziten Owner zugeordnet sein.
+
+144. I/O Cancellation MUSS soweit hardwareseitig möglich unterstützt werden.
+
+145. Nicht sofort cancellable I/O MUSS einen definierten Cancellation-Pending-Zustand besitzen können.
+
+146. GPU Work MUSS einem logischen Execution Owner zugeordnet werden können.
+
+147. NPU Work MUSS einem logischen Execution Owner zugeordnet werden können.
+
+148. Nicht physisch cancellable Accelerator Work MUSS logisch kontrolliert abgeschlossen werden können.
+
+149. Network Requests MÜSSEN Scope Ownership besitzen.
+
+150. KI-Agenten MÜSSEN definierte Agent Scopes besitzen.
+
+151. Agent Tool Invocations MÜSSEN strukturierte Child Operations sein.
+
+152. Agent Cancellation MUSS Tool Invocations propagieren können.
+
+153. Temporäre Agent Capabilities SOLLEN scopegebunden sein.
+
+154. Agent Resource Budgets SOLLEN unterstützt werden.
+
+155. Subagents MÜSSEN standardmäßig Child Scopes ihres Parent Agent sein.
+
+156. Langlaufende autonome Agents MÜSSEN explizite persistente Ownership erhalten.
+
+157. Structured Concurrency MUSS in das Declarative System Model integrierbar sein.
+
+158. Desired State MUSS langlebige Service Scopes beschreiben können.
+
+159. Actual State MUSS Scope Runtime State darstellen können.
+
+160. Reconciliation MUSS unerwartet beendete langlebige Scopes behandeln können.
+
+161. Eine neue Scope-Instanz nach Restart MUSS von der vorherigen Runtime-Instanz unterscheidbar sein.
+
+162. Structured Concurrency und Transaktionen MÜSSEN als unterschiedliche, komplementäre Modelle behandelt werden.
+
+163. Buffer Lifetimes SOLLEN an Scope Lifetimes bindbar sein.
+
+164. Task Results SOLLEN Semantic Types verwenden können.
+
+165. Pipeline Graph und Execution Scope Tree MÜSSEN miteinander verknüpfbar, aber nicht identisch sein.
+
+166. Remote Location DARF logische Scope Ownership NICHT aufheben.
+
+167. Location Transparency DARF Remote Failure und Cancellation Uncertainty NICHT verstecken.
+
+168. Mechanism und Policy für Structured Concurrency SOLLEN getrennt bleiben.
+
+169. Failure, Retry und Supervision Policies SOLLEN austauschbar sein.
+
+170. Structured Concurrency DARF NICHT von einem einzelnen zentralen Runtime-Prozess abhängig sein.
+
+171. Häufige Task- und Scope-Operationen MÜSSEN effiziente Fast Paths unterstützen.
+
+172. Task Creation SOLL ausreichend leichtgewichtig für feingranulare Parallelität sein.
+
+173. NovaOS SOLL Lightweight Tasks unterstützen können.
+
+174. Structured Tasks DÜRFEN auf unterschiedliche Threading-Modelle abgebildet werden.
+
+175. Fibers und Coroutines DÜRFEN als Mechanismen verwendet werden.
+
+176. Die Architektur DARF NICHT ausschließlich stackful oder stackless Execution vorschreiben.
+
+177. Blocking APIs MÜSSEN weiterhin möglich sein.
+
+178. Sync/Async Interoperability MUSS definiert werden.
+
+179. Blocking Worker MÜSSEN weiterhin Scope Ownership besitzen.
+
+180. Scope Local Context MUSS unterstützt werden können.
+
+181. Security-, Tracing-, Cancellation- und Deadline-Context SOLLEN an Children propagiert werden können.
+
+182. Kritischer Execution Context DARF NICHT ausschließlich von Thread Local Storage abhängen.
+
+183. Task Migration MUSS Scope Context erhalten.
+
+184. Tests SOLLEN nach Scope-Ende auf verbleibende Child Work prüfen können.
+
+185. Virtual Time SOLL für deterministische Concurrency-Tests unterstützt werden können.
+
+186. Failure Injection SOLL auf Scope-Ebene möglich sein.
+
+187. Structured Concurrency MUSS skalierbar implementierbar sein.
+
+188. Die logische Scope-Struktur DARF NICHT unnötig den Fast Data Path belasten.
+
+189. Scope-Metadaten SOLLEN hierarchisch vererbbar sein, um Redundanz zu reduzieren.
+
+190. Scope- und Task-Operationen MÜSSEN Security Boundaries respektieren.
+
+191. Ein Scope DARF nur Children in Execution Domains erzeugen, für die er autorisiert ist.
+
+192. Ownership Transfer MUSS capability-authorisiert sein können.
+
+193. Scope Introspection MUSS Berechtigungen respektieren.
+
+194. Sensitive Scope Contexts DÜRFEN nicht unautorisiert offengelegt werden.
+
+195. Cancellation MUSS idempotent behandelbar sein.
+
+196. Mehrfache Cancellation Requests DÜRFEN keine inkonsistenten Zustände erzeugen.
+
+197. Scope Completion MUSS genau einen terminalen Zustand erreichen.
+
+198. Ein terminaler Scope DARF keine neuen normalen Child Tasks akzeptieren.
+
+199. Scope Cleanup MUSS auch nach Fehlerpfaden ausgeführt werden.
+
+200. Resource Accounting MUSS auch fehlgeschlagene und gecancelte Tasks korrekt abschließen.
+
+201. Systemweite Structured Concurrency MUSS langfristig sprach-, runtime- und providerunabhängig bleiben.
+
+202. NovaLang SOLL native Sprachkonstrukte für Structured Concurrency bereitstellen.
+
+203. Andere Programmiersprachen MÜSSEN über NovaOS APIs in dasselbe Execution-Modell integrierbar sein.
+
+204. POSIX-, Linux- oder Win32-Kompatibilität DARF das native Structured-Concurrency-Modell NICHT definieren.
+
+205. Legacy detached Threads MÜSSEN durch Compatibility Layer einem expliziten Compatibility Scope zugeordnet werden.
+
+206. Das native NovaOS-Ausführungsmodell MUSS verhindern, dass fehlende Ownership als normaler Dauerzustand behandelt wird.
+
+## Konsequenzen
+
+### Positive Konsequenzen
+
+- klar definierte Task-Lebenszyklen
+- deutlich weniger Orphan Tasks
+- deutlich weniger Zombie Work
+- kontrollierte Cancellation
+- strukturierte Fehlerpropagation
+- hierarchisches Resource Accounting
+- bessere Resource Economy
+- bessere Deadline Propagation
+- bessere Realtime-Integration
+- bessere Security Context Propagation
+- bessere Capability-Lifetime-Kontrolle
+- bessere Data-Sovereignty-Kontrolle
+- vereinfachter Shutdown
+- bessere Hot-Replacement-Fähigkeit
+- klarere Failure Domains
+- bessere Self-Healing-Integration
+- bessere Debugbarkeit
+- bessere Observability
+- bessere Testbarkeit
+- deterministischere Concurrency möglich
+- bessere Integration verteilter Ausführung
+- bessere Kontrolle von KI-Agenten
+- einheitliches Modell für Anwendungen, Services, Kernel, Driver, Pipelines und Remote Work.
+
+### Negative Konsequenzen
+
+- komplexeres Runtime-Modell als vollständig freie Thread-Erzeugung
+- bestehende Legacy-APIs müssen adaptiert werden
+- Ownership Transfer benötigt explizite Mechanismen
+- Remote Cancellation kann niemals vollständig dieselbe Garantie wie lokale Cancellation bieten
+- Supervisor- und Recovery-Policies erhöhen Komplexität
+- Scope Metadata verursacht zusätzlichen Verwaltungsaufwand
+- hierarchisches Resource Accounting benötigt Scheduler-/Runtime-Integration
+- manche klassische Fire-and-Forget-Patterns müssen umgebaut werden
+- falsche Scope-Granularität kann unnötigen Overhead erzeugen
+- Hot Replacement benötigt saubere Quiescence-Regeln.
+
+## Verworfene Alternativen
+
+### Freie Thread-Erzeugung als primäres Modell
+
+Nicht übernommen.
+
+Threads bleiben als Mechanismus erhalten.
+
+Sie definieren jedoch nicht das logische Ownership-Modell.
+
+### Fire-and-Forget als Standard
+
+Nicht übernommen.
+
+Unkontrollierte Hintergrundarbeit erzeugt:
+
+- Lifecycle-Leaks,
+- Resource-Leaks,
+- schwer kontrollierbare Cancellation,
+- unklare Failure Ownership.
+
+### Nur sprachspezifische Structured Concurrency
+
+Nicht übernommen.
+
+Structured Concurrency soll nicht ausschließlich ein NovaLang-Feature sein.
+
+Das Betriebssystem selbst muss das Modell verstehen können.
+
+### Nur Prozesshierarchie
+
+Nicht übernommen.
+
+Ein Prozess kann viele logisch unabhängige Operationen besitzen.
+
+Die Process Tree-Struktur ist zu grob.
+
+### Nur Threadhierarchie
+
+Nicht übernommen.
+
+Tasks können:
+
+- Threads wechseln,
+- Event Loops verwenden,
+- GPU/NPU Work ausführen,
+- remote laufen.
+
+### Globaler Task Manager
+
+Nicht übernommen.
+
+Ein einzelner globaler Task Manager wäre:
+
+- Bottleneck,
+- Single Point of Failure,
+- unnötige Zentralisierung.
+
+### Cancellation ausschließlich über Thread Termination
+
+Nicht übernommen.
+
+Thread Termination ist zu grob und kann Invarianten beschädigen.
+
+### Cancellation ausschließlich kooperativ ohne Eskalation
+
+Nicht übernommen.
+
+Fehlerhafte beziehungsweise kompromittierte Tasks können Kooperation verweigern.
+
+Containment und Forced Termination müssen möglich bleiben.
+
+### Automatische Detachment bei Scope-Ende
+
+Nicht übernommen.
+
+Dies würde die fundamentale Ownership-Garantie zerstören.
+
+### Unbegrenzte Retry-Loops
+
+Nicht übernommen.
+
+Retries benötigen:
+
+- Owner,
+- Budget,
+- Deadline,
+- Cancellation.
+
+### Structured Concurrency ausschließlich im User Space
+
+Nicht übernommen.
+
+Kernel, Driver, I/O, Services und Systemoperationen profitieren ebenfalls von strukturierter Ownership.
+
+### Structured Concurrency ausschließlich im Kernel
+
+Nicht übernommen.
+
+Die semantische Struktur muss bis zu Anwendungen, Capabilities und Pipelines reichen.
+
+## Abhängigkeiten
+
+Diese ADR steht insbesondere in Beziehung zu:
+
+- `ADR-ARCH-0001_Modularer_monolithischer_Kernel_mit_starken_Isolationsgrenzen`
+- `ADR-ARCH-0002_Mechanism_Policy_Separation`
+- `ADR-ARCH-0003_Deklaratives_Systemmodell_als_Architekturgrundlage`
+- `ADR-ARCH-0004_Transaktionale_Systemoperationen`
+- `ADR-ARCH-0005_Systemweite_Ressourcenökonomie`
+- `ADR-ARCH-0006_Zero_Copy_als_Architekturprinzip`
+- `ADR-ARCH-0007_Location_Transparency_mit_sichtbaren_Kosten_und_Fehlern`
+- `ADR-ARCH-0008_Semantic_Types_als_systemweites_Typsystem`
+- `ADR-ARCH-0009_Einheitliches_Daten_und_Objekt_Pipelining`
+- `ADR-ARCH-0011_Deterministic_Mode`
+- `ADR-ARCH-0012_Hot_Replacement_und_Live_Evolution`
+- `ADR-ARCH-0013_Architecture_Introspection`
+- `ADR-EXECUTION-0001_Nova_ExecutionContract`
+- `ADR-CAPABILITY-0001_Capabilities_als_primäre_Systemfähigkeiten`
+- `ADR-RESILIENCE-0001_Nova_Resilience_als_systemweite_Self_Healing_Architektur`
+- `ADR-SECURITY-0001_Capability_Based_Security_als_zentrales_Autorisierungsmodell`
+- `ADR-TRUST-0001_Nova_Trust_als_systemweite_Vertrauensarchitektur`
+
+## Zugehörige NPSPECs
+
+- `NPSPEC-ARCH-STRUCTUREDCONCURRENCY-0001`
+- `NPSPEC-CONCURRENCY-ARCH-0001`
+- `NPSPEC-CONCURRENCY-SCOPE-0001`
+- `NPSPEC-CONCURRENCY-SCOPE-LIFECYCLE-0001`
+- `NPSPEC-CONCURRENCY-SCOPE-OWNERSHIP-0001`
+- `NPSPEC-CONCURRENCY-SCOPE-CONTEXT-0001`
+- `NPSPEC-CONCURRENCY-TASK-0001`
+- `NPSPEC-CONCURRENCY-TASKGROUP-0001`
+- `NPSPEC-CONCURRENCY-CHILD-0001`
+- `NPSPEC-CONCURRENCY-JOIN-0001`
+- `NPSPEC-CONCURRENCY-FAILURE-0001`
+- `NPSPEC-CONCURRENCY-SUPERVISION-0001`
+- `NPSPEC-CONCURRENCY-CANCELLATION-0001`
+- `NPSPEC-CONCURRENCY-CANCELLATION-PROPAGATION-0001`
+- `NPSPEC-CONCURRENCY-CANCELLATION-SAFETY-0001`
+- `NPSPEC-CONCURRENCY-DEADLINE-0001`
+- `NPSPEC-CONCURRENCY-TIMEOUT-0001`
+- `NPSPEC-CONCURRENCY-RESOURCE-0001`
+- `NPSPEC-CONCURRENCY-RESOURCE-ACCOUNTING-0001`
+- `NPSPEC-CONCURRENCY-RESOURCE-RESERVATION-0001`
+- `NPSPEC-CONCURRENCY-CAPABILITY-0001`
+- `NPSPEC-CONCURRENCY-SECURITY-0001`
+- `NPSPEC-CONCURRENCY-TRUST-0001`
+- `NPSPEC-CONCURRENCY-SOVEREIGNTY-0001`
+- `NPSPEC-CONCURRENCY-REMOTE-0001`
+- `NPSPEC-CONCURRENCY-LEASE-0001`
+- `NPSPEC-CONCURRENCY-DETACHED-0001`
+- `NPSPEC-CONCURRENCY-BACKGROUND-0001`
+- `NPSPEC-CONCURRENCY-SERVICE-0001`
+- `NPSPEC-CONCURRENCY-SESSION-0001`
+- `NPSPEC-CONCURRENCY-APPLICATION-0001`
+- `NPSPEC-CONCURRENCY-REQUEST-0001`
+- `NPSPEC-CONCURRENCY-TRANSACTION-0001`
+- `NPSPEC-CONCURRENCY-PIPELINE-0001`
+- `NPSPEC-CONCURRENCY-CAPABILITY-INVOKE-0001`
+- `NPSPEC-CONCURRENCY-SPECULATIVE-0001`
+- `NPSPEC-CONCURRENCY-SCHEDULING-0001`
+- `NPSPEC-CONCURRENCY-HIERARCHICAL-SCHEDULING-0001`
+- `NPSPEC-CONCURRENCY-REALTIME-0001`
+- `NPSPEC-CONCURRENCY-DETERMINISM-0001`
+- `NPSPEC-CONCURRENCY-CHANNEL-0001`
+- `NPSPEC-CONCURRENCY-ASYNC-0001`
+- `NPSPEC-CONCURRENCY-FUTURE-0001`
+- `NPSPEC-CONCURRENCY-HOTREPLACE-0001`
+- `NPSPEC-CONCURRENCY-QUIESCENCE-0001`
+- `NPSPEC-CONCURRENCY-SHUTDOWN-0001`
+- `NPSPEC-CONCURRENCY-RECOVERY-0001`
+- `NPSPEC-CONCURRENCY-RETRY-0001`
+- `NPSPEC-CONCURRENCY-INTROSPECTION-0001`
+- `NPSPEC-CONCURRENCY-OBSERVABILITY-0001`
+- `NPSPEC-CONCURRENCY-DECISIONTRACE-0001`
+- `NPSPEC-CONCURRENCY-PROFILING-0001`
+- `NPSPEC-CONCURRENCY-KERNEL-0001`
+- `NPSPEC-CONCURRENCY-DRIVER-0001`
+- `NPSPEC-CONCURRENCY-IO-0001`
+- `NPSPEC-CONCURRENCY-GPU-0001`
+- `NPSPEC-CONCURRENCY-NPU-0001`
+- `NPSPEC-CONCURRENCY-NETWORK-0001`
+- `NPSPEC-CONCURRENCY-AGENT-0001`
+- `NPSPEC-CONCURRENCY-TESTING-0001`
+- `NPSPEC-EXECUTION-CONTRACT-0001`
+- `NPSPEC-RESOURCE-ECONOMY-0001`
+- `NPSPEC-DETERMINISTIC-MODE-0001`
+
+## Verifikation und Tests
+
+Die Umsetzung dieser ADR MUSS durch funktionale, Concurrency-, Failure-, Resource-, Security- und Stress-Tests überprüft werden.
+
+### Scope-Lifecycle-Tests
+
+Zu prüfen sind:
+
+```text
+Created
+Preparing
+Running
+Cancelling
+Completing
+Completed
+Failed
+Cancelled
+```
+
+Ungültige State Transitions müssen verhindert werden.
+
+### Parent-/Child-Tests
+
+Zu prüfen:
+
+```text
+Parent
+├── Child A
+├── Child B
+└── Child C
+```
+
+Der Parent darf nicht erfolgreich enden, solange relevante Children noch aktiv sind.
+
+### Nested-Scope-Tests
+
+Zu prüfen:
+
+```text
+Scope A
+└── Scope B
+    └── Scope C
+        └── Task
+```
+
+Lifecycle-, Failure- und Cancellation-Propagation müssen korrekt funktionieren.
+
+### Join-Tests
+
+Zu prüfen sind mindestens:
+
+```text
+All
+Any
+FirstSuccess
+Quorum
+```
+
+Verbleibende Tasks dürfen nicht orphaned werden.
+
+### FailFast-Tests
+
+```text
+Task A = Running
+Task B = Failure
+Task C = Running
+```
+
+Erwartung bei FailFast:
+
+```text
+Task A → Cancel
+Task C → Cancel
+Parent → Failed
+```
+
+### Error-Collection-Tests
+
+Mehrere Child-Fehler müssen als strukturierte Aggregate Failure zurückgegeben werden können.
+
+### Supervisor-Tests
+
+Zu prüfen:
+
+```text
+Child Crash
+    ↓
+Restart Child
+```
+
+sowie:
+
+```text
+Repeated Crash
+    ↓
+Escalate
+```
+
+### Cancellation-Tests
+
+Zu prüfen sind:
+
+```text
+User Cancellation
+Parent Cancellation
+Deadline Cancellation
+Shutdown Cancellation
+Resource Revocation
+```
+
+### Cancellation-Propagation-Tests
+
+Bei:
+
+```text
+Parent
+└── Child
+    └── Grandchild
+```
+
+muss Parent Cancellation bis zum Grandchild propagieren.
+
+### Multiple-Cancellation-Tests
+
+Mehrfache Cancellation Requests dürfen keinen inkonsistenten Zustand erzeugen.
+
+### Cancellation-Safety-Tests
+
+Cancellation während:
+
+- normaler Verarbeitung,
+- Resource Allocation,
+- I/O,
+- Transaction Prepare,
+- Commit Region
+
+muss korrekt behandelt werden.
+
+### Non-Cancellable-Region-Tests
+
+Nicht abbrechbare Regionen müssen ihre maximal erlaubte Dauer einhalten.
+
+### Deadline-Tests
+
+Zu prüfen sind:
+
+```text
+Deadline met
+Deadline exceeded
+Child deadline refinement
+Fallback before deadline
+```
+
+### Timeout-Tests
+
+Timeout und Deadline müssen semantisch korrekt unterschieden werden.
+
+### Resource-Budget-Tests
+
+Ein Scope mit:
+
+```text
+memory <= 256 MiB
+```
+
+darf nicht durch Child-Erzeugung effektiv unbegrenzt Speicher konsumieren.
+
+### Hierarchical-Accounting-Tests
+
+Resource Usage von Children muss korrekt zum Parent aggregiert werden.
+
+### Cleanup-Tests
+
+Nach:
+
+```text
+Completed
+Failed
+Cancelled
+```
+
+müssen scopegebundene:
+
+- Handles,
+- Buffers,
+- Reservations,
+- Temporary Capabilities
+
+korrekt freigegeben werden.
+
+### Capability-Lifetime-Tests
+
+Eine an einen Scope gebundene Capability darf nach Scope-Ende nicht weiter verwendbar sein.
+
+### Privilege-Tests
+
+Ein Child darf durch Spawn keine höheren Privilegien als autorisiert erhalten.
+
+### Security-Context-Tests
+
+Security Context muss bei Task Migration erhalten bleiben.
+
+### Sovereignty-Tests
+
+Ein Child darf Parent-Sovereignty-Constraints nicht abschwächen.
+
+### Detached-Task-Tests
+
+Folgendes muss verhindert beziehungsweise explizit markiert werden:
+
+```text
+Scope ends
+Task continues
+No owner
+```
+
+### Ownership-Transfer-Tests
+
+Explizite Übertragung:
+
+```text
+ApplicationScope
+      ↓
+BackgroundServiceScope
+```
+
+muss Task-Lifetime korrekt übertragen.
+
+### Session-Shutdown-Tests
+
+Beim Session-Ende müssen sessiongebundene Application Scopes strukturiert beendet werden.
+
+### Application-Shutdown-Tests
+
+Beim Application-Ende dürfen keine anwendungsgebundenen orphaned Tasks verbleiben.
+
+### Window-Scope-Tests
+
+Beim Schließen eines Fensters müssen windowgebundene Tasks gecancelt werden können.
+
+### Request-Scope-Tests
+
+Client Disconnect muss Request Cancellation auslösen können.
+
+### Transaction-Integration-Tests
+
+Cancellation während:
+
+```text
+Prepare
+Stage
+Verify
+Commit
+```
+
+muss die Regeln von ADR-ARCH-0004 respektieren.
+
+### Pipeline-Integration-Tests
+
+Pipeline Cancellation muss alle relevanten Pipeline Tasks kontrolliert beenden.
+
+### Speculative-Execution-Tests
+
+Nach `FirstSuccess` müssen nicht mehr benötigte spekulative Tasks beendet werden.
+
+### Scheduler-Tests
+
+Work Stealing und Migration dürfen Scope Ownership nicht verändern.
+
+### Fairness-Tests
+
+Eine Anwendung darf durch Erzeugung vieler Child Tasks nicht unzulässig mehr CPU erhalten.
+
+### Realtime-Tests
+
+Hard-Realtime-Scopes müssen ihre reservierten Scheduling Guarantees erhalten.
+
+### Determinism-Tests
+
+Bei:
+
+```text
+Determinism = Required
+```
+
+müssen definierte Scheduling- und Join-Eigenschaften reproduzierbar sein.
+
+### Hot-Replacement-Tests
+
+Zu prüfen:
+
+```text
+Running Component
+      ↓
+Quiesce
+      ↓
+Children = 0
+      ↓
+State Transfer
+      ↓
+Replacement
+```
+
+### Shutdown-Tests
+
+System Shutdown muss Scope Trees kontrolliert von außen nach innen beziehungsweise gemäß definierter Dependency Order beenden.
+
+### Shutdown-Deadline-Tests
+
+Nicht reagierende Scopes müssen nach Ablauf definierter Deadlines eskaliert werden können.
+
+### Recovery-Tests
+
+Ein Child Failure soll den kleinsten sicheren Recovery Scope verwenden.
+
+### Retry-Tests
+
+Retries müssen bei Parent Cancellation sofort beendet werden können.
+
+### Retry-Budget-Tests
+
+Unbegrenzte Retry-Loops müssen verhindert werden.
+
+### Remote-Execution-Tests
+
+Zu simulieren sind:
+
+```text
+Remote Success
+Remote Failure
+Network Partition
+Cancellation Lost
+Cancellation Acknowledged
+Remote Node Crash
+Lease Expiration
+```
+
+### Device-Removal-Tests
+
+Pending Driver- und I/O-Tasks müssen bei Device Removal kontrolliert beendet werden.
+
+### GPU-/NPU-Tests
+
+Accelerator Work muss einem Scope zugeordnet bleiben, auch wenn physische Cancellation nicht möglich ist.
+
+### Agent-Tests
+
+Beim Stoppen eines Agent Scope müssen:
+
+- Subagents,
+- Tool Invocations,
+- temporäre Capabilities,
+- Resource Reservations
+
+kontrolliert beendet beziehungsweise freigegeben werden.
+
+### Introspection-Tests
+
+Ein Scope Tree muss abhängig von Berechtigungen korrekt sichtbar sein.
+
+### Waiting-Reason-Tests
+
+Wartende Tasks müssen korrekte Gründe anzeigen können.
+
+### Cancellation-Trace-Tests
+
+Die komplette Cancellation Chain muss nachvollziehbar sein.
+
+### Failure-Trace-Tests
+
+Failure Origin und Escalation Path müssen nachvollziehbar sein.
+
+### Resource-Trace-Tests
+
+Resource Usage muss dem korrekten Scope zugeordnet werden.
+
+### Leak-Tests
+
+Nach Abschluss eines Test Scope muss gelten:
+
+```text
+ActiveChildren = 0
+OwnedTemporaryResources = 0
+```
+
+sofern keine explizite Ownership-Übertragung stattgefunden hat.
+
+### Race-Tests
+
+Zu testen sind insbesondere:
+
+- Child Spawn während Scope Close,
+- Cancellation während Child Spawn,
+- Child Completion während Parent Cancellation,
+- Ownership Transfer während Shutdown.
+
+### Virtual-Time-Tests
+
+Timeouts, Deadlines, Retry und Backoff sollen mit Virtual Time deterministisch testbar sein.
+
+### Stress-Tests
+
+Zu testen sind:
+
+- Millionen Lightweight Tasks,
+- tiefe Scope Trees,
+- breite Task Groups,
+- häufige Cancellation,
+- hohe Failure Rate,
+- häufige Task Migration,
+- viele parallele Applications,
+- viele Remote Child Tasks.
+
+### Fault-Injection
+
+Fault-Injection SOLL mindestens simulieren:
+
+```text
+Task Crash
+Provider Crash
+Scheduler Delay
+Memory Exhaustion
+Capability Revocation
+Device Loss
+Network Partition
+Cancellation Failure
+Cleanup Failure
+```
+
+Fundamentale Systeminvarianten dürfen dadurch nicht verloren gehen.
+
+## Ergebnis
+
+NovaOS behandelt parallele Ausführung nicht als lose Sammlung voneinander unabhängiger Threads und Hintergrundjobs.
+
+Stattdessen entsteht eine systemweite hierarchische Execution-Struktur:
+
+```text
+System Scope
+│
+├── Service Scope
+│   ├── Worker
+│   └── Recovery
+│
+├── Session Scope
+│   └── Application Scope
+│       ├── UI Scope
+│       └── Operation Scope
+│           ├── Task A
+│           ├── Task B
+│           └── Task C
+│
+└── Device Scope
+    ├── I/O Task
+    └── Driver Task
+```
+
+Jede relevante Ausführung besitzt damit:
+
+```text
+Owner
+Lifecycle
+Children
+Cancellation
+Failure Policy
+Deadline
+Resource Budget
+Security Context
+Execution Contract
+```
+
+Structured Concurrency verbindet damit:
+
+```text
+Execution
+    +
+Lifecycle
+    +
+Resource Economy
+    +
+Cancellation
+    +
+Failure Handling
+    +
+Security
+    +
+Determinism
+    +
+Observability
+```
+
+zu einem gemeinsamen systemweiten Modell.
+
+Das verbindliche Architekturprinzip lautet:
+
+```text
+Every concurrent operation has an owner.
+
+Every owner defines a lifetime.
+
+Every lifetime defines how work ends.
+```
+
+Detached Work bleibt möglich, erfordert jedoch eine explizite Ownership-Übertragung:
+
+```text
+Structured by default,
+detached only by explicit ownership transfer.
+```
+
+Damit bildet Structured Concurrency die grundlegende Ausführungsstruktur für:
+
+- Kernel,
+- Treiber,
+- Services,
+- Anwendungen,
+- Capabilities,
+- Pipelines,
+- Transaktionen,
+- Remote Work,
+- KI-Agenten,
+- Recovery
+
+innerhalb von NovaOS.
