@@ -34,6 +34,7 @@
 #include "../boot/bootloader/bootmenu/transform2d.h"
 #include "../boot/bootloader/bootmenu/rounded_geometry.h"
 #include "../boot/bootloader/bootmenu/vector_geometry.h"
+#include "../boot/bootloader/bootmenu/svg_renderer.h"
 #include "../boot/bootloader/bootmenu/effects.h"
 #include "../boot/bootloader/bootmenu/background_blur.h"
 #include "../boot/bootloader/bootmenu/image_renderer.h"
@@ -126,6 +127,14 @@ static bool scene_visit(nova_scene_node_t *node,void *context)
 int main(void)
 {
     int failed = 0;
+    static const char svg_ok[]="<svg viewBox='0 0 4 4'><path fill='#FFFFFFFF' d='M0 0 L4 0 L4 4 L0 4 Z'/></svg>";
+    static const char svg_bad[]="<svg><script/></svg>";uint32_t svg_pixels[16]={0};
+    nova_surface_t svg_surface={.pixels=svg_pixels,.width=4,.height=4,.stride=4};
+    failed|=check(nova_svg_initialize()&&nova_svg_validate(svg_ok,sizeof(svg_ok)-1)&&
+        !nova_svg_validate(svg_bad,sizeof(svg_bad)-1)&&
+        nova_svg_render(svg_ok,sizeof(svg_ok)-1,&svg_surface,(nova_rect_t){0,0,4,4},0)&&
+        svg_pixels[0]==0xffffffffu&&nova_svg_diagnostics()->renders==1,
+        "SVG-Untermenge validiert und rasterisiert Pfade deterministisch");
     uint8_t bap[192];nova_bap_info_t bap_info;uint16_t bap_entries=0;make_bap(bap);
     failed|=check(nova_bap_validate(bap,sizeof(bap),&bap_info)&&bap_info.resource_count==1&&
         nova_bap_index_validate(bap+64,112,&bap_entries)&&bap_entries==1,

@@ -117,6 +117,7 @@ boot-ui-runtime-check: $(FONT_C_HEADER) $(ICON_C_HEADER) $(ART_C_HEADER) | $(BUI
 		boot/bootloader/bootmenu/transform2d.c \
 		boot/bootloader/bootmenu/rounded_geometry.c \
 		boot/bootloader/bootmenu/vector_geometry.c \
+		boot/bootloader/bootmenu/svg_renderer.c \
 		boot/bootloader/bootmenu/effects.c \
 		boot/bootloader/bootmenu/background_blur.c \
 		boot/bootloader/bootmenu/image_renderer.c \
@@ -194,6 +195,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/transform2d.c boot/bootloader/bootmenu/transform2d.h \
 		boot/bootloader/bootmenu/rounded_geometry.c boot/bootloader/bootmenu/rounded_geometry.h \
 		boot/bootloader/bootmenu/vector_geometry.c boot/bootloader/bootmenu/vector_geometry.h \
+		boot/bootloader/bootmenu/svg_renderer.c boot/bootloader/bootmenu/svg_renderer.h \
 		boot/bootloader/bootmenu/effects.c boot/bootloader/bootmenu/effects.h \
 		boot/bootloader/bootmenu/background_blur.c boot/bootloader/bootmenu/background_blur.h \
 		boot/bootloader/bootmenu/image_renderer.c boot/bootloader/bootmenu/image_renderer.h \
@@ -248,6 +250,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		boot/bootloader/bootmenu/transform2d.c \
 		boot/bootloader/bootmenu/rounded_geometry.c \
 		boot/bootloader/bootmenu/vector_geometry.c \
+		boot/bootloader/bootmenu/svg_renderer.c \
 		boot/bootloader/bootmenu/effects.c \
 		boot/bootloader/bootmenu/background_blur.c \
 		boot/bootloader/bootmenu/image_renderer.c \
