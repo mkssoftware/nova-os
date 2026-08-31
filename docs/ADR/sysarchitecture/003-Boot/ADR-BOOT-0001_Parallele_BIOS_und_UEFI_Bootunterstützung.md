@@ -352,7 +352,7 @@ wenn beide dieselbe Architektur verwenden.
 
 ## ELF Kernel
 
-Für den nativen NovaOS-Kernel wird ein strukturiertes ausführbares Kernelformat verwendet, bevorzugt ELF für die jeweils unterstützte Architektur.
+Für den nativen NovaOS-Kernel wird bevorzugt das Nova Kernel Image (NKI) verwendet; ELF bleibt für die jeweils unterstützte Architektur direkt ladbar.
 
 Der Bootloader muss mindestens:
 

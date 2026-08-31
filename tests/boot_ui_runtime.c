@@ -129,12 +129,18 @@ int main(void)
     int failed = 0;
     static const char svg_ok[]="<svg viewBox='0 0 4 4'><path fill='#FFFFFFFF' d='M0 0 L4 0 L4 4 L0 4 Z'/></svg>";
     static const char svg_bad[]="<svg><script/></svg>";uint32_t svg_pixels[16]={0};
+    static const char svg_shapes[]="<svg viewBox='0 0 8 8'><rect x='0' y='0' width='4' height='4' fill='#FF000080'/><circle cx='6' cy='6' r='2' fill='var(--nova-accent)'/></svg>";
     nova_surface_t svg_surface={.pixels=svg_pixels,.width=4,.height=4,.stride=4};
     failed|=check(nova_svg_initialize()&&nova_svg_validate(svg_ok,sizeof(svg_ok)-1)&&
         !nova_svg_validate(svg_bad,sizeof(svg_bad)-1)&&
         nova_svg_render(svg_ok,sizeof(svg_ok)-1,&svg_surface,(nova_rect_t){0,0,4,4},0)&&
         svg_pixels[0]==0xffffffffu&&nova_svg_diagnostics()->renders==1,
         "SVG-Untermenge validiert und rasterisiert Pfade deterministisch");
+    for(uint8_t i=0;i<16;++i)svg_pixels[i]=0;
+    failed|=check(nova_svg_validate(svg_shapes,sizeof(svg_shapes)-1)&&
+        nova_svg_render(svg_shapes,sizeof(svg_shapes)-1,&svg_surface,(nova_rect_t){0,0,4,4},0)&&
+        svg_pixels[0]==0x80800000u&&svg_pixels[15]!=0,
+        "SVG viewBox skaliert Rechteck, Kreis, Alpha und Themefarbe");
     uint8_t bap[192];nova_bap_info_t bap_info;uint16_t bap_entries=0;make_bap(bap);
     failed|=check(nova_bap_validate(bap,sizeof(bap),&bap_info)&&bap_info.resource_count==1&&
         nova_bap_index_validate(bap+64,112,&bap_entries)&&bap_entries==1,

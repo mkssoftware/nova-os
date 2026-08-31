@@ -1,4 +1,4 @@
-# ADR-BOOT-0004 – ELF als native Kernel-Ladeform
+# ADR-BOOT-0004 – NKI bevorzugt, ELF als Kernel-Ladeform
 
 ## Status
 
@@ -56,7 +56,7 @@ NovaOS benötigt deshalb ein strukturiertes natives Kernel-Ladeformat.
 
 ## Entscheidung
 
-NovaOS verwendet **ELF – Executable and Linkable Format – als natives Kernel-Ladeformat**.
+NovaOS verwendet bevorzugt das **Nova Kernel Image (NKI)**. ELF – Executable and Linkable Format – bleibt als direkt ladbare Kernel-Ladeform und als NKI-Payload unterstützt.
 
 Der Bootloader lädt den Kernel anhand der ELF-Program-Header und nicht anhand fest codierter Dateioffsets oder eines einzigen pauschalen Ladebereichs.
 
@@ -110,7 +110,7 @@ as hidden bootloader knowledge.
 
 ## Native Ladeform
 
-ELF wird als native Ladeform für den NovaOS-Kernel verwendet.
+NKI wird als bevorzugtes Nova-Produktionsformat verwendet; ELF bleibt eine vollwertige direkt ladbare Kernel-Ladeform.
 
 Das bedeutet insbesondere:
 
@@ -1024,7 +1024,7 @@ Verified ELF
 Load
 ```
 
-Auch hier bleibt ELF das native Ladeformat nach Entschlüsselung.
+Auch hier bleibt NKI das bevorzugte Produktionsformat; ein enthaltenes ELF-Payload wird nach der Entschlüsselung gemäß ELF-Ladevertrag verarbeitet.
 
 ---
 
@@ -1546,7 +1546,7 @@ KI darf niemals entscheiden, ein strukturell ungültiges Kernelimage trotzdem au
 
 ## Normative Anforderungen
 
-1. NovaOS MUSS ELF als natives Kernel-Ladeformat verwenden.
+1. NovaOS MUSS NKI als bevorzugtes Produktionsformat verwenden und ELF direkt laden können.
 2. BIOS- und UEFI-Bootpfad MÜSSEN dasselbe native ELF-Kernelmodell verwenden können.
 3. Der Bootloader MUSS ELF vor dem Laden strukturell validieren.
 4. Die ELF-Magic MUSS geprüft werden.
@@ -1793,7 +1793,7 @@ Die Umsetzung muss mindestens folgende Szenarien prüfen:
 
 ## Ergebnis
 
-NovaOS verwendet ELF als strukturierte native Beschreibung seines Kernelimages.
+NovaOS verwendet NKI als bevorzugtes Produktionsformat; ELF bleibt die strukturierte direkt ladbare Beschreibung des Kernelimages beziehungsweise des NKI-Payloads.
 
 Der Bootpfad lautet:
 

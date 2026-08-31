@@ -58,7 +58,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check vector-geometry-runtime-check asset-pipeline-check uefi-firmware-runtime-check uefi-pointer-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image test-firmware-compatibility run test test-uefi test-uefi-input test-uefi-dialog test-uefi-confirmation test-uefi-warning test-uefi-password test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check boot-ui-runtime-check vector-geometry-runtime-check svg-runtime-check asset-pipeline-check uefi-firmware-runtime-check uefi-pointer-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image test-firmware-compatibility run test test-uefi test-uefi-input test-uefi-dialog test-uefi-confirmation test-uefi-warning test-uefi-password test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -72,6 +72,14 @@ vector-geometry-runtime-check: | $(BUILD_DIR)
 		-Iboot/bootloader/bootmenu tests/vector_geometry_runtime.c \
 		boot/bootloader/bootmenu/vector_geometry.c -o $(BUILD_DIR)/vector-geometry-runtime-test.exe
 	$(BUILD_DIR)/vector-geometry-runtime-test.exe
+
+svg-runtime-check: | $(BUILD_DIR)
+	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
+		"$(HOST_CC)" -O2 -std=c11 -Wall -Wextra -Werror \
+		-Iboot/bootloader/bootmenu tests/svg_runtime.c \
+		boot/bootloader/bootmenu/svg_renderer.c boot/bootloader/bootmenu/vector_geometry.c \
+		-o $(BUILD_DIR)/svg-runtime-test.exe
+	$(BUILD_DIR)/svg-runtime-test.exe
 
 asset-pipeline-check:
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-boot-asset-pipeline.ps1

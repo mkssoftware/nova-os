@@ -1,4 +1,4 @@
-# ADR-BOOT-0004: ELF als Kernel-Format
+# ADR-BOOT-0004: NKI bevorzugt, ELF als Kernel-Format
 
 * **Dokumenttyp:** Architecture Decision Record (ADR)
 * **Dokument-ID:** ADR-BOOT-1014
@@ -92,7 +92,7 @@ Das Format muss für die erste x86-Implementierung geeignet sein, darf die Archi
 
 ## 3. Entscheidung
 
-NovaOS verwendet **ELF – Executable and Linkable Format** als verbindliches Kernel-Dateiformat.
+NovaOS verwendet bevorzugt das **Nova Kernel Image (NKI)**. ELF – Executable and Linkable Format – bleibt als direkt ladbares Kernel-Format und als NKI-Payload verbindlich unterstützt.
 
 Für den initialen 32-Bit-Kernel wird verwendet:
 
@@ -106,7 +106,7 @@ Für spätere 64-Bit-Kernel wird verwendet:
 ELF64
 ```
 
-Die Kerneldatei muss als ausführbares ELF-Image erzeugt werden.
+Das bevorzugte Produktionsartefakt ist NKI; dessen Kernel-Payload darf ein ausführbares ELF-Image sein, und ELF muss auch direkt ladbar bleiben.
 
 Der Bootloader lädt den Kernel anhand seiner **Program Header Table**.
 
@@ -1767,7 +1767,7 @@ Die Erweiterungen müssen rückwärtskompatibel und durch separate Spezifikation
 
 ## 52. Zusammenfassung
 
-NovaOS verwendet ELF als standardisiertes Format für Kernel-Images.
+NovaOS verwendet NKI als bevorzugtes Produktionsformat und ELF als standardisierte direkt ladbare Kernel-Ladeform.
 
 ELF stellt alle für den Bootloader erforderlichen Informationen bereit:
 
