@@ -60,6 +60,7 @@ static uint64_t startup_time_us(void)
 #include "../bootmenu/software_renderer.h"
 #include "../bootmenu/resources.h"
 #include "firmware.h"
+#include "kernel_loader.h"
 
 EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *system_table);
 bool uefi_power_initialize(EFI_SYSTEM_TABLE *system_table);
@@ -74,6 +75,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
 void *uefi_relocation_anchor = (void *)&efi_main;
 static UINTN pending_power = (UINTN)-1;
 static EFI_SYSTEM_TABLE *runtime_system_table;
+static EFI_HANDLE runtime_image_handle;
 static nova_dialog_motion_t dialog_visual;
 
 static void animate_dialog_motion(bool entering,UINTN selection)
@@ -307,6 +309,9 @@ static void boot_selected(UINTN selection)
           nova_gop_shutdown();nova_debug_string("UEFI:GOP-SHUTDOWN\n");
           nova_graphics_shutdown();nova_debug_string("UEFI:GAL-SHUTDOWN\n");
           nova_debug_string("UEFI:START\n");
+          EFI_STATUS status=uefi_boot_kernel(runtime_image_handle,runtime_system_table);
+          (void)status;
+          nova_debug_string("UEFI:KERNEL-START-FAILED\n");
     }
     else if (selection == 1) nova_debug_string("UEFI:INSTALL-UNAVAILABLE\n");
     else if (selection == 2) nova_debug_string("UEFI:SETTINGS\n");
@@ -525,7 +530,7 @@ static void handle_context_action(UINTN selection)
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_table)
 {
-    (void)image_handle;
+    runtime_image_handle = image_handle;
     startup_clock_initialize();
     uint64_t entry_time_us=startup_time_us();
     runtime_system_table = system_table;

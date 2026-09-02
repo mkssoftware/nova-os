@@ -12,12 +12,15 @@ kernel_entry:
     cld
     mov esp, KERNEL_STACK_TOP
     xor ebp, ebp
+    mov dword [boot_phase_current], BOOT_PHASE_KERNEL_ENTRY
+    mov dword [boot_phase_last_success], BOOT_PHASE_NONE
 
     push eax
     push ebx
     call serial_initialize
     mov esi, message_entered
     call serial_write_string
+    call boot_phase_log
     pop ebx
     pop eax
 
@@ -38,6 +41,9 @@ kernel_entry:
     test ebx, 7
     jnz panic_invalid_handoff
 
+    mov dword [boot_phase_last_success], BOOT_PHASE_KERNEL_ENTRY
+    mov dword [boot_phase_current], BOOT_PHASE_HANDOFF
+    call boot_phase_log
     mov [kernel_context + CONTEXT_BIB], ebx
     call validate_bib
     jc panic_invalid_handoff
@@ -46,6 +52,9 @@ kernel_entry:
     jc panic_invalid_handoff
     call early_security_entropy_initialize
     jc panic_invalid_handoff
+    mov dword [boot_phase_last_success], BOOT_PHASE_HANDOFF
+    mov dword [boot_phase_current], BOOT_PHASE_EARLY_ARCH
+    call boot_phase_log
 
     mov esi, message_bib_ok
     call serial_write_string
@@ -55,6 +64,9 @@ kernel_entry:
     call serial_write_string
 .kernel_identity_done:
 
+    mov dword [boot_phase_last_success], BOOT_PHASE_EARLY_ARCH
+    mov dword [boot_phase_current], BOOT_PHASE_EARLY_MEMORY
+    call boot_phase_log
     call pmm_initialize
     jc panic_memory_manager
     call pmm_self_test
@@ -62,6 +74,15 @@ kernel_entry:
     mov esi, message_pmm_ok
     call serial_write_string
 
+    mov dword [boot_phase_last_success], BOOT_PHASE_EARLY_MEMORY
+    mov dword [boot_phase_current], BOOT_PHASE_VIRTUAL_MEMORY
+    call boot_phase_log
+    call paging_initialize
+    jc panic_paging
+
+    mov dword [boot_phase_last_success], BOOT_PHASE_VIRTUAL_MEMORY
+    mov dword [boot_phase_current], BOOT_PHASE_KERNEL_CORE
+    call boot_phase_log
     call heap_initialize
     jc panic_heap
     call heap_self_test
@@ -83,13 +104,14 @@ kernel_entry:
     mov esi, message_component_manager_ok
     call serial_write_string
 
-    call paging_initialize
-    jc panic_paging
     call paging_self_test
     jc panic_paging
     mov esi, message_paging_ok
     call serial_write_string
 
+    mov dword [boot_phase_last_success], BOOT_PHASE_KERNEL_CORE
+    mov dword [boot_phase_current], BOOT_PHASE_INTERRUPTS_TIME
+    call boot_phase_log
     call interrupt_initialize
     jc panic_interrupt_manager
     call timer_initialize
@@ -126,6 +148,9 @@ kernel_entry:
     mov esi, message_security_ok
     call serial_write_string
 
+    mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
+    mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
+    call boot_phase_log
     call scheduler_initialize
     jc panic_scheduler
     call thread_manager_initialize
@@ -138,6 +163,10 @@ kernel_entry:
     jc panic_scheduler
     mov esi, message_scheduler_ok
     call serial_write_string
+
+    mov dword [boot_phase_last_success], BOOT_PHASE_SCHEDULER_SMP
+    mov dword [boot_phase_current], BOOT_PHASE_OPERATIONAL
+    call boot_phase_log
 
     call kernel_main
 
@@ -1390,6 +1419,15 @@ interrupt_initialize:
     call idt_set_gate
     lidt [idt_descriptor]
 
+    ; UEFI/OVMF kann externe Interrupts über den APIC-Pfad hinterlassen.
+    ; Der aktuelle Bootstrap-Interruptmanager arbeitet noch mit dem 8259 PIC,
+    ; daher wird die IMCR vor dessen Programmierung deterministisch umgelegt.
+    mov al, 0x70
+    out 0x22, al
+    in al, 0x23
+    and al, 0xFE
+    out 0x23, al
+
     ; 8259 PIC: IRQs auf Vektoren 32..47 verschieben.
     mov al, 0x11
     out PIC1_COMMAND, al
@@ -2602,7 +2640,23 @@ kernel_shutdown:
 
 ; Strukturierter Panic-Reporter (ADR-2014)
 PANIC_API_SIZE    equ 32
-PANIC_REPORT_SIZE equ 32
+PANIC_REPORT_SIZE equ 48
+
+BOOT_PHASE_NONE            equ 0xFFFFFFFF
+BOOT_PHASE_KERNEL_ENTRY    equ 0
+BOOT_PHASE_HANDOFF         equ 1
+BOOT_PHASE_EARLY_ARCH      equ 2
+BOOT_PHASE_EARLY_MEMORY    equ 3
+BOOT_PHASE_VIRTUAL_MEMORY  equ 4
+BOOT_PHASE_KERNEL_CORE     equ 5
+BOOT_PHASE_INTERRUPTS_TIME equ 6
+BOOT_PHASE_SCHEDULER_SMP   equ 7
+BOOT_PHASE_OPERATIONAL     equ 11
+BOOT_SEQUENCE_API_SIZE     equ 32
+BOOT_LOG_API_SIZE          equ 32
+BOOT_EVENT_SIZE            equ 24
+BOOT_LOG_CAPACITY          equ 12
+BOOT_COMPONENT_KERNEL      equ 0x4B45524E
 
 panic_manager_initialize:
     mov edi, panic_report
@@ -2639,6 +2693,18 @@ kernel_panic:
     mov [panic_report + 24], ecx
     mov ecx, [timer_ticks]
     mov [panic_report + 28], ecx
+    mov ecx, [boot_phase_current]
+    mov [panic_report + 32], ecx
+    mov ecx, [boot_phase_last_success]
+    mov [panic_report + 36], ecx
+    push ebx
+    mov eax, 1
+    cpuid
+    shr ebx, 24
+    mov [panic_report + 40], ebx
+    pop ebx
+    mov ecx, [kernel_context + CONTEXT_SECURITY_STATE]
+    mov [panic_report + 44], ecx
     push esi
     call draw_kernel_panic_screen
     pop esi
@@ -2659,6 +2725,22 @@ kernel_panic:
     call serial_write_string
     mov eax, [panic_report + 24]
     call serial_write_hex32
+    mov esi, message_panic_phase
+    call serial_write_string
+    mov eax, [panic_report + 32]
+    call serial_write_hex32
+    mov esi, message_panic_last_phase
+    call serial_write_string
+    mov eax, [panic_report + 36]
+    call serial_write_hex32
+    mov esi, message_panic_cpu
+    call serial_write_string
+    mov eax, [panic_report + 40]
+    call serial_write_hex32
+    mov esi, message_panic_security
+    call serial_write_string
+    mov eax, [panic_report + 44]
+    call serial_write_hex32
     mov esi, message_newline
     call serial_write_string
     pop esi
@@ -2670,7 +2752,7 @@ kernel_panic:
 align 4
 panic_api:
     dd PANIC_API_SIZE
-    dw 1, 0
+    dw 1, 1
     dd PANIC_REPORT_SIZE
     dd kernel_panic
     dd panic_report
@@ -2679,6 +2761,73 @@ panic_api:
     dd 0
 panic_report:
     times PANIC_REPORT_SIZE db 0
+
+; Frühe, lesbare Bootsequenz-ABI. Sie hält die aktuelle und die letzte
+; erfolgreich abgeschlossene NPSPEC-KERNEL-0002-Phase ohne Heapabhängigkeit.
+align 4
+boot_sequence_api:
+    dd BOOT_SEQUENCE_API_SIZE
+    dw 1, 0
+    dd boot_phase_current
+    dd boot_phase_last_success
+    dd BOOT_PHASE_OPERATIONAL + 1
+    dd 0
+    dd 0
+    dd 0
+boot_phase_current:      dd BOOT_PHASE_NONE
+boot_phase_last_success: dd BOOT_PHASE_NONE
+
+; Heapfreies Frühstartprotokoll; bewahrt sämtliche Aufruferregister.
+boot_phase_log:
+    pushad
+    call boot_event_record_current
+    mov esi, message_boot_phase
+    call serial_write_string
+    mov eax, [boot_phase_current]
+    call serial_write_hex32
+    mov esi, message_boot_last_phase
+    call serial_write_string
+    mov eax, [boot_phase_last_success]
+    call serial_write_hex32
+    mov esi, message_newline
+    call serial_write_string
+    popad
+    ret
+
+; Schreibt genau ein NPSPEC-KERNEL-0002-Bootereignis in den statischen Ring.
+; Ein voller Ring verwirft weitere Ereignisse deterministisch.
+boot_event_record_current:
+    mov ecx, [boot_event_count]
+    cmp ecx, BOOT_LOG_CAPACITY
+    jae .done
+    imul edi, ecx, BOOT_EVENT_SIZE
+    add edi, boot_events
+    mov eax, [timer_ticks]
+    mov [edi + 0], eax
+    mov dword [edi + 4], 0
+    mov eax, [boot_phase_current]
+    mov [edi + 8], eax
+    mov dword [edi + 12], BOOT_COMPONENT_KERNEL
+    mov dword [edi + 16], 0
+    mov dword [edi + 20], 0
+    inc dword [boot_event_count]
+.done:
+    ret
+
+align 4
+boot_log_api:
+    dd BOOT_LOG_API_SIZE
+    dw 1, 0
+    dd BOOT_LOG_CAPACITY
+    dd BOOT_EVENT_SIZE
+    dd boot_event_count
+    dd boot_events
+    dd 0
+    dd 0
+boot_event_count: dd 0
+align 8
+boot_events:
+    times BOOT_LOG_CAPACITY * BOOT_EVENT_SIZE db 0
 
 kernel_halt:
     cli
@@ -3921,8 +4070,12 @@ font_bitmap:
 
 message_entered:
     db "NOVA: Kernel Entry", 13, 10, 0
+message_boot_phase:
+    db "NOVA: BOOT phase=0x", 0
+message_boot_last_phase:
+    db " last_phase=0x", 0
 message_panic_manager_ok:
-    db "NOVA: Panic Reporter ABI 1.0 bereit", 13, 10, 0
+    db "NOVA: Panic Reporter ABI 1.1 bereit", 13, 10, 0
 message_panic_begin:
     db "NOVA PANIC REPORT code=0x", 0
 message_panic_subsystem:
@@ -3931,6 +4084,14 @@ message_panic_eip:
     db " eip=0x", 0
 message_panic_cr2:
     db " cr2=0x", 0
+message_panic_phase:
+    db " phase=0x", 0
+message_panic_last_phase:
+    db " last_phase=0x", 0
+message_panic_cpu:
+    db " cpu=0x", 0
+message_panic_security:
+    db " security=0x", 0
 message_panic_end:
     db "NOVA_PANIC_HALTED", 13, 10, 0
 message_debug_panic:

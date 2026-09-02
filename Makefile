@@ -65,6 +65,8 @@ all: image
 abi-check:
 	PATH=/ucrt64/bin:/usr/bin "$(HOST_CC)" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
 		tests/boot_protocol_layout.c
+	PATH=/ucrt64/bin:/usr/bin "$(HOST_CC)" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
+		tests/kernel_abi_layout.c
 
 vector-geometry-runtime-check: | $(BUILD_DIR)
 	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
@@ -172,7 +174,7 @@ kernel:
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/pointer.h boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c \
+$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c boot/bootloader/uefi/kernel_loader.h boot/bootloader/uefi/kernel_transition.S boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/pointer.h boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c \
 		boot/bootloader/uefi/uefi_min.h boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/ui.h \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/motion.h \
@@ -230,8 +232,8 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/graphics.c boot/bo
 		"$(HOST_CC)" -O2 -std=c11 -Wall -Wextra -Werror -ffreestanding \
 		-fno-stack-protector -fno-asynchronous-unwind-tables -mno-red-zone \
 		$(UEFI_EXTRA_CFLAGS) \
-		-nostdlib -Iboot/bootloader/uefi -I$(BUILD_DIR)/generated \
-		boot/bootloader/uefi/main.c \
+		-nostdlib -Iboot/bootloader/uefi -Iboot/include -I$(BUILD_DIR)/generated \
+		boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c boot/bootloader/uefi/kernel_transition.S \
 		boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/compositor.c \
 		boot/bootloader/bootmenu/graphics.c \

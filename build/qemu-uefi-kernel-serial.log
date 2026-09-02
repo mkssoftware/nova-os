@@ -1,0 +1,18 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+NOVA: Kernel Entry
+NOVA: BOOT phase=0x00000000 last_phase=0xFFFFFFFF
+NOVA: Panic Reporter ABI 1.1 bereit
+NOVA: BOOT phase=0x00000001 last_phase=0x00000000
+NOVA: BOOT phase=0x00000002 last_phase=0x00000001
+NOVA: NBHP/BIB v1 validiert
+NOVA: Kernel Build-ID aus NBHP/BIB importiert
+NOVA: BOOT phase=0x00000003 last_phase=0x00000002
+NOVA: PMM ABI 1.0 und Seitentest bereit
+NOVA: BOOT phase=0x00000004 last_phase=0x00000003
+NOVA: BOOT phase=0x00000005 last_phase=0x00000004
+NOVA: Heap ABI 1.0 und Schreibtest bereit
+NOVA: Object Manager ABI 1.0 bereit
+NOVA: Component Manager ABI 1.0 bereit
+NOVA: Paging ABI 1.0 und Speichertest bereit
+NOVA: BOOT phase=0x00000006 last_phase=0x00000005

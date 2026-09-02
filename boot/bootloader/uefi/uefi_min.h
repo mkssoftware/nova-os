@@ -5,6 +5,7 @@
 
 #define EFIAPI __attribute__((ms_abi))
 #define EFI_SUCCESS 0
+#define EFI_BUFFER_TOO_SMALL 0x8000000000000005ull
 #define EFI_ERROR(Status) (((uint64_t)(Status) >> 63) != 0)
 
 typedef void VOID;
