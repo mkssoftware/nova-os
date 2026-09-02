@@ -60,9 +60,9 @@ Eine Capability beschreibt dabei zunächst **was das System leisten kann**, nich
 ## Grundprinzip
 
 ```text
-Capability = What can be done
+Capability = Was getan werden kann
 
-Implementation = How it is done
+Implementation = Wie es getan wird
 ```
 
 Capabilities bilden damit eine stabile semantische Ebene oberhalb konkreter Bibliotheken, Algorithmen, Prozesse oder Hardwareimplementierungen.
