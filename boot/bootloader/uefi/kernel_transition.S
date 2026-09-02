@@ -19,6 +19,8 @@ uefi_transition_compat:
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %ss
+    movw %ax, %fs
+    movw %ax, %gs
     movl %cr0, %eax
     andl $0x7fffffff, %eax
     movl %eax, %cr0

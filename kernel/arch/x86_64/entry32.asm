@@ -12,6 +12,13 @@ kernel_entry:
     cld
     mov esp, KERNEL_STACK_TOP
     xor ebp, ebp
+    lgdt [kernel_gdt_descriptor]
+    mov ax, DATA_SEGMENT
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov fs, ax
+    mov gs, ax
     mov dword [boot_phase_current], BOOT_PHASE_KERNEL_ENTRY
     mov dword [boot_phase_last_success], BOOT_PHASE_NONE
 
@@ -1507,6 +1514,13 @@ apic_initialize:
     or eax, 0xFF
     mov [0xFEE000F0], eax
 
+    ; OVMF darf beim Ownership-Transfer noch einen angenommenen Interrupt im
+    ; ISR-Stack hinterlassen. Mehrfache EOIs sind für leere Ebenen harmlos.
+    mov ecx, 8
+.drain_isr:
+    mov dword [0xFEE000B0], 0
+    loop .drain_isr
+
     ; Q35: PIT IRQ0 ist per ACPI-Override auf GSI 2, Tastatur bleibt GSI 1.
     mov eax, 0x15                   ; GSI 2 destination high
     xor edx, edx
@@ -1603,6 +1617,10 @@ interrupt_dispatch:
     jmp .done
 .timer:
     inc dword [timer_ticks]
+    cmp dword [kernel_context + CONTEXT_PLATFORM], 2
+    jne .timer_input
+    mov dword [0xFEE000B0], 0       ; edge-triggered: früh quittieren
+.timer_input:
     in al, 0x64                     ; Fallback, falls QEMU IRQ1 nicht zustellt
     test al, 0x01
     jz .timer_schedule
@@ -1627,6 +1645,10 @@ interrupt_dispatch:
     pop eax
     jmp .done
 .keyboard:
+    cmp dword [kernel_context + CONTEXT_PLATFORM], 2
+    jne .keyboard_read
+    mov dword [0xFEE000B0], 0
+.keyboard_read:
     in al, 0x60                     ; Controllerdaten quittieren
     cmp al, 0x58                    ; F12 Make-Code in Scan-Code-Set 1
     je .debug_panic
