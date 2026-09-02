@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $headerSize = 64
-$maximumPayloadSize = 40960
+$maximumPayloadSize = 65536
 $entryPoint = [uint32]0x00100000
 
 $payload = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $InputFile))

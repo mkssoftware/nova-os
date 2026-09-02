@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include "../kernel/include/nova/boot_log.h"
 #include "../kernel/include/nova/boot_sequence.h"
+#include "../kernel/include/nova/device.h"
 #include "../kernel/include/nova/panic.h"
 #include "../kernel/include/nova/pmm.h"
 
@@ -15,5 +16,6 @@ int nova_kernel_abi_layout_is_valid(void)
 {
     return sizeof(NovaBootSequenceApiV1)==32&&
            sizeof(NovaBootEvent)==24&&sizeof(NovaBootLogApiV1)==32&&
+           sizeof(NovaDeviceRecord)==32&&sizeof(NovaDeviceApiV1)==32&&
            sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==32;
 }

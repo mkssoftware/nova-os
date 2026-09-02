@@ -582,6 +582,7 @@ detect_bios_extensions:
 load_kernel_chs:
     call get_disk_geometry
     mov word [kernel_destination_offset], KERNEL_TEMP_OFFSET
+    mov word [kernel_destination_segment], KERNEL_TEMP_SEGMENT
 
     ; KERNEL_FIRST_LBA in die vom BIOS gemeldete CHS-Geometrie umrechnen.
     mov ax, KERNEL_FIRST_LBA
@@ -605,7 +606,7 @@ load_kernel_chs:
     je .success
     mov byte [retry_count], DISK_RETRY_COUNT
 .retry:
-    mov ax, KERNEL_TEMP_SEGMENT
+    mov ax, [kernel_destination_segment]
     mov es, ax
     mov bx, [kernel_destination_offset]
     mov ah, 0x02
@@ -623,6 +624,9 @@ load_kernel_chs:
     ret
 .loaded:
     add word [kernel_destination_offset], 512
+    jnc .destination_ready
+    add word [kernel_destination_segment], 0x1000
+.destination_ready:
     call advance_chs
     dec byte [kernel_remaining]
     jmp .next_sector
@@ -4051,6 +4055,7 @@ vbe_best_rank:              db 0xFF
 vbe_best_mode:              dw 0xFFFF
 vbe_candidate_mode:         dw 0xFFFF
 kernel_destination_offset: dw 0
+kernel_destination_segment: dw 0
 kernel_cylinder:            db 0
 kernel_head:                db 0
 kernel_sector:              db 0

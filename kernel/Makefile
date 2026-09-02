@@ -22,7 +22,7 @@ $(KERNEL_BINARY): $(KERNEL_SOURCE) $(LAYOUT_INCLUDE) $(PROTOCOL_INCLUDE) $(ART_I
 
 verify: $(KERNEL_BINARY)
 	test "$$(wc -c < $(KERNEL_BINARY))" -gt 0
-	test "$$(wc -c < $(KERNEL_BINARY))" -le 40960
+	test "$$(wc -c < $(KERNEL_BINARY))" -le 61440
 
 clean:
 	rm -f $(KERNEL_BINARY)

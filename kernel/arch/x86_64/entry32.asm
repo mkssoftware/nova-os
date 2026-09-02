@@ -165,6 +165,16 @@ kernel_entry:
     call serial_write_string
 
     mov dword [boot_phase_last_success], BOOT_PHASE_SCHEDULER_SMP
+    mov dword [boot_phase_current], BOOT_PHASE_DEVICE_DISCOVERY
+    call boot_phase_log
+    call device_manager_initialize
+    jc panic_device_manager
+    call device_manager_self_test
+    jc panic_device_manager
+    mov esi, message_device_manager_ok
+    call serial_write_string
+
+    mov dword [boot_phase_last_success], BOOT_PHASE_DEVICE_DISCOVERY
     mov dword [boot_phase_current], BOOT_PHASE_OPERATIONAL
     call boot_phase_log
 
@@ -204,6 +214,12 @@ panic_thread_manager:
     mov eax, 0x00002012
     mov edx, 12
     mov esi, message_thread_manager_error
+    jmp kernel_panic
+
+panic_device_manager:
+    mov eax, 0x0000200C
+    mov edx, 12
+    mov esi, message_device_manager_error
     jmp kernel_panic
 
 panic_paging:
@@ -1247,6 +1263,18 @@ paging_initialize:
     cmp eax, PAGING_LOW_LIMIT
     jb .map_low
 
+    ; APIC-MMIO für den UEFI/Q35-Interruptpfad identisch abbilden.
+    mov eax, 0xFEC00000
+    mov edx, eax
+    mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE
+    call paging_map_page
+    jc .invalid
+    mov eax, 0xFEE00000
+    mov edx, eax
+    mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE
+    call paging_map_page
+    jc .invalid
+
     ; Linearen VBE-Framebuffer in seiner bestehenden Adresse abbilden.
     mov eax, [kernel_context + CONTEXT_FRAMEBUFFER]
     test eax, eax
@@ -1419,9 +1447,18 @@ interrupt_initialize:
     call idt_set_gate
     lidt [idt_descriptor]
 
+    cmp dword [kernel_context + CONTEXT_PLATFORM], 2
+    je apic_initialize
+
     ; UEFI/OVMF kann externe Interrupts über den APIC-Pfad hinterlassen.
     ; Der aktuelle Bootstrap-Interruptmanager arbeitet noch mit dem 8259 PIC,
-    ; daher wird die IMCR vor dessen Programmierung deterministisch umgelegt.
+    ; daher werden Local APIC und IMCR vor dessen Programmierung deterministisch
+    ; in den Legacy-INTR-Zustand gebracht. Die spätere APIC-Phase übernimmt die
+    ; erneute Aktivierung kontrolliert.
+    mov ecx, 0x1B                   ; IA32_APIC_BASE
+    rdmsr
+    and eax, 0xFFFFF7FF             ; globales APIC-Enable (Bit 11) löschen
+    wrmsr
     mov al, 0x70
     out 0x22, al
     in al, 0x23
@@ -1456,6 +1493,39 @@ interrupt_initialize:
     mov al, 0xFF
     out PIC2_DATA, al
     clc
+    ret
+
+apic_initialize:
+    ; Local APIC aktivieren und Spurious-Interrupt-Vektor freischalten.
+    mov ecx, 0x1B
+    rdmsr
+    or eax, 0x00000800
+    wrmsr
+    mov eax, [0xFEE000F0]
+    or eax, 0x00000100
+    and eax, 0xFFFFFF00
+    or eax, 0xFF
+    mov [0xFEE000F0], eax
+
+    ; Q35: PIT IRQ0 ist per ACPI-Override auf GSI 2, Tastatur bleibt GSI 1.
+    mov eax, 0x15                   ; GSI 2 destination high
+    xor edx, edx
+    call ioapic_write
+    mov eax, 0x14                   ; GSI 2 -> Vektor 32
+    mov edx, 32
+    call ioapic_write
+    mov eax, 0x13                   ; GSI 1 destination high
+    xor edx, edx
+    call ioapic_write
+    mov eax, 0x12                   ; GSI 1 -> Vektor 33
+    mov edx, 33
+    call ioapic_write
+    clc
+    ret
+
+ioapic_write:
+    mov [0xFEC00000], eax
+    mov [0xFEC00010], edx
     ret
 
 ; EBX=Vektor, EAX=Handleradresse.
@@ -1604,6 +1674,10 @@ interrupt_dispatch:
     call serial_write_string
     jmp kernel_halt
 .done:
+    cmp dword [kernel_context + CONTEXT_PLATFORM], 2
+    jne .return_frame
+    mov dword [0xFEE000B0], 0       ; Local-APIC EOI
+.return_frame:
     mov eax, [interrupt_return_frame]
     pop ebp
     ret
@@ -1831,6 +1905,149 @@ ipc_receive_buffer:
 align 16
 ipc_messages:
     times IPC_QUEUE_CAPACITY * IPC_MESSAGE_SIZE db 0
+
+; Bootkritischer Device Manager (NPSPEC-KERNEL-0002, Phase 8)
+DEVICE_API_SIZE       equ 32
+DEVICE_CAPACITY       equ 8
+DEVICE_RECORD_SIZE    equ 32
+DEVICE_STATE_ACTIVE   equ 1
+OBJECT_TYPE_DEVICE    equ 6
+DEVICE_ID             equ 0
+DEVICE_CLASS          equ 4
+DEVICE_STATE          equ 8
+DEVICE_HANDLE         equ 12
+DEVICE_RESOURCE_BASE  equ 16
+DEVICE_RESOURCE_SIZE  equ 20
+DEVICE_FLAGS          equ 24
+DEVICE_DRIVER         equ 28
+
+device_manager_initialize:
+    mov edi, device_records
+    xor eax, eax
+    mov ecx, (DEVICE_CAPACITY * DEVICE_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [device_count], 0
+    mov eax, 1                      ; PIT/Timer
+    mov edx, 1
+    mov ebx, 0x40
+    mov ecx, 1
+    call device_register
+    jc .invalid
+    mov eax, 2                      ; PS/2-Tastaturcontroller
+    mov edx, 2
+    mov ebx, 0x60
+    mov ecx, 5
+    call device_register
+    jc .invalid
+    test dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_GRAPHICS
+    jz .complete
+    mov eax, 3                      ; übernommener Firmware-Framebuffer
+    mov edx, 3
+    mov ebx, [kernel_context + CONTEXT_FRAMEBUFFER]
+    mov ecx, [kernel_context + CONTEXT_PITCH]
+    imul ecx, [kernel_context + CONTEXT_HEIGHT]
+    call device_register
+    jc .invalid
+.complete:
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; EAX=Geräte-ID, EDX=Klasse, EBX=Ressourcenbasis, ECX=Größe.
+device_register:
+    mov [device_temp_id], eax
+    mov [device_temp_class], edx
+    mov [device_temp_base], ebx
+    mov [device_temp_size], ecx
+    cmp dword [device_count], DEVICE_CAPACITY
+    jae .invalid
+    call device_lookup
+    jnc .invalid
+    mov eax, OBJECT_TYPE_DEVICE
+    mov edx, [device_temp_id]
+    xor ebx, ebx
+    call object_create
+    jc .invalid
+    mov edx, [device_count]
+    shl edx, 5
+    add edx, device_records
+    mov ecx, [device_temp_id]
+    mov [edx + DEVICE_ID], ecx
+    mov ecx, [device_temp_class]
+    mov [edx + DEVICE_CLASS], ecx
+    mov dword [edx + DEVICE_STATE], DEVICE_STATE_ACTIVE
+    mov [edx + DEVICE_HANDLE], eax
+    mov ecx, [device_temp_base]
+    mov [edx + DEVICE_RESOURCE_BASE], ecx
+    mov ecx, [device_temp_size]
+    mov [edx + DEVICE_RESOURCE_SIZE], ecx
+    mov dword [edx + DEVICE_FLAGS], 1 ; bootkritisch
+    inc dword [device_count]
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; EAX=Geräte-ID; EAX=Datensatz bei Erfolg.
+device_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, [device_count]
+    jae .missing
+    mov edx, ecx
+    shl edx, 5
+    add edx, device_records
+    cmp [edx + DEVICE_ID], eax
+    je .found
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.missing:
+    xor eax, eax
+    stc
+    ret
+
+device_manager_self_test:
+    cmp dword [device_count], 2
+    jb .invalid
+    mov eax, 1
+    call device_lookup
+    jc .invalid
+    cmp dword [eax + DEVICE_STATE], DEVICE_STATE_ACTIVE
+    jne .invalid
+    mov eax, 2
+    call device_lookup
+    jc .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+device_api:
+    dd DEVICE_API_SIZE
+    dw 1, 0
+    dd DEVICE_CAPACITY
+    dd device_register
+    dd device_lookup
+    dd device_count
+    dd device_records
+    dd 0
+device_count:      dd 0
+device_temp_id:    dd 0
+device_temp_class: dd 0
+device_temp_base:  dd 0
+device_temp_size:  dd 0
+align 4
+device_records:
+    times DEVICE_CAPACITY * DEVICE_RECORD_SIZE db 0
 
 ; Kernel Service Manager (ADR-2010)
 SERVICE_API_SIZE        equ 32
@@ -2651,6 +2868,7 @@ BOOT_PHASE_VIRTUAL_MEMORY  equ 4
 BOOT_PHASE_KERNEL_CORE     equ 5
 BOOT_PHASE_INTERRUPTS_TIME equ 6
 BOOT_PHASE_SCHEDULER_SMP   equ 7
+BOOT_PHASE_DEVICE_DISCOVERY equ 8
 BOOT_PHASE_OPERATIONAL     equ 11
 BOOT_SEQUENCE_API_SIZE     equ 32
 BOOT_LOG_API_SIZE          equ 32
@@ -4150,6 +4368,10 @@ message_scheduler_ok:
     db "NOVA: Scheduler ABI 1.0 und zwei Threads aktiv", 13, 10, 0
 message_scheduler_error:
     db "NOVA PANIC: praemptiver Scheduler nicht initialisierbar", 13, 10, 0
+message_device_manager_ok:
+    db "NOVA: Device Manager ABI 1.0 und Bootgeraete aktiv", 13, 10, 0
+message_device_manager_error:
+    db "NOVA PANIC: Kernel Device Manager nicht initialisierbar", 13, 10, 0
 message_exception:
     db "NOVA PANIC: CPU-Ausnahme Vektor 0x", 0
 message_fault_address:
