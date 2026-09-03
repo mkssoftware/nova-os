@@ -1677,21 +1677,7 @@ interrupt_dispatch:
     jb .slave_irq
     jmp .done
 .syscall:
-    ; x86-32 Nova Native Bootstrap-ABI:
-    ; EAX=Service-ID, EBX=Operation-ID. Core/Exit (1/1) beendet den
-    ; Bootstrap-Prozess kontrolliert und kehrt in Phase 11 zurück.
-    cmp dword [edx + 44], 1
-    jne .syscall_invalid
-    cmp dword [edx + 32], 1
-    jne .syscall_invalid
-    mov dword [userspace_exit_seen], 1
-    mov dword [edx + 44], 0
-    mov dword [edx + 56], userspace_return
-    mov dword [edx + 60], CODE_SEGMENT
-    and dword [edx + 64], 0xFFFFCFFF
-    jmp .done
-.syscall_invalid:
-    mov dword [edx + 44], 0xC0000001
+    call syscall_dispatch
     jmp .done
 .timer:
     inc dword [timer_ticks]
@@ -2590,6 +2576,19 @@ USER_CODE_ADDRESS  equ 0x00400000
 USER_STACK_ADDRESS equ 0x00402000
 PROCESS_FLAG_SYSTEM_SERVICE equ 0x00000002
 PROCESS_FLAG_USERSPACE      equ 0x00000004
+SYSCALL_ABI_VERSION         equ 0x00000001
+SYSCALL_SERVICE_CORE        equ 1
+SYSCALL_CORE_EXIT           equ 1
+SYSCALL_STATUS_OK           equ 0
+SYSCALL_STATUS_ABI          equ -1
+SYSCALL_STATUS_SIZE         equ -4
+SYSCALL_STATUS_RESERVED     equ -5
+SYSCALL_STATUS_SERVICE      equ -8
+SYSCALL_STATUS_OPERATION    equ -9
+SYSCALL_STATUS_ACCESS       equ -13
+SYSCALL_STATUS_POINTER      equ -15
+USER_ADDRESS_MIN            equ USER_CODE_ADDRESS
+USER_ADDRESS_MAX            equ USER_STACK_ADDRESS
 
 userspace_initialize:
     ; TSS stellt für Ring-3-Interrupts einen kontrollierten Kernelstack bereit.
@@ -2654,6 +2653,23 @@ userspace_initialize:
     mov [userspace_pid], eax
     cmp eax, 2
     jne .invalid
+    mov edx, SECURITY_CAP_SERVICE
+    call security_grant
+    jc .invalid
+
+    ; Grenztests der öffentlichen Copy-in-Prüfung.
+    mov esi, USER_ADDRESS_MIN
+    mov ecx, 16
+    call syscall_validate_user_range
+    jc .invalid
+    mov esi, USER_ADDRESS_MIN - 1
+    mov ecx, 1
+    call syscall_validate_user_range
+    jnc .invalid
+    mov esi, 0xFFFFFFF8
+    mov ecx, 16
+    call syscall_validate_user_range
+    jnc .invalid
     mov dword [userspace_exit_seen], 0
     clc
     ret
@@ -2676,16 +2692,138 @@ userspace_enter:
     iretd
 
 userspace_program_start:
-    mov eax, 1                      ; Core-Service
-    mov ebx, 1                      ; Exit
+    mov eax, SYSCALL_SERVICE_CORE
+    mov ebx, SYSCALL_CORE_EXIT
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_CODE_ADDRESS + userspace_exit_arguments - userspace_program_start
+    mov esi, 16
     int 0x80
     ud2                             ; eine erfolgreiche Exit-Operation kehrt nie zurück
+align 4
+userspace_exit_arguments:
+    dd 16
+    dw 1, 0
+    dd 0                            ; Exit-Code
+    dd 0                            ; reserviert
 userspace_program_end:
+
+; ESI=Userspace-Adresse, ECX=Länge. CF=0 nur für vollständig enthaltene
+; Bereiche des aktuellen Prozesses; Überläufe werden vor dem Zugriff erkannt.
+syscall_validate_user_range:
+    test ecx, ecx
+    jz .invalid
+    cmp esi, USER_ADDRESS_MIN
+    jb .invalid
+    mov eax, esi
+    add eax, ecx
+    jc .invalid
+    cmp eax, esi
+    jbe .invalid
+    cmp eax, USER_ADDRESS_MAX
+    ja .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; Kopiert erst nach vollständiger Bereichsprüfung in Kernel-Speicher.
+; ESI=Quelle, EDI=Ziel, ECX=Länge.
+syscall_copy_from_user:
+    push esi
+    push ecx
+    call syscall_validate_user_range
+    pop ecx
+    pop esi
+    jc .invalid
+    rep movsb
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; EDX zeigt auf den von isr_common erzeugten, bereits auf dem TSS-Kernelstack
+; liegenden Registerframe.
+syscall_dispatch:
+    mov [syscall_frame], edx
+    inc dword [syscall_total]
+    cmp dword [edx + 44], SYSCALL_SERVICE_CORE
+    jne .unknown_service
+    cmp dword [edx + 32], SYSCALL_CORE_EXIT
+    jne .unknown_operation
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 16
+    jb .bad_size
+
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_SERVICE
+    call security_check
+    jc .access_denied
+
+    mov edx, [syscall_frame]
+    mov esi, [edx + 36]
+    mov ecx, 16
+    mov edi, syscall_argument_buffer
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [syscall_argument_buffer + 0], 16
+    jb .bad_size
+    movzx eax, word [syscall_argument_buffer + 4]
+    cmp eax, 1
+    jne .bad_abi
+    cmp word [syscall_argument_buffer + 6], 0
+    jb .bad_abi
+    cmp dword [syscall_argument_buffer + 12], 0
+    jne .bad_reserved
+
+    mov eax, [syscall_argument_buffer + 8]
+    mov [userspace_exit_code], eax
+    mov dword [userspace_exit_seen], 1
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    mov dword [edx + 56], userspace_return
+    mov dword [edx + 60], CODE_SEGMENT
+    and dword [edx + 64], 0xFFFFCFFF
+    ret
+.unknown_service:
+    mov eax, SYSCALL_STATUS_SERVICE
+    jmp .reject
+.unknown_operation:
+    mov eax, SYSCALL_STATUS_OPERATION
+    jmp .reject
+.bad_abi:
+    mov eax, SYSCALL_STATUS_ABI
+    jmp .reject
+.bad_size:
+    mov eax, SYSCALL_STATUS_SIZE
+    jmp .reject
+.bad_reserved:
+    mov eax, SYSCALL_STATUS_RESERVED
+    jmp .reject
+.access_denied:
+    mov eax, SYSCALL_STATUS_ACCESS
+    jmp .reject
+.bad_pointer:
+    mov eax, SYSCALL_STATUS_POINTER
+.reject:
+    inc dword [syscall_rejected]
+    mov edx, [syscall_frame]
+    mov [edx + 44], eax
+    ret
 
 userspace_pid:        dd 0
 userspace_code_page:  dd 0
 userspace_stack_page: dd 0
 userspace_exit_seen:  dd 0
+userspace_exit_code:  dd 0
+syscall_frame:        dd 0
+syscall_total:        dd 0
+syscall_rejected:     dd 0
+align 4
+syscall_argument_buffer:
+    times 16 db 0
 
 ; Kernel Security / Capability Manager (ADR-2013)
 SECURITY_API_SIZE       equ 32
