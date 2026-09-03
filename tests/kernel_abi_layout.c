@@ -4,6 +4,7 @@
 #include "../kernel/include/nova/device.h"
 #include "../kernel/include/nova/panic.h"
 #include "../kernel/include/nova/pmm.h"
+#include "../kernel/include/nova/vfs.h"
 
 _Static_assert(NOVA_BOOT_PHASE_COUNT==12,"Kernel boot phase count changed");
 _Static_assert(NOVA_BOOT_PHASE_OPERATIONAL==11,"Kernel operational phase changed");
@@ -17,5 +18,6 @@ int nova_kernel_abi_layout_is_valid(void)
     return sizeof(NovaBootSequenceApiV1)==32&&
            sizeof(NovaBootEvent)==24&&sizeof(NovaBootLogApiV1)==32&&
            sizeof(NovaDeviceRecord)==32&&sizeof(NovaDeviceApiV1)==32&&
+           sizeof(NovaVfsStateV1)==32&&sizeof(NovaVfsApiV1)==32&&
            sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==32;
 }

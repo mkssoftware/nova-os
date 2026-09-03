@@ -26,6 +26,11 @@ NOVA: Thread Manager ABI 1.0 bereit
 NOVA: Scheduler ABI 1.0 und zwei Threads aktiv
 NOVA: BOOT phase=0x00000008 last_phase=0x00000007
 NOVA: Device Manager ABI 1.0 und Bootgeraete aktiv
-NOVA: BOOT phase=0x0000000B last_phase=0x00000008
+NOVA: BOOT phase=0x00000009 last_phase=0x00000008
+NOVA: VFS ABI 1.0, Mount-Namespace und Bootstrap-Root bereit
+NOVA: BOOT phase=0x0000000A last_phase=0x00000009
+NOVA: x86-32 Userspace, TSS und System-Call ABI 1.0 bereit
+NOVA: erster Ring-3-Systemdienst kontrolliert ausgefuehrt
+NOVA: BOOT phase=0x0000000B last_phase=0x0000000A
 NOVA: Kernel Context, Textmodus aktiv
 NOVA_KERNEL_READY

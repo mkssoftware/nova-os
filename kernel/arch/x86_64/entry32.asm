@@ -186,9 +186,41 @@ kernel_entry:
     call serial_write_string
 
     mov dword [boot_phase_last_success], BOOT_PHASE_DEVICE_DISCOVERY
+    mov dword [boot_phase_current], BOOT_PHASE_ROOT_FILESYSTEM
+    call boot_phase_log
+    call vfs_initialize
+    jc panic_vfs
+    call vfs_self_test
+    jc panic_vfs
+    mov esi, message_vfs_ok
+    call serial_write_string
+
+    ; Userspace ist die nächste, noch nicht abgeschlossene Bootphase. Der Kernel
+    ; meldet deshalb bewusst noch keinen operationalen Zustand (Phase 11).
+    mov dword [boot_phase_last_success], BOOT_PHASE_ROOT_FILESYSTEM
+    mov dword [boot_phase_current], BOOT_PHASE_USERSPACE
+    call boot_phase_log
+    call userspace_initialize
+    jc panic_userspace
+    mov esi, message_userspace_ok
+    call serial_write_string
+    call userspace_enter
+
+userspace_return:
+    cli
+    mov ax, DATA_SEGMENT
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov esp, KERNEL_STACK_TOP
+    cmp dword [userspace_exit_seen], 1
+    jne panic_userspace
+    mov esi, message_userspace_exit_ok
+    call serial_write_string
+    mov dword [boot_phase_last_success], BOOT_PHASE_USERSPACE
     mov dword [boot_phase_current], BOOT_PHASE_OPERATIONAL
     call boot_phase_log
-
     call kernel_main
 
 panic_ipc:
@@ -231,6 +263,18 @@ panic_device_manager:
     mov eax, 0x0000200C
     mov edx, 12
     mov esi, message_device_manager_error
+    jmp kernel_panic
+
+panic_vfs:
+    mov eax, 0x00002014
+    mov edx, 20
+    mov esi, message_vfs_error
+    jmp kernel_panic
+
+panic_userspace:
+    mov eax, 0x00002015
+    mov edx, 21
+    mov esi, message_userspace_error
     jmp kernel_panic
 
 panic_paging:
@@ -1244,6 +1288,7 @@ component_table:
 
 PAGING_PAGE_PRESENT   equ 0x001
 PAGING_PAGE_WRITE     equ 0x002
+PAGING_PAGE_USER      equ 0x004
 PAGING_API_SIZE       equ 32
 PAGING_API_ABI_MAJOR  equ 1
 PAGING_API_ABI_MINOR  equ 0
@@ -1361,6 +1406,12 @@ paging_map_page:
     or eax, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE
     mov [edx], eax
 .have_table:
+    ; Ein User-PTE benötigt das User-Bit auf beiden Paging-Ebenen. Bereits
+    ; vorhandene Supervisor-PTEs bleiben dadurch weiterhin geschützt.
+    test ebp, PAGING_PAGE_USER
+    jz .directory_ready
+    or dword [edx], PAGING_PAGE_USER
+.directory_ready:
     and eax, 0xFFFFF000
     mov ecx, esi
     shr ecx, 12
@@ -1456,6 +1507,10 @@ interrupt_initialize:
     mov ebx, 33
     mov eax, irq1_stub
     call idt_set_gate
+    mov ebx, 0x80
+    mov eax, syscall_stub
+    call idt_set_gate
+    mov byte [idt_table + 0x80 * 8 + 5], 0xEE ; present, Ring-3, Interrupt-Gate
     lidt [idt_descriptor]
 
     cmp dword [kernel_context + CONTEXT_PLATFORM], 2
@@ -1614,10 +1669,29 @@ interrupt_dispatch:
     je .timer
     cmp eax, 33
     je .keyboard
+    cmp eax, 0x80
+    je .syscall
     cmp eax, 32
     jb .exception
     cmp eax, 48
     jb .slave_irq
+    jmp .done
+.syscall:
+    ; x86-32 Nova Native Bootstrap-ABI:
+    ; EAX=Service-ID, EBX=Operation-ID. Core/Exit (1/1) beendet den
+    ; Bootstrap-Prozess kontrolliert und kehrt in Phase 11 zurück.
+    cmp dword [edx + 44], 1
+    jne .syscall_invalid
+    cmp dword [edx + 32], 1
+    jne .syscall_invalid
+    mov dword [userspace_exit_seen], 1
+    mov dword [edx + 44], 0
+    mov dword [edx + 56], userspace_return
+    mov dword [edx + 60], CODE_SEGMENT
+    and dword [edx + 64], 0xFFFFCFFF
+    jmp .done
+.syscall_invalid:
+    mov dword [edx + 44], 0xC0000001
     jmp .done
 .timer:
     inc dword [timer_ticks]
@@ -1788,6 +1862,10 @@ irq1_stub:
     push dword 0
     push dword 33
     jmp isr_common
+syscall_stub:
+    push dword 0
+    push dword 0x80
+    jmp isr_common
 isr_unexpected:
     push dword 0
     push dword 255
@@ -1806,6 +1884,10 @@ kernel_gdt:
     dq 0x0000000000000000
     dq 0x00CF9A000000FFFF
     dq 0x00CF92000000FFFF
+    dq 0x00CFFA000000FFFF          ; Ring-3 Code, Selector 0x1B
+    dq 0x00CFF2000000FFFF          ; Ring-3 Data, Selector 0x23
+kernel_tss_descriptor:
+    dq 0                            ; 32-Bit Available TSS, Selector 0x28
 kernel_gdt_descriptor:
     dw kernel_gdt_descriptor - kernel_gdt - 1
     dd kernel_gdt
@@ -1821,6 +1903,10 @@ timer_ticks:           dd 0
 last_exception_vector: dd 0
 last_fault_address:    dd 0
 interrupt_return_frame: dd 0
+
+align 16
+kernel_tss:
+    times 104 db 0
 
 ; Versionierte öffentliche Modulgrenze gemäß ADR-2006/2007.
 align 4
@@ -2083,6 +2169,126 @@ device_temp_size:  dd 0
 align 4
 device_records:
     times DEVICE_CAPACITY * DEVICE_RECORD_SIZE db 0
+
+; Frühes VFS-Bootstrap-Root (NPSPEC-KERNEL-0019). Das RAMFS ist absichtlich
+; read-only: es stellt bis zum späteren Dateisystemtreiber nur den Root-Knoten
+; und dessen Mount-Namespace bereit.
+VFS_API_SIZE                equ 32
+VFS_STATE_SIZE              equ 32
+VFS_FLAG_BOOTSTRAP_ROOT     equ 0x00000001
+VFS_FLAG_READ_ONLY          equ 0x00000002
+VFS_NODE_DIRECTORY          equ 1
+OBJECT_TYPE_FILESYSTEM      equ 7
+OBJECT_TYPE_MOUNT_NAMESPACE equ 8
+OBJECT_TYPE_MOUNT           equ 9
+OBJECT_TYPE_VFS_NODE        equ 10
+
+VFS_INITIALIZED       equ 0
+VFS_ROOT_READY        equ 4
+VFS_FILESYSTEM_HANDLE equ 8
+VFS_NAMESPACE_HANDLE  equ 12
+VFS_MOUNT_HANDLE      equ 16
+VFS_ROOT_NODE_HANDLE  equ 20
+VFS_FLAGS             equ 24
+
+vfs_initialize:
+    mov edi, vfs_state
+    xor eax, eax
+    mov ecx, VFS_STATE_SIZE / 4
+    rep stosd
+
+    mov eax, OBJECT_TYPE_FILESYSTEM
+    mov edx, 1                      ; Bootstrap-RAMFS-Instanz
+    xor ebx, ebx
+    call object_create
+    jc .invalid
+    mov [vfs_state + VFS_FILESYSTEM_HANDLE], eax
+
+    mov eax, OBJECT_TYPE_MOUNT_NAMESPACE
+    mov edx, 1                      ; initialer Kernel-Namespace
+    xor ebx, ebx
+    call object_create
+    jc .invalid
+    mov [vfs_state + VFS_NAMESPACE_HANDLE], eax
+
+    mov eax, OBJECT_TYPE_MOUNT
+    mov edx, 1                      ; Root-Mount
+    mov ebx, [vfs_state + VFS_NAMESPACE_HANDLE]
+    call object_create
+    jc .invalid
+    mov [vfs_state + VFS_MOUNT_HANDLE], eax
+
+    mov eax, OBJECT_TYPE_VFS_NODE
+    mov edx, 1                      ; Node-ID 1 ist das Root-Verzeichnis
+    mov ebx, [vfs_state + VFS_FILESYSTEM_HANDLE]
+    call object_create
+    jc .invalid
+    mov [vfs_state + VFS_ROOT_NODE_HANDLE], eax
+
+    mov dword [vfs_state + VFS_FLAGS], VFS_FLAG_BOOTSTRAP_ROOT | VFS_FLAG_READ_ONLY
+    mov dword [vfs_state + VFS_ROOT_READY], 1
+    mov dword [vfs_state + VFS_INITIALIZED], 1
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; ESI=Pfad, ECX=explizite Byte-Länge. Liefert in EAX den Root-Node-Handle.
+; Die längenbasierte Schnittstelle akzeptiert keine implizit terminierten Pfade.
+vfs_lookup_root:
+    cmp dword [vfs_state + VFS_ROOT_READY], 1
+    jne .missing
+    cmp ecx, 1
+    jne .missing
+    cmp byte [esi], '/'
+    jne .missing
+    mov eax, [vfs_state + VFS_ROOT_NODE_HANDLE]
+    test eax, eax
+    jz .missing
+    clc
+    ret
+.missing:
+    xor eax, eax
+    stc
+    ret
+
+vfs_self_test:
+    cmp dword [vfs_state + VFS_INITIALIZED], 1
+    jne .invalid
+    cmp dword [vfs_state + VFS_FLAGS], VFS_FLAG_BOOTSTRAP_ROOT | VFS_FLAG_READ_ONLY
+    jne .invalid
+    mov esi, vfs_root_path
+    mov ecx, 1
+    call vfs_lookup_root
+    jc .invalid
+    cmp eax, [vfs_state + VFS_ROOT_NODE_HANDLE]
+    jne .invalid
+    mov esi, vfs_invalid_path
+    mov ecx, 1
+    call vfs_lookup_root
+    jnc .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+vfs_api:
+    dd VFS_API_SIZE
+    dw 1, 0
+    dd vfs_state
+    dd vfs_lookup_root
+    dd vfs_root_path
+    dd 1
+    dd VFS_FLAG_BOOTSTRAP_ROOT | VFS_FLAG_READ_ONLY
+    dd 0
+vfs_state:
+    times VFS_STATE_SIZE db 0
+vfs_root_path:    db '/'
+vfs_invalid_path: db 'x'
+align 4
 
 ; Kernel Service Manager (ADR-2010)
 SERVICE_API_SIZE        equ 32
@@ -2373,6 +2579,113 @@ process_temp_slot:  dd 0
 align 4
 process_table:
     times PROCESS_CAPACITY * PROCESS_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Initialer x86-32 Userspace-Prozess (Bootphase 10)
+; ---------------------------------------------------------------------------
+USER_CODE_SELECTOR equ 0x1B
+USER_DATA_SELECTOR equ 0x23
+TSS_SELECTOR       equ 0x28
+USER_CODE_ADDRESS  equ 0x00400000
+USER_STACK_ADDRESS equ 0x00402000
+PROCESS_FLAG_SYSTEM_SERVICE equ 0x00000002
+PROCESS_FLAG_USERSPACE      equ 0x00000004
+
+userspace_initialize:
+    ; TSS stellt für Ring-3-Interrupts einen kontrollierten Kernelstack bereit.
+    mov edi, kernel_tss
+    xor eax, eax
+    mov ecx, 104 / 4
+    rep stosd
+    mov dword [kernel_tss + 4], KERNEL_STACK_TOP
+    mov word [kernel_tss + 8], DATA_SEGMENT
+    mov word [kernel_tss + 102], 104
+    mov eax, kernel_tss
+    mov word [kernel_tss_descriptor + 0], 103
+    mov word [kernel_tss_descriptor + 2], ax
+    shr eax, 16
+    mov byte [kernel_tss_descriptor + 4], al
+    mov byte [kernel_tss_descriptor + 5], 0x89
+    mov byte [kernel_tss_descriptor + 6], 0
+    mov byte [kernel_tss_descriptor + 7], ah
+    lgdt [kernel_gdt_descriptor]
+    mov ax, TSS_SELECTOR
+    ltr ax
+
+    ; Eigene physische Seiten für Code und Stack; nur diese PTEs tragen U/S.
+    call pmm_alloc_page
+    test eax, eax
+    jz .invalid
+    mov [userspace_code_page], eax
+    mov edi, eax
+    xor eax, eax
+    mov ecx, PMM_PAGE_SIZE / 4
+    rep stosd
+    mov esi, userspace_program_start
+    mov edi, [userspace_code_page]
+    mov ecx, userspace_program_end - userspace_program_start
+    rep movsb
+    mov eax, USER_CODE_ADDRESS
+    mov edx, [userspace_code_page]
+    mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_USER
+    call paging_map_page
+    jc .invalid
+
+    call pmm_alloc_page
+    test eax, eax
+    jz .invalid
+    mov [userspace_stack_page], eax
+    mov edi, eax
+    xor eax, eax
+    mov ecx, PMM_PAGE_SIZE / 4
+    rep stosd
+    mov eax, USER_STACK_ADDRESS - PMM_PAGE_SIZE
+    mov edx, [userspace_stack_page]
+    mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER
+    call paging_map_page
+    jc .invalid
+    mov eax, cr3
+    mov cr3, eax                    ; TLB nach den neuen PTEs invalidieren
+
+    mov eax, PROCESS_FLAG_SYSTEM_SERVICE | PROCESS_FLAG_USERSPACE
+    mov edx, cr3
+    call process_create
+    jc .invalid
+    mov [userspace_pid], eax
+    cmp eax, 2
+    jne .invalid
+    mov dword [userspace_exit_seen], 0
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+userspace_enter:
+    cli
+    mov ax, USER_DATA_SELECTOR
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    push dword USER_DATA_SELECTOR
+    push dword USER_STACK_ADDRESS
+    push dword 0x00000202
+    push dword USER_CODE_SELECTOR
+    push dword USER_CODE_ADDRESS
+    iretd
+
+userspace_program_start:
+    mov eax, 1                      ; Core-Service
+    mov ebx, 1                      ; Exit
+    int 0x80
+    ud2                             ; eine erfolgreiche Exit-Operation kehrt nie zurück
+userspace_program_end:
+
+userspace_pid:        dd 0
+userspace_code_page:  dd 0
+userspace_stack_page: dd 0
+userspace_exit_seen:  dd 0
 
 ; Kernel Security / Capability Manager (ADR-2013)
 SECURITY_API_SIZE       equ 32
@@ -2904,6 +3217,8 @@ BOOT_PHASE_KERNEL_CORE     equ 5
 BOOT_PHASE_INTERRUPTS_TIME equ 6
 BOOT_PHASE_SCHEDULER_SMP   equ 7
 BOOT_PHASE_DEVICE_DISCOVERY equ 8
+BOOT_PHASE_ROOT_FILESYSTEM  equ 9
+BOOT_PHASE_USERSPACE        equ 10
 BOOT_PHASE_OPERATIONAL     equ 11
 BOOT_SEQUENCE_API_SIZE     equ 32
 BOOT_LOG_API_SIZE          equ 32
@@ -4407,6 +4722,16 @@ message_device_manager_ok:
     db "NOVA: Device Manager ABI 1.0 und Bootgeraete aktiv", 13, 10, 0
 message_device_manager_error:
     db "NOVA PANIC: Kernel Device Manager nicht initialisierbar", 13, 10, 0
+message_vfs_ok:
+    db "NOVA: VFS ABI 1.0, Mount-Namespace und Bootstrap-Root bereit", 13, 10, 0
+message_vfs_error:
+    db "NOVA PANIC: VFS oder Root-Dateisystem nicht initialisierbar", 13, 10, 0
+message_userspace_ok:
+    db "NOVA: x86-32 Userspace, TSS und System-Call ABI 1.0 bereit", 13, 10, 0
+message_userspace_exit_ok:
+    db "NOVA: erster Ring-3-Systemdienst kontrolliert ausgefuehrt", 13, 10, 0
+message_userspace_error:
+    db "NOVA PANIC: initialer Userspace-Prozess nicht startbar", 13, 10, 0
 message_exception:
     db "NOVA PANIC: CPU-Ausnahme Vektor 0x", 0
 message_fault_address:
