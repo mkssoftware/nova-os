@@ -12,6 +12,8 @@ kernel_entry:
     cld
     mov esp, KERNEL_STACK_TOP
     xor ebp, ebp
+    push eax
+    push ebx
     lgdt [kernel_gdt_descriptor]
     mov ax, DATA_SEGMENT
     mov ds, ax
@@ -19,6 +21,8 @@ kernel_entry:
     mov ss, ax
     mov fs, ax
     mov gs, ax
+    pop ebx
+    pop eax
     mov dword [boot_phase_current], BOOT_PHASE_KERNEL_ENTRY
     mov dword [boot_phase_last_success], BOOT_PHASE_NONE
 
@@ -1796,6 +1800,15 @@ exception_stub_table:
     dd isr_%+__vector
 %assign __vector __vector + 1
 %endrep
+
+align 8
+kernel_gdt:
+    dq 0x0000000000000000
+    dq 0x00CF9A000000FFFF
+    dq 0x00CF92000000FFFF
+kernel_gdt_descriptor:
+    dw kernel_gdt_descriptor - kernel_gdt - 1
+    dd kernel_gdt
 
 align 16
 idt_table:
