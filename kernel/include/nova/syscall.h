@@ -25,6 +25,14 @@ enum NovaCoreOperationId {
     NOVA_CORE_OPERATION_EXIT = 1
 };
 
+enum NovaProcessOperationId {
+    NOVA_PROCESS_OPERATION_QUERY_SELF = 1
+};
+
+enum NovaThreadOperationId {
+    NOVA_THREAD_OPERATION_QUERY_SELF = 1
+};
+
 enum NovaStatus {
     NOVA_STATUS_OK = 0,
     NOVA_STATUS_ABI_INCOMPATIBLE = -1,
@@ -58,6 +66,13 @@ typedef struct NovaCoreExitArgumentsV1 {
     uint32_t Reserved;
 } NovaCoreExitArgumentsV1;
 
+typedef struct NovaIdentityResultV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t Identifier;
+    uint32_t Reserved;
+} NovaIdentityResultV1;
+
 _Static_assert(sizeof(NovaAbiVersion) == 4,
                "NovaAbiVersion ABI size changed");
 _Static_assert(sizeof(NovaSyscallRequestV1) == 32,
@@ -66,6 +81,8 @@ _Static_assert(offsetof(NovaSyscallRequestV1, Arguments) == 16,
                "NovaSyscallRequestV1 alignment changed");
 _Static_assert(sizeof(NovaCoreExitArgumentsV1) == 16,
                "NovaCoreExitArgumentsV1 ABI size changed");
+_Static_assert(sizeof(NovaIdentityResultV1) == 16,
+               "NovaIdentityResultV1 ABI size changed");
 
 /* x86-32: EAX=Service, EBX=Operation, ECX=Major|Minor<<16,
  * EDX=Argumentzeiger, ESI=Argumentgröße, EAX=Status. */

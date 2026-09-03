@@ -22,5 +22,6 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(NovaVfsStateV1)==32&&sizeof(NovaVfsApiV1)==32&&
            sizeof(NovaSyscallRequestV1)==32&&
            sizeof(NovaCoreExitArgumentsV1)==16&&
+           sizeof(NovaIdentityResultV1)==16&&
            sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==32;
 }

@@ -204,6 +204,11 @@ kernel_entry:
     jc panic_userspace
     mov esi, message_userspace_ok
     call serial_write_string
+    mov dword [boot_phase_last_success], BOOT_PHASE_USERSPACE
+    mov dword [boot_phase_current], BOOT_PHASE_OPERATIONAL
+    call boot_phase_log
+    call kernel_operational_prepare
+    mov dword [scheduler_current], 0
     call userspace_enter
 
 userspace_return:
@@ -218,9 +223,6 @@ userspace_return:
     jne panic_userspace
     mov esi, message_userspace_exit_ok
     call serial_write_string
-    mov dword [boot_phase_last_success], BOOT_PHASE_USERSPACE
-    mov dword [boot_phase_current], BOOT_PHASE_OPERATIONAL
-    call boot_phase_log
     call kernel_main
 
 panic_ipc:
@@ -2578,7 +2580,10 @@ PROCESS_FLAG_SYSTEM_SERVICE equ 0x00000002
 PROCESS_FLAG_USERSPACE      equ 0x00000004
 SYSCALL_ABI_VERSION         equ 0x00000001
 SYSCALL_SERVICE_CORE        equ 1
+SYSCALL_SERVICE_PROCESS     equ 2
+SYSCALL_SERVICE_THREAD      equ 3
 SYSCALL_CORE_EXIT           equ 1
+SYSCALL_QUERY_SELF          equ 1
 SYSCALL_STATUS_OK           equ 0
 SYSCALL_STATUS_ABI          equ -1
 SYSCALL_STATUS_SIZE         equ -4
@@ -2657,6 +2662,16 @@ userspace_initialize:
     call security_grant
     jc .invalid
 
+    ; Der Bootstrap-Kernelthread (TID 1 / Scheduler-Slot 0) wird atomar zum
+    ; ersten Userspace-Thread des neuen Prozesses weitergeführt.
+    mov eax, 1
+    call thread_lookup
+    jc .invalid
+    mov dword [eax + THREAD_PID], 2
+    mov dword [eax + THREAD_ENTRY], USER_CODE_ADDRESS
+    mov dword [eax + THREAD_CONTEXT], 0
+    mov dword [userspace_tid], 1
+
     ; Grenztests der öffentlichen Copy-in-Prüfung.
     mov esi, USER_ADDRESS_MIN
     mov ecx, 16
@@ -2692,6 +2707,42 @@ userspace_enter:
     iretd
 
 userspace_program_start:
+    ; Process.QuerySelf -> Ergebnis auf dem beschreibbaren Userstack.
+    mov eax, SYSCALL_SERVICE_PROCESS
+    mov ebx, SYSCALL_QUERY_SELF
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 64
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jnz .failed
+    cmp dword [USER_STACK_ADDRESS - 56], 2
+    jne .failed
+
+    ; Thread.QuerySelf -> TID 1 des weitergeführten Bootstrap-Threads.
+    mov eax, SYSCALL_SERVICE_THREAD
+    mov ebx, SYSCALL_QUERY_SELF
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 32
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jnz .failed
+    cmp dword [USER_STACK_ADDRESS - 24], 1
+    jne .failed
+.running:
+    pause
+    jmp .running
+.failed:
+    mov eax, SYSCALL_SERVICE_CORE
+    mov ebx, SYSCALL_CORE_EXIT
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_CODE_ADDRESS + userspace_exit_arguments - userspace_program_start
+    mov esi, 16
+    int 0x80
+    ud2
+
+userspace_exit_probe:
     mov eax, SYSCALL_SERVICE_CORE
     mov ebx, SYSCALL_CORE_EXIT
     mov ecx, SYSCALL_ABI_VERSION
@@ -2743,11 +2794,32 @@ syscall_copy_from_user:
     stc
     ret
 
+; Für öffentliche Ergebnisstrukturen gilt dieselbe vollständige Bereichsprüfung.
+syscall_copy_to_user:
+    push edi
+    push ecx
+    mov esi, edi
+    call syscall_validate_user_range
+    pop ecx
+    pop edi
+    jc .invalid
+    mov esi, syscall_result_buffer
+    rep movsb
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
 ; EDX zeigt auf den von isr_common erzeugten, bereits auf dem TSS-Kernelstack
 ; liegenden Registerframe.
 syscall_dispatch:
     mov [syscall_frame], edx
     inc dword [syscall_total]
+    cmp dword [edx + 44], SYSCALL_SERVICE_PROCESS
+    je .process
+    cmp dword [edx + 44], SYSCALL_SERVICE_THREAD
+    je .thread
     cmp dword [edx + 44], SYSCALL_SERVICE_CORE
     jne .unknown_service
     cmp dword [edx + 32], SYSCALL_CORE_EXIT
@@ -2787,6 +2859,56 @@ syscall_dispatch:
     mov dword [edx + 60], CODE_SEGMENT
     and dword [edx + 64], 0xFFFFCFFF
     ret
+.process:
+    cmp dword [edx + 32], SYSCALL_QUERY_SELF
+    jne .unknown_operation
+    mov eax, [userspace_pid]
+    mov [syscall_identity], eax
+    mov esi, message_process_syscall_ok
+    jmp .identity
+.thread:
+    cmp dword [edx + 32], SYSCALL_QUERY_SELF
+    jne .unknown_operation
+    mov eax, [userspace_tid]
+    mov [syscall_identity], eax
+    mov esi, message_thread_syscall_ok
+.identity:
+    push esi
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .identity_bad_abi
+    cmp dword [edx + 20], 16
+    jb .identity_bad_size
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_SERVICE
+    call security_check
+    jc .identity_access
+    mov dword [syscall_result_buffer + 0], 16
+    mov dword [syscall_result_buffer + 4], SYSCALL_ABI_VERSION
+    mov eax, [syscall_identity]
+    mov [syscall_result_buffer + 8], eax
+    mov dword [syscall_result_buffer + 12], 0
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov ecx, 16
+    call syscall_copy_to_user
+    jc .identity_pointer
+    pop esi
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.identity_bad_abi:
+    pop esi
+    jmp .bad_abi
+.identity_bad_size:
+    pop esi
+    jmp .bad_size
+.identity_access:
+    pop esi
+    jmp .access_denied
+.identity_pointer:
+    pop esi
+    jmp .bad_pointer
 .unknown_service:
     mov eax, SYSCALL_STATUS_SERVICE
     jmp .reject
@@ -2814,6 +2936,7 @@ syscall_dispatch:
     ret
 
 userspace_pid:        dd 0
+userspace_tid:        dd 0
 userspace_code_page:  dd 0
 userspace_stack_page: dd 0
 userspace_exit_seen:  dd 0
@@ -2821,8 +2944,11 @@ userspace_exit_code:  dd 0
 syscall_frame:        dd 0
 syscall_total:        dd 0
 syscall_rejected:     dd 0
+syscall_identity:     dd 0
 align 4
 syscall_argument_buffer:
+    times 16 db 0
+syscall_result_buffer:
     times 16 db 0
 
 ; Kernel Security / Capability Manager (ADR-2013)
@@ -3305,6 +3431,10 @@ scheduler_thread2_runs: dd 0
 ; ---------------------------------------------------------------------------
 
 kernel_main:
+    call kernel_operational_prepare
+    jmp kernel_idle
+
+kernel_operational_prepare:
     mov eax, [kernel_context + CONTEXT_SEEN]
     test eax, CONTEXT_HAS_GRAPHICS
     jz .text_mode
@@ -3322,7 +3452,7 @@ kernel_main:
 .ready:
     mov esi, message_ready
     call serial_write_string
-    jmp kernel_idle
+    ret
 
 kernel_idle:
     sti
@@ -4870,6 +5000,10 @@ message_userspace_exit_ok:
     db "NOVA: erster Ring-3-Systemdienst kontrolliert ausgefuehrt", 13, 10, 0
 message_userspace_error:
     db "NOVA PANIC: initialer Userspace-Prozess nicht startbar", 13, 10, 0
+message_process_syscall_ok:
+    db "NOVA: Userspace Process.QuerySelf erfolgreich", 13, 10, 0
+message_thread_syscall_ok:
+    db "NOVA: Userspace Thread.QuerySelf erfolgreich", 13, 10, 0
 message_exception:
     db "NOVA PANIC: CPU-Ausnahme Vektor 0x", 0
 message_fault_address:
