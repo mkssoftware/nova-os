@@ -2776,11 +2776,15 @@ SYSCALL_SERVICE_CORE        equ 1
 SYSCALL_SERVICE_PROCESS     equ 2
 SYSCALL_SERVICE_THREAD      equ 3
 SYSCALL_SERVICE_IPC         equ 5
+SYSCALL_SERVICE_VFS         equ 6
 SYSCALL_CORE_EXIT           equ 1
 SYSCALL_CORE_READY          equ 2
+SYSCALL_CORE_CLOSE_HANDLE   equ 3
 SYSCALL_QUERY_SELF          equ 1
 SYSCALL_IPC_SEND            equ 1
 SYSCALL_IPC_RECEIVE         equ 2
+SYSCALL_VFS_OPEN_ROOT       equ 1
+SYSCALL_VFS_LOOKUP          equ 2
 SYSCALL_STATUS_OK           equ 0
 SYSCALL_STATUS_ABI          equ -1
 SYSCALL_STATUS_SIZE         equ -4
@@ -2797,7 +2801,7 @@ SHARED_SERVICE_SIZE         equ 64
 SHARED_FEATURE_INT80        equ 0x00000001
 SHARED_FEATURE_COPY_IO      equ 0x00000002
 SHARED_FEATURE_PREEMPT      equ 0x00000004
-SHARED_SERVICE_BITMAP       equ 0x00000017 ; Core, Process, Thread, IPC
+SHARED_SERVICE_BITMAP       equ 0x00000037 ; Core, Process, Thread, IPC, VFS
 
 userspace_initialize:
     ; TSS stellt für Ring-3-Interrupts einen kontrollierten Kernelstack bereit.
@@ -2922,6 +2926,8 @@ userspace_initialize:
     jnc .invalid
     call userspace_ipc_initialize
     jc .invalid
+    call userspace_vfs_initialize
+    jc .invalid
 
     ; Grenztests der öffentlichen Copy-in-Prüfung.
     mov esi, USER_ADDRESS_MIN
@@ -3026,6 +3032,51 @@ userspace_program_start:
     cmp dword [USER_STACK_ADDRESS - 88], 0x41564F4E
     jne .failed
 
+    mov eax, SYSCALL_SERVICE_VFS
+    mov ebx, SYSCALL_VFS_OPEN_ROOT
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 160
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jnz .failed
+    cmp dword [USER_STACK_ADDRESS - 152], 0
+    je .failed
+
+    ; VFS.Lookup mit explizitem Pointer und Pfadlänge für "/".
+    mov dword [USER_STACK_ADDRESS - 224], 32
+    mov dword [USER_STACK_ADDRESS - 220], SYSCALL_ABI_VERSION
+    mov eax, [USER_STACK_ADDRESS - 152]
+    mov [USER_STACK_ADDRESS - 216], eax
+    mov dword [USER_STACK_ADDRESS - 212], USER_CODE_ADDRESS + userspace_root_path - userspace_program_start
+    mov dword [USER_STACK_ADDRESS - 208], 1
+    mov dword [USER_STACK_ADDRESS - 204], 0
+    mov dword [USER_STACK_ADDRESS - 200], 0
+    mov dword [USER_STACK_ADDRESS - 196], 0
+    mov eax, SYSCALL_SERVICE_VFS
+    mov ebx, SYSCALL_VFS_LOOKUP
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 224
+    mov esi, 32
+    int 0x80
+    test eax, eax
+    jnz .failed
+    cmp dword [USER_STACK_ADDRESS - 200], 0
+    je .failed
+    mov dword [USER_STACK_ADDRESS - 256], 16
+    mov dword [USER_STACK_ADDRESS - 252], SYSCALL_ABI_VERSION
+    mov eax, [USER_STACK_ADDRESS - 200]
+    mov [USER_STACK_ADDRESS - 248], eax
+    mov dword [USER_STACK_ADDRESS - 244], 0
+    mov eax, SYSCALL_SERVICE_CORE
+    mov ebx, SYSCALL_CORE_CLOSE_HANDLE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 256
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jnz .failed
+
     ; Die feste Shared Service Page ist user-lesbar, aber nicht beschreibbar.
     cmp dword [SHARED_SERVICE_ADDRESS + 0], SHARED_SERVICE_SIGNATURE
     jne .failed
@@ -3081,6 +3132,7 @@ userspace_ipc_packet:
     dd 4
     dd 0
     db "NOVA",0,0,0,0
+userspace_root_path: db '/'
 userspace_program_end:
 
 ; ESI=Userspace-Adresse, ECX=Länge. CF=0 nur für vollständig enthaltene
@@ -3163,10 +3215,14 @@ syscall_dispatch:
     je .thread
     cmp dword [edx + 44], SYSCALL_SERVICE_IPC
     je .ipc
+    cmp dword [edx + 44], SYSCALL_SERVICE_VFS
+    je .vfs
     cmp dword [edx + 44], SYSCALL_SERVICE_CORE
     jne .unknown_service
     cmp dword [edx + 32], SYSCALL_CORE_READY
     je .core_ready
+    cmp dword [edx + 32], SYSCALL_CORE_CLOSE_HANDLE
+    je .core_close_handle
     cmp dword [edx + 32], SYSCALL_CORE_EXIT
     jne .unknown_operation
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
@@ -3217,6 +3273,39 @@ syscall_dispatch:
     jc .access_denied
     mov dword [userspace_ready_seen], 1
     mov esi, message_shared_service_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.core_close_handle:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 16
+    jb .bad_size
+    mov esi, [edx + 36]
+    mov ecx, 16
+    mov edi, syscall_argument_buffer
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [syscall_argument_buffer + 0], 16
+    jne .bad_size
+    cmp dword [syscall_argument_buffer + 4], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [syscall_argument_buffer + 12], 0
+    jne .bad_reserved
+    mov edx, [syscall_argument_buffer + 8]
+    mov [syscall_closed_handle], edx
+    mov eax, [userspace_pid]
+    call handle_close
+    jc .access_denied
+    ; Derselbe codierte Wert muss nach Generationswechsel ungültig sein.
+    mov eax, [userspace_pid]
+    mov edx, [syscall_closed_handle]
+    mov ebx, OBJECT_TYPE_VFS_NODE
+    mov ecx, HANDLE_RIGHT_QUERY
+    call handle_resolve
+    jnc .bad_reserved
+    mov esi, message_handle_close_ok
     call serial_write_string
     mov edx, [syscall_frame]
     mov dword [edx + 44], SYSCALL_STATUS_OK
@@ -3358,6 +3447,90 @@ syscall_dispatch:
 .ipc_would_block:
     mov eax, -19
     jmp .reject
+.vfs:
+    cmp dword [edx + 32], SYSCALL_VFS_LOOKUP
+    je .vfs_lookup
+    cmp dword [edx + 32], SYSCALL_VFS_OPEN_ROOT
+    jne .unknown_operation
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 16
+    jb .bad_size
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_SERVICE
+    call security_check
+    jc .access_denied
+    mov dword [syscall_result_buffer + 0], 16
+    mov dword [syscall_result_buffer + 4], SYSCALL_ABI_VERSION
+    mov eax, [userspace_root_handle]
+    mov [syscall_result_buffer + 8], eax
+    mov dword [syscall_result_buffer + 12], 0
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov esi, syscall_result_buffer
+    mov ecx, 16
+    call syscall_copy_buffer_to_user
+    jc .bad_pointer
+    mov esi, message_vfs_userspace_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.vfs_lookup:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 32
+    jb .bad_size
+    mov esi, [edx + 36]
+    mov ecx, 32
+    mov edi, syscall_vfs_buffer
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [syscall_vfs_buffer + 0], 32
+    jne .bad_size
+    cmp dword [syscall_vfs_buffer + 4], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [syscall_vfs_buffer + 16], 1
+    jne .bad_size
+    cmp dword [syscall_vfs_buffer + 20], 0
+    jne .bad_reserved
+    cmp dword [syscall_vfs_buffer + 28], 0
+    jne .bad_reserved
+    mov eax, [userspace_pid]
+    mov edx, [syscall_vfs_buffer + 8]
+    mov ebx, OBJECT_TYPE_VFS_NODE
+    mov ecx, HANDLE_RIGHT_QUERY
+    call handle_resolve
+    jc .access_denied
+    mov eax, [syscall_vfs_buffer + 12]
+    mov esi, eax
+    mov ecx, 1
+    mov edi, syscall_vfs_path
+    call syscall_copy_from_user
+    jc .bad_pointer
+    mov esi, syscall_vfs_path
+    mov ecx, 1
+    call vfs_lookup_root
+    jc .unknown_operation
+    mov edx, eax
+    mov eax, [userspace_pid]
+    mov ebx, OBJECT_TYPE_VFS_NODE
+    mov ecx, HANDLE_RIGHT_QUERY
+    xor esi, esi
+    call handle_create
+    jc .access_denied
+    mov [syscall_vfs_buffer + 24], eax
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov esi, syscall_vfs_buffer
+    mov ecx, 32
+    call syscall_copy_buffer_to_user
+    jc .bad_pointer
+    mov esi, message_vfs_lookup_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
 .unknown_service:
     mov eax, SYSCALL_STATUS_SERVICE
     jmp .reject
@@ -3396,11 +3569,14 @@ syscall_frame:        dd 0
 syscall_total:        dd 0
 syscall_rejected:     dd 0
 syscall_identity:     dd 0
+syscall_closed_handle: dd 0
 align 4
 syscall_argument_buffer:
     times 16 db 0
 syscall_result_buffer:
     times 16 db 0
+syscall_vfs_buffer: times 32 db 0
+syscall_vfs_path:   times 4 db 0
 
 OBJECT_TYPE_IPC_ENDPOINT equ 11
 
@@ -3458,6 +3634,37 @@ userspace_ipc_count:          dd 0
 align 4
 userspace_ipc_copy:  times 48 db 0
 userspace_ipc_queue: times 48 db 0
+
+userspace_vfs_initialize:
+    mov eax, 2
+    mov edx, [vfs_state + VFS_ROOT_NODE_HANDLE]
+    mov ebx, OBJECT_TYPE_VFS_NODE
+    mov ecx, HANDLE_RIGHT_QUERY
+    mov esi, HANDLE_FLAG_PROTECTED
+    call handle_create
+    jc .invalid
+    mov [userspace_root_handle], eax
+    cmp dword [handle_active_count], 5
+    jne .invalid
+    mov edx, eax
+    mov eax, 2
+    mov ebx, OBJECT_TYPE_VFS_NODE
+    mov ecx, HANDLE_RIGHT_QUERY
+    call handle_resolve
+    jc .invalid
+    mov edx, [userspace_root_handle]
+    mov eax, 2
+    mov ebx, OBJECT_TYPE_DEVICE       ; Root-Handle ist kein Device-Handle
+    mov ecx, HANDLE_RIGHT_QUERY
+    call handle_resolve
+    jnc .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+userspace_root_handle: dd 0
 
 ; Erstellt eine ausschließlich lesbare, öffentliche Service-Informationsseite.
 ; Physische Adresse und interne Kernelobjekte werden darin nie veröffentlicht.
@@ -5562,6 +5769,12 @@ message_shared_service_ok:
     db "NOVA: Shared Service Page im Userspace validiert", 13, 10, 0
 message_ipc_roundtrip_ok:
     db "NOVA: Userspace IPC Inline-Roundtrip atomar erfolgreich", 13, 10, 0
+message_vfs_userspace_ok:
+    db "NOVA: Userspace VFS.OpenRoot Handle erfolgreich", 13, 10, 0
+message_vfs_lookup_ok:
+    db "NOVA: Userspace VFS.Lookup Pfad '/' erfolgreich", 13, 10, 0
+message_handle_close_ok:
+    db "NOVA: Userspace Handle geschlossen, alter Wert ungueltig", 13, 10, 0
 message_exception:
     db "NOVA PANIC: CPU-Ausnahme Vektor 0x", 0
 message_fault_address:

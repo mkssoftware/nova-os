@@ -38,4 +38,6 @@ NOVA: Process.OpenSelf Handle typ- und rechtegeprueft
 NOVA: Userspace Thread.QuerySelf erfolgreich
 NOVA: Thread.OpenSelf Handle typ- und rechtegeprueft
 NOVA: Userspace IPC Inline-Roundtrip atomar erfolgreich
+NOVA: Userspace VFS.OpenRoot Handle erfolgreich
+NOVA: Userspace VFS.Lookup Pfad '/' erfolgreich
 NOVA: Shared Service Page im Userspace validiert

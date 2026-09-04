@@ -25,7 +25,8 @@ enum NovaServiceId {
 
 enum NovaCoreOperationId {
     NOVA_CORE_OPERATION_EXIT = 1,
-    NOVA_CORE_OPERATION_READY = 2
+    NOVA_CORE_OPERATION_READY = 2,
+    NOVA_CORE_OPERATION_CLOSE_HANDLE = 3
 };
 
 enum NovaProcessOperationId {
@@ -41,6 +42,11 @@ enum NovaThreadOperationId {
 enum NovaIpcOperationId {
     NOVA_IPC_OPERATION_SEND = 1,
     NOVA_IPC_OPERATION_RECEIVE = 2
+};
+
+enum NovaVfsOperationId {
+    NOVA_VFS_OPERATION_OPEN_ROOT = 1,
+    NOVA_VFS_OPERATION_LOOKUP = 2
 };
 
 enum NovaStatus {
@@ -83,6 +89,13 @@ typedef struct NovaIdentityResultV1 {
     uint32_t Reserved;
 } NovaIdentityResultV1;
 
+typedef struct NovaHandleCloseArgumentsV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t Handle;
+    uint32_t Reserved;
+} NovaHandleCloseArgumentsV1;
+
 typedef struct NovaSharedServicePageV1 {
     uint32_t Signature;
     uint32_t StructSize;
@@ -108,6 +121,17 @@ typedef struct NovaIpcPacketV1 {
     uint8_t Payload[8];
 } NovaIpcPacketV1;
 
+typedef struct NovaVfsLookupArgumentsV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t DirectoryHandle;
+    uint32_t PathAddress;
+    uint32_t PathLength;
+    uint32_t Flags;
+    uint32_t ResultHandle;
+    uint32_t Reserved;
+} NovaVfsLookupArgumentsV1;
+
 _Static_assert(sizeof(NovaAbiVersion) == 4,
                "NovaAbiVersion ABI size changed");
 _Static_assert(sizeof(NovaSyscallRequestV1) == 32,
@@ -118,10 +142,14 @@ _Static_assert(sizeof(NovaCoreExitArgumentsV1) == 16,
                "NovaCoreExitArgumentsV1 ABI size changed");
 _Static_assert(sizeof(NovaIdentityResultV1) == 16,
                "NovaIdentityResultV1 ABI size changed");
+_Static_assert(sizeof(NovaHandleCloseArgumentsV1) == 16,
+               "NovaHandleCloseArgumentsV1 ABI size changed");
 _Static_assert(sizeof(NovaSharedServicePageV1) == 64,
                "NovaSharedServicePageV1 ABI size changed");
 _Static_assert(sizeof(NovaIpcPacketV1) == 48,
                "NovaIpcPacketV1 ABI size changed");
+_Static_assert(sizeof(NovaVfsLookupArgumentsV1) == 32,
+               "NovaVfsLookupArgumentsV1 ABI size changed");
 
 /* x86-32: EAX=Service, EBX=Operation, ECX=Major|Minor<<16,
  * EDX=Argumentzeiger, ESI=Argumentgröße, EAX=Status. */
