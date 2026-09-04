@@ -937,7 +937,7 @@ heap_bytes:       dd 0
 OBJECT_API_SIZE       equ 32
 OBJECT_API_ABI_MAJOR  equ 1
 OBJECT_API_ABI_MINOR  equ 0
-OBJECT_TABLE_CAPACITY equ 16
+OBJECT_TABLE_CAPACITY equ 32
 OBJECT_HEADER_SIZE    equ 32
 OBJECT_STATE_LIVE     equ 1
 
@@ -1134,6 +1134,8 @@ HANDLE_ENTRY_SIZE     equ 24
 HANDLE_STATE_ACTIVE   equ 1
 HANDLE_RIGHT_QUERY    equ 0x00000001
 HANDLE_RIGHT_WAIT     equ 0x00000002
+HANDLE_RIGHT_SEND     equ 0x00000004
+HANDLE_RIGHT_RECEIVE  equ 0x00000008
 HANDLE_FLAG_PROTECTED equ 0x00000010
 HANDLE_OBJECT equ 0
 HANDLE_RIGHTS equ 4
@@ -2773,9 +2775,12 @@ SYSCALL_ABI_VERSION         equ 0x00000001
 SYSCALL_SERVICE_CORE        equ 1
 SYSCALL_SERVICE_PROCESS     equ 2
 SYSCALL_SERVICE_THREAD      equ 3
+SYSCALL_SERVICE_IPC         equ 5
 SYSCALL_CORE_EXIT           equ 1
 SYSCALL_CORE_READY          equ 2
 SYSCALL_QUERY_SELF          equ 1
+SYSCALL_IPC_SEND            equ 1
+SYSCALL_IPC_RECEIVE         equ 2
 SYSCALL_STATUS_OK           equ 0
 SYSCALL_STATUS_ABI          equ -1
 SYSCALL_STATUS_SIZE         equ -4
@@ -2792,7 +2797,7 @@ SHARED_SERVICE_SIZE         equ 64
 SHARED_FEATURE_INT80        equ 0x00000001
 SHARED_FEATURE_COPY_IO      equ 0x00000002
 SHARED_FEATURE_PREEMPT      equ 0x00000004
-SHARED_SERVICE_BITMAP       equ 0x00000007 ; Core, Process, Thread
+SHARED_SERVICE_BITMAP       equ 0x00000017 ; Core, Process, Thread, IPC
 
 userspace_initialize:
     ; TSS stellt für Ring-3-Interrupts einen kontrollierten Kernelstack bereit.
@@ -2863,6 +2868,10 @@ userspace_initialize:
     mov edx, SECURITY_CAP_SERVICE
     call security_grant
     jc .invalid
+    mov eax, 2
+    mov edx, SECURITY_CAP_IPC
+    call security_grant
+    jc .invalid
 
     ; Der Bootstrap-Kernelthread (TID 1 / Scheduler-Slot 0) wird atomar zum
     ; ersten Userspace-Thread des neuen Prozesses weitergeführt.
@@ -2911,6 +2920,8 @@ userspace_initialize:
     mov ecx, HANDLE_RIGHT_QUERY
     call handle_resolve
     jnc .invalid
+    call userspace_ipc_initialize
+    jc .invalid
 
     ; Grenztests der öffentlichen Copy-in-Prüfung.
     mov esi, USER_ADDRESS_MIN
@@ -2992,6 +3003,29 @@ userspace_program_start:
     cmp dword [USER_STACK_ADDRESS - 24], 0
     je .failed
 
+    mov eax, SYSCALL_SERVICE_IPC
+    mov ebx, SYSCALL_IPC_SEND
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_CODE_ADDRESS + userspace_ipc_packet - userspace_program_start
+    mov esi, 48
+    int 0x80
+    test eax, eax
+    jnz .failed
+    mov eax, SYSCALL_SERVICE_IPC
+    mov ebx, SYSCALL_IPC_RECEIVE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 128
+    mov esi, 48
+    int 0x80
+    test eax, eax
+    jnz .failed
+    cmp dword [USER_STACK_ADDRESS - 112], 0x11223344
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 96], 4
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 88], 0x41564F4E
+    jne .failed
+
     ; Die feste Shared Service Page ist user-lesbar, aber nicht beschreibbar.
     cmp dword [SHARED_SERVICE_ADDRESS + 0], SHARED_SERVICE_SIGNATURE
     jne .failed
@@ -3036,6 +3070,17 @@ userspace_exit_arguments:
     dw 1, 0
     dd 0                            ; Exit-Code
     dd 0                            ; reserviert
+align 8
+userspace_ipc_packet:
+    dd 48
+    dw 1, 0
+    dd 0                            ; Send-Endpoint, zur Laufzeit gesetzt
+    dd 0
+    dq 0x0000000011223344
+    dq 0
+    dd 4
+    dd 0
+    db "NOVA",0,0,0,0
 userspace_program_end:
 
 ; ESI=Userspace-Adresse, ECX=Länge. CF=0 nur für vollständig enthaltene
@@ -3091,6 +3136,22 @@ syscall_copy_to_user:
     stc
     ret
 
+; ESI=Kernelquelle, EDI=Userspace-Ziel, ECX=Länge.
+syscall_copy_buffer_to_user:
+    push esi
+    push ecx
+    mov esi, edi
+    call syscall_validate_user_range
+    pop ecx
+    pop esi
+    jc .invalid
+    rep movsb
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
 ; EDX zeigt auf den von isr_common erzeugten, bereits auf dem TSS-Kernelstack
 ; liegenden Registerframe.
 syscall_dispatch:
@@ -3100,6 +3161,8 @@ syscall_dispatch:
     je .process
     cmp dword [edx + 44], SYSCALL_SERVICE_THREAD
     je .thread
+    cmp dword [edx + 44], SYSCALL_SERVICE_IPC
+    je .ipc
     cmp dword [edx + 44], SYSCALL_SERVICE_CORE
     jne .unknown_service
     cmp dword [edx + 32], SYSCALL_CORE_READY
@@ -3164,12 +3227,13 @@ syscall_dispatch:
     cmp dword [edx + 32], SYSCALL_QUERY_SELF
     jne .unknown_operation
     mov eax, [userspace_pid]
+    mov esi, message_process_syscall_ok
     jmp .process_value
 .process_handle:
     mov eax, [userspace_process_handle]
+    mov esi, message_process_handle_ok
 .process_value:
     mov [syscall_identity], eax
-    mov esi, message_process_syscall_ok
     jmp .identity
 .thread:
     cmp dword [edx + 32], 2
@@ -3177,12 +3241,13 @@ syscall_dispatch:
     cmp dword [edx + 32], SYSCALL_QUERY_SELF
     jne .unknown_operation
     mov eax, [userspace_tid]
+    mov esi, message_thread_syscall_ok
     jmp .thread_value
 .thread_handle:
     mov eax, [userspace_thread_handle]
+    mov esi, message_thread_handle_ok
 .thread_value:
     mov [syscall_identity], eax
-    mov esi, message_thread_syscall_ok
 .identity:
     push esi
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
@@ -3220,6 +3285,79 @@ syscall_dispatch:
 .identity_pointer:
     pop esi
     jmp .bad_pointer
+.ipc:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 48
+    jb .bad_size
+    cmp dword [edx + 32], SYSCALL_IPC_SEND
+    je .ipc_send
+    cmp dword [edx + 32], SYSCALL_IPC_RECEIVE
+    je .ipc_receive
+    jmp .unknown_operation
+.ipc_send:
+    mov esi, [edx + 36]
+    mov ecx, 48
+    mov edi, userspace_ipc_copy
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [userspace_ipc_copy], 48
+    jne .bad_size
+    cmp dword [userspace_ipc_copy + 4], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [userspace_ipc_copy + 32], 8
+    ja .bad_size
+    cmp dword [userspace_ipc_copy + 36], 0
+    jne .bad_reserved
+    mov eax, [userspace_pid]
+    mov edx, [userspace_ipc_copy + 8]
+    mov ebx, OBJECT_TYPE_IPC_ENDPOINT
+    mov ecx, HANDLE_RIGHT_SEND
+    call handle_resolve
+    jc .access_denied
+    cmp dword [userspace_ipc_count], 0
+    jne .ipc_queue_full
+    mov esi, userspace_ipc_copy
+    mov edi, userspace_ipc_queue
+    mov ecx, 12
+    rep movsd
+    mov dword [userspace_ipc_count], 1
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.ipc_receive:
+    cmp dword [userspace_ipc_count], 1
+    jne .ipc_would_block
+    mov eax, [userspace_pid]
+    mov edx, [userspace_ipc_receive_handle]
+    mov ebx, OBJECT_TYPE_IPC_ENDPOINT
+    mov ecx, HANDLE_RIGHT_RECEIVE
+    call handle_resolve
+    jc .access_denied
+    mov esi, userspace_ipc_queue
+    mov edi, userspace_ipc_copy
+    mov ecx, 12
+    rep movsd
+    mov eax, [userspace_ipc_receive_handle]
+    mov [userspace_ipc_copy + 8], eax
+    mov dword [userspace_ipc_count], 0
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov esi, userspace_ipc_copy
+    mov ecx, 48
+    call syscall_copy_buffer_to_user
+    jc .bad_pointer
+    mov esi, message_ipc_roundtrip_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.ipc_queue_full:
+    mov eax, -17
+    jmp .reject
+.ipc_would_block:
+    mov eax, -19
+    jmp .reject
 .unknown_service:
     mov eax, SYSCALL_STATUS_SERVICE
     jmp .reject
@@ -3263,6 +3401,63 @@ syscall_argument_buffer:
     times 16 db 0
 syscall_result_buffer:
     times 16 db 0
+
+OBJECT_TYPE_IPC_ENDPOINT equ 11
+
+userspace_ipc_initialize:
+    mov dword [userspace_ipc_count], 0
+    mov edi, userspace_ipc_queue
+    xor eax, eax
+    mov ecx, 48 / 4
+    rep stosd
+    mov eax, OBJECT_TYPE_IPC_ENDPOINT
+    mov edx, 1
+    mov ebx, 2
+    call object_create
+    jc .invalid
+    mov [userspace_ipc_send_object], eax
+    mov eax, OBJECT_TYPE_IPC_ENDPOINT
+    mov edx, 2
+    mov ebx, 1
+    call object_create
+    jc .invalid
+    mov [userspace_ipc_receive_object], eax
+    mov eax, 2
+    mov edx, [userspace_ipc_send_object]
+    mov ebx, OBJECT_TYPE_IPC_ENDPOINT
+    mov ecx, HANDLE_RIGHT_SEND
+    xor esi, esi
+    call handle_create
+    jc .invalid
+    mov [userspace_ipc_send_handle], eax
+    mov eax, 2
+    mov edx, [userspace_ipc_receive_object]
+    mov ebx, OBJECT_TYPE_IPC_ENDPOINT
+    mov ecx, HANDLE_RIGHT_RECEIVE | HANDLE_RIGHT_WAIT
+    xor esi, esi
+    call handle_create
+    jc .invalid
+    mov [userspace_ipc_receive_handle], eax
+    mov edi, [userspace_code_page]
+    add edi, userspace_ipc_packet - userspace_program_start + 8
+    mov eax, [userspace_ipc_send_handle]
+    mov [edi], eax
+    cmp dword [handle_active_count], 4
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+userspace_ipc_send_object:    dd 0
+userspace_ipc_receive_object: dd 0
+userspace_ipc_send_handle:    dd 0
+userspace_ipc_receive_handle: dd 0
+userspace_ipc_count:          dd 0
+align 4
+userspace_ipc_copy:  times 48 db 0
+userspace_ipc_queue: times 48 db 0
 
 ; Erstellt eine ausschließlich lesbare, öffentliche Service-Informationsseite.
 ; Physische Adresse und interne Kernelobjekte werden darin nie veröffentlicht.
@@ -3311,7 +3506,8 @@ SECURITY_CAP_MEMORY     equ 0x00000001
 SECURITY_CAP_IO         equ 0x00000002
 SECURITY_CAP_SERVICE    equ 0x00000004
 SECURITY_CAP_ADMIN      equ 0x00000008
-SECURITY_KERNEL_CAPS    equ 0x0000000F
+SECURITY_CAP_IPC        equ 0x00000010
+SECURITY_KERNEL_CAPS    equ 0x0000001F
 
 security_initialize:
     mov edi, security_table
@@ -3415,7 +3611,7 @@ security_self_test:
     cmp eax, 1
     jne .invalid
     mov eax, 1
-    mov edx, 0x00000010
+    mov edx, 0x00000020
     call security_check
     jnc .invalid
     mov eax, 0xFFFFFFFF
@@ -5356,10 +5552,16 @@ message_userspace_error:
     db "NOVA PANIC: initialer Userspace-Prozess nicht startbar", 13, 10, 0
 message_process_syscall_ok:
     db "NOVA: Userspace Process.QuerySelf erfolgreich", 13, 10, 0
+message_process_handle_ok:
+    db "NOVA: Process.OpenSelf Handle typ- und rechtegeprueft", 13, 10, 0
 message_thread_syscall_ok:
     db "NOVA: Userspace Thread.QuerySelf erfolgreich", 13, 10, 0
+message_thread_handle_ok:
+    db "NOVA: Thread.OpenSelf Handle typ- und rechtegeprueft", 13, 10, 0
 message_shared_service_ok:
     db "NOVA: Shared Service Page im Userspace validiert", 13, 10, 0
+message_ipc_roundtrip_ok:
+    db "NOVA: Userspace IPC Inline-Roundtrip atomar erfolgreich", 13, 10, 0
 message_exception:
     db "NOVA PANIC: CPU-Ausnahme Vektor 0x", 0
 message_fault_address:

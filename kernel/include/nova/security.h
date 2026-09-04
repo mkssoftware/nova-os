@@ -7,6 +7,7 @@
 #define NOVA_CAP_IO      (1u << 1)
 #define NOVA_CAP_SERVICE (1u << 2)
 #define NOVA_CAP_ADMIN   (1u << 3)
+#define NOVA_CAP_IPC     (1u << 4)
 typedef struct nova_security_record {
     uint32_t ProcessId;
     uint32_t Capabilities;

@@ -27,6 +27,7 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(NovaCoreExitArgumentsV1)==16&&
            sizeof(NovaIdentityResultV1)==16&&
            sizeof(NovaSharedServicePageV1)==64&&
+           sizeof(NovaIpcPacketV1)==48&&
            sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&
            sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&
            sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&

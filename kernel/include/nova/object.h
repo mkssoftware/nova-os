@@ -5,7 +5,7 @@
 
 #define NOVA_OBJECT_ABI_MAJOR 1u
 #define NOVA_OBJECT_ABI_MINOR 0u
-#define NOVA_OBJECT_TABLE_CAPACITY 16u
+#define NOVA_OBJECT_TABLE_CAPACITY 32u
 
 typedef uint32_t nova_handle_t;
 

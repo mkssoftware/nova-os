@@ -38,6 +38,11 @@ enum NovaThreadOperationId {
     NOVA_THREAD_OPERATION_OPEN_SELF = 2
 };
 
+enum NovaIpcOperationId {
+    NOVA_IPC_OPERATION_SEND = 1,
+    NOVA_IPC_OPERATION_RECEIVE = 2
+};
+
 enum NovaStatus {
     NOVA_STATUS_OK = 0,
     NOVA_STATUS_ABI_INCOMPATIBLE = -1,
@@ -91,6 +96,18 @@ typedef struct NovaSharedServicePageV1 {
     uint32_t Reserved[6];
 } NovaSharedServicePageV1;
 
+typedef struct NovaIpcPacketV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t EndpointHandle;
+    uint32_t Flags;
+    uint64_t MessageId;
+    uint64_t CorrelationId;
+    uint32_t PayloadSize;
+    uint32_t Reserved;
+    uint8_t Payload[8];
+} NovaIpcPacketV1;
+
 _Static_assert(sizeof(NovaAbiVersion) == 4,
                "NovaAbiVersion ABI size changed");
 _Static_assert(sizeof(NovaSyscallRequestV1) == 32,
@@ -103,6 +120,8 @@ _Static_assert(sizeof(NovaIdentityResultV1) == 16,
                "NovaIdentityResultV1 ABI size changed");
 _Static_assert(sizeof(NovaSharedServicePageV1) == 64,
                "NovaSharedServicePageV1 ABI size changed");
+_Static_assert(sizeof(NovaIpcPacketV1) == 48,
+               "NovaIpcPacketV1 ABI size changed");
 
 /* x86-32: EAX=Service, EBX=Operation, ECX=Major|Minor<<16,
  * EDX=Argumentzeiger, ESI=Argumentgröße, EAX=Status. */

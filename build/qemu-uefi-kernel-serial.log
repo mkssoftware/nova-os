@@ -34,5 +34,8 @@ NOVA: BOOT phase=0x0000000B last_phase=0x0000000A
 NOVA: Kernel Context, Textmodus aktiv
 NOVA_KERNEL_READY
 NOVA: Userspace Process.QuerySelf erfolgreich
+NOVA: Process.OpenSelf Handle typ- und rechtegeprueft
 NOVA: Userspace Thread.QuerySelf erfolgreich
+NOVA: Thread.OpenSelf Handle typ- und rechtegeprueft
+NOVA: Userspace IPC Inline-Roundtrip atomar erfolgreich
 NOVA: Shared Service Page im Userspace validiert
