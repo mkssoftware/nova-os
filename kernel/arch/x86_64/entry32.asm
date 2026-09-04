@@ -108,6 +108,9 @@ kernel_entry:
     mov esi, message_object_manager_ok
     call serial_write_string
 
+    call handle_manager_initialize
+    jc panic_handle_manager
+
     call component_manager_initialize
     jc panic_component_manager
     call component_manager_self_test
@@ -289,6 +292,12 @@ panic_object_manager:
     mov eax, 0x00002008
     mov edx, 8
     mov esi, message_object_manager_error
+    jmp kernel_panic
+
+panic_handle_manager:
+    mov eax, 0x00002016
+    mov edx, 22
+    mov esi, message_handle_manager_error
     jmp kernel_panic
 
 panic_component_manager:
@@ -1115,6 +1124,188 @@ object_live_count: dd 0
 align 4
 object_table:       times OBJECT_TABLE_CAPACITY dd 0
 object_generations: times OBJECT_TABLE_CAPACITY dd 0
+
+; ---------------------------------------------------------------------------
+; Prozesslokaler Handle Manager (NPSPEC-KERNEL-0013)
+; ---------------------------------------------------------------------------
+HANDLE_API_SIZE       equ 32
+HANDLE_CAPACITY       equ 8
+HANDLE_ENTRY_SIZE     equ 24
+HANDLE_STATE_ACTIVE   equ 1
+HANDLE_RIGHT_QUERY    equ 0x00000001
+HANDLE_RIGHT_WAIT     equ 0x00000002
+HANDLE_FLAG_PROTECTED equ 0x00000010
+HANDLE_OBJECT equ 0
+HANDLE_RIGHTS equ 4
+HANDLE_FLAGS  equ 8
+HANDLE_GEN    equ 12
+HANDLE_TYPE   equ 16
+HANDLE_STATE  equ 20
+
+handle_manager_initialize:
+    mov edi, handle_table
+    xor eax, eax
+    mov ecx, (HANDLE_CAPACITY * HANDLE_ENTRY_SIZE) / 4
+    rep stosd
+    mov edi, handle_generations
+    mov eax, 1
+    mov ecx, HANDLE_CAPACITY
+    rep stosd
+    mov dword [handle_owner_pid], 0
+    mov dword [handle_active_count], 0
+    clc
+    ret
+
+; EAX=PID, EDX=Kernelobjekthandle, EBX=Typ, ECX=Rechte, ESI=Flags.
+; EAX=prozesslokaler, generationsgeschützter Handle.
+handle_create:
+    cmp eax, [handle_owner_pid]
+    jne .invalid
+    test eax, eax
+    jz .invalid
+    test ecx, ecx
+    jz .invalid
+    mov [handle_temp_object], edx
+    mov [handle_temp_type], ebx
+    mov [handle_temp_rights], ecx
+    mov [handle_temp_flags], esi
+    mov eax, edx
+    call object_lookup
+    jc .invalid
+    mov ecx, [handle_temp_type]
+    cmp [eax + OBJ_TYPE], ecx
+    jne .invalid
+    xor edi, edi
+.scan:
+    cmp edi, HANDLE_CAPACITY
+    jae .invalid
+    mov eax, edi
+    imul eax, HANDLE_ENTRY_SIZE
+    add eax, handle_table
+    cmp dword [eax + HANDLE_STATE], 0
+    je .slot
+    inc edi
+    jmp .scan
+.slot:
+    mov [handle_temp_slot], eax
+    mov eax, [handle_temp_object]
+    call object_retain
+    jc .invalid
+    mov eax, [handle_temp_slot]
+    mov edx, [handle_temp_object]
+    mov [eax + HANDLE_OBJECT], edx
+    mov edx, [handle_temp_rights]
+    mov [eax + HANDLE_RIGHTS], edx
+    mov edx, [handle_temp_flags]
+    mov [eax + HANDLE_FLAGS], edx
+    mov edx, [handle_generations + edi * 4]
+    mov [eax + HANDLE_GEN], edx
+    mov edx, [handle_temp_type]
+    mov [eax + HANDLE_TYPE], edx
+    mov dword [eax + HANDLE_STATE], HANDLE_STATE_ACTIVE
+    inc dword [handle_active_count]
+    mov eax, [handle_generations + edi * 4]
+    shl eax, 16
+    lea edx, [edi + 1]
+    or eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=PID, EDX=Handle, EBX=erwarteter Typ, ECX=benötigte Rechte.
+; EAX=interne Objektadresse ausschließlich für den Kernel.
+handle_resolve:
+    cmp eax, [handle_owner_pid]
+    jne .invalid
+    mov edi, edx
+    and edi, 0xFFFF
+    jz .invalid
+    dec edi
+    cmp edi, HANDLE_CAPACITY
+    jae .invalid
+    mov esi, edi
+    imul esi, HANDLE_ENTRY_SIZE
+    add esi, handle_table
+    cmp dword [esi + HANDLE_STATE], HANDLE_STATE_ACTIVE
+    jne .invalid
+    mov eax, edx
+    shr eax, 16
+    cmp eax, [esi + HANDLE_GEN]
+    jne .invalid
+    cmp ebx, [esi + HANDLE_TYPE]
+    jne .invalid
+    mov eax, [esi + HANDLE_RIGHTS]
+    and eax, ecx
+    cmp eax, ecx
+    jne .invalid
+    mov eax, [esi + HANDLE_OBJECT]
+    call object_lookup
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=PID, EDX=Handle. Geschützte Handles können nicht regulär geschlossen werden.
+handle_close:
+    cmp eax, [handle_owner_pid]
+    jne .invalid
+    mov edi, edx
+    and edi, 0xFFFF
+    jz .invalid
+    dec edi
+    cmp edi, HANDLE_CAPACITY
+    jae .invalid
+    mov esi, edi
+    imul esi, HANDLE_ENTRY_SIZE
+    add esi, handle_table
+    cmp dword [esi + HANDLE_STATE], HANDLE_STATE_ACTIVE
+    jne .invalid
+    mov eax, edx
+    shr eax, 16
+    cmp eax, [esi + HANDLE_GEN]
+    jne .invalid
+    test dword [esi + HANDLE_FLAGS], HANDLE_FLAG_PROTECTED
+    jnz .invalid
+    mov eax, [esi + HANDLE_OBJECT]
+    call object_release
+    jc .invalid
+    mov dword [esi + HANDLE_STATE], 0
+    inc dword [handle_generations + edi * 4]
+    and dword [handle_generations + edi * 4], 0xFFFF
+    jnz .generation_ok
+    mov dword [handle_generations + edi * 4], 1
+.generation_ok:
+    dec dword [handle_active_count]
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+handle_manager_api:
+    dd HANDLE_API_SIZE
+    dw 1, 0
+    dd HANDLE_CAPACITY
+    dd handle_create
+    dd handle_resolve
+    dd handle_close
+    dd handle_active_count
+    dd handle_table
+handle_owner_pid:    dd 0
+handle_active_count: dd 0
+handle_temp_object: dd 0
+handle_temp_type:   dd 0
+handle_temp_rights: dd 0
+handle_temp_flags:  dd 0
+handle_temp_slot:   dd 0
+align 4
+handle_generations: times HANDLE_CAPACITY dd 0
+handle_table: times HANDLE_CAPACITY * HANDLE_ENTRY_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Kernel Component Manager (ADR-2009)
@@ -2583,6 +2774,7 @@ SYSCALL_SERVICE_CORE        equ 1
 SYSCALL_SERVICE_PROCESS     equ 2
 SYSCALL_SERVICE_THREAD      equ 3
 SYSCALL_CORE_EXIT           equ 1
+SYSCALL_CORE_READY          equ 2
 SYSCALL_QUERY_SELF          equ 1
 SYSCALL_STATUS_OK           equ 0
 SYSCALL_STATUS_ABI          equ -1
@@ -2594,6 +2786,13 @@ SYSCALL_STATUS_ACCESS       equ -13
 SYSCALL_STATUS_POINTER      equ -15
 USER_ADDRESS_MIN            equ USER_CODE_ADDRESS
 USER_ADDRESS_MAX            equ USER_STACK_ADDRESS
+SHARED_SERVICE_ADDRESS      equ 0x00403000
+SHARED_SERVICE_SIGNATURE    equ 0x5353564E ; "NVSS"
+SHARED_SERVICE_SIZE         equ 64
+SHARED_FEATURE_INT80        equ 0x00000001
+SHARED_FEATURE_COPY_IO      equ 0x00000002
+SHARED_FEATURE_PREEMPT      equ 0x00000004
+SHARED_SERVICE_BITMAP       equ 0x00000007 ; Core, Process, Thread
 
 userspace_initialize:
     ; TSS stellt für Ring-3-Interrupts einen kontrollierten Kernelstack bereit.
@@ -2651,6 +2850,9 @@ userspace_initialize:
     mov eax, cr3
     mov cr3, eax                    ; TLB nach den neuen PTEs invalidieren
 
+    call shared_service_page_initialize
+    jc .invalid
+
     mov eax, PROCESS_FLAG_SYSTEM_SERVICE | PROCESS_FLAG_USERSPACE
     mov edx, cr3
     call process_create
@@ -2672,6 +2874,44 @@ userspace_initialize:
     mov dword [eax + THREAD_CONTEXT], 0
     mov dword [userspace_tid], 1
 
+    mov dword [handle_owner_pid], 2
+    mov eax, 2
+    call process_lookup
+    jc .invalid
+    mov edx, [eax + PROCESS_HANDLE]
+    mov eax, 2
+    mov ebx, OBJECT_TYPE_PROCESS
+    mov ecx, HANDLE_RIGHT_QUERY | HANDLE_RIGHT_WAIT
+    mov esi, HANDLE_FLAG_PROTECTED
+    call handle_create
+    jc .invalid
+    mov [userspace_process_handle], eax
+    mov eax, 1
+    call thread_lookup
+    jc .invalid
+    mov edx, [eax + THREAD_HANDLE]
+    mov eax, 2
+    mov ebx, OBJECT_TYPE_THREAD
+    mov ecx, HANDLE_RIGHT_QUERY | HANDLE_RIGHT_WAIT
+    mov esi, HANDLE_FLAG_PROTECTED
+    call handle_create
+    jc .invalid
+    mov [userspace_thread_handle], eax
+    cmp dword [handle_active_count], 2
+    jne .invalid
+    mov edx, [userspace_process_handle]
+    mov eax, 2
+    mov ebx, OBJECT_TYPE_PROCESS
+    mov ecx, HANDLE_RIGHT_QUERY
+    call handle_resolve
+    jc .invalid
+    mov edx, [userspace_process_handle]
+    mov eax, 2
+    mov ebx, OBJECT_TYPE_THREAD       ; Typverwechslung muss scheitern
+    mov ecx, HANDLE_RIGHT_QUERY
+    call handle_resolve
+    jnc .invalid
+
     ; Grenztests der öffentlichen Copy-in-Prüfung.
     mov esi, USER_ADDRESS_MIN
     mov ecx, 16
@@ -2686,6 +2926,7 @@ userspace_initialize:
     call syscall_validate_user_range
     jnc .invalid
     mov dword [userspace_exit_seen], 0
+    mov dword [userspace_ready_seen], 0
     clc
     ret
 .invalid:
@@ -2718,6 +2959,16 @@ userspace_program_start:
     jnz .failed
     cmp dword [USER_STACK_ADDRESS - 56], 2
     jne .failed
+    mov eax, SYSCALL_SERVICE_PROCESS
+    mov ebx, 2                       ; Process.OpenSelf
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 64
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jnz .failed
+    cmp dword [USER_STACK_ADDRESS - 56], 0
+    je .failed
 
     ; Thread.QuerySelf -> TID 1 des weitergeführten Bootstrap-Threads.
     mov eax, SYSCALL_SERVICE_THREAD
@@ -2730,6 +2981,35 @@ userspace_program_start:
     jnz .failed
     cmp dword [USER_STACK_ADDRESS - 24], 1
     jne .failed
+    mov eax, SYSCALL_SERVICE_THREAD
+    mov ebx, 2                       ; Thread.OpenSelf
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 32
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jnz .failed
+    cmp dword [USER_STACK_ADDRESS - 24], 0
+    je .failed
+
+    ; Die feste Shared Service Page ist user-lesbar, aber nicht beschreibbar.
+    cmp dword [SHARED_SERVICE_ADDRESS + 0], SHARED_SERVICE_SIGNATURE
+    jne .failed
+    cmp dword [SHARED_SERVICE_ADDRESS + 4], SHARED_SERVICE_SIZE
+    jne .failed
+    cmp dword [SHARED_SERVICE_ADDRESS + 8], SYSCALL_ABI_VERSION
+    jne .failed
+    cmp dword [SHARED_SERVICE_ADDRESS + 20], PMM_PAGE_SIZE
+    jne .failed
+
+    mov eax, SYSCALL_SERVICE_CORE
+    mov ebx, SYSCALL_CORE_READY
+    mov ecx, SYSCALL_ABI_VERSION
+    xor edx, edx
+    xor esi, esi
+    int 0x80
+    test eax, eax
+    jnz .failed
 .running:
     pause
     jmp .running
@@ -2822,6 +3102,8 @@ syscall_dispatch:
     je .thread
     cmp dword [edx + 44], SYSCALL_SERVICE_CORE
     jne .unknown_service
+    cmp dword [edx + 32], SYSCALL_CORE_READY
+    je .core_ready
     cmp dword [edx + 32], SYSCALL_CORE_EXIT
     jne .unknown_operation
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
@@ -2859,17 +3141,46 @@ syscall_dispatch:
     mov dword [edx + 60], CODE_SEGMENT
     and dword [edx + 64], 0xFFFFCFFF
     ret
+.core_ready:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 0
+    jne .bad_size
+    cmp dword [edx + 36], 0
+    jne .bad_pointer
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_SERVICE
+    call security_check
+    jc .access_denied
+    mov dword [userspace_ready_seen], 1
+    mov esi, message_shared_service_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
 .process:
+    cmp dword [edx + 32], 2
+    je .process_handle
     cmp dword [edx + 32], SYSCALL_QUERY_SELF
     jne .unknown_operation
     mov eax, [userspace_pid]
+    jmp .process_value
+.process_handle:
+    mov eax, [userspace_process_handle]
+.process_value:
     mov [syscall_identity], eax
     mov esi, message_process_syscall_ok
     jmp .identity
 .thread:
+    cmp dword [edx + 32], 2
+    je .thread_handle
     cmp dword [edx + 32], SYSCALL_QUERY_SELF
     jne .unknown_operation
     mov eax, [userspace_tid]
+    jmp .thread_value
+.thread_handle:
+    mov eax, [userspace_thread_handle]
+.thread_value:
     mov [syscall_identity], eax
     mov esi, message_thread_syscall_ok
 .identity:
@@ -2937,6 +3248,8 @@ syscall_dispatch:
 
 userspace_pid:        dd 0
 userspace_tid:        dd 0
+userspace_process_handle: dd 0
+userspace_thread_handle:  dd 0
 userspace_code_page:  dd 0
 userspace_stack_page: dd 0
 userspace_exit_seen:  dd 0
@@ -2950,6 +3263,45 @@ syscall_argument_buffer:
     times 16 db 0
 syscall_result_buffer:
     times 16 db 0
+
+; Erstellt eine ausschließlich lesbare, öffentliche Service-Informationsseite.
+; Physische Adresse und interne Kernelobjekte werden darin nie veröffentlicht.
+shared_service_page_initialize:
+    call pmm_alloc_page
+    test eax, eax
+    jz .invalid
+    mov [shared_service_page], eax
+    mov edi, eax
+    xor eax, eax
+    mov ecx, PMM_PAGE_SIZE / 4
+    rep stosd
+    mov edi, [shared_service_page]
+    mov dword [edi + 0], SHARED_SERVICE_SIGNATURE
+    mov dword [edi + 4], SHARED_SERVICE_SIZE
+    mov dword [edi + 8], SYSCALL_ABI_VERSION
+    mov dword [edi + 12], SHARED_FEATURE_INT80 | SHARED_FEATURE_COPY_IO | SHARED_FEATURE_PREEMPT
+    mov dword [edi + 16], SHARED_SERVICE_BITMAP
+    mov dword [edi + 20], PMM_PAGE_SIZE
+    mov dword [edi + 24], 100
+    mov dword [edi + 28], BOOT_PHASE_USERSPACE
+    mov eax, [timer_ticks]
+    mov [edi + 32], eax
+    mov dword [edi + 36], 0
+    mov eax, SHARED_SERVICE_ADDRESS
+    mov edx, [shared_service_page]
+    mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_USER
+    call paging_map_page
+    jc .invalid
+    mov eax, cr3
+    mov cr3, eax
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+shared_service_page: dd 0
+userspace_ready_seen: dd 0
 
 ; Kernel Security / Capability Manager (ADR-2013)
 SECURITY_API_SIZE       equ 32
@@ -4950,6 +5302,8 @@ message_object_manager_ok:
     db "NOVA: Object Manager ABI 1.0 bereit", 13, 10, 0
 message_object_manager_error:
     db "NOVA PANIC: Kernel Object Manager nicht initialisierbar", 13, 10, 0
+message_handle_manager_error:
+    db "NOVA PANIC: Prozesslokaler Handle Manager nicht initialisierbar", 13, 10, 0
 message_component_manager_ok:
     db "NOVA: Component Manager ABI 1.0 bereit", 13, 10, 0
 message_component_manager_error:
@@ -5004,6 +5358,8 @@ message_process_syscall_ok:
     db "NOVA: Userspace Process.QuerySelf erfolgreich", 13, 10, 0
 message_thread_syscall_ok:
     db "NOVA: Userspace Thread.QuerySelf erfolgreich", 13, 10, 0
+message_shared_service_ok:
+    db "NOVA: Shared Service Page im Userspace validiert", 13, 10, 0
 message_exception:
     db "NOVA PANIC: CPU-Ausnahme Vektor 0x", 0
 message_fault_address:

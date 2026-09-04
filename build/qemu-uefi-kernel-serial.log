@@ -35,3 +35,4 @@ NOVA: Kernel Context, Textmodus aktiv
 NOVA_KERNEL_READY
 NOVA: Userspace Process.QuerySelf erfolgreich
 NOVA: Userspace Thread.QuerySelf erfolgreich
+NOVA: Shared Service Page im Userspace validiert

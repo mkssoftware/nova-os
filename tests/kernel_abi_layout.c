@@ -6,6 +6,9 @@
 #include "../kernel/include/nova/pmm.h"
 #include "../kernel/include/nova/vfs.h"
 #include "../kernel/include/nova/syscall.h"
+#include "../kernel/include/nova/handle.h"
+#include "../kernel/include/nova/handle.h"
+#include "../kernel/include/nova/handle.h"
 
 _Static_assert(NOVA_BOOT_PHASE_COUNT==12,"Kernel boot phase count changed");
 _Static_assert(NOVA_BOOT_PHASE_OPERATIONAL==11,"Kernel operational phase changed");
@@ -23,5 +26,9 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(NovaSyscallRequestV1)==32&&
            sizeof(NovaCoreExitArgumentsV1)==16&&
            sizeof(NovaIdentityResultV1)==16&&
+           sizeof(NovaSharedServicePageV1)==64&&
+           sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&
+           sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&
+           sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&
            sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==32;
 }

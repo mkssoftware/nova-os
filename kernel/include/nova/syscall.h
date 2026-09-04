@@ -6,6 +6,8 @@
 
 #define NOVA_SYSCALL_ABI_MAJOR 1u
 #define NOVA_SYSCALL_ABI_MINOR 0u
+#define NOVA_SHARED_SERVICE_PAGE_ADDRESS 0x00403000u
+#define NOVA_SHARED_SERVICE_PAGE_SIGNATURE 0x5353564Eu /* NVSS */
 
 enum NovaServiceId {
     NOVA_SERVICE_CORE = 1,
@@ -22,15 +24,18 @@ enum NovaServiceId {
 };
 
 enum NovaCoreOperationId {
-    NOVA_CORE_OPERATION_EXIT = 1
+    NOVA_CORE_OPERATION_EXIT = 1,
+    NOVA_CORE_OPERATION_READY = 2
 };
 
 enum NovaProcessOperationId {
-    NOVA_PROCESS_OPERATION_QUERY_SELF = 1
+    NOVA_PROCESS_OPERATION_QUERY_SELF = 1,
+    NOVA_PROCESS_OPERATION_OPEN_SELF = 2
 };
 
 enum NovaThreadOperationId {
-    NOVA_THREAD_OPERATION_QUERY_SELF = 1
+    NOVA_THREAD_OPERATION_QUERY_SELF = 1,
+    NOVA_THREAD_OPERATION_OPEN_SELF = 2
 };
 
 enum NovaStatus {
@@ -73,6 +78,19 @@ typedef struct NovaIdentityResultV1 {
     uint32_t Reserved;
 } NovaIdentityResultV1;
 
+typedef struct NovaSharedServicePageV1 {
+    uint32_t Signature;
+    uint32_t StructSize;
+    NovaAbiVersion KernelAbi;
+    uint32_t FeatureFlags;
+    uint32_t ServiceBitmap;
+    uint32_t PageSize;
+    uint32_t TimerFrequencyHz;
+    uint32_t BootPhase;
+    uint64_t BootTickSnapshot;
+    uint32_t Reserved[6];
+} NovaSharedServicePageV1;
+
 _Static_assert(sizeof(NovaAbiVersion) == 4,
                "NovaAbiVersion ABI size changed");
 _Static_assert(sizeof(NovaSyscallRequestV1) == 32,
@@ -83,6 +101,8 @@ _Static_assert(sizeof(NovaCoreExitArgumentsV1) == 16,
                "NovaCoreExitArgumentsV1 ABI size changed");
 _Static_assert(sizeof(NovaIdentityResultV1) == 16,
                "NovaIdentityResultV1 ABI size changed");
+_Static_assert(sizeof(NovaSharedServicePageV1) == 64,
+               "NovaSharedServicePageV1 ABI size changed");
 
 /* x86-32: EAX=Service, EBX=Operation, ECX=Major|Minor<<16,
  * EDX=Argumentzeiger, ESI=Argumentgröße, EAX=Status. */
