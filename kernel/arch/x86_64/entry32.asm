@@ -198,6 +198,13 @@ kernel_entry:
     mov esi, message_vfs_ok
     call serial_write_string
 
+    call power_manager_initialize
+    jc panic_power_manager
+    call power_manager_self_test
+    jc panic_power_manager
+    mov esi, message_power_manager_ok
+    call serial_write_string
+
     ; Userspace ist die nächste, noch nicht abgeschlossene Bootphase. Der Kernel
     ; meldet deshalb bewusst noch keinen operationalen Zustand (Phase 11).
     mov dword [boot_phase_last_success], BOOT_PHASE_ROOT_FILESYSTEM
@@ -274,6 +281,12 @@ panic_vfs:
     mov eax, 0x00002014
     mov edx, 20
     mov esi, message_vfs_error
+    jmp kernel_panic
+
+panic_power_manager:
+    mov eax, 0x00002017
+    mov edx, 23
+    mov esi, message_power_manager_error
     jmp kernel_panic
 
 panic_userspace:
@@ -2777,6 +2790,7 @@ SYSCALL_SERVICE_PROCESS     equ 2
 SYSCALL_SERVICE_THREAD      equ 3
 SYSCALL_SERVICE_IPC         equ 5
 SYSCALL_SERVICE_VFS         equ 6
+SYSCALL_SERVICE_POWER       equ 7
 SYSCALL_CORE_EXIT           equ 1
 SYSCALL_CORE_READY          equ 2
 SYSCALL_CORE_CLOSE_HANDLE   equ 3
@@ -2785,6 +2799,9 @@ SYSCALL_IPC_SEND            equ 1
 SYSCALL_IPC_RECEIVE         equ 2
 SYSCALL_VFS_OPEN_ROOT       equ 1
 SYSCALL_VFS_LOOKUP          equ 2
+SYSCALL_POWER_QUERY_SYSTEM  equ 1
+SYSCALL_POWER_WAKE_ACQUIRE  equ 2
+SYSCALL_POWER_WAKE_RELEASE  equ 3
 SYSCALL_STATUS_OK           equ 0
 SYSCALL_STATUS_ABI          equ -1
 SYSCALL_STATUS_SIZE         equ -4
@@ -2801,7 +2818,7 @@ SHARED_SERVICE_SIZE         equ 64
 SHARED_FEATURE_INT80        equ 0x00000001
 SHARED_FEATURE_COPY_IO      equ 0x00000002
 SHARED_FEATURE_PREEMPT      equ 0x00000004
-SHARED_SERVICE_BITMAP       equ 0x00000037 ; Core, Process, Thread, IPC, VFS
+SHARED_SERVICE_BITMAP       equ 0x00000077 ; Core, Process, Thread, IPC, VFS, Power
 
 userspace_initialize:
     ; TSS stellt für Ring-3-Interrupts einen kontrollierten Kernelstack bereit.
@@ -2874,6 +2891,10 @@ userspace_initialize:
     jc .invalid
     mov eax, 2
     mov edx, SECURITY_CAP_IPC
+    call security_grant
+    jc .invalid
+    mov eax, 2
+    mov edx, SECURITY_CAP_POWER_QUERY | SECURITY_CAP_POWER_WAKE
     call security_grant
     jc .invalid
 
@@ -3077,6 +3098,61 @@ userspace_program_start:
     test eax, eax
     jnz .failed
 
+    ; Power.QuerySystem liefert ausschließlich capability-geschützte,
+    ; aggregierte Kernelzustände an den Bootstrap-Prozess.
+    mov eax, SYSCALL_SERVICE_POWER
+    mov ebx, SYSCALL_POWER_QUERY_SYSTEM
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 320
+    mov esi, 32
+    int 0x80
+    test eax, eax
+    jnz .failed
+    cmp dword [USER_STACK_ADDRESS - 320], 32
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 316], SYSCALL_ABI_VERSION
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 312], POWER_STATE_RUNNING
+    jne .failed
+    test dword [USER_STACK_ADDRESS - 308], (1 << POWER_STATE_SHUTDOWN)
+    jz .failed
+
+    ; Zeitlich begrenzten Wake Lock anfordern und mit dem ausgegebenen Token
+    ; wieder freigeben. Eine zweite Freigabe muss der Kernel ablehnen.
+    mov dword [USER_STACK_ADDRESS - 352], 16
+    mov dword [USER_STACK_ADDRESS - 348], SYSCALL_ABI_VERSION
+    mov dword [USER_STACK_ADDRESS - 344], 100 ; maximal eine Sekunde
+    mov dword [USER_STACK_ADDRESS - 340], 0
+    mov eax, SYSCALL_SERVICE_POWER
+    mov ebx, SYSCALL_POWER_WAKE_ACQUIRE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 352
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jnz .failed
+    mov eax, [USER_STACK_ADDRESS - 344]
+    mov dword [USER_STACK_ADDRESS - 368], 16
+    mov dword [USER_STACK_ADDRESS - 364], SYSCALL_ABI_VERSION
+    mov [USER_STACK_ADDRESS - 360], eax
+    mov dword [USER_STACK_ADDRESS - 356], 0
+    mov eax, SYSCALL_SERVICE_POWER
+    mov ebx, SYSCALL_POWER_WAKE_RELEASE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 368
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jnz .failed
+    mov eax, SYSCALL_SERVICE_POWER
+    mov ebx, SYSCALL_POWER_WAKE_RELEASE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 368
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jz .failed
+
     ; Die feste Shared Service Page ist user-lesbar, aber nicht beschreibbar.
     cmp dword [SHARED_SERVICE_ADDRESS + 0], SHARED_SERVICE_SIGNATURE
     jne .failed
@@ -3217,6 +3293,8 @@ syscall_dispatch:
     je .ipc
     cmp dword [edx + 44], SYSCALL_SERVICE_VFS
     je .vfs
+    cmp dword [edx + 44], SYSCALL_SERVICE_POWER
+    je .power
     cmp dword [edx + 44], SYSCALL_SERVICE_CORE
     jne .unknown_service
     cmp dword [edx + 32], SYSCALL_CORE_READY
@@ -3476,6 +3554,112 @@ syscall_dispatch:
     mov edx, [syscall_frame]
     mov dword [edx + 44], SYSCALL_STATUS_OK
     ret
+.power:
+    cmp dword [edx + 32], SYSCALL_POWER_QUERY_SYSTEM
+    je .power_query
+    cmp dword [edx + 32], SYSCALL_POWER_WAKE_ACQUIRE
+    je .power_wake_acquire
+    cmp dword [edx + 32], SYSCALL_POWER_WAKE_RELEASE
+    je .power_wake_release
+    jmp .unknown_operation
+.power_query:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 32
+    jb .bad_size
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_POWER_QUERY
+    call security_check
+    jc .access_denied
+    mov dword [syscall_power_result + 0], 32
+    mov dword [syscall_power_result + 4], SYSCALL_ABI_VERSION
+    mov eax, [power_current_state]
+    mov [syscall_power_result + 8], eax
+    mov dword [syscall_power_result + 12], POWER_SUPPORTED_MASK
+    mov eax, [power_profile]
+    mov [syscall_power_result + 16], eax
+    mov eax, [power_wake_lock_count]
+    mov [syscall_power_result + 20], eax
+    mov eax, [power_idle_entries]
+    mov [syscall_power_result + 24], eax
+    mov eax, [power_deep_idle_entries]
+    mov [syscall_power_result + 28], eax
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov esi, syscall_power_result
+    mov ecx, 32
+    call syscall_copy_buffer_to_user
+    jc .bad_pointer
+    mov esi, message_power_query_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.power_wake_acquire:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 16
+    jb .bad_size
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_POWER_WAKE
+    call security_check
+    jc .access_denied
+    mov edx, [syscall_frame]
+    mov esi, [edx + 36]
+    mov ecx, 16
+    mov edi, syscall_argument_buffer
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [syscall_argument_buffer], 16
+    jne .bad_size
+    cmp dword [syscall_argument_buffer + 4], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [syscall_argument_buffer + 12], 0
+    jne .bad_reserved
+    mov eax, [syscall_argument_buffer + 8]
+    call power_wake_lock_acquire
+    jc .unknown_operation
+    mov [syscall_argument_buffer + 8], eax
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov esi, syscall_argument_buffer
+    mov ecx, 16
+    call syscall_copy_buffer_to_user
+    jc .bad_pointer
+    mov esi, message_power_wake_acquire_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.power_wake_release:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 16
+    jb .bad_size
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_POWER_WAKE
+    call security_check
+    jc .access_denied
+    mov edx, [syscall_frame]
+    mov esi, [edx + 36]
+    mov ecx, 16
+    mov edi, syscall_argument_buffer
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [syscall_argument_buffer], 16
+    jne .bad_size
+    cmp dword [syscall_argument_buffer + 4], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [syscall_argument_buffer + 12], 0
+    jne .bad_reserved
+    mov eax, [syscall_argument_buffer + 8]
+    call power_wake_lock_release
+    jc .unknown_operation
+    mov esi, message_power_wake_release_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
 .vfs_lookup:
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
     jne .bad_abi
@@ -3577,6 +3761,7 @@ syscall_result_buffer:
     times 16 db 0
 syscall_vfs_buffer: times 32 db 0
 syscall_vfs_path:   times 4 db 0
+syscall_power_result: times 32 db 0
 
 OBJECT_TYPE_IPC_ENDPOINT equ 11
 
@@ -3714,7 +3899,10 @@ SECURITY_CAP_IO         equ 0x00000002
 SECURITY_CAP_SERVICE    equ 0x00000004
 SECURITY_CAP_ADMIN      equ 0x00000008
 SECURITY_CAP_IPC        equ 0x00000010
-SECURITY_KERNEL_CAPS    equ 0x0000001F
+SECURITY_CAP_POWER_QUERY equ 0x00000020
+SECURITY_CAP_POWER_WAKE equ 0x00000040
+SECURITY_CAP_POWER_SHUTDOWN equ 0x00000080
+SECURITY_KERNEL_CAPS    equ 0x000000FF
 
 security_initialize:
     mov edi, security_table
@@ -3818,7 +4006,7 @@ security_self_test:
     cmp eax, 1
     jne .invalid
     mov eax, 1
-    mov edx, 0x00000020
+    mov edx, 0x00000100
     call security_check
     jnc .invalid
     mov eax, 0xFFFFFFFF
@@ -4212,19 +4400,226 @@ kernel_operational_prepare:
 kernel_idle:
     sti
 .loop:
-    hlt
+    call power_cpu_idle
     jmp .loop
 
 kernel_shutdown:
     cli
-    mov esi, message_shutdown
+    call power_manager_request_shutdown
+    jc kernel_halt
+    call power_manager_platform_off
+    jmp kernel_halt
+
+; ---------------------------------------------------------------------------
+; Power Manager ABI 1.0 (NPSPEC-KERNEL-0021)
+; ---------------------------------------------------------------------------
+POWER_API_SIZE                 equ 64
+POWER_STATE_RUNNING            equ 0
+POWER_STATE_IDLE               equ 1
+POWER_STATE_SUSPEND_TO_IDLE    equ 2
+POWER_STATE_SUSPEND_TO_RAM     equ 3
+POWER_STATE_HIBERNATE          equ 4
+POWER_STATE_HYBRID_SLEEP       equ 5
+POWER_STATE_SHUTDOWN           equ 6
+POWER_STATE_RESTART            equ 7
+POWER_STATE_OFF                equ 8
+POWER_SUPPORTED_MASK           equ (1 << POWER_STATE_RUNNING) | (1 << POWER_STATE_IDLE) | (1 << POWER_STATE_SHUTDOWN) | (1 << POWER_STATE_RESTART) | (1 << POWER_STATE_OFF)
+POWER_PROFILE_BALANCED         equ 1
+POWER_PHASE_NONE               equ 0
+POWER_PHASE_REQUEST            equ 1
+POWER_PHASE_FREEZE_USERSPACE   equ 2
+POWER_PHASE_SYNC_STORAGE       equ 3
+POWER_PHASE_STOP_DEVICES       equ 4
+POWER_PHASE_PLATFORM_OFF       equ 5
+POWER_WAKE_LOCK_CAPACITY       equ 2
+POWER_IDLE_SHALLOW             equ 0
+POWER_IDLE_DEEP                equ 1
+
+power_manager_initialize:
+    mov dword [power_current_state], POWER_STATE_RUNNING
+    mov dword [power_target_state], POWER_STATE_RUNNING
+    mov dword [power_profile], POWER_PROFILE_BALANCED
+    mov dword [power_transition_phase], POWER_PHASE_NONE
+    mov dword [power_transition_active], 0
+    mov dword [power_shutdown_requests], 0
+    mov dword [power_transition_failures], 0
+    mov dword [power_wake_lock_count], 0
+    mov dword [power_wake_lock_expirations], 0
+    mov dword [power_idle_entries], 0
+    mov dword [power_deep_idle_entries], 0
+    mov dword [power_wake_lock_deadlines], 0
+    mov dword [power_wake_lock_deadlines + 4], 0
+    clc
+    ret
+
+power_manager_self_test:
+    cmp dword [power_api], POWER_API_SIZE
+    jne .invalid
+    cmp word [power_api + 4], 1
+    jne .invalid
+    cmp dword [power_api + 12], POWER_SUPPORTED_MASK
+    jne .invalid
+    cmp dword [power_current_state], POWER_STATE_RUNNING
+    jne .invalid
+    mov eax, 10
+    call power_wake_lock_acquire
+    jc .invalid
+    cmp dword [power_wake_lock_count], 1
+    jne .invalid
+    call power_wake_lock_release
+    jc .invalid
+    cmp dword [power_wake_lock_count], 0
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; CF=1, falls bereits ein globaler Energieuebergang aktiv ist.
+power_manager_request_shutdown:
+    cmp dword [power_transition_active], 0
+    jne .busy
+    mov dword [power_transition_active], 1
+    inc dword [power_shutdown_requests]
+    mov dword [power_target_state], POWER_STATE_SHUTDOWN
+    mov dword [power_transition_phase], POWER_PHASE_REQUEST
+    mov esi, message_shutdown_requested
+    call serial_write_string
+    mov dword [power_transition_phase], POWER_PHASE_FREEZE_USERSPACE
+    mov esi, message_shutdown_userspace
+    call serial_write_string
+    mov dword [power_transition_phase], POWER_PHASE_SYNC_STORAGE
+    mov esi, message_shutdown_storage
+    call serial_write_string
+    mov dword [power_transition_phase], POWER_PHASE_STOP_DEVICES
+    mov esi, message_shutdown_devices
+    call serial_write_string
+    mov dword [power_current_state], POWER_STATE_SHUTDOWN
+    clc
+    ret
+.busy:
+    inc dword [power_transition_failures]
+    stc
+    ret
+
+; EAX=maximale Dauer in 100-Hz-Ticks, Rueckgabe EAX=Slot.
+power_wake_lock_acquire:
+    test eax, eax
+    jz .invalid
+    cmp dword [power_wake_lock_count], POWER_WAKE_LOCK_CAPACITY
+    jae .invalid
+    mov edx, [timer_ticks]
+    add edx, eax
+    jc .invalid
+    xor ecx, ecx
+.find:
+    cmp dword [power_wake_lock_deadlines + ecx * 4], 0
+    je .found
+    inc ecx
+    cmp ecx, POWER_WAKE_LOCK_CAPACITY
+    jb .find
+.invalid:
+    stc
+    ret
+.found:
+    mov [power_wake_lock_deadlines + ecx * 4], edx
+    inc dword [power_wake_lock_count]
+    mov eax, ecx
+    clc
+    ret
+
+; EAX=Slot.
+power_wake_lock_release:
+    cmp eax, POWER_WAKE_LOCK_CAPACITY
+    jae .invalid
+    cmp dword [power_wake_lock_deadlines + eax * 4], 0
+    je .invalid
+    mov dword [power_wake_lock_deadlines + eax * 4], 0
+    cmp dword [power_wake_lock_count], 0
+    je .invalid
+    dec dword [power_wake_lock_count]
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+power_wake_lock_expire:
+    xor ecx, ecx
+.next:
+    mov eax, [power_wake_lock_deadlines + ecx * 4]
+    test eax, eax
+    jz .continue
+    mov edx, [timer_ticks]
+    sub edx, eax
+    js .continue
+    mov dword [power_wake_lock_deadlines + ecx * 4], 0
+    dec dword [power_wake_lock_count]
+    inc dword [power_wake_lock_expirations]
+.continue:
+    inc ecx
+    cmp ecx, POWER_WAKE_LOCK_CAPACITY
+    jb .next
+    ret
+
+power_cpu_idle:
+    call power_wake_lock_expire
+    inc dword [power_idle_entries]
+    cmp dword [power_wake_lock_count], 0
+    jne .shallow
+    mov dword [power_idle_state], POWER_IDLE_DEEP
+    inc dword [power_deep_idle_entries]
+    hlt
+    ret
+.shallow:
+    mov dword [power_idle_state], POWER_IDLE_SHALLOW
+    hlt
+    ret
+
+power_manager_platform_off:
+    mov dword [power_transition_phase], POWER_PHASE_PLATFORM_OFF
+    mov esi, message_shutdown_platform
     call serial_write_string
     mov ax, 0x2000
     mov dx, 0x0604                  ; QEMU/ACPI Poweroff
     out dx, ax
     mov dx, 0xB004                  ; Bochs/QEMU Fallback
     out dx, ax
-    jmp kernel_halt
+    mov dword [power_current_state], POWER_STATE_OFF
+    ret
+
+align 4
+power_api:
+    dd POWER_API_SIZE
+    dw 1, 0
+    dd POWER_STATE_RUNNING
+    dd POWER_SUPPORTED_MASK
+    dd power_current_state
+    dd power_target_state
+    dd power_profile
+    dd power_transition_phase
+    dd power_shutdown_requests
+    dd power_transition_failures
+    dd power_manager_request_shutdown
+    dd power_manager_platform_off
+    dd power_wake_lock_acquire
+    dd power_wake_lock_release
+    dd power_cpu_idle
+    dd power_wake_lock_count
+power_current_state:       dd POWER_STATE_RUNNING
+power_target_state:        dd POWER_STATE_RUNNING
+power_profile:             dd POWER_PROFILE_BALANCED
+power_transition_phase:    dd POWER_PHASE_NONE
+power_transition_active:   dd 0
+power_shutdown_requests:   dd 0
+power_transition_failures: dd 0
+power_wake_lock_count:      dd 0
+power_wake_lock_expirations: dd 0
+power_idle_state:           dd POWER_IDLE_SHALLOW
+power_idle_entries:         dd 0
+power_deep_idle_entries:    dd 0
+power_wake_lock_deadlines:  times POWER_WAKE_LOCK_CAPACITY dd 0
 
 ; Strukturierter Panic-Reporter (ADR-2014)
 PANIC_API_SIZE    equ 32
@@ -5550,7 +5945,7 @@ text_kernel_log:
     db "NOVA: Process und Thread Manager bereit",10
     db "NOVA: Security ABI 1.0 Capabilities aktiv",10
     db "NOVA: Scheduler und drei Threads aktiv",10
-    db "NOVA: Device Manager und Bootgeraete aktiv",10
+    db "NOVA: Device und Power Manager aktiv",10
     db "NOVA: VFS Mount-Namespace und Root bereit",10
     db "NOVA: x86-32 Ring-3 Userspace aktiv",10
     db "NOVA: System-Call ABI 1.0 aktiv",10
@@ -5691,6 +6086,26 @@ message_debug_panic:
     db "NOVA PANIC: manueller F12-Diagnosetest", 13, 10, 0
 message_shutdown:
     db "NOVA: Shutdown angefordert, System wird ausgeschaltet", 13, 10, 0
+message_power_manager_ok:
+    db "NOVA: Power Manager ABI 1.0 und Shutdown-Pfad bereit", 13, 10, 0
+message_power_query_ok:
+    db "NOVA: Userspace Power.QuerySystem capability-geprueft", 13, 10, 0
+message_power_wake_acquire_ok:
+    db "NOVA: Userspace Power.WakeAcquire zeitlich begrenzt", 13, 10, 0
+message_power_wake_release_ok:
+    db "NOVA: Userspace Power.WakeRelease validiert", 13, 10, 0
+message_power_manager_error:
+    db "NOVA PANIC: Power Manager nicht initialisierbar", 13, 10, 0
+message_shutdown_requested:
+    db "NOVA: Power Shutdown REQUEST", 13, 10, 0
+message_shutdown_userspace:
+    db "NOVA: Power Shutdown FREEZE_USERSPACE", 13, 10, 0
+message_shutdown_storage:
+    db "NOVA: Power Shutdown SYNC_STORAGE", 13, 10, 0
+message_shutdown_devices:
+    db "NOVA: Power Shutdown STOP_DEVICES", 13, 10, 0
+message_shutdown_platform:
+    db "NOVA: Power Shutdown PLATFORM_OFF", 13, 10, 0
 message_bib_ok:
     db "NOVA: NBHP/BIB v1 validiert", 13, 10, 0
 message_kernel_identity_ok:

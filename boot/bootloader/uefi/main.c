@@ -305,9 +305,11 @@ static void boot_selected(UINTN selection)
           nova_runtime_destroy();nova_debug_string("UEFI:RUNTIME-DESTROYED\n");
           nova_resource_manager_shutdown();nova_debug_string("UEFI:RESOURCE-MANAGER-SHUTDOWN\n");
           nova_present_shutdown();nova_debug_string("UEFI:PRESENT-SCHEDULER-SHUTDOWN\n");
-          nova_framebuffer_shutdown();nova_debug_string("UEFI:FRAMEBUFFER-BACKEND-SHUTDOWN\n");
-          nova_gop_shutdown();nova_debug_string("UEFI:GOP-SHUTDOWN\n");
-          nova_graphics_shutdown();nova_debug_string("UEFI:GAL-SHUTDOWN\n");
+          /* Preserve the active GOP/GAL descriptors until build_bib() has
+             serialized the framebuffer TLV. ExitBootServices transfers the
+             framebuffer ownership to the kernel; clearing these contexts
+             here made every UEFI boot fall back to text mode. */
+          nova_debug_string("UEFI:FRAMEBUFFER-HANDOFF-PRESERVED\n");
           nova_debug_string("UEFI:START\n");
           EFI_STATUS status=uefi_boot_kernel(runtime_image_handle,runtime_system_table);
           (void)status;
