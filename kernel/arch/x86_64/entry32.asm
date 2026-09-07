@@ -5539,21 +5539,23 @@ text_escape:
     db "ESC", 0
 text_kernel_log:
     db "NOVA: Kernel Entry",10
-    db "NOVA: Panic Reporter ABI 1.0 bereit",10
+    db "NOVA: Panic Reporter ABI 1.1 bereit",10
     db "NOVA: NBHP/BIB v1 validiert",10
-    db "NOVA: PMM ABI 1.0 und Seitentest bereit",10
-    db "NOVA: Heap ABI 1.0 und Schreibtest bereit",10
-    db "NOVA: Object Manager ABI 1.0 bereit",10
-    db "NOVA: Component Manager ABI 1.0 bereit",10
-    db "NOVA: Paging ABI 1.0 und Speichertest bereit",10
+    db "NOVA: PMM und Heap ABI 1.0 bereit",10
+    db "NOVA: Object und Handle Manager bereit",10
+    db "NOVA: Component und Service Manager bereit",10
+    db "NOVA: Paging ABI 1.0 aktiv",10
     db "NOVA: IDT, PIC und PIT 100 Hz aktiv",10
-    db "NOVA: IPC ABI 1.0 FIFO bereit",10
-    db "NOVA: Service Manager ABI 1.0 bereit",10
-    db "NOVA: Process Manager ABI 1.0 bereit",10
+    db "NOVA: IPC ABI 1.0 und Endpunkte bereit",10
+    db "NOVA: Process und Thread Manager bereit",10
     db "NOVA: Security ABI 1.0 Capabilities aktiv",10
-    db "NOVA: Thread Manager ABI 1.0 bereit",10
-    db "NOVA: Scheduler ABI 1.0 und zwei Threads aktiv",10
-    db "NOVA: Kernel Context und Framebuffer aktiv",10
+    db "NOVA: Scheduler und drei Threads aktiv",10
+    db "NOVA: Device Manager und Bootgeraete aktiv",10
+    db "NOVA: VFS Mount-Namespace und Root bereit",10
+    db "NOVA: x86-32 Ring-3 Userspace aktiv",10
+    db "NOVA: System-Call ABI 1.0 aktiv",10
+    db "NOVA: Shared Service Page bereit",10
+    db "NOVA: Framebuffer und Kernel Context aktiv",10
     db "NOVA_KERNEL_READY",0
 text_ready:
     db "SYSTEM BEREIT", 0

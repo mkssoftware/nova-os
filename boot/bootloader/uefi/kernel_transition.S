@@ -5,6 +5,8 @@
    non-returning and is used only after successful ExitBootServices(). */
 uefi_enter_kernel32:
     cli
+    movb $'T', %al
+    outb %al, $0xe9
     movl %ecx, %edi
     movl %edx, %ebx
     lgdt uefi_transition_gdtr(%rip)
@@ -15,6 +17,8 @@ uefi_enter_kernel32:
 
     .code32
 uefi_transition_compat:
+    movb $'C', %al
+    outb %al, $0xe9
     movw $0x10, %ax
     movw %ax, %ds
     movw %ax, %es
@@ -24,6 +28,8 @@ uefi_transition_compat:
     movl %cr0, %eax
     andl $0x7fffffff, %eax
     movl %eax, %cr0
+    movb $'P', %al
+    outb %al, $0xe9
     movl $0xc0000080, %ecx
     rdmsr
     andl $0xfffffeff, %eax
@@ -33,6 +39,9 @@ uefi_transition_compat:
     movl %eax, %cr4
     movl $0x00090000, %esp
     xorl %ebp, %ebp
+    movl $0x4e4f5641, %eax
+    movb $'J', %al
+    outb %al, $0xe9
     movl $0x4e4f5641, %eax
     jmp *%edi
 

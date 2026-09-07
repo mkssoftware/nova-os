@@ -813,6 +813,11 @@ image: abi-check bootloader kernel $(KERNEL_IMAGE) artifact-check | $(BUILD_DIR)
 	test "$$(wc -c < $(DISK_IMAGE))" -eq 1474560
 	@echo "Nova BIOS image: $(DISK_IMAGE)"
 
+.PHONY: iso
+iso: image
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-bootable-iso.ps1 \
+		-BootImage $(DISK_IMAGE) -OutputFile build/nova-os.iso
+
 run: image
 	"$(QEMU)" \
 		-drive format=raw,file=$(DISK_IMAGE),if=ide \
