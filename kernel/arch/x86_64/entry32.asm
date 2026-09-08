@@ -3307,11 +3307,11 @@ userspace_program_start:
     mov ebx, SYSCALL_NETWORK_QUERY
     mov ecx, SYSCALL_ABI_VERSION
     mov edx, USER_STACK_ADDRESS - 448
-    mov esi, 48
+    mov esi, 52
     int 0x80
     test eax, eax
     jnz .failed
-    cmp dword [USER_STACK_ADDRESS - 448], 48
+    cmp dword [USER_STACK_ADDRESS - 448], 52
     jne .failed
     cmp dword [USER_STACK_ADDRESS - 444], SYSCALL_ABI_VERSION
     jne .failed
@@ -3328,6 +3328,8 @@ userspace_program_start:
     cmp dword [USER_STACK_ADDRESS - 408], 0 ; keine beschädigten Pakete
     jne .failed
     cmp dword [USER_STACK_ADDRESS - 404], 9000
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 400], 1 ; ICMPv4 Echo Request/Reply getestet
     jne .failed
     mov eax, SYSCALL_SERVICE_NETWORK
     mov ebx, SYSCALL_NETWORK_RAW_OPEN
@@ -3770,13 +3772,13 @@ syscall_dispatch:
 .network_query:
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
     jne .bad_abi
-    cmp dword [edx + 20], 48
+    cmp dword [edx + 20], 52
     jb .bad_size
     mov eax, [userspace_pid]
     mov edx, SECURITY_CAP_NET_QUERY
     call security_check
     jc .access_denied
-    mov dword [syscall_network_result + 0], 48
+    mov dword [syscall_network_result + 0], 52
     mov dword [syscall_network_result + 4], SYSCALL_ABI_VERSION
     mov eax, [network_namespace_generation]
     mov [syscall_network_result + 8], eax
@@ -3795,10 +3797,12 @@ syscall_dispatch:
     mov [syscall_network_result + 40], eax
     mov eax, [network_socket_port]
     mov [syscall_network_result + 44], eax
+    mov eax, [network_icmp_echo_tests]
+    mov [syscall_network_result + 48], eax
     mov edx, [syscall_frame]
     mov edi, [edx + 36]
     mov esi, syscall_network_result
-    mov ecx, 48
+    mov ecx, 52
     call syscall_copy_buffer_to_user
     jc .bad_pointer
     mov esi, message_network_query_ok
@@ -4267,7 +4271,7 @@ syscall_vfs_buffer: times 32 db 0
 syscall_vfs_path:   times 4 db 0
 syscall_power_result: times 32 db 0
 syscall_power_request: times 24 db 0
-syscall_network_result: times 48 db 0
+syscall_network_result: times 52 db 0
 syscall_network_packet: times 40 db 0
 syscall_network_bind: times 28 db 0
 
@@ -5223,6 +5227,74 @@ network_manager_self_test:
     je .invalid
     cmp dword [network_socket_bound], 0
     jne .invalid
+    call network_icmp_echo_self_test
+    jc .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; ICMPv4-Echo-Grundpfad: Request und Reply werden vollständig im Kernel
+; erzeugt und jeweils vor der Verarbeitung per Internet-Checksum validiert.
+network_icmp_echo_self_test:
+    mov edi, network_icmp_buffer
+    xor eax, eax
+    mov ecx, 16 / 4
+    rep stosd
+    mov byte [network_icmp_buffer + 0], 8  ; Echo Request
+    mov byte [network_icmp_buffer + 1], 0
+    mov word [network_icmp_buffer + 4], 0x414E
+    mov word [network_icmp_buffer + 6], 0x0100
+    mov dword [network_icmp_buffer + 8], 0x41564F4E
+    mov dword [network_icmp_buffer + 12], 0x534F4156
+    mov esi, network_icmp_buffer
+    mov ecx, 16
+    call network_checksum
+    xchg al, ah
+    mov [network_icmp_buffer + 2], ax
+    call network_icmp_validate_request
+    jc .invalid
+    mov byte [network_icmp_buffer + 0], 0  ; Echo Reply
+    mov word [network_icmp_buffer + 2], 0
+    mov esi, network_icmp_buffer
+    mov ecx, 16
+    call network_checksum
+    xchg al, ah
+    mov [network_icmp_buffer + 2], ax
+    call network_icmp_validate_reply
+    jc .invalid
+    mov dword [network_icmp_echo_tests], 1
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+network_icmp_validate_request:
+    cmp byte [network_icmp_buffer], 8
+    jne .invalid
+    jmp network_icmp_validate_common
+.invalid:
+    stc
+    ret
+
+network_icmp_validate_reply:
+    cmp byte [network_icmp_buffer], 0
+    jne .invalid
+    jmp network_icmp_validate_common
+.invalid:
+    stc
+    ret
+
+network_icmp_validate_common:
+    cmp byte [network_icmp_buffer + 1], 0
+    jne .invalid
+    mov esi, network_icmp_buffer
+    mov ecx, 16
+    call network_checksum
+    test ax, ax
+    jnz .invalid
     clc
     ret
 .invalid:
@@ -5397,6 +5469,8 @@ network_ipv4_identification:  dw 0
 align 4
 network_loopback_frame:       times 64 db 0
 network_checksum_buffer:      times 40 db 0
+network_icmp_buffer:          times 16 db 0
+network_icmp_echo_tests:      dd 0
 
 ; Strukturierter Panic-Reporter (ADR-2014)
 PANIC_API_SIZE    equ 32
@@ -6879,7 +6953,7 @@ message_power_shutdown_denied:
 message_power_manager_error:
     db "NOVA PANIC: Power Manager nicht initialisierbar", 13, 10, 0
 message_network_manager_ok:
-    db "NOVA: Network ABI 1.0, Namespace und Loopback lo0 bereit", 13, 10, 0
+    db "NOVA: Network ABI 1.0, Loopback lo0 und ICMPv4 Echo bereit", 13, 10, 0
 message_network_query_ok:
     db "NOVA: Userspace Network.Query capability-geprueft", 13, 10, 0
 message_network_raw_denied:
