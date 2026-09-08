@@ -198,6 +198,13 @@ kernel_entry:
     mov esi, message_vfs_ok
     call serial_write_string
 
+    call network_manager_initialize
+    jc panic_network_manager
+    call network_manager_self_test
+    jc panic_network_manager
+    mov esi, message_network_manager_ok
+    call serial_write_string
+
     call power_manager_initialize
     jc panic_power_manager
     call power_manager_self_test
@@ -287,6 +294,12 @@ panic_power_manager:
     mov eax, 0x00002017
     mov edx, 23
     mov esi, message_power_manager_error
+    jmp kernel_panic
+
+panic_network_manager:
+    mov eax, 0x00002018
+    mov edx, 24
+    mov esi, message_network_manager_error
     jmp kernel_panic
 
 panic_userspace:
@@ -1149,6 +1162,7 @@ HANDLE_RIGHT_QUERY    equ 0x00000001
 HANDLE_RIGHT_WAIT     equ 0x00000002
 HANDLE_RIGHT_SEND     equ 0x00000004
 HANDLE_RIGHT_RECEIVE  equ 0x00000008
+HANDLE_RIGHT_BIND     equ 0x00000010
 HANDLE_FLAG_PROTECTED equ 0x00000010
 HANDLE_OBJECT equ 0
 HANDLE_RIGHTS equ 4
@@ -2791,6 +2805,7 @@ SYSCALL_SERVICE_THREAD      equ 3
 SYSCALL_SERVICE_IPC         equ 5
 SYSCALL_SERVICE_VFS         equ 6
 SYSCALL_SERVICE_POWER       equ 7
+SYSCALL_SERVICE_NETWORK     equ 8
 SYSCALL_CORE_EXIT           equ 1
 SYSCALL_CORE_READY          equ 2
 SYSCALL_CORE_CLOSE_HANDLE   equ 3
@@ -2802,6 +2817,14 @@ SYSCALL_VFS_LOOKUP          equ 2
 SYSCALL_POWER_QUERY_SYSTEM  equ 1
 SYSCALL_POWER_WAKE_ACQUIRE  equ 2
 SYSCALL_POWER_WAKE_RELEASE  equ 3
+SYSCALL_POWER_SET_PROFILE   equ 4
+SYSCALL_POWER_REQUEST_STATE equ 5
+SYSCALL_NETWORK_QUERY       equ 1
+SYSCALL_NETWORK_RAW_OPEN    equ 2
+SYSCALL_NETWORK_SOCKET_CREATE equ 3
+SYSCALL_NETWORK_SEND        equ 4
+SYSCALL_NETWORK_RECEIVE     equ 5
+SYSCALL_NETWORK_BIND        equ 6
 SYSCALL_STATUS_OK           equ 0
 SYSCALL_STATUS_ABI          equ -1
 SYSCALL_STATUS_SIZE         equ -4
@@ -2810,6 +2833,7 @@ SYSCALL_STATUS_SERVICE      equ -8
 SYSCALL_STATUS_OPERATION    equ -9
 SYSCALL_STATUS_ACCESS       equ -13
 SYSCALL_STATUS_POINTER      equ -15
+SYSCALL_STATUS_WOULD_BLOCK  equ -19
 USER_ADDRESS_MIN            equ USER_CODE_ADDRESS
 USER_ADDRESS_MAX            equ USER_STACK_ADDRESS
 SHARED_SERVICE_ADDRESS      equ 0x00403000
@@ -2818,7 +2842,7 @@ SHARED_SERVICE_SIZE         equ 64
 SHARED_FEATURE_INT80        equ 0x00000001
 SHARED_FEATURE_COPY_IO      equ 0x00000002
 SHARED_FEATURE_PREEMPT      equ 0x00000004
-SHARED_SERVICE_BITMAP       equ 0x00000077 ; Core, Process, Thread, IPC, VFS, Power
+SHARED_SERVICE_BITMAP       equ 0x000000F7 ; Core, Process, Thread, IPC, VFS, Power, Network
 
 userspace_initialize:
     ; TSS stellt für Ring-3-Interrupts einen kontrollierten Kernelstack bereit.
@@ -2894,7 +2918,11 @@ userspace_initialize:
     call security_grant
     jc .invalid
     mov eax, 2
-    mov edx, SECURITY_CAP_POWER_QUERY | SECURITY_CAP_POWER_WAKE
+    mov edx, SECURITY_CAP_POWER_QUERY | SECURITY_CAP_POWER_WAKE | SECURITY_CAP_POWER_PROFILE
+    call security_grant
+    jc .invalid
+    mov eax, 2
+    mov edx, SECURITY_CAP_NET_QUERY | SECURITY_CAP_NET_CONNECT | SECURITY_CAP_NET_LISTEN
     call security_grant
     jc .invalid
 
@@ -3153,6 +3181,163 @@ userspace_program_start:
     test eax, eax
     jz .failed
 
+    mov dword [USER_STACK_ADDRESS - 384], 16
+    mov dword [USER_STACK_ADDRESS - 380], SYSCALL_ABI_VERSION
+    mov dword [USER_STACK_ADDRESS - 376], POWER_PROFILE_EFFICIENCY
+    mov dword [USER_STACK_ADDRESS - 372], 0
+    mov eax, SYSCALL_SERVICE_POWER
+    mov ebx, SYSCALL_POWER_SET_PROFILE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 384
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jnz .failed
+
+    ; Den globalen Shutdown ohne POWER_SHUTDOWN-Capability anfordern. Der
+    ; Kernel muss fail-closed antworten und darf keinen Übergang beginnen.
+    mov dword [USER_STACK_ADDRESS - 416], 24
+    mov dword [USER_STACK_ADDRESS - 412], SYSCALL_ABI_VERSION
+    mov dword [USER_STACK_ADDRESS - 408], POWER_STATE_SHUTDOWN
+    mov dword [USER_STACK_ADDRESS - 404], 1 ; Benutzeranforderung
+    mov dword [USER_STACK_ADDRESS - 400], 0
+    mov dword [USER_STACK_ADDRESS - 396], 0
+    mov eax, SYSCALL_SERVICE_POWER
+    mov ebx, SYSCALL_POWER_REQUEST_STATE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 416
+    mov esi, 24
+    int 0x80
+    cmp eax, SYSCALL_STATUS_ACCESS
+    jne .failed
+
+    ; Capability-geschütztes Datagramm-Socket erstellen und ein Paket ohne
+    ; ungeprüften Userspace-Pointer über lo0 senden und wieder empfangen.
+    mov eax, SYSCALL_SERVICE_NETWORK
+    mov ebx, SYSCALL_NETWORK_SOCKET_CREATE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 464
+    mov esi, 16
+    int 0x80
+    test eax, eax
+    jnz .failed
+    mov eax, [USER_STACK_ADDRESS - 456]
+    test eax, eax
+    jz .failed
+    mov dword [USER_STACK_ADDRESS - 592], 28
+    mov dword [USER_STACK_ADDRESS - 588], SYSCALL_ABI_VERSION
+    mov [USER_STACK_ADDRESS - 584], eax
+    mov dword [USER_STACK_ADDRESS - 580], NETWORK_AF_IPV4
+    mov dword [USER_STACK_ADDRESS - 576], NETWORK_IPV4_LOOPBACK
+    mov dword [USER_STACK_ADDRESS - 572], 9000
+    mov dword [USER_STACK_ADDRESS - 568], 0
+    mov eax, SYSCALL_SERVICE_NETWORK
+    mov ebx, SYSCALL_NETWORK_BIND
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 592
+    mov esi, 28
+    int 0x80
+    test eax, eax
+    jnz .failed
+    mov dword [USER_STACK_ADDRESS - 512], 40
+    mov dword [USER_STACK_ADDRESS - 508], SYSCALL_ABI_VERSION
+    mov eax, [USER_STACK_ADDRESS - 456]
+    mov [USER_STACK_ADDRESS - 504], eax
+    mov dword [USER_STACK_ADDRESS - 500], 4
+    mov dword [USER_STACK_ADDRESS - 496], 0
+    mov dword [USER_STACK_ADDRESS - 492], 0x41564F4E ; "NOVA"
+    mov dword [USER_STACK_ADDRESS - 488], 0
+    mov dword [USER_STACK_ADDRESS - 484], 0
+    mov dword [USER_STACK_ADDRESS - 480], 0
+    mov dword [USER_STACK_ADDRESS - 476], 0
+    ; Überlange Datagramme müssen vor jeder Queue-Änderung scheitern.
+    mov dword [USER_STACK_ADDRESS - 500], 17
+    mov eax, SYSCALL_SERVICE_NETWORK
+    mov ebx, SYSCALL_NETWORK_SEND
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 512
+    mov esi, 40
+    int 0x80
+    cmp eax, SYSCALL_STATUS_SIZE
+    jne .failed
+    mov dword [USER_STACK_ADDRESS - 500], 4
+    mov eax, SYSCALL_SERVICE_NETWORK
+    mov ebx, SYSCALL_NETWORK_SEND
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 512
+    mov esi, 40
+    int 0x80
+    test eax, eax
+    jnz .failed
+    ; Die Queue ist auf ein Datagramm begrenzt. Ein zweites, nichtblockierendes
+    ; Senden darf das erste Paket nicht überschreiben.
+    mov eax, SYSCALL_SERVICE_NETWORK
+    mov ebx, SYSCALL_NETWORK_SEND
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 512
+    mov esi, 40
+    int 0x80
+    cmp eax, SYSCALL_STATUS_WOULD_BLOCK
+    jne .failed
+    mov eax, SYSCALL_SERVICE_NETWORK
+    mov ebx, SYSCALL_NETWORK_RECEIVE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 560
+    mov esi, 40
+    int 0x80
+    test eax, eax
+    jnz .failed
+    cmp dword [USER_STACK_ADDRESS - 548], 4
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 540], 0x41564F4E
+    jne .failed
+    ; Nach dem einzigen Empfang ist die Queue leer und muss WOULD_BLOCK melden.
+    mov eax, SYSCALL_SERVICE_NETWORK
+    mov ebx, SYSCALL_NETWORK_RECEIVE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 560
+    mov esi, 40
+    int 0x80
+    cmp eax, SYSCALL_STATUS_WOULD_BLOCK
+    jne .failed
+
+    ; Network.Query beschreibt nur den eigenen Standard-Namespace und das
+    ; Loopback-Interface. Raw-Sockets bleiben ohne Sonderrecht geschlossen.
+    mov eax, SYSCALL_SERVICE_NETWORK
+    mov ebx, SYSCALL_NETWORK_QUERY
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 448
+    mov esi, 48
+    int 0x80
+    test eax, eax
+    jnz .failed
+    cmp dword [USER_STACK_ADDRESS - 448], 48
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 444], SYSCALL_ABI_VERSION
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 436], 1 ; genau lo0
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 428], NETWORK_INTERFACE_UP
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 424], NETWORK_LOOPBACK_MTU
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 416], 1 ; ein TX-Datagramm
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 412], 1 ; ein RX-Datagramm
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 408], 0 ; keine beschädigten Pakete
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 404], 9000
+    jne .failed
+    mov eax, SYSCALL_SERVICE_NETWORK
+    mov ebx, SYSCALL_NETWORK_RAW_OPEN
+    mov ecx, SYSCALL_ABI_VERSION
+    xor edx, edx
+    xor esi, esi
+    int 0x80
+    cmp eax, SYSCALL_STATUS_ACCESS
+    jne .failed
+
     ; Die feste Shared Service Page ist user-lesbar, aber nicht beschreibbar.
     cmp dword [SHARED_SERVICE_ADDRESS + 0], SHARED_SERVICE_SIGNATURE
     jne .failed
@@ -3295,6 +3480,8 @@ syscall_dispatch:
     je .vfs
     cmp dword [edx + 44], SYSCALL_SERVICE_POWER
     je .power
+    cmp dword [edx + 44], SYSCALL_SERVICE_NETWORK
+    je .network
     cmp dword [edx + 44], SYSCALL_SERVICE_CORE
     jne .unknown_service
     cmp dword [edx + 32], SYSCALL_CORE_READY
@@ -3561,7 +3748,259 @@ syscall_dispatch:
     je .power_wake_acquire
     cmp dword [edx + 32], SYSCALL_POWER_WAKE_RELEASE
     je .power_wake_release
+    cmp dword [edx + 32], SYSCALL_POWER_SET_PROFILE
+    je .power_set_profile
+    cmp dword [edx + 32], SYSCALL_POWER_REQUEST_STATE
+    je .power_request_state
     jmp .unknown_operation
+.network:
+    cmp dword [edx + 32], SYSCALL_NETWORK_QUERY
+    je .network_query
+    cmp dword [edx + 32], SYSCALL_NETWORK_RAW_OPEN
+    je .network_raw_open
+    cmp dword [edx + 32], SYSCALL_NETWORK_SOCKET_CREATE
+    je .network_socket_create
+    cmp dword [edx + 32], SYSCALL_NETWORK_SEND
+    je .network_send
+    cmp dword [edx + 32], SYSCALL_NETWORK_RECEIVE
+    je .network_receive
+    cmp dword [edx + 32], SYSCALL_NETWORK_BIND
+    je .network_bind
+    jmp .unknown_operation
+.network_query:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 48
+    jb .bad_size
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_NET_QUERY
+    call security_check
+    jc .access_denied
+    mov dword [syscall_network_result + 0], 48
+    mov dword [syscall_network_result + 4], SYSCALL_ABI_VERSION
+    mov eax, [network_namespace_generation]
+    mov [syscall_network_result + 8], eax
+    mov dword [syscall_network_result + 12], 1
+    mov eax, [network_loopback_id]
+    mov [syscall_network_result + 16], eax
+    mov eax, [network_loopback_state]
+    mov [syscall_network_result + 20], eax
+    mov dword [syscall_network_result + 24], NETWORK_LOOPBACK_MTU
+    mov dword [syscall_network_result + 28], NETWORK_FEATURE_IPV4 | NETWORK_FEATURE_IPV6
+    mov eax, [network_transmitted_packets]
+    mov [syscall_network_result + 32], eax
+    mov eax, [network_received_packets]
+    mov [syscall_network_result + 36], eax
+    mov eax, [network_dropped_packets]
+    mov [syscall_network_result + 40], eax
+    mov eax, [network_socket_port]
+    mov [syscall_network_result + 44], eax
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov esi, syscall_network_result
+    mov ecx, 48
+    call syscall_copy_buffer_to_user
+    jc .bad_pointer
+    mov esi, message_network_query_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.network_raw_open:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 0
+    jne .bad_size
+    cmp dword [edx + 36], 0
+    jne .bad_pointer
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_NET_RAW
+    call security_check
+    jc .network_raw_denied
+    jmp .unknown_operation
+.network_raw_denied:
+    mov esi, message_network_raw_denied
+    call serial_write_string
+    jmp .access_denied
+.network_socket_create:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 16
+    jb .bad_size
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_NET_CONNECT
+    call security_check
+    jc .access_denied
+    mov eax, OBJECT_TYPE_NET_SOCKET
+    mov edx, NETWORK_SOCKET_DATAGRAM
+    mov ebx, 1                       ; Namespace 1
+    call object_create
+    jc .unknown_operation
+    mov [network_socket_object], eax
+    mov edx, eax
+    mov eax, [userspace_pid]
+    mov ebx, OBJECT_TYPE_NET_SOCKET
+    mov ecx, HANDLE_RIGHT_QUERY | HANDLE_RIGHT_SEND | HANDLE_RIGHT_RECEIVE | HANDLE_RIGHT_WAIT | HANDLE_RIGHT_BIND
+    xor esi, esi
+    call handle_create
+    jc .unknown_operation
+    mov [network_socket_handle], eax
+    mov dword [syscall_result_buffer], 16
+    mov dword [syscall_result_buffer + 4], SYSCALL_ABI_VERSION
+    mov [syscall_result_buffer + 8], eax
+    mov dword [syscall_result_buffer + 12], 0
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov esi, syscall_result_buffer
+    mov ecx, 16
+    call syscall_copy_buffer_to_user
+    jc .bad_pointer
+    mov esi, message_network_socket_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.network_bind:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 28
+    jb .bad_size
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_NET_LISTEN
+    call security_check
+    jc .access_denied
+    mov edx, [syscall_frame]
+    mov esi, [edx + 36]
+    mov ecx, 28
+    mov edi, syscall_network_bind
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [syscall_network_bind], 28
+    jne .bad_size
+    cmp dword [syscall_network_bind + 4], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [syscall_network_bind + 12], NETWORK_AF_IPV4
+    jne .unknown_operation
+    cmp dword [syscall_network_bind + 16], NETWORK_IPV4_LOOPBACK
+    jne .unknown_operation
+    mov eax, [syscall_network_bind + 20]
+    test eax, eax
+    jz .unknown_operation
+    cmp eax, 65535
+    ja .unknown_operation
+    cmp dword [syscall_network_bind + 24], 0
+    jne .bad_reserved
+    cmp dword [network_socket_bound], 0
+    jne .unknown_operation
+    mov eax, [userspace_pid]
+    mov edx, [syscall_network_bind + 8]
+    mov ebx, OBJECT_TYPE_NET_SOCKET
+    mov ecx, HANDLE_RIGHT_BIND
+    call handle_resolve
+    jc .access_denied
+    mov eax, [syscall_network_bind + 20]
+    mov [network_socket_port], eax
+    mov dword [network_socket_bound], 1
+    inc dword [network_namespace_generation]
+    mov esi, message_network_bind_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.network_send:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 40
+    jb .bad_size
+    mov esi, [edx + 36]
+    mov ecx, 40
+    mov edi, syscall_network_packet
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [syscall_network_packet], 40
+    jne .bad_size
+    cmp dword [syscall_network_packet + 4], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [syscall_network_packet + 12], 16
+    ja .network_packet_too_large
+    cmp dword [syscall_network_packet + 16], 0
+    jne .bad_reserved
+    cmp dword [syscall_network_packet + 36], 0
+    jne .bad_reserved
+    cmp dword [network_loopback_queue_count], 0
+    jne .network_would_block
+    cmp dword [network_socket_bound], 1
+    jne .unknown_operation
+    mov eax, [userspace_pid]
+    mov edx, [syscall_network_packet + 8]
+    mov ebx, OBJECT_TYPE_NET_SOCKET
+    mov ecx, HANDLE_RIGHT_SEND
+    call handle_resolve
+    jc .access_denied
+    call network_loopback_encapsulate
+    jc .unknown_operation
+    mov dword [network_loopback_queue_count], 1
+    inc dword [network_transmitted_packets]
+    mov esi, message_network_send_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.network_packet_too_large:
+    mov esi, message_network_size_denied
+    call serial_write_string
+    jmp .bad_size
+.network_receive:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 40
+    jb .bad_size
+    cmp dword [network_loopback_queue_count], 1
+    jne .network_would_block
+    call network_loopback_validate
+    jc .network_malformed
+    mov eax, [userspace_pid]
+    mov edx, [network_socket_handle]
+    mov ebx, OBJECT_TYPE_NET_SOCKET
+    mov ecx, HANDLE_RIGHT_RECEIVE
+    call handle_resolve
+    jc .access_denied
+    mov dword [syscall_network_packet], 40
+    mov dword [syscall_network_packet + 4], SYSCALL_ABI_VERSION
+    mov eax, [network_socket_handle]
+    mov [syscall_network_packet + 8], eax
+    mov eax, [network_loopback_payload_length]
+    mov [syscall_network_packet + 12], eax
+    mov dword [syscall_network_packet + 16], 0
+    mov esi, network_loopback_frame + 28
+    mov edi, syscall_network_packet + 20
+    mov ecx, 16
+    rep movsb
+    mov dword [syscall_network_packet + 36], 0
+    mov dword [network_loopback_queue_count], 0
+    inc dword [network_received_packets]
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov esi, syscall_network_packet
+    mov ecx, 40
+    call syscall_copy_buffer_to_user
+    jc .bad_pointer
+    mov esi, message_network_loopback_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.network_malformed:
+    mov dword [network_loopback_queue_count], 0
+    inc dword [network_dropped_packets]
+    mov esi, message_network_malformed
+    call serial_write_string
+    jmp .unknown_operation
+.network_would_block:
+    mov esi, message_network_would_block
+    call serial_write_string
+    mov eax, SYSCALL_STATUS_WOULD_BLOCK
+    jmp .reject
 .power_query:
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
     jne .bad_abi
@@ -3660,6 +4099,71 @@ syscall_dispatch:
     mov edx, [syscall_frame]
     mov dword [edx + 44], SYSCALL_STATUS_OK
     ret
+.power_set_profile:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 16
+    jb .bad_size
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_POWER_PROFILE
+    call security_check
+    jc .access_denied
+    mov edx, [syscall_frame]
+    mov esi, [edx + 36]
+    mov ecx, 16
+    mov edi, syscall_argument_buffer
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [syscall_argument_buffer], 16
+    jne .bad_size
+    cmp dword [syscall_argument_buffer + 4], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [syscall_argument_buffer + 12], 0
+    jne .bad_reserved
+    mov eax, [syscall_argument_buffer + 8]
+    call power_manager_set_profile
+    jc .unknown_operation
+    mov esi, message_power_profile_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.power_request_state:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [edx + 20], 24
+    jb .bad_size
+    mov esi, [edx + 36]
+    mov ecx, 24
+    mov edi, syscall_power_request
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [syscall_power_request], 24
+    jne .bad_size
+    cmp dword [syscall_power_request + 4], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [syscall_power_request + 8], POWER_STATE_SHUTDOWN
+    jne .unknown_operation
+    cmp dword [syscall_power_request + 16], 0
+    jne .bad_reserved
+    cmp dword [syscall_power_request + 20], 0
+    jne .bad_reserved
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_POWER_SHUTDOWN
+    call security_check
+    jc .power_request_denied
+    call power_manager_request_shutdown
+    jc .unknown_operation
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    mov dword [edx + 56], kernel_shutdown_authorized
+    mov dword [edx + 60], CODE_SEGMENT
+    and dword [edx + 64], 0xFFFFCFFF
+    ret
+.power_request_denied:
+    mov esi, message_power_shutdown_denied
+    call serial_write_string
+    jmp .access_denied
 .vfs_lookup:
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
     jne .bad_abi
@@ -3762,6 +4266,10 @@ syscall_result_buffer:
 syscall_vfs_buffer: times 32 db 0
 syscall_vfs_path:   times 4 db 0
 syscall_power_result: times 32 db 0
+syscall_power_request: times 24 db 0
+syscall_network_result: times 48 db 0
+syscall_network_packet: times 40 db 0
+syscall_network_bind: times 28 db 0
 
 OBJECT_TYPE_IPC_ENDPOINT equ 11
 
@@ -3902,7 +4410,12 @@ SECURITY_CAP_IPC        equ 0x00000010
 SECURITY_CAP_POWER_QUERY equ 0x00000020
 SECURITY_CAP_POWER_WAKE equ 0x00000040
 SECURITY_CAP_POWER_SHUTDOWN equ 0x00000080
-SECURITY_KERNEL_CAPS    equ 0x000000FF
+SECURITY_CAP_POWER_PROFILE equ 0x00000100
+SECURITY_CAP_NET_QUERY equ 0x00000200
+SECURITY_CAP_NET_RAW   equ 0x00000400
+SECURITY_CAP_NET_CONNECT equ 0x00000800
+SECURITY_CAP_NET_LISTEN equ 0x00001000
+SECURITY_KERNEL_CAPS    equ 0x00001FFF
 
 security_initialize:
     mov edi, security_table
@@ -4006,7 +4519,7 @@ security_self_test:
     cmp eax, 1
     jne .invalid
     mov eax, 1
-    mov edx, 0x00000100
+    mov edx, 0x00002000             ; weiterhin unbelegte Capability
     call security_check
     jnc .invalid
     mov eax, 0xFFFFFFFF
@@ -4410,10 +4923,15 @@ kernel_shutdown:
     call power_manager_platform_off
     jmp kernel_halt
 
+kernel_shutdown_authorized:
+    cli
+    call power_manager_platform_off
+    jmp kernel_halt
+
 ; ---------------------------------------------------------------------------
 ; Power Manager ABI 1.0 (NPSPEC-KERNEL-0021)
 ; ---------------------------------------------------------------------------
-POWER_API_SIZE                 equ 64
+POWER_API_SIZE                 equ 72
 POWER_STATE_RUNNING            equ 0
 POWER_STATE_IDLE               equ 1
 POWER_STATE_SUSPEND_TO_IDLE    equ 2
@@ -4425,6 +4943,10 @@ POWER_STATE_RESTART            equ 7
 POWER_STATE_OFF                equ 8
 POWER_SUPPORTED_MASK           equ (1 << POWER_STATE_RUNNING) | (1 << POWER_STATE_IDLE) | (1 << POWER_STATE_SHUTDOWN) | (1 << POWER_STATE_RESTART) | (1 << POWER_STATE_OFF)
 POWER_PROFILE_BALANCED         equ 1
+POWER_PROFILE_PERFORMANCE      equ 0
+POWER_PROFILE_EFFICIENCY       equ 2
+POWER_PROFILE_POWERSAVE        equ 3
+POWER_PROFILE_SUPPORTED_MASK   equ 0x0000000F
 POWER_PHASE_NONE               equ 0
 POWER_PHASE_REQUEST            equ 1
 POWER_PHASE_FREEZE_USERSPACE   equ 2
@@ -4447,6 +4969,7 @@ power_manager_initialize:
     mov dword [power_wake_lock_expirations], 0
     mov dword [power_idle_entries], 0
     mov dword [power_deep_idle_entries], 0
+    mov dword [power_profile_changes], 0
     mov dword [power_wake_lock_deadlines], 0
     mov dword [power_wake_lock_deadlines + 4], 0
     clc
@@ -4577,6 +5100,23 @@ power_cpu_idle:
     hlt
     ret
 
+; EAX=Profil. Nur zur Laufzeit als unterstuetzt gemeldete Profile annehmen.
+power_manager_set_profile:
+    cmp eax, POWER_PROFILE_POWERSAVE
+    ja .invalid
+    cmp dword [power_transition_active], 0
+    jne .invalid
+    cmp [power_profile], eax
+    je .success
+    mov [power_profile], eax
+    inc dword [power_profile_changes]
+.success:
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
 power_manager_platform_off:
     mov dword [power_transition_phase], POWER_PHASE_PLATFORM_OFF
     mov esi, message_shutdown_platform
@@ -4607,6 +5147,8 @@ power_api:
     dd power_wake_lock_release
     dd power_cpu_idle
     dd power_wake_lock_count
+    dd power_manager_set_profile
+    dd power_profile_changes
 power_current_state:       dd POWER_STATE_RUNNING
 power_target_state:        dd POWER_STATE_RUNNING
 power_profile:             dd POWER_PROFILE_BALANCED
@@ -4619,7 +5161,242 @@ power_wake_lock_expirations: dd 0
 power_idle_state:           dd POWER_IDLE_SHALLOW
 power_idle_entries:         dd 0
 power_deep_idle_entries:    dd 0
+power_profile_changes:      dd 0
 power_wake_lock_deadlines:  times POWER_WAKE_LOCK_CAPACITY dd 0
+
+; Minimaler Network-Core nach NPSPEC-KERNEL-0022. Hardwareprotokolle folgen
+; auf dieser objekt- und capability-basierten Grundlage.
+NETWORK_API_SIZE          equ 40
+NETWORK_INTERFACE_UP      equ 2
+NETWORK_INTERFACE_LOOPBACK equ 0
+NETWORK_LOOPBACK_MTU      equ 65536
+NETWORK_FEATURE_IPV4      equ 0x00000001
+NETWORK_FEATURE_IPV6      equ 0x00000002
+OBJECT_TYPE_NET_INTERFACE equ 12
+OBJECT_TYPE_NET_SOCKET    equ 13
+NETWORK_SOCKET_DATAGRAM   equ 1
+NETWORK_AF_IPV4           equ 4
+NETWORK_IPV4_LOOPBACK     equ 0x0100007F
+
+network_manager_initialize:
+    mov dword [network_namespace_generation], 1
+    mov dword [network_interface_count], 0
+    mov dword [network_loopback_id], 1
+    mov dword [network_loopback_state], NETWORK_INTERFACE_UP
+    mov dword [network_received_packets], 0
+    mov dword [network_transmitted_packets], 0
+    mov dword [network_dropped_packets], 0
+    mov dword [network_loopback_queue_count], 0
+    mov dword [network_socket_object], 0
+    mov dword [network_socket_handle], 0
+    mov dword [network_socket_bound], 0
+    mov dword [network_socket_port], 0
+    mov edi, network_loopback_frame
+    xor eax, eax
+    mov ecx, 64 / 4
+    rep stosd
+    mov eax, OBJECT_TYPE_NET_INTERFACE
+    mov edx, NETWORK_INTERFACE_LOOPBACK
+    mov ebx, 1
+    call object_create
+    jc .invalid
+    mov [network_loopback_object], eax
+    mov dword [network_interface_count], 1
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+network_manager_self_test:
+    cmp dword [network_api], NETWORK_API_SIZE
+    jne .invalid
+    cmp word [network_api + 4], 1
+    jne .invalid
+    cmp dword [network_interface_count], 1
+    jne .invalid
+    cmp dword [network_loopback_id], 1
+    jne .invalid
+    cmp dword [network_loopback_state], NETWORK_INTERFACE_UP
+    jne .invalid
+    cmp dword [network_loopback_object], 0
+    je .invalid
+    cmp dword [network_socket_bound], 0
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; Erstellt ein IPv4/UDP-Datagramm für 127.0.0.1. Der öffentliche Request
+; enthält nur Nutzdaten; sämtliche Protokollfelder entstehen im Kernel.
+network_loopback_encapsulate:
+    mov ecx, [syscall_network_packet + 12]
+    test ecx, ecx
+    jz .invalid
+    cmp ecx, 16
+    ja .invalid
+    mov [network_loopback_payload_length], ecx
+    mov edi, network_loopback_frame
+    xor eax, eax
+    push ecx
+    mov ecx, 64 / 4
+    rep stosd
+    pop ecx
+    mov byte [network_loopback_frame + 0], 0x45
+    mov byte [network_loopback_frame + 1], 0
+    mov eax, ecx
+    add eax, 28
+    xchg al, ah
+    mov [network_loopback_frame + 2], ax
+    inc word [network_ipv4_identification]
+    mov ax, [network_ipv4_identification]
+    xchg al, ah
+    mov [network_loopback_frame + 4], ax
+    mov word [network_loopback_frame + 6], 0
+    mov byte [network_loopback_frame + 8], 64
+    mov byte [network_loopback_frame + 9], 17
+    mov dword [network_loopback_frame + 12], NETWORK_IPV4_LOOPBACK
+    mov dword [network_loopback_frame + 16], NETWORK_IPV4_LOOPBACK
+    mov eax, [network_socket_port]
+    xchg al, ah
+    mov [network_loopback_frame + 20], ax
+    mov [network_loopback_frame + 22], ax
+    mov eax, ecx
+    add eax, 8
+    xchg al, ah
+    mov [network_loopback_frame + 24], ax
+    mov esi, syscall_network_packet + 20
+    mov edi, network_loopback_frame + 28
+    rep movsb
+    mov esi, network_loopback_frame
+    mov ecx, 20
+    call network_checksum
+    xchg al, ah
+    mov [network_loopback_frame + 10], ax
+    call network_udp_checksum_prepare
+    mov eax, [network_loopback_payload_length]
+    add eax, 20
+    mov ecx, eax
+    mov esi, network_checksum_buffer
+    call network_checksum
+    test ax, ax
+    jnz .udp_checksum_ready
+    mov ax, 0xFFFF
+.udp_checksum_ready:
+    xchg al, ah
+    mov [network_loopback_frame + 26], ax
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+network_udp_checksum_prepare:
+    mov edi, network_checksum_buffer
+    xor eax, eax
+    mov ecx, 40 / 4
+    rep stosd
+    mov dword [network_checksum_buffer + 0], NETWORK_IPV4_LOOPBACK
+    mov dword [network_checksum_buffer + 4], NETWORK_IPV4_LOOPBACK
+    mov byte [network_checksum_buffer + 8], 0
+    mov byte [network_checksum_buffer + 9], 17
+    mov ax, [network_loopback_frame + 24]
+    mov [network_checksum_buffer + 10], ax
+    mov esi, network_loopback_frame + 20
+    mov edi, network_checksum_buffer + 12
+    mov ecx, [network_loopback_payload_length]
+    add ecx, 8
+    rep movsb
+    ret
+
+network_loopback_validate:
+    cmp byte [network_loopback_frame + 0], 0x45
+    jne .invalid
+    cmp byte [network_loopback_frame + 9], 17
+    jne .invalid
+    cmp dword [network_loopback_frame + 16], NETWORK_IPV4_LOOPBACK
+    jne .invalid
+    mov esi, network_loopback_frame
+    mov ecx, 20
+    call network_checksum
+    test ax, ax
+    jnz .invalid
+    call network_udp_checksum_prepare
+    mov eax, [network_loopback_payload_length]
+    add eax, 20
+    mov ecx, eax
+    mov esi, network_checksum_buffer
+    call network_checksum
+    test ax, ax
+    jnz .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; Internet-Checksum über ECX Bytes in Netzwerkreihenfolge, Ergebnis in AX.
+network_checksum:
+    xor eax, eax
+.pair:
+    cmp ecx, 2
+    jb .odd
+    movzx edx, byte [esi]
+    shl edx, 8
+    mov dl, [esi + 1]
+    add eax, edx
+    add esi, 2
+    sub ecx, 2
+    jmp .pair
+.odd:
+    test ecx, ecx
+    jz .fold
+    movzx edx, byte [esi]
+    shl edx, 8
+    add eax, edx
+.fold:
+    mov edx, eax
+    shr edx, 16
+    and eax, 0xFFFF
+    add eax, edx
+    mov edx, eax
+    shr edx, 16
+    add ax, dx
+    not ax
+    ret
+
+align 4
+network_api:
+    dd NETWORK_API_SIZE
+    dw 1, 0
+    dd NETWORK_FEATURE_IPV4 | NETWORK_FEATURE_IPV6
+    dd network_namespace_generation
+    dd network_interface_count
+    dd network_loopback_id
+    dd network_loopback_state
+    dd network_received_packets
+    dd network_transmitted_packets
+    dd network_dropped_packets
+network_namespace_generation: dd 1
+network_interface_count:      dd 0
+network_loopback_id:          dd 1
+network_loopback_state:       dd NETWORK_INTERFACE_UP
+network_loopback_object:      dd 0
+network_received_packets:     dd 0
+network_transmitted_packets:  dd 0
+network_dropped_packets:      dd 0
+network_socket_object:        dd 0
+network_socket_handle:        dd 0
+network_socket_bound:         dd 0
+network_socket_port:          dd 0
+network_loopback_queue_count: dd 0
+network_loopback_payload_length: dd 0
+network_ipv4_identification:  dw 0
+align 4
+network_loopback_frame:       times 64 db 0
+network_checksum_buffer:      times 40 db 0
 
 ; Strukturierter Panic-Reporter (ADR-2014)
 PANIC_API_SIZE    equ 32
@@ -5947,6 +6724,7 @@ text_kernel_log:
     db "NOVA: Scheduler und drei Threads aktiv",10
     db "NOVA: Device und Power Manager aktiv",10
     db "NOVA: VFS Mount-Namespace und Root bereit",10
+    db "NOVA: Network Stack und Loopback lo0 bereit",10
     db "NOVA: x86-32 Ring-3 Userspace aktiv",10
     db "NOVA: System-Call ABI 1.0 aktiv",10
     db "NOVA: Shared Service Page bereit",10
@@ -6094,8 +6872,34 @@ message_power_wake_acquire_ok:
     db "NOVA: Userspace Power.WakeAcquire zeitlich begrenzt", 13, 10, 0
 message_power_wake_release_ok:
     db "NOVA: Userspace Power.WakeRelease validiert", 13, 10, 0
+message_power_profile_ok:
+    db "NOVA: Userspace Power.SetProfile capability-geprueft", 13, 10, 0
+message_power_shutdown_denied:
+    db "NOVA: Userspace Power.RequestState ohne Capability abgewiesen", 13, 10, 0
 message_power_manager_error:
     db "NOVA PANIC: Power Manager nicht initialisierbar", 13, 10, 0
+message_network_manager_ok:
+    db "NOVA: Network ABI 1.0, Namespace und Loopback lo0 bereit", 13, 10, 0
+message_network_query_ok:
+    db "NOVA: Userspace Network.Query capability-geprueft", 13, 10, 0
+message_network_raw_denied:
+    db "NOVA: Userspace Raw-Socket ohne Capability abgewiesen", 13, 10, 0
+message_network_socket_ok:
+    db "NOVA: Userspace IPv4/IPv6 Datagramm-Socketobjekt erstellt", 13, 10, 0
+message_network_bind_ok:
+    db "NOVA: Userspace Socket an IPv4 127.0.0.1 Port 9000 gebunden", 13, 10, 0
+message_network_loopback_ok:
+    db "NOVA: IPv4/UDP Loopback mit Header- und Pruefsummenvalidierung erfolgreich", 13, 10, 0
+message_network_size_denied:
+    db "NOVA: Ueberlanges Loopback-Datagramm sicher abgewiesen", 13, 10, 0
+message_network_send_ok:
+    db "NOVA: IPv4/UDP Loopback-Datagramm in begrenzte Queue eingestellt", 13, 10, 0
+message_network_malformed:
+    db "NOVA: Beschaedigtes IPv4/UDP-Datagramm verworfen", 13, 10, 0
+message_network_would_block:
+    db "NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK", 13, 10, 0
+message_network_manager_error:
+    db "NOVA PANIC: Network Manager nicht initialisierbar", 13, 10, 0
 message_shutdown_requested:
     db "NOVA: Power Shutdown REQUEST", 13, 10, 0
 message_shutdown_userspace:
