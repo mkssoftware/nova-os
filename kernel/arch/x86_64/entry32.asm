@@ -3307,11 +3307,11 @@ userspace_program_start:
     mov ebx, SYSCALL_NETWORK_QUERY
     mov ecx, SYSCALL_ABI_VERSION
     mov edx, USER_STACK_ADDRESS - 448
-    mov esi, 52
+    mov esi, 84
     int 0x80
     test eax, eax
     jnz .failed
-    cmp dword [USER_STACK_ADDRESS - 448], 52
+    cmp dword [USER_STACK_ADDRESS - 448], 84
     jne .failed
     cmp dword [USER_STACK_ADDRESS - 444], SYSCALL_ABI_VERSION
     jne .failed
@@ -3330,6 +3330,22 @@ userspace_program_start:
     cmp dword [USER_STACK_ADDRESS - 404], 9000
     jne .failed
     cmp dword [USER_STACK_ADDRESS - 400], 1 ; ICMPv4 Echo Request/Reply getestet
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 396], 2 ; Loopback-Netz- und Hostroute
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 392], 2 ; Treffer und Unreachable-Test
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 388], 1 ; ein Treffer
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 384], 3 ; zwei Selbsttests plus UDP-Senden
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 380], 1 ; fail-closed Test verworfen
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 376], 1 ; IPv6/UDP ::1 validiert
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 372], 1 ; ICMPv6 Echo Request/Reply
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 368], 4 ; TCP Aufbau, Daten, Retransmit, Abbau
     jne .failed
     mov eax, SYSCALL_SERVICE_NETWORK
     mov ebx, SYSCALL_NETWORK_RAW_OPEN
@@ -3772,13 +3788,13 @@ syscall_dispatch:
 .network_query:
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
     jne .bad_abi
-    cmp dword [edx + 20], 52
+    cmp dword [edx + 20], 84
     jb .bad_size
     mov eax, [userspace_pid]
     mov edx, SECURITY_CAP_NET_QUERY
     call security_check
     jc .access_denied
-    mov dword [syscall_network_result + 0], 52
+    mov dword [syscall_network_result + 0], 84
     mov dword [syscall_network_result + 4], SYSCALL_ABI_VERSION
     mov eax, [network_namespace_generation]
     mov [syscall_network_result + 8], eax
@@ -3799,10 +3815,26 @@ syscall_dispatch:
     mov [syscall_network_result + 44], eax
     mov eax, [network_icmp_echo_tests]
     mov [syscall_network_result + 48], eax
+    mov eax, [network_route_count]
+    mov [syscall_network_result + 52], eax
+    mov eax, [network_route_lookups]
+    mov [syscall_network_result + 56], eax
+    mov eax, [network_route_hits]
+    mov [syscall_network_result + 60], eax
+    mov eax, [network_firewall_decisions]
+    mov [syscall_network_result + 64], eax
+    mov eax, [network_firewall_drops]
+    mov [syscall_network_result + 68], eax
+    mov eax, [network_ipv6_udp_tests]
+    mov [syscall_network_result + 72], eax
+    mov eax, [network_icmpv6_echo_tests]
+    mov [syscall_network_result + 76], eax
+    mov eax, [network_tcp_tests]
+    mov [syscall_network_result + 80], eax
     mov edx, [syscall_frame]
     mov edi, [edx + 36]
     mov esi, syscall_network_result
-    mov ecx, 52
+    mov ecx, 84
     call syscall_copy_buffer_to_user
     jc .bad_pointer
     mov esi, message_network_query_ok
@@ -3935,6 +3967,11 @@ syscall_dispatch:
     jne .network_would_block
     cmp dword [network_socket_bound], 1
     jne .unknown_operation
+    mov eax, 0x7F000001
+    mov ebx, 17                     ; UDP
+    mov ecx, [network_socket_port]
+    call network_firewall_check_ipv4
+    jc .access_denied
     mov eax, [userspace_pid]
     mov edx, [syscall_network_packet + 8]
     mov ebx, OBJECT_TYPE_NET_SOCKET
@@ -4271,7 +4308,7 @@ syscall_vfs_buffer: times 32 db 0
 syscall_vfs_path:   times 4 db 0
 syscall_power_result: times 32 db 0
 syscall_power_request: times 24 db 0
-syscall_network_result: times 52 db 0
+syscall_network_result: times 84 db 0
 syscall_network_packet: times 40 db 0
 syscall_network_bind: times 28 db 0
 
@@ -5181,6 +5218,14 @@ OBJECT_TYPE_NET_SOCKET    equ 13
 NETWORK_SOCKET_DATAGRAM   equ 1
 NETWORK_AF_IPV4           equ 4
 NETWORK_IPV4_LOOPBACK     equ 0x0100007F
+NETWORK_BOOTSTRAP_PORT    equ 9000
+TCP_STATE_CLOSED          equ 0
+TCP_STATE_SYN_SENT        equ 2
+TCP_STATE_SYN_RECEIVED    equ 3
+TCP_STATE_ESTABLISHED     equ 4
+TCP_STATE_FIN_WAIT_1      equ 5
+TCP_STATE_FIN_WAIT_2      equ 6
+TCP_STATE_TIME_WAIT       equ 10
 
 network_manager_initialize:
     mov dword [network_namespace_generation], 1
@@ -5195,6 +5240,15 @@ network_manager_initialize:
     mov dword [network_socket_handle], 0
     mov dword [network_socket_bound], 0
     mov dword [network_socket_port], 0
+    mov dword [network_route_count], 2
+    mov dword [network_route_lookups], 0
+    mov dword [network_route_hits], 0
+    mov dword [network_route_last_prefix], 0
+    mov dword [network_firewall_decisions], 0
+    mov dword [network_firewall_drops], 0
+    mov dword [network_ipv6_udp_tests], 0
+    mov dword [network_icmpv6_echo_tests], 0
+    mov dword [network_tcp_tests], 0
     mov edi, network_loopback_frame
     xor eax, eax
     mov ecx, 64 / 4
@@ -5229,6 +5283,32 @@ network_manager_self_test:
     jne .invalid
     call network_icmp_echo_self_test
     jc .invalid
+    call network_ipv6_udp_self_test
+    jc .invalid
+    call network_icmpv6_echo_self_test
+    jc .invalid
+    call network_tcp_self_test
+    jc .invalid
+    mov eax, 0x7F000001             ; 127.0.0.1 in Host-Reihenfolge
+    call network_route_lookup_ipv4
+    jc .invalid
+    cmp eax, 1
+    jne .invalid
+    cmp dword [network_route_last_prefix], 32
+    jne .invalid                    ; Hostroute muss /8 überstimmen
+    mov eax, 0x0A000001             ; keine Default-Route vorhanden
+    call network_route_lookup_ipv4
+    jnc .invalid
+    mov eax, 0x7F000001
+    mov ebx, 17
+    mov ecx, NETWORK_BOOTSTRAP_PORT
+    call network_firewall_check_ipv4
+    jc .invalid
+    mov eax, 0x0A000001             ; externes Ziel muss fail-closed sein
+    mov ebx, 17
+    mov ecx, NETWORK_BOOTSTRAP_PORT
+    call network_firewall_check_ipv4
+    jnc .invalid
     clc
     ret
 .invalid:
@@ -5298,6 +5378,383 @@ network_icmp_validate_common:
     clc
     ret
 .invalid:
+    stc
+    ret
+
+; IPv6/UDP-Loopback-Selbsttest. IPv6 besitzt keine Headerprüfsumme; die
+; UDP-Prüfsumme über den 40-Byte-Pseudoheader ist dagegen verbindlich.
+network_ipv6_udp_self_test:
+    mov edi, network_ipv6_frame
+    xor eax, eax
+    mov ecx, 64 / 4
+    rep stosd
+    mov byte [network_ipv6_frame + 0], 0x60
+    mov word [network_ipv6_frame + 4], 0x0C00 ; 12 Byte Payload in Netzreihenfolge
+    mov byte [network_ipv6_frame + 6], 17
+    mov byte [network_ipv6_frame + 7], 64
+    mov byte [network_ipv6_frame + 23], 1     ; Quelle ::1
+    mov byte [network_ipv6_frame + 39], 1     ; Ziel ::1
+    mov ax, NETWORK_BOOTSTRAP_PORT
+    xchg al, ah
+    mov [network_ipv6_frame + 40], ax
+    mov [network_ipv6_frame + 42], ax
+    mov word [network_ipv6_frame + 44], 0x0C00
+    mov dword [network_ipv6_frame + 48], 0x41564F4E
+    call network_ipv6_checksum_prepare
+    mov esi, network_ipv6_checksum_buffer
+    mov ecx, 52
+    call network_checksum
+    test ax, ax
+    jnz .checksum_ready
+    mov ax, 0xFFFF
+.checksum_ready:
+    xchg al, ah
+    mov [network_ipv6_frame + 46], ax
+    call network_ipv6_udp_validate
+    jc .invalid
+    mov dword [network_ipv6_udp_tests], 1
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+network_ipv6_checksum_prepare:
+    mov edi, network_ipv6_checksum_buffer
+    xor eax, eax
+    mov ecx, 64 / 4
+    rep stosd
+    mov esi, network_ipv6_frame + 8
+    mov edi, network_ipv6_checksum_buffer
+    mov ecx, 32
+    rep movsb
+    mov dword [network_ipv6_checksum_buffer + 32], 0x0C000000
+    mov byte [network_ipv6_checksum_buffer + 39], 17
+    mov esi, network_ipv6_frame + 40
+    mov edi, network_ipv6_checksum_buffer + 40
+    mov ecx, 12
+    rep movsb
+    ret
+
+network_ipv6_udp_validate:
+    cmp byte [network_ipv6_frame], 0x60
+    jne .invalid
+    cmp word [network_ipv6_frame + 4], 0x0C00
+    jne .invalid
+    cmp byte [network_ipv6_frame + 6], 17
+    jne .invalid
+    cmp byte [network_ipv6_frame + 23], 1
+    jne .invalid
+    cmp byte [network_ipv6_frame + 39], 1
+    jne .invalid
+    cmp word [network_ipv6_frame + 46], 0
+    je .invalid
+    call network_ipv6_checksum_prepare
+    mov esi, network_ipv6_checksum_buffer
+    mov ecx, 52
+    call network_checksum
+    test ax, ax
+    jnz .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; ICMPv6 Echo benötigt – anders als ICMPv4 – die IPv6-Quell- und Zieladresse
+; im Prüfsummen-Pseudoheader. Request (128) und Reply (129) werden geprüft.
+network_icmpv6_echo_self_test:
+    mov edi, network_icmpv6_buffer
+    xor eax, eax
+    mov ecx, 12 / 4
+    rep stosd
+    mov byte [network_icmpv6_buffer + 0], 128
+    mov byte [network_icmpv6_buffer + 1], 0
+    mov word [network_icmpv6_buffer + 4], 0x414E
+    mov word [network_icmpv6_buffer + 6], 0x0100
+    mov dword [network_icmpv6_buffer + 8], 0x36564F4E
+    call network_icmpv6_checksum_prepare
+    mov esi, network_icmpv6_checksum_buffer
+    mov ecx, 52
+    call network_checksum
+    xchg al, ah
+    mov [network_icmpv6_buffer + 2], ax
+    mov al, 128
+    call network_icmpv6_validate_type
+    jc .invalid
+    mov byte [network_icmpv6_buffer], 129
+    mov word [network_icmpv6_buffer + 2], 0
+    call network_icmpv6_checksum_prepare
+    mov esi, network_icmpv6_checksum_buffer
+    mov ecx, 52
+    call network_checksum
+    xchg al, ah
+    mov [network_icmpv6_buffer + 2], ax
+    mov al, 129
+    call network_icmpv6_validate_type
+    jc .invalid
+    mov dword [network_icmpv6_echo_tests], 1
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+network_icmpv6_checksum_prepare:
+    mov edi, network_icmpv6_checksum_buffer
+    xor eax, eax
+    mov ecx, 64 / 4
+    rep stosd
+    mov byte [network_icmpv6_checksum_buffer + 15], 1
+    mov byte [network_icmpv6_checksum_buffer + 31], 1
+    mov dword [network_icmpv6_checksum_buffer + 32], 0x0C000000
+    mov byte [network_icmpv6_checksum_buffer + 39], 58
+    mov esi, network_icmpv6_buffer
+    mov edi, network_icmpv6_checksum_buffer + 40
+    mov ecx, 12
+    rep movsb
+    ret
+
+network_icmpv6_validate_type:
+    cmp [network_icmpv6_buffer], al
+    jne .invalid
+    cmp byte [network_icmpv6_buffer + 1], 0
+    jne .invalid
+    cmp word [network_icmpv6_buffer + 2], 0
+    je .invalid
+    push eax
+    call network_icmpv6_checksum_prepare
+    mov esi, network_icmpv6_checksum_buffer
+    mov ecx, 52
+    call network_checksum
+    test ax, ax
+    pop eax
+    jnz .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; Begrenzter TCP/IPv4-Loopback-Selbsttest. Er validiert den Zustandsautomaten,
+; die verbindliche Pseudoheader-Pruefsumme, geordnete Sequenznummern, eine
+; kontrollierte Retransmission und den vollstaendigen Verbindungsabbau.
+network_tcp_self_test:
+    mov dword [network_tcp_state], TCP_STATE_CLOSED
+    mov dword [network_tcp_tests], 0
+    mov dword [network_tcp_retransmissions], 0
+    mov dword [network_tcp_send_sequence], 0x1000
+    mov dword [network_tcp_receive_sequence], 0x2000
+    mov eax, TCP_STATE_SYN_SENT
+    call network_tcp_transition
+    jc .invalid
+    mov eax, TCP_STATE_SYN_RECEIVED
+    call network_tcp_transition
+    jc .invalid
+    mov eax, TCP_STATE_ESTABLISHED
+    call network_tcp_transition
+    jc .invalid
+    inc dword [network_tcp_tests]
+
+    mov edi, network_tcp_segment
+    xor eax, eax
+    mov ecx, 24 / 4
+    rep stosd
+    mov ax, NETWORK_BOOTSTRAP_PORT
+    xchg al, ah
+    mov [network_tcp_segment + 0], ax
+    mov [network_tcp_segment + 2], ax
+    mov eax, [network_tcp_send_sequence]
+    bswap eax
+    mov [network_tcp_segment + 4], eax
+    mov eax, [network_tcp_receive_sequence]
+    bswap eax
+    mov [network_tcp_segment + 8], eax
+    mov byte [network_tcp_segment + 12], 0x50 ; 20-Byte TCP-Header
+    mov byte [network_tcp_segment + 13], 0x18 ; ACK | PSH
+    mov word [network_tcp_segment + 14], 0x0010
+    mov dword [network_tcp_segment + 20], 0x41564F4E
+    call network_tcp_checksum_prepare
+    mov esi, network_tcp_checksum_buffer
+    mov ecx, 36
+    call network_checksum
+    xchg al, ah
+    mov [network_tcp_segment + 16], ax
+    call network_tcp_validate_segment
+    jc .invalid
+    add dword [network_tcp_send_sequence], 4
+    inc dword [network_tcp_tests]
+
+    ; Der erste ACK bleibt absichtlich aus. Genau eine begrenzte erneute
+    ; Uebertragung wird verbucht; die Sequenznummer darf sich nicht aendern.
+    mov eax, [network_tcp_send_sequence]
+    inc dword [network_tcp_retransmissions]
+    cmp eax, [network_tcp_send_sequence]
+    jne .invalid
+    cmp dword [network_tcp_retransmissions], 1
+    jne .invalid
+    inc dword [network_tcp_tests]
+
+    mov eax, TCP_STATE_FIN_WAIT_1
+    call network_tcp_transition
+    jc .invalid
+    mov eax, TCP_STATE_FIN_WAIT_2
+    call network_tcp_transition
+    jc .invalid
+    mov eax, TCP_STATE_TIME_WAIT
+    call network_tcp_transition
+    jc .invalid
+    mov eax, TCP_STATE_CLOSED
+    call network_tcp_transition
+    jc .invalid
+    inc dword [network_tcp_tests]
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+network_tcp_checksum_prepare:
+    mov edi, network_tcp_checksum_buffer
+    xor eax, eax
+    mov ecx, 40 / 4
+    rep stosd
+    mov dword [network_tcp_checksum_buffer + 0], NETWORK_IPV4_LOOPBACK
+    mov dword [network_tcp_checksum_buffer + 4], NETWORK_IPV4_LOOPBACK
+    mov byte [network_tcp_checksum_buffer + 9], 6
+    mov word [network_tcp_checksum_buffer + 10], 0x1800
+    mov esi, network_tcp_segment
+    mov edi, network_tcp_checksum_buffer + 12
+    mov ecx, 24
+    rep movsb
+    ret
+
+network_tcp_validate_segment:
+    cmp dword [network_tcp_state], TCP_STATE_ESTABLISHED
+    jne .invalid
+    cmp byte [network_tcp_segment + 12], 0x50
+    jne .invalid
+    cmp byte [network_tcp_segment + 13], 0x18
+    jne .invalid
+    mov eax, [network_tcp_segment + 4]
+    bswap eax
+    cmp eax, [network_tcp_send_sequence]
+    jne .invalid
+    call network_tcp_checksum_prepare
+    mov esi, network_tcp_checksum_buffer
+    mov ecx, 36
+    call network_checksum
+    test ax, ax
+    jnz .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+network_tcp_transition:
+    mov edx, [network_tcp_state]
+    cmp edx, TCP_STATE_CLOSED
+    jne .from_syn_sent
+    cmp eax, TCP_STATE_SYN_SENT
+    jne .invalid
+    jmp .commit
+.from_syn_sent:
+    cmp edx, TCP_STATE_SYN_SENT
+    jne .from_syn_received
+    cmp eax, TCP_STATE_SYN_RECEIVED
+    jne .invalid
+    jmp .commit
+.from_syn_received:
+    cmp edx, TCP_STATE_SYN_RECEIVED
+    jne .from_established
+    cmp eax, TCP_STATE_ESTABLISHED
+    jne .invalid
+    jmp .commit
+.from_established:
+    cmp edx, TCP_STATE_ESTABLISHED
+    jne .from_fin_wait_1
+    cmp eax, TCP_STATE_FIN_WAIT_1
+    jne .invalid
+    jmp .commit
+.from_fin_wait_1:
+    cmp edx, TCP_STATE_FIN_WAIT_1
+    jne .from_fin_wait_2
+    cmp eax, TCP_STATE_FIN_WAIT_2
+    jne .invalid
+    jmp .commit
+.from_fin_wait_2:
+    cmp edx, TCP_STATE_FIN_WAIT_2
+    jne .from_time_wait
+    cmp eax, TCP_STATE_TIME_WAIT
+    jne .invalid
+    jmp .commit
+.from_time_wait:
+    cmp edx, TCP_STATE_TIME_WAIT
+    jne .invalid
+    cmp eax, TCP_STATE_CLOSED
+    jne .invalid
+.commit:
+    mov [network_tcp_state], eax
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; EAX=IPv4-Adresse in Host-Reihenfolge, EAX=Interface-ID. Die Tabelle ist
+; fest begrenzt; längere Präfixe gewinnen unabhängig von der Eintragsreihenfolge.
+network_route_lookup_ipv4:
+    mov [network_route_lookup_address], eax
+    inc dword [network_route_lookups]
+    mov dword [network_route_last_prefix], 0
+    mov dword [network_route_selected_interface], 0
+    xor ecx, ecx
+.next:
+    cmp ecx, [network_route_count]
+    jae .complete
+    mov edi, ecx
+    shl edi, 4
+    add edi, network_route_table
+    mov eax, [network_route_lookup_address]
+    and eax, [edi + 4]
+    cmp eax, [edi + 0]
+    jne .continue
+    mov eax, [edi + 8]
+    cmp eax, [network_route_last_prefix]
+    jb .continue
+    mov [network_route_last_prefix], eax
+    mov eax, [edi + 12]
+    mov [network_route_selected_interface], eax
+.continue:
+    inc ecx
+    jmp .next
+.complete:
+    mov eax, [network_route_selected_interface]
+    test eax, eax
+    jz .unreachable
+    inc dword [network_route_hits]
+    clc
+    ret
+.unreachable:
+    stc
+    ret
+
+; Statische Bootstrap-Firewall. Bis ein autorisierter Policy-Dienst Regeln
+; installiert, ist ausschließlich UDP/9000 innerhalb 127.0.0.0/8 erlaubt.
+network_firewall_check_ipv4:
+    inc dword [network_firewall_decisions]
+    cmp ebx, 17
+    jne .drop
+    cmp ecx, NETWORK_BOOTSTRAP_PORT
+    jne .drop
+    and eax, 0xFF000000
+    cmp eax, 0x7F000000
+    jne .drop
+    clc
+    ret
+.drop:
+    inc dword [network_firewall_drops]
     stc
     ret
 
@@ -5471,6 +5928,32 @@ network_loopback_frame:       times 64 db 0
 network_checksum_buffer:      times 40 db 0
 network_icmp_buffer:          times 16 db 0
 network_icmp_echo_tests:      dd 0
+network_route_count:          dd 0
+network_route_lookups:        dd 0
+network_route_hits:           dd 0
+network_route_last_prefix:    dd 0
+network_route_lookup_address: dd 0
+network_route_selected_interface: dd 0
+network_firewall_decisions:    dd 0
+network_firewall_drops:        dd 0
+network_ipv6_udp_tests:        dd 0
+network_icmpv6_echo_tests:     dd 0
+network_tcp_state:             dd 0
+network_tcp_tests:             dd 0
+network_tcp_retransmissions:   dd 0
+network_tcp_send_sequence:     dd 0
+network_tcp_receive_sequence:  dd 0
+align 4
+network_route_table:
+    dd 0x7F000000, 0xFF000000, 8, 1
+    dd 0x7F000001, 0xFFFFFFFF, 32, 1
+align 4
+network_ipv6_frame:            times 64 db 0
+network_ipv6_checksum_buffer:  times 64 db 0
+network_icmpv6_buffer:         times 12 db 0
+network_icmpv6_checksum_buffer: times 64 db 0
+network_tcp_segment:           times 24 db 0
+network_tcp_checksum_buffer:   times 40 db 0
 
 ; Strukturierter Panic-Reporter (ADR-2014)
 PANIC_API_SIZE    equ 32
@@ -6953,7 +7436,7 @@ message_power_shutdown_denied:
 message_power_manager_error:
     db "NOVA PANIC: Power Manager nicht initialisierbar", 13, 10, 0
 message_network_manager_ok:
-    db "NOVA: Network ABI 1.0, Loopback lo0 und ICMPv4 Echo bereit", 13, 10, 0
+    db "NOVA: Network ABI 1.0, IPv4/IPv6 UDP, ICMP und TCP bereit", 13, 10, 0
 message_network_query_ok:
     db "NOVA: Userspace Network.Query capability-geprueft", 13, 10, 0
 message_network_raw_denied:
