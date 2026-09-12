@@ -806,6 +806,7 @@ $(ELF64_TEST): $(ELF64_RAW) scripts/build-elf64.ps1
 		-File scripts/build-elf64.ps1 -InputFile $(ELF64_RAW) -OutputFile $(ELF64_TEST)
 
 image: abi-check bootloader kernel $(KERNEL_IMAGE) artifact-check | $(BUILD_DIR)
+	test "$$(wc -c < $(KERNEL_IMAGE))" -le 262656
 	dd if=/dev/zero of=$(DISK_IMAGE) bs=512 count=$(IMAGE_SECTORS) status=none
 	dd if=$(STAGE1) of=$(DISK_IMAGE) bs=512 seek=0 conv=notrunc status=none
 	dd if=$(STAGE2) of=$(DISK_IMAGE) bs=512 seek=1 conv=notrunc status=none

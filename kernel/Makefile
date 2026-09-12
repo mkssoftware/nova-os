@@ -22,7 +22,8 @@ $(KERNEL_BINARY): $(KERNEL_SOURCE) $(LAYOUT_INCLUDE) $(PROTOCOL_INCLUDE) $(ART_I
 
 verify: $(KERNEL_BINARY)
 	test "$$(wc -c < $(KERNEL_BINARY))" -gt 0
-	test "$$(wc -c < $(KERNEL_BINARY))" -le 61440
+	# 252 KiB Kernelcode plus 4 KiB ELF-Payloadoffset bleiben im 256-KiB-NKI-Limit.
+	test "$$(wc -c < $(KERNEL_BINARY))" -le 258048
 
 clean:
 	rm -f $(KERNEL_BINARY)

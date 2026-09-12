@@ -541,18 +541,34 @@ bios_debug_write_string:
 load_kernel_image:
     call detect_bios_extensions
     jc .chs
+    mov word [kernel_remaining], KERNEL_IMAGE_SECTOR_COUNT
+    mov word [kernel_dap + 2], 1
+    mov word [kernel_dap + 4], KERNEL_TEMP_OFFSET
+    mov word [kernel_dap + 6], KERNEL_TEMP_SEGMENT
+    mov dword [kernel_dap + 8], KERNEL_FIRST_LBA
+    mov dword [kernel_dap + 12], 0
+.lba_next:
+    cmp word [kernel_remaining], 0
+    je .done
     mov byte [retry_count], DISK_RETRY_COUNT
-
 .lba_retry:
     mov si, kernel_dap
     mov ah, 0x42
     mov dl, [boot_drive]
     int 0x13
-    jnc .done
+    jnc .lba_loaded
     call reset_disk
     dec byte [retry_count]
     jnz .lba_retry
-
+    jmp kernel_load_error
+.lba_loaded:
+    add word [kernel_dap + 4], 512
+    jnc .lba_destination_ready
+    add word [kernel_dap + 6], 0x1000
+.lba_destination_ready:
+    inc dword [kernel_dap + 8]
+    dec word [kernel_remaining]
+    jmp .lba_next
 .chs:
     call load_kernel_chs
     jc kernel_load_error
@@ -599,10 +615,10 @@ load_kernel_chs:
     div bx
     mov [kernel_cylinder], al
     mov [kernel_head], dl
-    mov byte [kernel_remaining], KERNEL_IMAGE_SECTOR_COUNT
+    mov word [kernel_remaining], KERNEL_IMAGE_SECTOR_COUNT
 
 .next_sector:
-    cmp byte [kernel_remaining], 0
+    cmp word [kernel_remaining], 0
     je .success
     mov byte [retry_count], DISK_RETRY_COUNT
 .retry:
@@ -628,7 +644,7 @@ load_kernel_chs:
     add word [kernel_destination_segment], 0x1000
 .destination_ready:
     call advance_chs
-    dec byte [kernel_remaining]
+    dec word [kernel_remaining]
     jmp .next_sector
 .success:
     clc
@@ -1247,14 +1263,16 @@ validate_elf_note_segment:
     stc
     ret
 
-; CRC32/ISO-HDLC über DS:SI, Länge ECX. Ergebnis EAX.
+; CRC32/ISO-HDLC über DS:SI, Länge ECX. Der 32-Bit-Offset verhindert den
+; Real-Mode-Wrap bei NKI-Nutzdaten, die die 64-KiB-Segmentgrenze überschreiten.
 crc32_ds_si:
+    movzx esi, si
     mov eax, 0xFFFFFFFF
 .byte:
     test ecx, ecx
     jz .finish
-    xor al, [si]
-    inc si
+    xor al, [esi]
+    inc esi
     push cx
     mov cx, 8
 .bit:
@@ -4059,7 +4077,7 @@ kernel_destination_segment: dw 0
 kernel_cylinder:            db 0
 kernel_head:                db 0
 kernel_sector:              db 0
-kernel_remaining:           db 0
+kernel_remaining:           dw 0
 sectors_per_track:          db 18
 maximum_head:               db 1
 
@@ -4091,7 +4109,7 @@ elf_segment_ends:           times 16 dd 0
 align 4
 kernel_dap:
     db 0x10, 0
-    dw KERNEL_IMAGE_SECTOR_COUNT
+    dw 1
     dw KERNEL_TEMP_OFFSET
     dw KERNEL_TEMP_SEGMENT
     dq KERNEL_FIRST_LBA
