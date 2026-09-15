@@ -58,6 +58,11 @@ typedef struct {
     uint8_t Data4[8];
 } EFI_GUID;
 
+typedef struct {
+    EFI_GUID VendorGuid;
+    VOID *VendorTable;
+} EFI_CONFIGURATION_TABLE;
+
 typedef struct EFI_BOOT_SERVICES EFI_BOOT_SERVICES;
 typedef struct EFI_RUNTIME_SERVICES EFI_RUNTIME_SERVICES;
 typedef EFI_STATUS (EFIAPI *EFI_GET_VARIABLE)(CHAR16 *,EFI_GUID *,uint32_t *,UINTN *,VOID *);
@@ -106,7 +111,7 @@ typedef struct {
     EFI_RUNTIME_SERVICES *RuntimeServices;
     EFI_BOOT_SERVICES *BootServices;
     UINTN NumberOfTableEntries;
-    VOID *ConfigurationTable;
+    EFI_CONFIGURATION_TABLE *ConfigurationTable;
 } EFI_SYSTEM_TABLE;
 
 typedef struct {

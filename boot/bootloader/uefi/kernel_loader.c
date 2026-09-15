@@ -55,6 +55,8 @@ static CHAR16 nki_path[]={'\\','N','O','V','A','.','N','K','I',0};
 
 static void bytes_zero(void *target,UINTN length){uint8_t *p=target;while(length--)*p++=0;}
 static void bytes_copy(void *target,const void *source,UINTN length){uint8_t *d=target;const uint8_t *s=source;while(length--)*d++=*s++;}
+static bool bytes_equal(const void *left,const void *right,UINTN length)
+{const uint8_t *a=left,*b=right;while(length--)if(*a++!=*b++)return false;return true;}
 static uint32_t crc32_with_zero(const uint8_t *data,UINTN size,UINTN zero_offset,UINTN zero_size)
 {uint32_t crc=0xffffffffu;for(UINTN i=0;i<size;++i){uint8_t value=(i>=zero_offset&&i<zero_offset+zero_size)?0:data[i];crc^=value;for(uint32_t bit=0;bit<8;++bit)crc=(crc>>1)^((crc&1)?0xedb88320u:0);}return ~crc;}
 static bool range_valid(UINTN offset,UINTN length,UINTN total){return offset<=total&&length<=total-offset;}
@@ -122,7 +124,31 @@ static bool load_nki_elf32(EFI_BOOT_SERVICES *bs,const uint8_t *file,UINTN size,
 static uint8_t *append_tlv(uint8_t *at,uint16_t type,uint16_t flags,uint32_t length)
 {nova_bib_tlv_header_t *header=(nova_bib_tlv_header_t *)at;header->type=type;header->flags=flags;header->length=length;bytes_zero(at+8,length);return at+8;}
 
-static UINTN build_bib(const VOID *map,UINTN map_size,UINTN descriptor_size,uint32_t entry,
+static uint8_t acpi_checksum(const uint8_t *bytes,UINTN length)
+{uint8_t sum=0;for(UINTN i=0;i<length;++i)sum=(uint8_t)(sum+bytes[i]);return sum;}
+
+static uint32_t find_acpi_rsdp(const EFI_SYSTEM_TABLE *st)
+{
+    static const EFI_GUID acpi20={0x8868e871,0xe4f1,0x11d3,{0xbc,0x22,0,0x80,0xc7,0x3c,0x88,0x81}};
+    static const EFI_GUID acpi10={0xeb9d2d30,0x2d88,0x11d3,{0x9a,0x16,0,0x90,0x27,0x3f,0xc1,0x4d}};
+    const EFI_CONFIGURATION_TABLE *tables=st->ConfigurationTable;
+    if(!tables||st->NumberOfTableEntries>4096)return 0;
+    for(unsigned pass=0;pass<2;++pass)for(UINTN i=0;i<st->NumberOfTableEntries;++i){
+        const EFI_GUID *wanted=pass?&acpi10:&acpi20;
+        if(!bytes_equal(&tables[i].VendorGuid,wanted,sizeof(*wanted)))continue;
+        UINTN address=(UINTN)tables[i].VendorTable;
+        if(!address||address>0xffffffffull-36)continue;
+        const uint8_t *rsdp=(const uint8_t *)address;
+        if(!bytes_equal(rsdp,"RSD PTR ",8)||acpi_checksum(rsdp,20))continue;
+        if(rsdp[15]>=2){uint32_t length;
+            bytes_copy(&length,rsdp+20,4);
+            if(length<36||length>4096||address>0xffffffffull-length||acpi_checksum(rsdp,length))continue;}
+        return (uint32_t)address;
+    }
+    return 0;
+}
+
+static UINTN build_bib(const EFI_SYSTEM_TABLE *st,const VOID *map,UINTN map_size,UINTN descriptor_size,uint32_t entry,
                        uint32_t image_size,const uint8_t build_id[16])
 {
     uint8_t *base=(uint8_t *)(UINTN)BIB_ADDRESS;bytes_zero(base,0x800);
@@ -150,6 +176,8 @@ static UINTN build_bib(const VOID *map,UINTN map_size,UINTN descriptor_size,uint
     bytes_copy(value,&b,4);bytes_copy(value+4,&d,4);bytes_copy(value+8,&c,4);((uint32_t *)value)[3]=a;__asm__ volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(1),"c"(0));((uint32_t *)value)[4]=d;((uint32_t *)value)[5]=c;at=value+32;
     value=append_tlv(at,NOVA_BIB_TLV_ENTROPY,NOVA_BIB_TLV_FLAG_REQUIRED,32);uint64_t tsc;uint32_t lo,hi;__asm__ volatile("rdtsc":"=a"(lo),"=d"(hi));tsc=((uint64_t)hi<<32)|lo;bytes_copy(value,&tsc,8);tsc^=0x4e6f76614f535545ull;bytes_copy(value+8,&tsc,8);((uint32_t *)value)[4]=1;((uint32_t *)value)[5]=1;((uint32_t *)value)[6]=16;at=value+32;
     value=append_tlv(at,NOVA_BIB_TLV_SYSTEM,NOVA_BIB_TLV_FLAG_REQUIRED,16);((uint32_t *)value)[2]=1;at=value+16;
+    uint32_t rsdp=find_acpi_rsdp(st);
+    if(rsdp){value=append_tlv(at,NOVA_BIB_TLV_ACPI,0,16);((nova_bib_pointer_info_t *)value)->address=rsdp;at=value+16;}
     value=append_tlv(at,NOVA_BIB_TLV_KERNEL_IDENTITY,0,32);bytes_copy(value,build_id,16);((uint32_t *)value)[5]=NOVA_KERNEL_FORMAT_ELF32;at=value+32;
     header->total_size=(uint32_t)(at-base);header->checksum=crc32_with_zero(base,header->total_size,20,4);return count;
 }
@@ -167,7 +195,7 @@ EFI_STATUS uefi_boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st)
     status=alloc(EFI_LOADER_DATA,map_capacity,&map);if(EFI_ERROR(status))return status;
     map_size=map_capacity;status=getmap(&map_size,map,&map_key,&descriptor_size,&descriptor_version);
     if(EFI_ERROR(status)||!descriptor_size){nova_debug_string("UEFI:MEMORY-MAP-ERROR\n");return status;}
-    if(!build_bib(map,map_size,descriptor_size,entry,image_size,build_id)){nova_debug_string("UEFI:BIB-ERROR\n");return 1;}
+    if(!build_bib(st,map,map_size,descriptor_size,entry,image_size,build_id)){nova_debug_string("UEFI:BIB-ERROR\n");return 1;}
     nova_debug_string("UEFI:NBHP-BIB-READY\n");
     efi_exit_boot_services_fn exit_bs=(efi_exit_boot_services_fn)st->BootServices->ExitBootServices;
     status=exit_bs(image_handle,map_key);if(EFI_ERROR(status)){map_size=map_capacity;status=getmap(&map_size,map,&map_key,&descriptor_size,&descriptor_version);if(!EFI_ERROR(status))status=exit_bs(image_handle,map_key);}

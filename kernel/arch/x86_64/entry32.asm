@@ -73,6 +73,7 @@ kernel_entry:
 
     call create_kernel_context
     jc panic_invalid_handoff
+    call acpi_rsdp_initialize
     call early_security_entropy_initialize
     jc panic_invalid_handoff
     mov dword [boot_phase_last_success], BOOT_PHASE_HANDOFF
@@ -204,6 +205,13 @@ kernel_entry:
     mov esi, message_scheduler_ok
     call serial_write_string
 
+    call smp_initialize
+    jc panic_smp
+    call smp_self_test
+    jc panic_smp
+    mov esi, message_smp_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_SCHEDULER_SMP
     mov dword [boot_phase_current], BOOT_PHASE_DEVICE_DISCOVERY
     call boot_phase_log
@@ -251,6 +259,9 @@ kernel_entry:
     mov dword [boot_phase_current], BOOT_PHASE_OPERATIONAL
     call boot_phase_log
     call kernel_operational_prepare
+    mov eax, SMP_PHASE_OPERATIONAL
+    call smp_publish_phase
+    jc panic_smp
     mov dword [scheduler_current], 0
     call userspace_enter
 
@@ -302,6 +313,12 @@ panic_cpu_manager:
     mov eax, 0x00000012
     mov edx, 0x43505520             ; "CPU "
     mov esi, message_cpu_manager_error
+    jmp kernel_panic
+
+panic_smp:
+    mov eax, 0x0000001B
+    mov edx, 0x534D5020             ; "SMP "
+    mov esi, message_smp_error
     jmp kernel_panic
 
 panic_scheduler:
@@ -631,7 +648,12 @@ create_kernel_context:
     cmp ecx, BIB_ACPI_SIZE
     jb .invalid
     mov eax, [edx + 0]
+    cmp dword [edx + 4], 0
+    jne .acpi_unaddressable
     mov [kernel_context + CONTEXT_ACPI_ADDRESS], eax
+    jmp .advance
+.acpi_unaddressable:
+    mov dword [kernel_context + CONTEXT_ACPI_ADDRESS], 0
     jmp .advance
 
 .modules:
@@ -687,6 +709,110 @@ create_kernel_context:
     jne .invalid
     clc
     ret
+.invalid:
+    stc
+    ret
+
+; ACPI-Root-Pointer vor der Paging-Aktivierung prüfen. Ein fehlender oder
+; beschädigter RSDP verhindert den UP-Boot nicht und aktiviert keinen AP.
+acpi_rsdp_initialize:
+    mov esi, [kernel_context + CONTEXT_ACPI_ADDRESS]
+    test esi, esi
+    jz .bios_scan
+    call acpi_rsdp_validate
+    jnc .ready
+    mov dword [kernel_context + CONTEXT_ACPI_ADDRESS], 0
+.bios_scan:
+    cmp dword [kernel_context + CONTEXT_PLATFORM], NOVA_BOOT_PLATFORM_BIOS
+    jne .unavailable
+    movzx esi, word [0x40E]        ; EBDA-Segment aus dem BIOS Data Area
+    shl esi, 4
+    cmp esi, 0x80000
+    jb .high_scan
+    cmp esi, 0xA0000
+    jae .high_scan
+    lea edx, [esi + 1024]
+    call acpi_rsdp_scan_range
+    jnc .found
+.high_scan:
+    mov esi, 0xE0000
+    mov edx, 0x100000
+    call acpi_rsdp_scan_range
+    jc .unavailable
+.found:
+    mov [kernel_context + CONTEXT_ACPI_ADDRESS], esi
+.ready:
+    mov esi, message_acpi_rsdp_ok
+    call serial_write_string
+    ret
+.unavailable:
+    mov esi, message_acpi_rsdp_missing
+    call serial_write_string
+    ret
+
+; ESI = Anfang, EDX = exklusives Ende; 16-Byte-RSDP-Ausrichtung.
+acpi_rsdp_scan_range:
+.next:
+    lea eax, [esi + 36]
+    cmp eax, edx
+    ja .missing
+    push edx
+    call acpi_rsdp_validate
+    pop edx
+    jnc .found
+    add esi, 16
+    jmp .next
+.found:
+    clc
+    ret
+.missing:
+    stc
+    ret
+
+acpi_rsdp_validate:
+    cmp esi, 0xFFFFEFFF
+    ja .invalid
+    cmp dword [esi], 0x20445352 ; "RSD "
+    jne .invalid
+    cmp dword [esi + 4], 0x20525450 ; "PTR "
+    jne .invalid
+    push ecx
+    push edi
+    xor eax, eax
+    mov edi, esi
+    mov ecx, 20
+.first_checksum:
+    add al, [edi]
+    inc edi
+    loop .first_checksum
+    test al, al
+    jnz .checksum_invalid
+    cmp byte [esi + 15], 2
+    jb .valid
+    mov ecx, [esi + 20]
+    cmp ecx, 36
+    jb .checksum_invalid
+    cmp ecx, 4096
+    ja .checksum_invalid
+    mov edi, esi
+    add edi, ecx
+    jc .checksum_invalid
+    mov edi, esi
+    xor eax, eax
+.extended_checksum:
+    add al, [edi]
+    inc edi
+    loop .extended_checksum
+    test al, al
+    jnz .checksum_invalid
+.valid:
+    pop edi
+    pop ecx
+    clc
+    ret
+.checksum_invalid:
+    pop edi
+    pop ecx
 .invalid:
     stc
     ret
@@ -5444,6 +5570,7 @@ security_table:
 CPU_API_SIZE          equ 48
 CPU_RECORD_SIZE       equ 96
 CPU_CAPACITY          equ 8
+CPU_LOCAL_SLOT_SIZE   equ 64
 CPU_STATE_DISCOVERED  equ 0
 CPU_STATE_OFFLINE     equ 1
 CPU_STATE_STARTING    equ 2
@@ -5466,12 +5593,14 @@ cpu_manager_initialize:
     mov ecx, (CPU_CAPACITY * CPU_RECORD_SIZE) / 4
     rep stosd
     mov edi, cpu_local_data
-    mov ecx, 64 / 4
+    mov ecx, (CPU_CAPACITY * CPU_LOCAL_SLOT_SIZE) / 4
     rep stosd
     mov dword [cpu_possible_set], 1
     mov dword [cpu_discovered_set], 1
+    mov dword [cpu_present_set], 1
     mov dword [cpu_online_set], 0
     mov dword [cpu_active_set], 0
+    mov dword [cpu_isolated_set], 0
     mov dword [cpu_failed_set], 0
     mov dword [cpu_discovered_count], 1
     mov dword [cpu_online_count], 0
@@ -5655,16 +5784,206 @@ cpu_max_basic_leaf:      dd 0
 cpu_system_features:     dd 0
 cpu_possible_set:        dd 0
 cpu_discovered_set:      dd 0
+cpu_present_set:         dd 0
 cpu_online_set:          dd 0
 cpu_active_set:          dd 0
+cpu_isolated_set:        dd 0
 cpu_failed_set:          dd 0
 cpu_discovered_count:    dd 0
 cpu_online_count:        dd 0
 cpu_startup_attempts:    dd 0
 cpu_offline_operations:  dd 0
-align 16
-cpu_local_data:          times 64 db 0
+align 64
+cpu_local_data:          times CPU_CAPACITY * CPU_LOCAL_SLOT_SIZE db 0
 cpu_records:             times CPU_CAPACITY * CPU_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; SMP-Grundlage (NPSPEC-KERNEL-0027). Aktuell ist nur der BSP gestartet.
+; Remote-IPIs und Remote-TLB-Shootdowns bleiben fail-closed, bis M/ADT,
+; AP-Trampoline und getrennte AP-Stacks tatsächlich bereitstehen.
+; ---------------------------------------------------------------------------
+SMP_API_SIZE                 equ 48
+SMP_PHASE_ARCH_READY        equ 0
+SMP_PHASE_MEMORY_READY      equ 1
+SMP_PHASE_INTERRUPTS_READY  equ 2
+SMP_PHASE_SCHEDULER_READY   equ 3
+SMP_PHASE_OPERATIONAL       equ 4
+SMP_IPI_RESCHEDULE          equ 0
+SMP_IPI_TLB_SHOOTDOWN       equ 1
+SMP_IPI_CALL_FUNCTION       equ 2
+SMP_IPI_CPU_STOP            equ 3
+SMP_IPI_CPU_WAKE            equ 4
+SMP_IPI_DEBUG               equ 5
+SMP_IPI_PANIC_STOP          equ 6
+SMP_IPI_TYPE_COUNT          equ 7
+
+smp_initialize:
+    cmp dword [cpu_discovered_count], 1
+    jne .unsupported
+    cmp dword [cpu_online_set], 1
+    jne .unsupported
+    cmp dword [cpu_active_set], 1
+    jne .unsupported
+    cmp dword [cpu_present_set], 1
+    jne .unsupported
+    mov dword [smp_boot_phase], SMP_PHASE_SCHEDULER_READY
+    mov dword [smp_local_tlb_generation], 0
+    mov dword [smp_local_tlb_flushes], 0
+    mov dword [smp_rejected_ipis], 0
+    mov dword [smp_rejected_remote_shootdowns], 0
+    mov dword [smp_remote_ipis_sent], 0
+    clc
+    ret
+.unsupported:
+    stc
+    ret
+
+; EAX=Phasenindex. LOCK CMPXCHG veröffentlicht Bootstrap-Daten erst nach
+; vollständigem Aufbau und verhindert selbst bei Konkurrenz einen Rückschritt.
+smp_publish_phase:
+    cmp eax, SMP_PHASE_OPERATIONAL
+    ja .invalid
+    mov edx, eax
+.retry:
+    mov eax, [smp_boot_phase]
+    cmp edx, eax
+    jb .invalid
+    lock cmpxchg dword [smp_boot_phase], edx
+    jne .retry
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; EAX=Zielmaske, ECX=IPI-Typ. Diese Routine validiert zunächst jedes Ziel;
+; der physische IPI-Versand existiert noch nicht und wird nie behauptet.
+smp_send_ipi:
+    cmp ecx, SMP_IPI_TYPE_COUNT
+    jae .reject
+    test eax, eax
+    jz .reject
+    mov edx, [cpu_online_set]
+    not edx
+    test eax, edx
+    jnz .reject
+    ; Self-IPI ist keine Cross-CPU-Operation. Im UP-Betrieb gibt es keinen AP.
+    test eax, 1
+    jnz .reject
+    inc dword [smp_rejected_ipis]
+    stc
+    ret
+.reject:
+    inc dword [smp_rejected_ipis]
+    stc
+    ret
+
+; EAX=virtuelle Adresse, EDX=Ziel-CPU-Maske. Der lokale TLB wird nur nach
+; vollständig aktualisiertem Mapping invalidiert. Andere CPUs wären vor
+; Seitenwiederverwendung zu bestätigen und werden derzeit strikt abgelehnt.
+smp_tlb_shootdown_page:
+    test eax, 0xFFF
+    jnz .invalid
+    test edx, edx
+    jz .invalid
+    mov ecx, [cpu_active_set]
+    not ecx
+    test edx, ecx
+    jnz .invalid
+    test edx, 0xFFFFFFFE
+    jnz .remote_unsupported
+    invlpg [eax]
+    lock inc dword [smp_local_tlb_generation]
+    inc dword [smp_local_tlb_flushes]
+    clc
+    ret
+.remote_unsupported:
+    inc dword [smp_rejected_remote_shootdowns]
+.invalid:
+    stc
+    ret
+
+smp_self_test:
+    cmp dword [cpu_possible_set], 1
+    jne .invalid
+    cmp dword [cpu_discovered_set], 1
+    jne .invalid
+    cmp dword [cpu_present_set], 1
+    jne .invalid
+    cmp dword [cpu_online_set], 1
+    jne .invalid
+    cmp dword [cpu_active_set], 1
+    jne .invalid
+    cmp dword [cpu_isolated_set], 0
+    jne .invalid
+    cmp dword [cpu_failed_set], 0
+    jne .invalid
+    cmp dword [smp_boot_phase], SMP_PHASE_SCHEDULER_READY
+    jne .invalid
+    cmp dword [cpu_local_data + CPU_LOCAL_SLOT_SIZE], 0
+    jne .invalid
+    mov eax, SMP_PHASE_MEMORY_READY
+    call smp_publish_phase
+    jnc .invalid                    ; ein Rückschritt darf nicht sichtbar werden
+    mov eax, SMP_PHASE_SCHEDULER_READY
+    call smp_publish_phase
+    jc .invalid
+    cmp dword [smp_boot_phase], SMP_PHASE_SCHEDULER_READY
+    jne .invalid
+    mov eax, 2
+    mov ecx, SMP_IPI_RESCHEDULE
+    call smp_send_ipi
+    jnc .invalid                    ; CPU 1 ist nicht online
+    mov eax, 1
+    mov ecx, SMP_IPI_PANIC_STOP
+    call smp_send_ipi
+    jnc .invalid                    ; keinen physischen IPI vortäuschen
+    mov eax, KERNEL_ENTRY_ADDRESS
+    mov edx, 1
+    call smp_tlb_shootdown_page
+    jc .invalid
+    cmp dword [smp_local_tlb_flushes], 1
+    jne .invalid
+    cmp dword [smp_local_tlb_generation], 1
+    jne .invalid
+    mov eax, KERNEL_ENTRY_ADDRESS + 1
+    mov edx, 1
+    call smp_tlb_shootdown_page
+    jnc .invalid                    ; keine unpräzise Seitenadresse
+    mov eax, KERNEL_ENTRY_ADDRESS
+    mov edx, 3
+    call smp_tlb_shootdown_page
+    jnc .invalid                    ; Remote-Maske nicht aktiv
+    cmp dword [smp_remote_ipis_sent], 0
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+smp_api:
+    dd SMP_API_SIZE
+    dw 1, 0
+    dd cpu_possible_set
+    dd cpu_discovered_set
+    dd cpu_present_set
+    dd cpu_online_set
+    dd cpu_active_set
+    dd cpu_isolated_set
+    dd cpu_failed_set
+    dd smp_boot_phase
+    dd smp_send_ipi
+    dd smp_tlb_shootdown_page
+    dd smp_publish_phase
+smp_boot_phase:                dd 0
+smp_local_tlb_generation:      dd 0
+smp_local_tlb_flushes:         dd 0
+smp_rejected_ipis:             dd 0
+smp_rejected_remote_shootdowns: dd 0
+smp_remote_ipis_sent:          dd 0
 
 ; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
@@ -8942,6 +9261,10 @@ message_cpu_manager_ok:
     db "NOVA: CPU Manager ABI 1.0, BSP-Topologie und per-CPU-Daten aktiv", 13, 10, 0
 message_cpu_manager_error:
     db "NOVA PANIC: CPU Manager Selbsttest fehlgeschlagen", 13, 10, 0
+message_smp_ok:
+    db "NOVA: SMP-Grundlage ABI 1.0, BSP-Barriere und lokaler TLB-Pfad bereit", 13, 10, 0
+message_smp_error:
+    db "NOVA PANIC: SMP-Grundlagen-Selbsttest fehlgeschlagen", 13, 10, 0
 message_panic_begin:
     db "NOVA PANIC REPORT code=0x", 0
 message_panic_subsystem:
@@ -9032,6 +9355,10 @@ message_shutdown_platform:
     db "NOVA: Power Shutdown PLATFORM_OFF", 13, 10, 0
 message_bib_ok:
     db "NOVA: NBHP/BIB v1 validiert", 13, 10, 0
+message_acpi_rsdp_ok:
+    db "NOVA: ACPI RSDP mit Pruefsumme validiert", 13, 10, 0
+message_acpi_rsdp_missing:
+    db "NOVA: ACPI RSDP nicht verfuegbar, BSP-only", 13, 10, 0
 message_kernel_identity_ok:
     db "NOVA: Kernel Build-ID aus NBHP/BIB importiert", 13, 10, 0
 message_pmm_ok:
