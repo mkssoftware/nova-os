@@ -151,6 +151,12 @@ kernel_entry:
 
     call ipc_initialize
     jc panic_ipc
+    call semantic_initialize
+    jc panic_ipc
+    call semantic_self_test
+    jc panic_ipc
+    mov esi, message_semantic_ok
+    call serial_write_string
     mov esi, message_ipc_ok
     call serial_write_string
 
@@ -2713,6 +2719,8 @@ interrupt_api:
 ; Kernel-Nachrichtenwarteschlange (ADR-2005)
 ; ---------------------------------------------------------------------------
 
+%include "arch/x86_64/semantic32.inc"
+
 IPC_MESSAGE_SIZE   equ 16
 IPC_QUEUE_CAPACITY equ 16
 IPC_API_SIZE       equ 32
@@ -3394,6 +3402,7 @@ SYSCALL_CORE_CLOSE_HANDLE   equ 3
 SYSCALL_QUERY_SELF          equ 1
 SYSCALL_IPC_SEND            equ 1
 SYSCALL_IPC_RECEIVE         equ 2
+SYSCALL_IPC_PACKET_ABI      equ 2
 SYSCALL_VFS_OPEN_ROOT       equ 1
 SYSCALL_VFS_LOOKUP          equ 2
 SYSCALL_POWER_QUERY_SYSTEM  equ 1
@@ -3425,6 +3434,7 @@ SYSCALL_STATUS_OPERATION    equ -9
 SYSCALL_STATUS_ACCESS       equ -13
 SYSCALL_STATUS_POINTER      equ -15
 SYSCALL_STATUS_WOULD_BLOCK  equ -19
+SYSCALL_STATUS_TYPE         equ -22
 USER_ADDRESS_MIN            equ USER_CODE_ADDRESS
 USER_ADDRESS_MAX            equ USER_STACK_ADDRESS
 SHARED_SERVICE_ADDRESS      equ 0x00403000
@@ -3649,6 +3659,33 @@ userspace_program_start:
     jnz .failed
     cmp dword [USER_STACK_ADDRESS - 24], 0
     je .failed
+
+    ; Gleiche technische Bytes8-Repräsentation reicht nicht: ein anderer
+    ; Semantic Type und eine inkompatible Version müssen vor Queue-Mutation
+    ; zurückgewiesen werden. Die Capability-/Handle-Prüfung bleibt separat.
+    mov esi, USER_CODE_ADDRESS + userspace_ipc_packet - userspace_program_start
+    mov edi, USER_STACK_ADDRESS - 128
+    mov ecx, 12
+    rep movsd
+    mov dword [USER_STACK_ADDRESS - 116], SEMANTIC_IPC_DIAGNOSTIC
+    mov eax, SYSCALL_SERVICE_IPC
+    mov ebx, SYSCALL_IPC_SEND
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 128
+    mov esi, 48
+    int 0x80
+    cmp eax, SYSCALL_STATUS_TYPE
+    jne .failed
+    mov dword [USER_STACK_ADDRESS - 116], SEMANTIC_IPC_INLINE_DATA
+    mov dword [USER_STACK_ADDRESS - 104], 2
+    mov eax, SYSCALL_SERVICE_IPC
+    mov ebx, SYSCALL_IPC_SEND
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 128
+    mov esi, 48
+    int 0x80
+    cmp eax, SYSCALL_STATUS_TYPE
+    jne .failed
 
     mov eax, SYSCALL_SERVICE_IPC
     mov ebx, SYSCALL_IPC_SEND
@@ -4190,11 +4227,12 @@ userspace_exit_arguments:
 align 8
 userspace_ipc_packet:
     dd 48
-    dw 1, 0
+    dw SYSCALL_IPC_PACKET_ABI, 0
     dd 0                            ; Send-Endpoint, zur Laufzeit gesetzt
-    dd 0
+    dd SEMANTIC_IPC_INLINE_DATA      ; internierter Type Handle
     dq 0x0000000011223344
-    dq 0
+    dd SEMANTIC_TYPE_VERSION_1
+    dd 0
     dd 4
     dd 0
     db "NOVA",0,0,0,0
@@ -4540,11 +4578,13 @@ syscall_dispatch:
     jc .bad_pointer
     cmp dword [userspace_ipc_copy], 48
     jne .bad_size
-    cmp dword [userspace_ipc_copy + 4], SYSCALL_ABI_VERSION
+    cmp dword [userspace_ipc_copy + 4], SYSCALL_IPC_PACKET_ABI
     jne .bad_abi
     cmp dword [userspace_ipc_copy + 32], 8
     ja .bad_size
     cmp dword [userspace_ipc_copy + 36], 0
+    jne .bad_reserved
+    cmp dword [userspace_ipc_copy + 28], 0
     jne .bad_reserved
     mov eax, [userspace_pid]
     mov edx, [userspace_ipc_copy + 8]
@@ -4552,6 +4592,15 @@ syscall_dispatch:
     mov ecx, HANDLE_RIGHT_SEND
     call handle_resolve
     jc .access_denied
+    push dword [eax + OBJ_PAYLOAD1] ; Endpoint-Contract, nicht User-Claim
+    mov eax, [userspace_ipc_copy + 12]
+    mov ecx, [userspace_ipc_copy + 24]
+    mov edx, SEMANTIC_REPR_BYTES8
+    call semantic_check_claim
+    pop edx
+    jc .semantic_mismatch
+    cmp eax, edx
+    jne .semantic_mismatch
     cmp dword [userspace_ipc_count], 0
     jne .ipc_queue_full
     mov esi, userspace_ipc_copy
@@ -4559,6 +4608,7 @@ syscall_dispatch:
     mov ecx, 12
     rep movsd
     mov dword [userspace_ipc_count], 1
+    mov dword [userspace_ipc_validation_state], 1
     mov edx, [syscall_frame]
     mov dword [edx + 44], SYSCALL_STATUS_OK
     ret
@@ -4571,6 +4621,16 @@ syscall_dispatch:
     mov ecx, HANDLE_RIGHT_RECEIVE
     call handle_resolve
     jc .access_denied
+    cmp dword [userspace_ipc_validation_state], 1
+    jne .semantic_mismatch
+    mov ebx, [eax + OBJ_PAYLOAD1]
+    mov eax, [userspace_ipc_queue + 12]
+    cmp eax, ebx
+    jne .semantic_mismatch
+    mov ecx, [userspace_ipc_queue + 24]
+    mov edx, SEMANTIC_REPR_BYTES8
+    call semantic_check_claim
+    jc .semantic_mismatch
     mov esi, userspace_ipc_queue
     mov edi, userspace_ipc_copy
     mov ecx, 12
@@ -4578,6 +4638,7 @@ syscall_dispatch:
     mov eax, [userspace_ipc_receive_handle]
     mov [userspace_ipc_copy + 8], eax
     mov dword [userspace_ipc_count], 0
+    mov dword [userspace_ipc_validation_state], 0
     mov edx, [syscall_frame]
     mov edi, [edx + 36]
     mov esi, userspace_ipc_copy
@@ -4586,6 +4647,11 @@ syscall_dispatch:
     jc .bad_pointer
     mov esi, message_ipc_roundtrip_ok
     call serial_write_string
+    cmp dword [semantic_ipc_rejected], 2
+    jne .ipc_receive_done
+    mov esi, message_semantic_reject_ok
+    call serial_write_string
+.ipc_receive_done:
     mov edx, [syscall_frame]
     mov dword [edx + 44], SYSCALL_STATUS_OK
     ret
@@ -5505,6 +5571,10 @@ syscall_dispatch:
 .access_denied:
     mov eax, SYSCALL_STATUS_ACCESS
     jmp .reject
+.semantic_mismatch:
+    inc dword [semantic_ipc_rejected]
+    mov eax, SYSCALL_STATUS_TYPE
+    jmp .reject
 .bad_pointer:
     mov eax, SYSCALL_STATUS_POINTER
 .reject:
@@ -5526,6 +5596,7 @@ syscall_total:        dd 0
 syscall_rejected:     dd 0
 syscall_identity:     dd 0
 syscall_closed_handle: dd 0
+semantic_ipc_rejected: dd 0
 align 4
 syscall_argument_buffer:
     times 16 db 0
@@ -5549,19 +5620,21 @@ OBJECT_TYPE_IPC_ENDPOINT equ 11
 
 userspace_ipc_initialize:
     mov dword [userspace_ipc_count], 0
+    mov dword [userspace_ipc_validation_state], 0
+    mov dword [semantic_ipc_rejected], 0
     mov edi, userspace_ipc_queue
     xor eax, eax
     mov ecx, 48 / 4
     rep stosd
     mov eax, OBJECT_TYPE_IPC_ENDPOINT
     mov edx, 1
-    mov ebx, 2
+    mov ebx, SEMANTIC_IPC_INLINE_DATA
     call object_create
     jc .invalid
     mov [userspace_ipc_send_object], eax
     mov eax, OBJECT_TYPE_IPC_ENDPOINT
     mov edx, 2
-    mov ebx, 1
+    mov ebx, SEMANTIC_IPC_INLINE_DATA
     call object_create
     jc .invalid
     mov [userspace_ipc_receive_object], eax
@@ -5598,6 +5671,7 @@ userspace_ipc_receive_object: dd 0
 userspace_ipc_send_handle:    dd 0
 userspace_ipc_receive_handle: dd 0
 userspace_ipc_count:          dd 0
+userspace_ipc_validation_state: dd 0
 align 4
 userspace_ipc_copy:  times 48 db 0
 userspace_ipc_queue: times 48 db 0
@@ -9700,6 +9774,10 @@ message_interrupts_error:
     db "NOVA PANIC: Interrupt- oder Timerinitialisierung fehlgeschlagen", 13, 10, 0
 message_ipc_ok:
     db "NOVA: IPC ABI 1.0 FIFO bereit", 13, 10, 0
+message_semantic_ok:
+    db "NOVA: Semantic Types v1, Registry versiegelt und Typed-IPC-Contract bereit", 13, 10, 0
+message_semantic_reject_ok:
+    db "NOVA: Typed IPC, fremder Type und Version sicher abgewiesen", 13, 10, 0
 message_ipc_error:
     db "NOVA PANIC: Kernel-IPC nicht initialisierbar", 13, 10, 0
 message_service_manager_ok:
