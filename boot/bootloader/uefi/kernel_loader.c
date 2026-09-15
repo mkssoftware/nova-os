@@ -3,6 +3,7 @@
 #include "../../include/nova_boot_protocol.h"
 
 #define EFI_ALLOCATE_ADDRESS 2u
+#define EFI_ALLOCATE_MAX_ADDRESS 1u
 #define EFI_LOADER_DATA 2u
 #define EFI_FILE_MODE_READ 1ull
 #define EFI_CONVENTIONAL_MEMORY 7u
@@ -13,7 +14,7 @@
 #define PAGE_SIZE 4096ull
 #define UEFI_PLATFORM 2u
 #define MEMORY_ENTRY_SIZE 24u
-#define MEMORY_ENTRY_CAPACITY 64u
+#define MEMORY_ENTRY_CAPACITY 256u
 
 typedef EFI_STATUS (EFIAPI *efi_handle_protocol_fn)(EFI_HANDLE,EFI_GUID *,VOID **);
 typedef EFI_STATUS (EFIAPI *efi_allocate_pages_fn)(uint32_t,uint32_t,UINTN,EFI_PHYSICAL_ADDRESS *);
@@ -47,7 +48,7 @@ typedef struct {uint64_t Address,Length;uint32_t Type,Attributes;} nova_e820_ent
 typedef struct {uint8_t ident[16];uint16_t type,machine;uint32_t version,entry,phoff,shoff,flags;uint16_t ehsize,phentsize,phnum,shentsize,shnum,shstrndx;} elf32_header;
 typedef struct {uint32_t type,offset,vaddr,paddr,filesz,memsz,flags,align;} elf32_program_header;
 
-extern void EFIAPI uefi_enter_kernel32(uint32_t entry,uint32_t bib);
+extern void EFIAPI uefi_enter_kernel32(uint32_t entry,uint32_t bib,uint32_t stack_top);
 
 static EFI_GUID loaded_image_guid={0x5b1b31a1,0x9562,0x11d2,{0x8e,0x3f,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
 static EFI_GUID simple_fs_guid={0x964e5b22,0x6459,0x11d2,{0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
@@ -63,6 +64,18 @@ static bool range_valid(UINTN offset,UINTN length,UINTN total){return offset<=to
 
 static EFI_STATUS allocate_fixed(EFI_BOOT_SERVICES *bs,uint64_t address,UINTN pages)
 {EFI_PHYSICAL_ADDRESS value=address;efi_allocate_pages_fn fn=(efi_allocate_pages_fn)bs->AllocatePages;return fn(EFI_ALLOCATE_ADDRESS,EFI_LOADER_DATA,pages,&value);}
+
+static bool allocate_kernel_stack(EFI_BOOT_SERVICES *bs,uint32_t *stack_top)
+{
+    if(!EFI_ERROR(allocate_fixed(bs,KERNEL_STACK_BASE,16))){*stack_top=KERNEL_STACK_BASE+16*PAGE_SIZE;return true;}
+    EFI_PHYSICAL_ADDRESS base=0x007fffffull;
+    efi_allocate_pages_fn fn=(efi_allocate_pages_fn)bs->AllocatePages;
+    if(EFI_ERROR(fn(EFI_ALLOCATE_MAX_ADDRESS,EFI_LOADER_DATA,16,&base))||
+       base<0x10000ull||base+16*PAGE_SIZE>0x00800000ull)return false;
+    *stack_top=(uint32_t)(base+16*PAGE_SIZE);
+    nova_debug_string("UEFI:KERNEL-STACK-RELOCATED\n");
+    return true;
+}
 
 static EFI_STATUS read_nki(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,uint8_t **data,UINTN *size)
 {
@@ -186,9 +199,11 @@ EFI_STATUS uefi_boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st)
 {
     uint8_t *file=0;UINTN size=0;EFI_STATUS status=read_nki(image_handle,st,&file,&size);
     if(EFI_ERROR(status)){nova_debug_string("UEFI:KERNEL-FILE-ERROR\n");return status;}
-    if(EFI_ERROR(allocate_fixed(st->BootServices,BIB_ADDRESS,2))||EFI_ERROR(allocate_fixed(st->BootServices,KERNEL_STACK_BASE,16))){nova_debug_string("UEFI:KERNEL-MEMORY-ERROR\n");return 1;}
+    if(EFI_ERROR(allocate_fixed(st->BootServices,BIB_ADDRESS,2))){nova_debug_string("UEFI:BIB-MEMORY-ERROR\n");return 1;}
     uint32_t entry=0,image_size=0;uint8_t build_id[16];
     if(!load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id)){nova_debug_string("UEFI:KERNEL-VALIDATION-ERROR\n");return 1;}
+    uint32_t stack_top=0;
+    if(!allocate_kernel_stack(st->BootServices,&stack_top)){nova_debug_string("UEFI:KERNEL-STACK-MEMORY-ERROR\n");return 1;}
     st->BootServices->FreePool(file);nova_debug_string("UEFI:NKI-VALIDATED\n");
     efi_allocate_pool_fn alloc=(efi_allocate_pool_fn)st->BootServices->AllocatePool;efi_get_memory_map_fn getmap=(efi_get_memory_map_fn)st->BootServices->GetMemoryMap;
     UINTN map_capacity=32768,map_size=map_capacity,map_key=0,descriptor_size=0;uint32_t descriptor_version=0;VOID *map=0;
@@ -201,5 +216,5 @@ EFI_STATUS uefi_boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st)
     status=exit_bs(image_handle,map_key);if(EFI_ERROR(status)){map_size=map_capacity;status=getmap(&map_size,map,&map_key,&descriptor_size,&descriptor_version);if(!EFI_ERROR(status))status=exit_bs(image_handle,map_key);}
     if(EFI_ERROR(status)){nova_debug_string("UEFI:EXIT-BOOT-SERVICES-ERROR\n");return status;}
     nova_debug_string("UEFI:EXIT-BOOT-SERVICES-READY\n");nova_debug_string("UEFI:KERNEL-HANDOFF-READY\n");
-    uefi_enter_kernel32(entry,(uint32_t)BIB_ADDRESS);for(;;)__asm__ volatile("hlt");
+    uefi_enter_kernel32(entry,(uint32_t)BIB_ADDRESS,stack_top);for(;;)__asm__ volatile("hlt");
 }

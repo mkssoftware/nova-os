@@ -1,7 +1,7 @@
     .text
     .globl uefi_enter_kernel32
     .def uefi_enter_kernel32; .scl 2; .type 32; .endef
-/* Microsoft x64 ABI: RCX=entry, RDX=BIB. This trampoline is intentionally
+/* Microsoft x64 ABI: RCX=entry, RDX=BIB, R8D=stack top. This trampoline is intentionally
    non-returning and is used only after successful ExitBootServices(). */
 uefi_enter_kernel32:
     cli
@@ -9,6 +9,7 @@ uefi_enter_kernel32:
     outb %al, $0xe9
     movl %ecx, %edi
     movl %edx, %ebx
+    movl %r8d, %esi
     lgdt uefi_transition_gdtr(%rip)
     pushq $0x08
     leaq uefi_transition_compat(%rip), %rax
@@ -37,7 +38,7 @@ uefi_transition_compat:
     movl %cr4, %eax
     andl $0xffffffdf, %eax
     movl %eax, %cr4
-    movl $0x00090000, %esp
+    movl %esi, %esp
     xorl %ebp, %ebp
     movl $0x4e4f5641, %eax
     movb $'J', %al

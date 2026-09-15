@@ -10,7 +10,6 @@
 kernel_entry:
     cli
     cld
-    mov esp, KERNEL_STACK_TOP
     xor ebp, ebp
     push eax
     push ebx
@@ -23,6 +22,7 @@ kernel_entry:
     mov gs, ax
     pop ebx
     pop eax
+    mov [kernel_boot_stack_top], esp
     mov dword [boot_phase_current], BOOT_PHASE_KERNEL_ENTRY
     mov dword [boot_phase_last_success], BOOT_PHASE_NONE
 
@@ -272,7 +272,7 @@ userspace_return:
     mov es, ax
     mov fs, ax
     mov gs, ax
-    mov esp, KERNEL_STACK_TOP
+    mov esp, [kernel_boot_stack_top]
     cmp dword [userspace_exit_seen], 1
     jne panic_userspace
     mov esi, message_userspace_exit_ok
@@ -844,7 +844,7 @@ acpi_physical_range_valid:
     add edx, ecx
     jc .bad
     mov ebx, [kernel_context + CONTEXT_MEMORY_COUNT]
-    cmp ebx, MEMORY_MAP_MAX_ENTRIES
+    cmp ebx, 256                   ; UEFI-Map 0x5800..0x7000: 256 x 24 Byte
     ja .bad
     mov edi, [kernel_context + CONTEXT_MEMORY_MAP]
 .entry:
@@ -3441,7 +3441,8 @@ userspace_initialize:
     xor eax, eax
     mov ecx, 104 / 4
     rep stosd
-    mov dword [kernel_tss + 4], KERNEL_STACK_TOP
+    mov eax, [kernel_boot_stack_top]
+    mov [kernel_tss + 4], eax
     mov word [kernel_tss + 8], DATA_SEGMENT
     mov word [kernel_tss + 102], 104
     mov eax, kernel_tss
@@ -5949,7 +5950,8 @@ cpu_manager_initialize:
     mov dword [cpu_local_data + 16], 0 ; preemption depth
     mov dword [cpu_local_data + 20], 0 ; interrupt depth
     mov dword [cpu_local_data + 24], 0 ; exception depth
-    mov dword [cpu_local_data + 28], KERNEL_STACK_TOP
+    mov eax, [kernel_boot_stack_top]
+    mov [cpu_local_data + 28], eax
     mov dword [cpu_local_data + 32], 1 ; lokaler Timer vorbereitet
     mov dword [cpu_local_data + 36], 1 ; Interruptcontroller vorbereitet
     mov dword [cpu_local_data + 40], 0x43505530 ; Canary/Owner-Marker
@@ -6034,7 +6036,8 @@ cpu_manager_self_test:
     jne .invalid
     cmp dword [cpu_active_set], 1
     jne .invalid
-    cmp dword [cpu_local_data + 28], KERNEL_STACK_TOP
+    mov eax, [kernel_boot_stack_top]
+    cmp dword [cpu_local_data + 28], eax
     jne .invalid
     cmp dword [cpu_local_data + 32], 1
     jne .invalid
@@ -9362,6 +9365,7 @@ CONTEXT_REQUIRED          equ CONTEXT_HAS_FIRMWARE | CONTEXT_HAS_MEMORY | CONTEX
 align 8
 kernel_context:
     times CONTEXT_SIZE db 0
+kernel_boot_stack_top: dd 0
 stack_canary_seed: dd 0
 
 COM1_BASE             equ 0x03F8
