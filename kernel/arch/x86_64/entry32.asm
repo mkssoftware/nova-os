@@ -742,8 +742,18 @@ acpi_rsdp_initialize:
 .found:
     mov [kernel_context + CONTEXT_ACPI_ADDRESS], esi
 .ready:
+    call acpi_madt_discover
     mov esi, message_acpi_rsdp_ok
     call serial_write_string
+    cmp dword [acpi_madt_valid], 1
+    jne .ready_done
+    mov esi, message_acpi_cpu_count
+    call serial_write_string
+    mov eax, [acpi_cpu_count]
+    call serial_write_hex32
+    mov esi, message_line_end
+    call serial_write_string
+.ready_done:
     ret
 .unavailable:
     mov esi, message_acpi_rsdp_missing
@@ -816,6 +826,258 @@ acpi_rsdp_validate:
 .invalid:
     stc
     ret
+
+; Physische ACPI-Tabellen werden ausschließlich im frühen Identity-Modus
+; gelesen. Ein kompletter Tabellenbereich muss in einem E820/UEFI-RAM-
+; Deskriptor liegen; MMIO und 64-Bit-Adressen werden nicht dereferenziert.
+; ESI=Adresse, ECX=Länge, CF=0 wenn vollständig im Firmware-Memory-Map.
+acpi_physical_range_valid:
+    push eax
+    push ebx
+    push edx
+    push edi
+    test esi, esi
+    jz .bad
+    test ecx, ecx
+    jz .bad
+    mov edx, esi
+    add edx, ecx
+    jc .bad
+    mov ebx, [kernel_context + CONTEXT_MEMORY_COUNT]
+    cmp ebx, MEMORY_MAP_MAX_ENTRIES
+    ja .bad
+    mov edi, [kernel_context + CONTEXT_MEMORY_MAP]
+.entry:
+    test ebx, ebx
+    jz .bad
+    cmp dword [edi + 4], 0
+    jne .next
+    cmp dword [edi + 16], 1
+    jb .next
+    cmp dword [edi + 16], 4
+    ja .next
+    mov eax, [edi]
+    cmp esi, eax
+    jb .next
+    cmp dword [edi + 12], 0
+    jne .good
+    add eax, [edi + 8]
+    jc .good
+    cmp edx, eax
+    jbe .good
+.next:
+    add edi, MEMORY_MAP_ENTRY_SIZE
+    dec ebx
+    jmp .entry
+.good:
+    pop edi
+    pop edx
+    pop ebx
+    pop eax
+    clc
+    ret
+.bad:
+    pop edi
+    pop edx
+    pop ebx
+    pop eax
+    stc
+    ret
+
+; ESI=physischer Tabellenanfang, EAX=erwartete Signatur;
+; ECX=geprüfte Länge bei Erfolg. Maximal 4 KiB Bootstrap-Tabellen.
+acpi_table_validate:
+    push eax
+    push edx
+    push edi
+    mov ecx, 36
+    call acpi_physical_range_valid
+    jc .bad
+    mov edx, [esi]
+    cmp edx, eax
+    jne .bad
+    mov ecx, [esi + 4]
+    cmp ecx, 36
+    jb .bad
+    cmp ecx, 4096
+    ja .bad
+    call acpi_physical_range_valid
+    jc .bad
+    mov edx, ecx
+    mov edi, esi
+    xor eax, eax
+.checksum:
+    add al, [edi]
+    inc edi
+    loop .checksum
+    mov ecx, edx
+    test al, al
+    jnz .bad
+    pop edi
+    pop edx
+    pop eax
+    clc
+    ret
+.bad:
+    pop edi
+    pop edx
+    pop eax
+    stc
+    ret
+
+; BIOS/UEFI-MADT vor Paging in eine kleine, unveränderliche ID-Liste kopieren.
+; Der BSP bleibt CPU 0; APs werden erst später separat gestartet.
+acpi_madt_discover:
+    mov dword [acpi_cpu_count], 1
+    mov dword [acpi_madt_valid], 0
+    mov eax, 1
+    cpuid
+    shr ebx, 24
+    mov [acpi_apic_ids], ebx
+    mov ebp, [kernel_context + CONTEXT_ACPI_ADDRESS]
+    cmp byte [ebp + 15], 2
+    jb .rsdt
+    cmp dword [ebp + 28], 0
+    jne .rsdt
+    mov esi, [ebp + 24]
+    mov eax, 0x54445358         ; XSDT
+    call acpi_table_validate
+    jc .rsdt
+    mov dword [acpi_root_entry_size], 8
+    jmp .root_ready
+.rsdt:
+    mov esi, [ebp + 16]
+    mov eax, 0x54445352         ; RSDT
+    call acpi_table_validate
+    jc .missing
+    mov dword [acpi_root_entry_size], 4
+.root_ready:
+    mov eax, ecx
+    sub eax, 36
+    xor edx, edx
+    div dword [acpi_root_entry_size]
+    test edx, edx
+    jnz .missing
+    mov [acpi_root_entries_left], eax
+    lea eax, [esi + 36]
+    mov [acpi_root_cursor], eax
+.root_next:
+    cmp dword [acpi_root_entries_left], 0
+    je .missing
+    mov ebx, [acpi_root_cursor]
+    mov esi, [ebx]
+    cmp dword [acpi_root_entry_size], 8
+    jne .candidate
+    cmp dword [ebx + 4], 0
+    jne .advance
+.candidate:
+    mov eax, 0x43495041         ; APIC/MADT
+    call acpi_table_validate
+    jc .advance
+    call acpi_madt_parse
+    jc .advance
+    mov dword [acpi_madt_valid], 1
+    ret
+.advance:
+    mov eax, [acpi_root_entry_size]
+    add [acpi_root_cursor], eax
+    dec dword [acpi_root_entries_left]
+    jmp .root_next
+.missing:
+    mov dword [acpi_cpu_count], 1
+    ret
+
+; ESI=geprüfter MADT, ECX=geprüfte Gesamtlänge.
+acpi_madt_parse:
+    cmp ecx, 44
+    jb .bad
+    mov dword [acpi_cpu_count], 1
+    mov dword [acpi_madt_bsp_seen], 0
+    mov edi, esi
+    add edi, 44
+    mov ebp, esi
+    add ebp, ecx
+.entry:
+    cmp edi, ebp
+    je .complete
+    lea eax, [edi + 2]
+    cmp eax, ebp
+    ja .bad
+    movzx ebx, byte [edi + 1]
+    cmp ebx, 2
+    jb .bad
+    mov eax, edi
+    add eax, ebx
+    cmp eax, ebp
+    ja .bad
+    cmp byte [edi], 0
+    je .lapic
+    cmp byte [edi], 9
+    je .x2apic
+    jmp .next
+.lapic:
+    cmp ebx, 8
+    jb .bad
+    test dword [edi + 4], 1
+    jz .next
+    movzx eax, byte [edi + 3]
+    call acpi_madt_add_id
+    jmp .next
+.x2apic:
+    cmp ebx, 16
+    jb .bad
+    test dword [edi + 8], 1
+    jz .next
+    mov eax, [edi + 4]
+    call acpi_madt_add_id
+.next:
+    add edi, ebx
+    jmp .entry
+.complete:
+    cmp dword [acpi_madt_bsp_seen], 1
+    jne .bad
+    clc
+    ret
+.bad:
+    mov dword [acpi_cpu_count], 1
+    stc
+    ret
+
+; EAX=Hardware-ID, Duplikate und BSP werden nicht als AP registriert.
+acpi_madt_add_id:
+    cmp eax, [acpi_apic_ids]
+    jne .other
+    mov dword [acpi_madt_bsp_seen], 1
+    ret
+.other:
+    push ecx
+    push edx
+    xor ecx, ecx
+.unique:
+    cmp ecx, [acpi_cpu_count]
+    jae .insert
+    cmp eax, [acpi_apic_ids + ecx * 4]
+    je .done
+    inc ecx
+    jmp .unique
+.insert:
+    cmp ecx, CPU_CAPACITY
+    jae .done
+    mov [acpi_apic_ids + ecx * 4], eax
+    inc dword [acpi_cpu_count]
+.done:
+    pop edx
+    pop ecx
+    ret
+
+align 4
+acpi_cpu_count:          dd 1
+acpi_madt_valid:         dd 0
+acpi_madt_bsp_seen:      dd 0
+acpi_root_entry_size:    dd 0
+acpi_root_entries_left:  dd 0
+acpi_root_cursor:        dd 0
+acpi_apic_ids:           times 8 dd 0
 
 early_security_entropy_initialize:
     mov eax, [kernel_context + CONTEXT_ENTROPY_SEED + 0]
@@ -5696,6 +5958,37 @@ cpu_manager_initialize:
     mov dword [cpu_online_count], 1
     mov dword [edi + 12], CPU_STATE_ACTIVE
     mov dword [cpu_active_set], 1
+    ; Firmwareerkannte APs erhalten kompakte CPU IDs, aber weder Stack noch
+    ; Runqueue noch ONLINE/ACTIVE-Bit. Der UP-Kernel kann sicher weiterbooten.
+    mov ecx, [acpi_cpu_count]
+    cmp ecx, CPU_CAPACITY
+    ja .invalid_topology
+    mov [cpu_discovered_count], ecx
+    mov eax, 1
+    shl eax, cl
+    dec eax
+    mov [cpu_possible_set], eax
+    mov [cpu_discovered_set], eax
+    mov [cpu_present_set], eax
+    mov ebx, 1
+.register_ap:
+    cmp ebx, ecx
+    jae .topology_done
+    imul edx, ebx, CPU_RECORD_SIZE
+    add edx, cpu_records
+    mov [edx], ebx
+    mov eax, [acpi_apic_ids + ebx * 4]
+    mov [edx + 4], eax
+    mov dword [edx + 12], CPU_STATE_OFFLINE
+    mov dword [edx + 40], CPU_CAPACITY_SCALE
+    mov dword [edx + 80], 0xFFFFFFFF
+    inc ebx
+    jmp .register_ap
+.invalid_topology:
+    pop ebp
+    stc
+    ret
+.topology_done:
     pop ebp
     clc
     ret
@@ -5734,7 +6027,8 @@ cpu_offline:
     ret
 
 cpu_manager_self_test:
-    cmp dword [cpu_discovered_count], 1
+    mov eax, [acpi_cpu_count]
+    cmp dword [cpu_discovered_count], eax
     jne .invalid
     cmp dword [cpu_online_count], 1
     jne .invalid
@@ -5751,6 +6045,16 @@ cpu_manager_self_test:
     jc .invalid
     cmp dword [edx + 12], CPU_STATE_ACTIVE
     jne .invalid
+    cmp dword [cpu_discovered_count], 1
+    jbe .no_ap
+    mov eax, 1
+    call cpu_query
+    jc .invalid
+    cmp dword [edx + 12], CPU_STATE_OFFLINE
+    jne .invalid
+    cmp dword [cpu_records + CPU_RECORD_SIZE + 44], 0
+    jne .invalid
+.no_ap:
     mov eax, CPU_CAPACITY
     call cpu_query
     jnc .invalid
@@ -5818,14 +6122,14 @@ SMP_IPI_PANIC_STOP          equ 6
 SMP_IPI_TYPE_COUNT          equ 7
 
 smp_initialize:
-    cmp dword [cpu_discovered_count], 1
-    jne .unsupported
+    cmp dword [cpu_discovered_count], CPU_CAPACITY
+    ja .unsupported
     cmp dword [cpu_online_set], 1
     jne .unsupported
     cmp dword [cpu_active_set], 1
     jne .unsupported
-    cmp dword [cpu_present_set], 1
-    jne .unsupported
+    test dword [cpu_present_set], 1
+    jz .unsupported
     mov dword [smp_boot_phase], SMP_PHASE_SCHEDULER_READY
     mov dword [smp_local_tlb_generation], 0
     mov dword [smp_local_tlb_flushes], 0
@@ -5905,11 +6209,10 @@ smp_tlb_shootdown_page:
     ret
 
 smp_self_test:
-    cmp dword [cpu_possible_set], 1
+    mov eax, [cpu_discovered_set]
+    cmp [cpu_possible_set], eax
     jne .invalid
-    cmp dword [cpu_discovered_set], 1
-    jne .invalid
-    cmp dword [cpu_present_set], 1
+    cmp [cpu_present_set], eax
     jne .invalid
     cmp dword [cpu_online_set], 1
     jne .invalid
@@ -9359,6 +9662,10 @@ message_acpi_rsdp_ok:
     db "NOVA: ACPI RSDP mit Pruefsumme validiert", 13, 10, 0
 message_acpi_rsdp_missing:
     db "NOVA: ACPI RSDP nicht verfuegbar, BSP-only", 13, 10, 0
+message_acpi_cpu_count:
+    db "NOVA: ACPI MADT, erkannte CPUs (hex): 0x", 0
+message_line_end:
+    db 13, 10, 0
 message_kernel_identity_ok:
     db "NOVA: Kernel Build-ID aus NBHP/BIB importiert", 13, 10, 0
 message_pmm_ok:
