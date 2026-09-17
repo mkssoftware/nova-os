@@ -1,5 +1,6 @@
 #include "kernel_loader.h"
 #include "../bootmenu/graphics.h"
+#include "firmware.h"
 #include "../../include/nova_boot_protocol.h"
 
 #define EFI_ALLOCATE_ADDRESS 2u
@@ -10,6 +11,7 @@
 #define BIB_ADDRESS 0x5000ull
 #define MEMORY_MAP_ADDRESS 0x5800ull
 #define KERNEL_ADDRESS 0x100000ull
+#define KERNEL64_ADDRESS 0x200000ull
 #define KERNEL_STACK_BASE 0x80000ull
 #define PAGE_SIZE 4096ull
 #define UEFI_PLATFORM 2u
@@ -47,13 +49,17 @@ typedef struct {uint32_t Type;uint32_t Pad;uint64_t PhysicalStart,VirtualStart,N
 typedef struct {uint64_t Address,Length;uint32_t Type,Attributes;} nova_e820_entry;
 typedef struct {uint8_t ident[16];uint16_t type,machine;uint32_t version,entry,phoff,shoff,flags;uint16_t ehsize,phentsize,phnum,shentsize,shnum,shstrndx;} elf32_header;
 typedef struct {uint32_t type,offset,vaddr,paddr,filesz,memsz,flags,align;} elf32_program_header;
+typedef struct {uint8_t ident[16];uint16_t type,machine;uint32_t version;uint64_t entry,phoff,shoff;uint32_t flags;uint16_t ehsize,phentsize,phnum,shentsize,shnum,shstrndx;} elf64_header;
+typedef struct {uint32_t type,flags;uint64_t offset,vaddr,paddr,filesz,memsz,align;} elf64_program_header;
 
 extern void EFIAPI uefi_enter_kernel32(uint32_t entry,uint32_t bib,uint32_t stack_top);
+extern void EFIAPI uefi_enter_kernel64(uint64_t entry,uint32_t bib,uint32_t stack_top);
 
 static EFI_GUID loaded_image_guid={0x5b1b31a1,0x9562,0x11d2,{0x8e,0x3f,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
 static EFI_GUID simple_fs_guid={0x964e5b22,0x6459,0x11d2,{0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
 static CHAR16 nki_path[]={'\\','N','O','V','A','.','N','K','I',0};
 static CHAR16 elf_path[]={'\\','K','E','R','N','E','L','.','E','L','F',0};
+static CHAR16 elf64_path[]={'\\','K','E','R','N','E','L','6','4','.','E','L','F',0};
 
 static void bytes_zero(void *target,UINTN length){uint8_t *p=target;while(length--)*p++=0;}
 static void bytes_copy(void *target,const void *source,UINTN length){uint8_t *d=target;const uint8_t *s=source;while(length--)*d++=*s++;}
@@ -166,6 +172,71 @@ static bool load_elf32(EFI_BOOT_SERVICES *bs,const uint8_t *payload,UINTN size,
     *entry=elf->entry;*image_size=highest-lowest;return true;
 }
 
+static bool read_elf64_metadata(const uint8_t *payload,UINTN size,const elf64_header *elf,uint8_t build_id[20])
+{
+    bool have_build_id=false,have_requirements=false;
+    uint32_t a,b,c,d;__asm__ volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(1),"c"(0));
+    for(uint16_t i=0;i<elf->phnum;++i){
+        const elf64_program_header *ph=(const elf64_program_header *)(payload+(UINTN)elf->phoff+(UINTN)i*elf->phentsize);
+        if(ph->type!=4)continue;
+        if(ph->offset>(uint64_t)size||ph->filesz>(uint64_t)size-ph->offset)return false;
+        UINTN at=(UINTN)ph->offset,end=at+(UINTN)ph->filesz;
+        while(at+12u<=end){
+            uint32_t namesz,descsz,type;bytes_copy(&namesz,payload+at,4);bytes_copy(&descsz,payload+at+4,4);bytes_copy(&type,payload+at+8,4);
+            UINTN name_padded=align4(namesz),desc_padded=align4(descsz);
+            if(name_padded<namesz||desc_padded<descsz||name_padded>end-at-12u||desc_padded>end-at-12u-name_padded)return false;
+            const uint8_t *name=payload+at+12u,*desc=name+name_padded;
+            if(type==3&&namesz==4&&descsz==20&&bytes_equal(name,"GNU\0",4)){bytes_copy(build_id,desc,20);have_build_id=true;}
+            if(type==0x4e4f5601u&&namesz==5&&descsz==16&&bytes_equal(name,"NOVA\0",5)){
+                uint32_t metadata_version,minimum_abi,required_edx,required_ecx;
+                bytes_copy(&metadata_version,desc,4);bytes_copy(&minimum_abi,desc+4,4);
+                bytes_copy(&required_edx,desc+8,4);bytes_copy(&required_ecx,desc+12,4);
+                if(metadata_version!=1||minimum_abi>NOVA_LOADER_ABI_VERSION||
+                   (d&required_edx)!=required_edx||(c&required_ecx)!=required_ecx)return false;
+                have_requirements=true;
+            }
+            at+=12u+name_padded+desc_padded;
+        }
+        if(at!=end)return false;
+    }
+    return have_build_id&&have_requirements;
+}
+
+static bool load_elf64(EFI_BOOT_SERVICES *bs,const uint8_t *payload,UINTN size,
+                       uint32_t *entry,uint32_t *load_address,uint32_t *image_size,uint8_t build_id[20])
+{
+    if(size<sizeof(elf64_header))return false;
+    const elf64_header *elf=(const elf64_header *)payload;
+    if(elf->ident[0]!=0x7f||elf->ident[1]!='E'||elf->ident[2]!='L'||elf->ident[3]!='F'||
+       elf->ident[4]!=2||elf->ident[5]!=1||elf->ident[6]!=1||elf->type!=2||elf->machine!=62||elf->version!=1||
+       elf->ehsize!=sizeof(elf64_header)||elf->phentsize!=sizeof(elf64_program_header)||!elf->phnum||elf->phnum>64||
+       elf->phoff>(uint64_t)size||elf->phnum>(size-(UINTN)elf->phoff)/elf->phentsize)return false;
+    if(!read_elf64_metadata(payload,size,elf,build_id))return false;
+    uint64_t lowest=~0ull,highest=0;bool executable_entry=false,have_load=false;
+    for(uint16_t i=0;i<elf->phnum;++i){const elf64_program_header *ph=(const elf64_program_header *)(payload+(UINTN)elf->phoff+(UINTN)i*elf->phentsize);
+        if(ph->type!=1)continue;
+        have_load=true;
+        if(ph->filesz>ph->memsz||!ph->memsz||ph->offset>(uint64_t)size||ph->filesz>(uint64_t)size-ph->offset||
+           ph->paddr<KERNEL64_ADDRESS||ph->paddr+ph->memsz<ph->paddr||ph->paddr+ph->memsz>0x100000000ull||
+           (ph->flags&3u)==3u||(ph->align&&((ph->align&(ph->align-1u))||
+           (ph->paddr&(ph->align-1u))!=(ph->offset&(ph->align-1u)))))return false;
+        for(uint16_t j=0;j<i;++j){const elf64_program_header *other=(const elf64_program_header *)(payload+(UINTN)elf->phoff+(UINTN)j*elf->phentsize);
+            if(other->type==1&&ph->paddr<other->paddr+other->memsz&&other->paddr<ph->paddr+ph->memsz)return false;}
+        if(ph->paddr<lowest)lowest=ph->paddr;
+        if(ph->paddr+ph->memsz>highest)highest=ph->paddr+ph->memsz;
+        if((ph->flags&1)&&elf->entry>=ph->paddr&&elf->entry<ph->paddr+ph->memsz)executable_entry=true;
+    }
+    if(!have_load||lowest!=KERNEL64_ADDRESS||highest<=lowest||highest-lowest>0xffffffffull||
+       elf->entry>0xffffffffull||!executable_entry)return false;
+    UINTN pages=(UINTN)((highest-lowest+PAGE_SIZE-1)/PAGE_SIZE);
+    if(EFI_ERROR(allocate_fixed(bs,lowest,pages)))return false;
+    for(uint16_t i=0;i<elf->phnum;++i){const elf64_program_header *ph=(const elf64_program_header *)(payload+(UINTN)elf->phoff+(UINTN)i*elf->phentsize);
+        if(ph->type!=1)continue;
+        bytes_zero((void *)(UINTN)ph->paddr,(UINTN)ph->memsz);
+        bytes_copy((void *)(UINTN)ph->paddr,payload+(UINTN)ph->offset,(UINTN)ph->filesz);}
+    *entry=(uint32_t)elf->entry;*load_address=(uint32_t)lowest;*image_size=(uint32_t)(highest-lowest);return true;
+}
+
 static bool load_nki_elf32(EFI_BOOT_SERVICES *bs,const uint8_t *file,UINTN size,
                            uint32_t *entry,uint32_t *image_size,uint8_t build_id[20])
 {
@@ -210,6 +281,19 @@ static uint32_t find_acpi_rsdp(const EFI_SYSTEM_TABLE *st)
     return 0;
 }
 
+static uint32_t current_secure_boot_state(uint32_t *security_flags)
+{
+    const nova_uefi_firmware_status_t *firmware=uefi_firmware_status();
+    if(!firmware)return NOVA_SECURE_BOOT_UNKNOWN;
+    if(firmware->setup_mode_known&&firmware->setup_mode){
+        *security_flags|=NOVA_BOOT_SECURITY_FIRMWARE_STATE_KNOWN;
+        return NOVA_SECURE_BOOT_SETUP_MODE;
+    }
+    if(!firmware->secure_boot_known)return NOVA_SECURE_BOOT_UNKNOWN;
+    *security_flags|=NOVA_BOOT_SECURITY_FIRMWARE_STATE_KNOWN;
+    return firmware->secure_boot?NOVA_SECURE_BOOT_ENABLED:NOVA_SECURE_BOOT_DISABLED;
+}
+
 /* Kept allocation-free between the successful GetMemoryMap call and
      ExitBootServices. The descriptor slack absorbs the pool allocation's own
      map entries; a firmware-requested resize is followed by a fresh query. */
@@ -236,14 +320,15 @@ static EFI_STATUS refresh_memory_map(EFI_BOOT_SERVICES *bs,VOID **map,UINTN *cap
 }
 
 static UINTN build_bib(const EFI_SYSTEM_TABLE *st,const VOID *map,UINTN map_size,UINTN descriptor_size,uint32_t entry,
-                       uint32_t image_size,const uint8_t build_id[20],bool nki_container)
+                       uint32_t load_address,uint32_t image_size,const uint8_t build_id[20],uint32_t architecture,
+                       uint32_t kernel_format,bool nki_container,uint32_t verification_state)
 {
     if(!map||descriptor_size<sizeof(efi_memory_descriptor)||map_size<descriptor_size)return 0;
     uint8_t *base=(uint8_t *)(UINTN)BIB_ADDRESS;bytes_zero(base,0x800);
     nova_bib_header_t *header=(nova_bib_header_t *)base;
     const uint8_t magic[8]={'N','B','H','P','B','I','B',0};bytes_copy(header->magic,magic,8);
     header->version_major=1;header->version_minor=2;header->header_size=32;
-    header->architecture=NOVA_BOOT_ARCH_X86_32;
+    header->architecture=architecture;
     uint8_t *at=base+32,*value;
     value=append_tlv(at,NOVA_BIB_TLV_FIRMWARE,NOVA_BIB_TLV_FLAG_REQUIRED,16);((uint32_t *)value)[0]=UEFI_PLATFORM;at=value+16;
     value=append_tlv(at,NOVA_BIB_TLV_MEMORY,NOVA_BIB_TLV_FLAG_REQUIRED,16);nova_bib_memory_t *memory=(nova_bib_memory_t *)value;
@@ -260,42 +345,59 @@ static UINTN build_bib(const EFI_SYSTEM_TABLE *st,const VOID *map,UINTN map_size
     if(graphics&&graphics->initialized&&graphics->framebuffer_address<=0xffffffffull){value=append_tlv(at,NOVA_BIB_TLV_GRAPHICS,0,32);nova_bib_graphics_t *g=(nova_bib_graphics_t *)value;
         g->framebuffer_address=(uint32_t)graphics->framebuffer_address;g->pitch=graphics->pitch;g->width=graphics->width;g->height=graphics->height;g->bits_per_pixel=graphics->bits_per_pixel;g->pixel_format=1;header->flags|=NOVA_BOOT_FLAG_FRAMEBUFFER;at=value+32;}
     value=append_tlv(at,NOVA_BIB_TLV_KERNEL,NOVA_BIB_TLV_FLAG_REQUIRED,32);nova_bib_kernel_t *kernel=(nova_bib_kernel_t *)value;
-    kernel->load_address=KERNEL_ADDRESS;kernel->image_size=image_size;kernel->entry_point=entry;at=value+32;
-    value=append_tlv(at,NOVA_BIB_TLV_SECURITY,NOVA_BIB_TLV_FLAG_REQUIRED,16);((uint32_t *)value)[2]=1;at=value+16;
+    kernel->load_address=load_address;kernel->image_size=image_size;kernel->entry_point=entry;at=value+32;
+    value=append_tlv(at,NOVA_BIB_TLV_SECURITY,NOVA_BIB_TLV_FLAG_REQUIRED,16);nova_bib_security_t *security=(nova_bib_security_t *)value;
+    security->verification_state=verification_state;
+    security->flags=NOVA_BOOT_SECURITY_ELF_BUILD_ID_VALID|(nki_container?NOVA_BOOT_SECURITY_NKI_CRC32_VALID:0u);
+    security->secure_boot_state=current_secure_boot_state(&security->flags);
+    security->entropy_quality=1;at=value+16;
     value=append_tlv(at,NOVA_BIB_TLV_CPU,NOVA_BIB_TLV_FLAG_REQUIRED,32);uint32_t a,b,c,d;__asm__ volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(0),"c"(0));
     bytes_copy(value,&b,4);bytes_copy(value+4,&d,4);bytes_copy(value+8,&c,4);((uint32_t *)value)[3]=a;__asm__ volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(1),"c"(0));((uint32_t *)value)[4]=d;((uint32_t *)value)[5]=c;at=value+32;
     value=append_tlv(at,NOVA_BIB_TLV_ENTROPY,NOVA_BIB_TLV_FLAG_REQUIRED,32);uint64_t tsc;uint32_t lo,hi;__asm__ volatile("rdtsc":"=a"(lo),"=d"(hi));tsc=((uint64_t)hi<<32)|lo;bytes_copy(value,&tsc,8);tsc^=0x4e6f76614f535545ull;bytes_copy(value+8,&tsc,8);((uint32_t *)value)[4]=1;((uint32_t *)value)[5]=1;((uint32_t *)value)[6]=16;at=value+32;
     value=append_tlv(at,NOVA_BIB_TLV_SYSTEM,NOVA_BIB_TLV_FLAG_REQUIRED,16);((uint32_t *)value)[2]=1;at=value+16;
     uint32_t rsdp=find_acpi_rsdp(st);
     if(rsdp){value=append_tlv(at,NOVA_BIB_TLV_ACPI,0,16);((nova_bib_pointer_info_t *)value)->address=rsdp;at=value+16;}
-    value=append_tlv(at,NOVA_BIB_TLV_KERNEL_IDENTITY,0,32);bytes_copy(value,build_id,20);((uint32_t *)value)[5]=NOVA_KERNEL_FORMAT_ELF32;((uint32_t *)value)[6]=nki_container?1u:0u;at=value+32;
+    value=append_tlv(at,NOVA_BIB_TLV_KERNEL_IDENTITY,0,32);bytes_copy(value,build_id,20);((uint32_t *)value)[5]=kernel_format;((uint32_t *)value)[6]=nki_container?1u:0u;at=value+32;
     header->total_size=(uint32_t)(at-base);header->checksum=crc32_with_zero(base,header->total_size,20,4);return count;
 }
 
 EFI_STATUS uefi_boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st)
 {
+    (void)uefi_firmware_refresh();
     uint8_t *file=0;UINTN size=0;bool nki_container=true;
+    uint32_t architecture=NOVA_BOOT_ARCH_X86_32,kernel_format=NOVA_KERNEL_FORMAT_ELF32;
     EFI_STATUS status=read_kernel_file(image_handle,st,nki_path,&file,&size);
     if(EFI_ERROR(status)){
         nki_container=false;file=0;size=0;
         status=read_kernel_file(image_handle,st,elf_path,&file,&size);
+        if(EFI_ERROR(status)){
+            file=0;size=0;architecture=NOVA_BOOT_ARCH_X86_64;kernel_format=NOVA_KERNEL_FORMAT_ELF64;
+            status=read_kernel_file(image_handle,st,elf64_path,&file,&size);
+        }
     }
     if(EFI_ERROR(status)){nova_debug_string("UEFI:KERNEL-FILE-ERROR\n");return status;}
     if(EFI_ERROR(allocate_fixed(st->BootServices,BIB_ADDRESS,2))){nova_debug_string("UEFI:BIB-MEMORY-ERROR\n");return 1;}
-    uint32_t entry=0,image_size=0;uint8_t build_id[20];bytes_zero(build_id,sizeof(build_id));
-    bool loaded=nki_container?load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id):
-                              load_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
+    uint32_t entry=0,load_address=KERNEL_ADDRESS,image_size=0;uint8_t build_id[20];bytes_zero(build_id,sizeof(build_id));
+    bool loaded;
+    if(nki_container)loaded=load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
+    else if(kernel_format==NOVA_KERNEL_FORMAT_ELF32)loaded=load_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
+    else loaded=load_elf64(st->BootServices,file,size,&entry,&load_address,&image_size,build_id);
     if(!loaded){nova_debug_string("UEFI:KERNEL-VALIDATION-ERROR\n");return 1;}
+    uint32_t verification_state=nki_container?NOVA_BOOT_VERIFICATION_INTEGRITY_VERIFIED:
+                                              NOVA_BOOT_VERIFICATION_STRUCTURE_VALIDATED;
     uint32_t stack_top=0;
     if(!allocate_kernel_stack(st->BootServices,&stack_top)){nova_debug_string("UEFI:KERNEL-STACK-MEMORY-ERROR\n");return 1;}
     st->BootServices->FreePool(file);
-    nova_debug_string(nki_container?"UEFI:NKI-VALIDATED\n":"UEFI:ELF32-DIRECT-VALIDATED\n");
+    if(nki_container)nova_debug_string("UEFI:NKI-VALIDATED\n");
+    else nova_debug_string(kernel_format==NOVA_KERNEL_FORMAT_ELF32?"UEFI:ELF32-DIRECT-VALIDATED\n":"UEFI:ELF64-DIRECT-VALIDATED\n");
+    nova_debug_string(nki_container?"UEFI:KERNEL-INTEGRITY-VERIFIED\n":"UEFI:KERNEL-STRUCTURE-VALIDATED\n");
+    nova_debug_string("UEFI:KERNEL-SIGNATURE-NOT-PRESENT\n");
     UINTN map_capacity=0,map_size=0,map_key=0,descriptor_size=0;uint32_t descriptor_version=0;VOID *map=0;
     efi_exit_boot_services_fn exit_bs=(efi_exit_boot_services_fn)st->BootServices->ExitBootServices;
     for(unsigned attempt=0;attempt<3;++attempt){
         status=refresh_memory_map(st->BootServices,&map,&map_capacity,&map_size,&map_key,&descriptor_size,&descriptor_version);
         if(EFI_ERROR(status)||!descriptor_size){nova_debug_string("UEFI:MEMORY-MAP-ERROR\n");return status;}
-        if(!build_bib(st,map,map_size,descriptor_size,entry,image_size,build_id,nki_container)){nova_debug_string("UEFI:BIB-ERROR\n");return 1;}
+        if(!build_bib(st,map,map_size,descriptor_size,entry,load_address,image_size,build_id,architecture,kernel_format,nki_container,verification_state)){nova_debug_string("UEFI:BIB-ERROR\n");return 1;}
         nova_debug_string("UEFI:NBHP-BIB-READY\n");
         status=exit_bs(image_handle,map_key);
         if(!EFI_ERROR(status))break;
@@ -303,5 +405,7 @@ EFI_STATUS uefi_boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st)
     }
     if(EFI_ERROR(status)){nova_debug_string("UEFI:EXIT-BOOT-SERVICES-ERROR\n");return status;}
     nova_debug_string("UEFI:EXIT-BOOT-SERVICES-READY\n");nova_debug_string("UEFI:KERNEL-HANDOFF-READY\n");
-    uefi_enter_kernel32(entry,(uint32_t)BIB_ADDRESS,stack_top);for(;;)__asm__ volatile("hlt");
+    if(kernel_format==NOVA_KERNEL_FORMAT_ELF64)uefi_enter_kernel64(entry,(uint32_t)BIB_ADDRESS,stack_top);
+    else uefi_enter_kernel32(entry,(uint32_t)BIB_ADDRESS,stack_top);
+    for(;;)__asm__ volatile("hlt");
 }

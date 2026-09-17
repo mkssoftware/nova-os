@@ -1,7 +1,8 @@
 param([Parameter(Mandatory=$true)][string]$EfiApplication,
       [Parameter(Mandatory=$true)][string]$OutputImage,
       [string]$KernelImage,
-      [string]$KernelElf)
+      [string]$KernelElf,
+      [string]$KernelElf64)
 $ErrorActionPreference='Stop'
 $efi=[IO.File]::ReadAllBytes([IO.Path]::GetFullPath($EfiApplication))
 $payloadFiles=@(
@@ -16,6 +17,11 @@ if($KernelElf){
     $elfPath=[IO.Path]::GetFullPath($KernelElf)
     if(!(Test-Path -LiteralPath $elfPath)){throw "ELF-Kernel fehlt: $elfPath"}
     $payloadFiles+=@{Name='KERNEL';Ext='ELF';Data=[IO.File]::ReadAllBytes($elfPath);Cluster=0}
+}
+if($KernelElf64){
+    $elf64Path=[IO.Path]::GetFullPath($KernelElf64)
+    if(!(Test-Path -LiteralPath $elf64Path)){throw "ELF64-Kernel fehlt: $elf64Path"}
+    $payloadFiles+=@{Name='KERNEL64';Ext='ELF';Data=[IO.File]::ReadAllBytes($elf64Path);Cluster=0}
 }
 $ss=512;$total=131072L;$partFirst=2048L;$partLast=$total-34;$partSectors=$partLast-$partFirst+1
 $image=[byte[]]::new($total*$ss)

@@ -31,7 +31,8 @@ Projektstamm.
   erhalten.
 - BIOS und UEFI übergeben dem Kernel denselben TLV-basierten NBHP/BIB-Vertrag.
 - NKI ist das bevorzugte Produktionsformat.
-- Ein gültiges ELF32 kann vom UEFI-Loader auch direkt geladen werden.
+- Gültige ELF32- und ELF64-Dateien können vom UEFI-Loader direkt geladen
+  werden.
 - Kernel und Bootloader bleiben über den versionierten Handoff getrennt.
 - Boot-UI-Koordinaten und Layoutdefinitionen verwenden DLU als logische Einheit.
 - Der Kernel erhält genau einen Zeiger auf den zusammenhängenden BIB.
@@ -118,7 +119,8 @@ Der Loader arbeitet in folgender Reihenfolge:
 2. NKI-Header, Architektur, Flags, Größe und CRC32 prüfen.
 3. Das enthaltene ELF32 zusätzlich vollständig validieren.
 4. Wenn `NOVA.NKI` nicht existiert, `KERNEL.ELF` direkt laden.
-5. Ein vorhandenes, aber ungültiges NKI führt kontrolliert zum Fehler und wird
+5. Fehlt auch ELF32, `KERNEL64.ELF` als direkten ELF64-Kernel laden.
+6. Ein vorhandenes, aber ungültiges NKI führt kontrolliert zum Fehler und wird
    nicht stillschweigend durch ELF umgangen.
 
 Für ELF32 werden derzeit geprüft:
@@ -143,6 +145,13 @@ NKI- und ELF-Build-ID müssen zusammenpassen. Der BIB kennzeichnet außerdem, ob
 der geladene ELF-Kernel aus einem NKI-Container oder aus einer direkten
 ELF-Datei stammt.
 
+Für direktes ELF64 werden zusätzlich ELF-Klasse 64, `EM_X86_64`, 64-Bit-
+Program-Header und ein vollständig unterhalb der aktuellen 4-GiB-BIB-Grenze
+liegendes Ladelayout geprüft. Der Loader validiert auch hier GNU-Build-ID,
+Nova-Requirements, W^X, Alignment, Segmentüberlappungen und Einstiegspunkt. Der
+UEFI-x64-Loader bleibt nach `ExitBootServices()` im Long Mode und übergibt über
+ein separates, nicht zurückkehrendes 64-Bit-Trampolin.
+
 ### Speicherkarte und `ExitBootServices()`
 
 Die UEFI-Speicherübergabe wurde gehärtet:
@@ -164,6 +173,7 @@ Vorhandene Diagnosemarken sind unter anderem:
 ```text
 UEFI:NKI-VALIDATED
 UEFI:ELF32-DIRECT-VALIDATED
+UEFI:ELF64-DIRECT-VALIDATED
 UEFI:NBHP-BIB-READY
 UEFI:EXIT-BOOT-SERVICES-RETRY
 UEFI:EXIT-BOOT-SERVICES-READY
@@ -185,13 +195,32 @@ Der aktuelle BIB ist versioniert, zusammenhängend, TLV-basiert und enthält:
 - validierten ACPI-RSDP, wenn vorhanden
 - Kernel-Build-ID und Kernelformat
 
+Der Security-TLV verwendet keine festen Platzhalter mehr. Er unterscheidet:
+
+- unbekannten Prüfzustand,
+- strukturell validiertes direktes ELF,
+- integritätsgeprüftes NKI mit CRC32 und passender innerer ELF-Build-ID,
+- signaturgeprüft und policyautorisiert als reservierte höhere Zustände.
+
+Da das aktuelle NKI-Format noch keinen kryptografischen Signaturcontainer
+enthält, wird ausdrücklich **nicht** behauptet, der Kernel sei signaturgeprüft.
+Die Diagnose meldet stattdessen `UEFI:KERNEL-SIGNATURE-NOT-PRESENT`.
+
+Der Firmwarezustand wird unmittelbar vor der Kernelprüfung erneut aus den
+UEFI-Variablen gelesen und als `Unknown`, `Disabled`, `Enabled` oder
+`SetupMode` in den BIB übertragen. Zusätzliche Security-Flags unterscheiden
+bekannten Firmwarezustand, gültige ELF-Build-ID, gültige NKI-CRC32 und eine
+zukünftig vorhandene Signatur. UEFI Secure Boot bleibt damit zusätzliche
+Evidenz und wird nicht mit NovaOS-Trust oder Ausführungsautorität gleichgesetzt.
+
 Unbekannte optionale TLVs können vom Kernel anhand ihrer Länge übersprungen
 werden. Unbekannte als erforderlich markierte TLVs führen zum kontrollierten
 Bootabbruch.
 
 ### Kernelübergang
 
-- Der Kernel wird derzeit als x86-32-Kernel geladen.
+- Der normale NovaOS-Entwicklungskernel wird derzeit als x86-32-Kernel geladen.
+- Direkte ELF64-Testkernel werden als x86-64 geladen und im Long Mode gestartet.
 - Der UEFI-x64-Loader wechselt über einen eigenen Trampolinpfad in den vom
   Kernel erwarteten CPU-Zustand.
 - Der Einstiegspunkt, der einzelne BIB-Zeiger und ein reservierter Kernelstack
@@ -417,6 +446,31 @@ UEFI:KERNEL-HANDOFF-READY
 NOVA_KERNEL_READY
 ```
 
+Ein weiteres temporäres Abbild enthielt ausschließlich `KERNEL64.ELF`. Der
+direkte ELF64-Pfad meldete:
+
+```text
+UEFI:ELF64-DIRECT-VALIDATED
+UEFI:NBHP-BIB-READY
+UEFI:EXIT-BOOT-SERVICES-READY
+UEFI:KERNEL-HANDOFF-READY
+NOVA_ELF64_LONG_MODE_READY
+```
+
+Die UEFI-Kernellader-Fehlerpfade besitzen außerdem einen automatisierten
+Negativtest (`make test-uefi-kernel-validation`). Er erzeugt ausschließlich
+temporäre Abbilder und prüft:
+
+- beschädigtes NKI bei gleichzeitig vorhandenem gültigem ELF32,
+- ungültiges direktes ELF32,
+- ungültiges direktes ELF64,
+- kontrollierte Meldung von `UEFI:KERNEL-VALIDATION-ERROR`,
+- ausbleibenden `UEFI:KERNEL-HANDOFF-READY`-Marker,
+- keinen stillschweigenden ELF-Fallback bei vorhandenem, aber ungültigem NKI.
+
+Alle drei Negativfälle werden derzeit vor dem Kernel-Handoff abgewiesen. Die
+temporären Images und Logs werden anschließend automatisch entfernt.
+
 Das temporäre Testabbild wurde danach entfernt. Im Buildordner bleiben die
 festgelegten Image-Namen erhalten.
 
@@ -424,9 +478,10 @@ festgelegten Image-Namen erhalten.
 
 Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 
-- direkte ELF64-Ausführung im UEFI-Kernelloader
 - LZ4-, ZSTD- und GZIP-Dekompression für Kernelabbilder
-- vollständige kryptografische Kernelsignaturprüfung und Secure-Boot-Kette
+- kryptografischer Kernelsignaturcontainer, Schlüssel-/Revocation-Policy und
+  vollständige NovaOS-Trustentscheidung; der UEFI-Secure-Boot- und
+  Integritätszustand wird bereits getrennt in den BIB übertragen
 - produktive Auswahl mehrerer Kernelgenerationen, automatischer Rollback und
   unabhängiger Recovery-Kernel
 - vollständige AP-Aktivierung und echter SMP-Betrieb
@@ -446,12 +501,11 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 Für die weitere Arbeit am derzeit priorisierten UEFI-Pfad bietet sich diese
 Reihenfolge an:
 
-1. direkte ELF64-Lade- und Übergabefähigkeit des UEFI-Loaders ergänzen,
-2. UEFI-Fehlerpfade für beschädigte NKI-/ELF-Dateien automatisiert testen,
-3. Kernel-Signatur- und Secure-Boot-Status sauber in Security-TLV integrieren,
-4. Recovery- und Rollback-Kernelauswahl funktional anbinden,
-5. VirtualBox-UEFI mit dem aktuellen GPT/FAT32-Image erneut validieren,
-6. danach die nächsten Kernel- und Semantic-Type-Abschnitte umsetzen.
+1. normativen Kernel-Signaturcontainer sowie Schlüssel- und Revocation-Policy
+   spezifizieren beziehungsweise implementieren,
+2. Recovery- und Rollback-Kernelauswahl funktional anbinden,
+3. VirtualBox-UEFI mit dem aktuellen GPT/FAT32-Image erneut validieren,
+4. danach die nächsten Kernel- und Semantic-Type-Abschnitte umsetzen.
 
 ## 12. Wichtige Quellbereiche
 
@@ -477,4 +531,3 @@ werden. Neue Einträge müssen klar unterscheiden zwischen:
 - **automatisiert getestet:** durch einen reproduzierbaren Test bestätigt,
 - **manuell geprüft:** visuell oder in einer VM kontrolliert,
 - **offen:** noch nicht oder nur teilweise umgesetzt.
-

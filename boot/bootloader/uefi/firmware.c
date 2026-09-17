@@ -48,8 +48,12 @@ bool uefi_firmware_refresh(void)
     status.firmware_setup_supported=read_variable(indications_supported_name,&supported,
                                                    sizeof(supported))&&
                                     (supported&EFI_OS_INDICATIONS_BOOT_TO_FW_UI)!=0;
-    nova_debug_string(status.secure_boot?"UEFI:FIRMWARE-SECURE-BOOT-ON\n":
-                                         "UEFI:FIRMWARE-SECURE-BOOT-OFF\n");
+    if(status.setup_mode_known&&status.setup_mode)
+        nova_debug_string("UEFI:FIRMWARE-SECURE-BOOT-SETUP-MODE\n");
+    else if(!status.secure_boot_known)
+        nova_debug_string("UEFI:FIRMWARE-SECURE-BOOT-UNKNOWN\n");
+    else nova_debug_string(status.secure_boot?"UEFI:FIRMWARE-SECURE-BOOT-ON\n":
+                                               "UEFI:FIRMWARE-SECURE-BOOT-OFF\n");
     nova_debug_string(status.firmware_setup_supported?"UEFI:FIRMWARE-SETUP-SUPPORTED\n":
                                                        "UEFI:FIRMWARE-SETUP-UNAVAILABLE\n");
     return true;

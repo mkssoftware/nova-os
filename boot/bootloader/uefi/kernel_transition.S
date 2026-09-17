@@ -1,6 +1,8 @@
     .text
     .globl uefi_enter_kernel32
+    .globl uefi_enter_kernel64
     .def uefi_enter_kernel32; .scl 2; .type 32; .endef
+    .def uefi_enter_kernel64; .scl 2; .type 32; .endef
 /* Microsoft x64 ABI: RCX=entry, RDX=BIB, R8D=stack top. This trampoline is intentionally
    non-returning and is used only after successful ExitBootServices(). */
 uefi_enter_kernel32:
@@ -47,6 +49,18 @@ uefi_transition_compat:
     jmp *%edi
 
     .code64
+/* Microsoft x64 ABI: RCX=entry, EDX=BIB, R8D=stack top. UEFI x64 already
+   runs in long mode; after ExitBootServices the loader only establishes the
+   kernel register contract and transfers control without returning. */
+uefi_enter_kernel64:
+    cli
+    movq %rcx, %r10
+    movl %edx, %ebx
+    movl %r8d, %esp
+    xorl %ebp, %ebp
+    movl $0x4e4f5641, %eax
+    jmp *%r10
+
     .p2align 3
 uefi_transition_gdt:
     .quad 0
