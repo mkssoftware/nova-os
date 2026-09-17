@@ -1567,6 +1567,10 @@ object_manager_initialize:
     xor eax, eax
     mov ecx, OBJECT_TABLE_CAPACITY
     rep stosd
+    mov edi, object_semantic_types
+    xor eax, eax
+    mov ecx, OBJECT_TABLE_CAPACITY * 3
+    rep stosd
     mov edi, object_generations
     mov eax, 1
     mov ecx, OBJECT_TABLE_CAPACITY
@@ -1671,6 +1675,9 @@ object_release:
     and edx, 0xFFFF
     dec edx
     mov dword [object_table + edx * 4], 0
+    mov dword [object_semantic_types + edx * 4], 0
+    mov dword [object_semantic_versions + edx * 4], 0
+    mov dword [object_semantic_validation + edx * 4], 0
     inc dword [object_generations + edx * 4]
     and dword [object_generations + edx * 4], 0xFFFF
     jnz .generation_ok
@@ -1736,6 +1743,11 @@ object_live_count: dd 0
 align 4
 object_table:       times OBJECT_TABLE_CAPACITY dd 0
 object_generations: times OBJECT_TABLE_CAPACITY dd 0
+; Semantic Type ist ein Sidecar des stabilen Objekts und weder Objekt-ID noch
+; Pfad noch allgemeines Payloadfeld (ADR-SEMANTIC-0003 Typed Resources).
+object_semantic_types:      times OBJECT_TABLE_CAPACITY dd 0
+object_semantic_versions:   times OBJECT_TABLE_CAPACITY dd 0
+object_semantic_validation: times OBJECT_TABLE_CAPACITY dd 0
 
 ; ---------------------------------------------------------------------------
 ; Prozesslokaler Handle Manager (NPSPEC-KERNEL-0013)
@@ -3107,6 +3119,9 @@ service_manager_initialize:
     xor eax, eax
     mov ecx, (SERVICE_CAPACITY * SERVICE_RECORD_SIZE) / 4
     rep stosd
+    mov edi, service_input_types
+    mov ecx, SERVICE_CAPACITY * 4
+    rep stosd
     mov dword [service_count], 0
     clc
     ret
@@ -3192,11 +3207,85 @@ service_lookup:
     stc
     ret
 
+; EAX=Service-ID, EDX=Service-Version, EBX=Provider/Owner,
+; ECX=Input Semantic Type, ESI=Output Semantic Type. Type Identity und
+; Provider bleiben getrennte Contractbestandteile (ADR-SEMANTIC-0006).
+service_register_typed:
+    mov [service_temp_input_type], ecx
+    mov [service_temp_output_type], esi
+    push eax
+    push edx
+    push ebx
+    mov eax, ecx
+    call semantic_lookup_type
+    jc .invalid
+    cmp dword [edx + SEMANTIC_TYPE_VERSION], SEMANTIC_TYPE_VERSION_1
+    jne .invalid
+    mov eax, [service_temp_output_type]
+    call semantic_lookup_type
+    jc .invalid
+    cmp dword [edx + SEMANTIC_TYPE_VERSION], SEMANTIC_TYPE_VERSION_1
+    jne .invalid
+    pop ebx
+    pop edx
+    pop eax
+    call service_register
+    jc .failed
+    mov [service_temp_handle], eax
+    mov eax, [service_temp_id]
+    call service_lookup
+    jc .failed
+    sub eax, service_table
+    shr eax, 5
+    mov ecx, [service_temp_input_type]
+    mov [service_input_types + eax * 4], ecx
+    mov ecx, [service_temp_output_type]
+    mov [service_output_types + eax * 4], ecx
+    mov dword [service_input_versions + eax * 4], SEMANTIC_TYPE_VERSION_1
+    mov dword [service_output_versions + eax * 4], SEMANTIC_TYPE_VERSION_1
+    mov eax, [service_temp_handle]
+    clc
+    ret
+.invalid:
+    add esp, 12
+.failed:
+    stc
+    ret
+
+; EAX=Service-ID, ECX=gelieferter Input-Type, EDX=Type-Version.
+; EBX=Output-Type bei exakter starker Kompatibilität. Eine Conversion wird
+; nicht implizit erfunden; sie benötigt später einen expliziten Provider.
+service_contract_check:
+    push ecx
+    push edx
+    call service_lookup
+    jc .invalid
+    sub eax, service_table
+    shr eax, 5
+    pop edx
+    pop ecx
+    cmp ecx, [service_input_types + eax * 4]
+    jne .mismatch
+    cmp edx, [service_input_versions + eax * 4]
+    jne .mismatch
+    mov ebx, [service_output_types + eax * 4]
+    test ebx, ebx
+    jz .mismatch
+    clc
+    ret
+.invalid:
+    add esp, 8
+.mismatch:
+    stc
+    ret
+
 service_manager_self_test:
     mov eax, 0x4B45524E
     mov edx, 0x00010000
     mov ebx, 0x434F5245
-    call service_register
+    mov ecx, SEMANTIC_IPC_INLINE_DATA
+    mov esi, SEMANTIC_IPC_DIAGNOSTIC
+    call service_register_typed
     jc .invalid
     mov esi, eax
     mov eax, 0x4B45524E
@@ -3212,6 +3301,18 @@ service_manager_self_test:
     jne .invalid
     cmp dword [service_count], 1
     jne .invalid
+    mov eax, 0x4B45524E
+    mov ecx, SEMANTIC_IPC_INLINE_DATA
+    mov edx, SEMANTIC_TYPE_VERSION_1
+    call service_contract_check
+    jc .invalid
+    cmp ebx, SEMANTIC_IPC_DIAGNOSTIC
+    jne .invalid
+    mov eax, 0x4B45524E
+    mov ecx, SEMANTIC_IPC_DIAGNOSTIC
+    mov edx, SEMANTIC_TYPE_VERSION_1
+    call service_contract_check
+    jnc .invalid                   ; gleiche Bytes8-Repräsentation reicht nicht
     clc
     ret
 .invalid:
@@ -3234,9 +3335,16 @@ service_temp_id:      dd 0
 service_temp_version: dd 0
 service_temp_owner:   dd 0
 service_temp_slot:    dd 0
+service_temp_input_type:  dd 0
+service_temp_output_type: dd 0
+service_temp_handle:      dd 0
 align 4
 service_table:
     times SERVICE_CAPACITY * SERVICE_RECORD_SIZE db 0
+service_input_types:    times SERVICE_CAPACITY dd 0
+service_output_types:   times SERVICE_CAPACITY dd 0
+service_input_versions: times SERVICE_CAPACITY dd 0
+service_output_versions: times SERVICE_CAPACITY dd 0
 
 ; Kernel Process Manager (ADR-2011)
 PROCESS_API_SIZE      equ 32
@@ -3435,6 +3543,7 @@ SYSCALL_STATUS_ACCESS       equ -13
 SYSCALL_STATUS_POINTER      equ -15
 SYSCALL_STATUS_WOULD_BLOCK  equ -19
 SYSCALL_STATUS_TYPE         equ -22
+SYSCALL_STATUS_VALIDATION   equ -23
 USER_ADDRESS_MIN            equ USER_CODE_ADDRESS
 USER_ADDRESS_MAX            equ USER_STACK_ADDRESS
 SHARED_SERVICE_ADDRESS      equ 0x00403000
@@ -3685,6 +3794,19 @@ userspace_program_start:
     mov esi, 48
     int 0x80
     cmp eax, SYSCALL_STATUS_TYPE
+    jne .failed
+
+    ; Typ und Version sind korrekt, aber ein leerer Inline-Wert verletzt die
+    ; deklarierte NONEMPTY-Regel. Das ist ein eigener Validierungsfehler.
+    mov dword [USER_STACK_ADDRESS - 104], SEMANTIC_TYPE_VERSION_1
+    mov dword [USER_STACK_ADDRESS - 96], 0
+    mov eax, SYSCALL_SERVICE_IPC
+    mov ebx, SYSCALL_IPC_SEND
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 128
+    mov esi, 48
+    int 0x80
+    cmp eax, SYSCALL_STATUS_VALIDATION
     jne .failed
 
     mov eax, SYSCALL_SERVICE_IPC
@@ -4592,7 +4714,12 @@ syscall_dispatch:
     mov ecx, HANDLE_RIGHT_SEND
     call handle_resolve
     jc .access_denied
-    push dword [eax + OBJ_PAYLOAD1] ; Endpoint-Contract, nicht User-Claim
+    mov eax, [eax + OBJ_HANDLE]
+    call object_semantic_query
+    jc .semantic_mismatch
+    cmp ebx, SEMANTIC_VALIDATION_VERIFIED
+    jne .semantic_mismatch
+    push ecx                       ; Endpoint-Contract, nicht User-Claim
     mov eax, [userspace_ipc_copy + 12]
     mov ecx, [userspace_ipc_copy + 24]
     mov edx, SEMANTIC_REPR_BYTES8
@@ -4601,6 +4728,13 @@ syscall_dispatch:
     jc .semantic_mismatch
     cmp eax, edx
     jne .semantic_mismatch
+    mov eax, [userspace_ipc_copy + 12]
+    mov ecx, [userspace_ipc_copy + 24]
+    mov edx, userspace_ipc_copy + 40
+    mov ebx, [userspace_ipc_copy + 32]
+    mov esi, 8                       ; Endpoint-Capability-Contract
+    call semantic_validate_value
+    jc .semantic_validation_failed
     cmp dword [userspace_ipc_count], 0
     jne .ipc_queue_full
     mov esi, userspace_ipc_copy
@@ -4608,7 +4742,7 @@ syscall_dispatch:
     mov ecx, 12
     rep movsd
     mov dword [userspace_ipc_count], 1
-    mov dword [userspace_ipc_validation_state], 1
+    mov dword [userspace_ipc_validation_state], SEMANTIC_VALIDATION_VERIFIED
     mov edx, [syscall_frame]
     mov dword [edx + 44], SYSCALL_STATUS_OK
     ret
@@ -4621,9 +4755,14 @@ syscall_dispatch:
     mov ecx, HANDLE_RIGHT_RECEIVE
     call handle_resolve
     jc .access_denied
-    cmp dword [userspace_ipc_validation_state], 1
+    mov eax, [eax + OBJ_HANDLE]
+    call object_semantic_query
+    jc .semantic_mismatch
+    cmp ebx, SEMANTIC_VALIDATION_VERIFIED
     jne .semantic_mismatch
-    mov ebx, [eax + OBJ_PAYLOAD1]
+    mov ebx, ecx
+    cmp dword [userspace_ipc_validation_state], SEMANTIC_VALIDATION_VERIFIED
+    jne .semantic_mismatch
     mov eax, [userspace_ipc_queue + 12]
     cmp eax, ebx
     jne .semantic_mismatch
@@ -4650,6 +4789,11 @@ syscall_dispatch:
     cmp dword [semantic_ipc_rejected], 2
     jne .ipc_receive_done
     mov esi, message_semantic_reject_ok
+    call serial_write_string
+.ipc_validation_report:
+    cmp dword [semantic_ipc_validation_rejected], 1
+    jne .ipc_receive_done
+    mov esi, message_semantic_validation_ok
     call serial_write_string
 .ipc_receive_done:
     mov edx, [syscall_frame]
@@ -5575,6 +5719,10 @@ syscall_dispatch:
     inc dword [semantic_ipc_rejected]
     mov eax, SYSCALL_STATUS_TYPE
     jmp .reject
+.semantic_validation_failed:
+    inc dword [semantic_ipc_validation_rejected]
+    mov eax, SYSCALL_STATUS_VALIDATION
+    jmp .reject
 .bad_pointer:
     mov eax, SYSCALL_STATUS_POINTER
 .reject:
@@ -5597,6 +5745,7 @@ syscall_rejected:     dd 0
 syscall_identity:     dd 0
 syscall_closed_handle: dd 0
 semantic_ipc_rejected: dd 0
+semantic_ipc_validation_rejected: dd 0
 align 4
 syscall_argument_buffer:
     times 16 db 0
@@ -5622,22 +5771,33 @@ userspace_ipc_initialize:
     mov dword [userspace_ipc_count], 0
     mov dword [userspace_ipc_validation_state], 0
     mov dword [semantic_ipc_rejected], 0
+    mov dword [semantic_ipc_validation_rejected], 0
     mov edi, userspace_ipc_queue
     xor eax, eax
     mov ecx, 48 / 4
     rep stosd
     mov eax, OBJECT_TYPE_IPC_ENDPOINT
     mov edx, 1
-    mov ebx, SEMANTIC_IPC_INLINE_DATA
+    xor ebx, ebx
     call object_create
     jc .invalid
     mov [userspace_ipc_send_object], eax
+    mov ecx, SEMANTIC_IPC_INLINE_DATA
+    mov edx, SEMANTIC_TYPE_VERSION_1
+    mov ebx, SEMANTIC_VALIDATION_VERIFIED
+    call object_semantic_attach
+    jc .invalid
     mov eax, OBJECT_TYPE_IPC_ENDPOINT
     mov edx, 2
-    mov ebx, SEMANTIC_IPC_INLINE_DATA
+    xor ebx, ebx
     call object_create
     jc .invalid
     mov [userspace_ipc_receive_object], eax
+    mov ecx, SEMANTIC_IPC_INLINE_DATA
+    mov edx, SEMANTIC_TYPE_VERSION_1
+    mov ebx, SEMANTIC_VALIDATION_VERIFIED
+    call object_semantic_attach
+    jc .invalid
     mov eax, 2
     mov edx, [userspace_ipc_send_object]
     mov ebx, OBJECT_TYPE_IPC_ENDPOINT
@@ -9775,9 +9935,11 @@ message_interrupts_error:
 message_ipc_ok:
     db "NOVA: IPC ABI 1.0 FIFO bereit", 13, 10, 0
 message_semantic_ok:
-    db "NOVA: Semantic Types v1, Registry versiegelt und Typed-IPC-Contract bereit", 13, 10, 0
+    db "NOVA: Semantic Types v1, Registry, Kompatibilitaet und Typed Contracts bereit", 13, 10, 0
 message_semantic_reject_ok:
     db "NOVA: Typed IPC, fremder Type und Version sicher abgewiesen", 13, 10, 0
+message_semantic_validation_ok:
+    db "NOVA: Semantic Validation, ungueltiger Wert strukturiert abgewiesen", 13, 10, 0
 message_ipc_error:
     db "NOVA PANIC: Kernel-IPC nicht initialisierbar", 13, 10, 0
 message_service_manager_ok:

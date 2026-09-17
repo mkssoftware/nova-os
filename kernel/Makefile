@@ -9,6 +9,7 @@ KERNEL_BINARY := $(BUILD_DIR)/kernel.bin
 LAYOUT_INCLUDE := ../boot/bootloader/include/layout.inc
 PROTOCOL_INCLUDE := ../boot/include/nova_boot_protocol.inc
 ART_INCLUDE := ../boot/bootloader/include/nova-art.inc
+KERNEL_INCLUDES := $(wildcard arch/x86_64/*.inc)
 
 .PHONY: all clean verify
 
@@ -17,7 +18,7 @@ all: $(KERNEL_BINARY) verify
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(KERNEL_BINARY): $(KERNEL_SOURCE) $(LAYOUT_INCLUDE) $(PROTOCOL_INCLUDE) $(ART_INCLUDE) | $(BUILD_DIR)
+$(KERNEL_BINARY): $(KERNEL_SOURCE) $(KERNEL_INCLUDES) $(LAYOUT_INCLUDE) $(PROTOCOL_INCLUDE) $(ART_INCLUDE) | $(BUILD_DIR)
 	$(NASM) $(NASM_FLAGS) -f bin $< -o $@
 
 verify: $(KERNEL_BINARY)
