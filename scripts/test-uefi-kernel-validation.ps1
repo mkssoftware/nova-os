@@ -25,18 +25,21 @@ function Write-CorruptCopy([string]$source,[string]$destination,[int]$offset) {
 
 function Invoke-ValidationCase([string]$name,[string]$image,[string]$forbiddenMarker) {
     $debug=[IO.Path]::Combine($tempDir,$name+'.debug.log')
+    $serial=[IO.Path]::Combine($tempDir,$name+'.serial.log')
     $stderr=[IO.Path]::Combine($tempDir,$name+'.stderr.log')
     $arguments=@('-machine','q35','-m','256M','-smp','4',
         '-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
         '-drive',"format=raw,file=$image,if=ide",'-display','none','-monitor','none',
-        '-serial','none','-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
+        '-serial',"file:$serial",'-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
         '-no-reboot','-no-shutdown')
     $process=Start-Process $Qemu -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     try {
         $deadline=[DateTime]::UtcNow.AddSeconds(90);$content=''
         do {
             Start-Sleep -Milliseconds 250
-            if(Test-Path -LiteralPath $debug){$content=Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue}
+            $debugContent=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+            $serialContent=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+            $content=$debugContent+$serialContent
             if($process.HasExited){
                 $detail=if(Test-Path -LiteralPath $stderr){Get-Content -LiteralPath $stderr -Raw}else{''}
                 throw "${name}: QEMU wurde vor der erwarteten Ablehnung beendet. $detail"
@@ -49,24 +52,28 @@ function Invoke-ValidationCase([string]$name,[string]$image,[string]$forbiddenMa
         Write-Host "$name`: ungueltiger Kernel kontrolliert abgewiesen"
     } finally {
         if(!$process.HasExited){Stop-Process -Id $process.Id -Force}
+        if(!$process.HasExited){$process.WaitForExit(5000)|Out-Null}
         $process.Dispose()
     }
 }
 
 function Invoke-RecoveryCase([string]$name,[string]$image) {
     $debug=[IO.Path]::Combine($tempDir,$name+'.debug.log')
+    $serial=[IO.Path]::Combine($tempDir,$name+'.serial.log')
     $stderr=[IO.Path]::Combine($tempDir,$name+'.stderr.log')
     $arguments=@('-machine','q35','-m','256M','-smp','4',
         '-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
         '-drive',"format=raw,file=$image,if=ide",'-display','none','-monitor','none',
-        '-serial','none','-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
+        '-serial',"file:$serial",'-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
         '-no-reboot','-no-shutdown')
     $process=Start-Process $Qemu -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     try {
         $deadline=[DateTime]::UtcNow.AddSeconds(90);$content=''
         do {
             Start-Sleep -Milliseconds 250
-            if(Test-Path -LiteralPath $debug){$content=Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue}
+            $debugContent=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+            $serialContent=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+            $content=$debugContent+$serialContent
             if($process.HasExited){
                 $detail=if(Test-Path -LiteralPath $stderr){Get-Content -LiteralPath $stderr -Raw}else{''}
                 throw "${name}: QEMU wurde vor dem Recovery-Handoff beendet. $detail"
@@ -83,24 +90,28 @@ function Invoke-RecoveryCase([string]$name,[string]$image) {
         Write-Host "$name`: beschädigter Hauptkernel kontrolliert über RECOVERY.NKI gestartet"
     } finally {
         if(!$process.HasExited){Stop-Process -Id $process.Id -Force}
+        if(!$process.HasExited){$process.WaitForExit(5000)|Out-Null}
         $process.Dispose()
     }
 }
 
 function Invoke-BackupCase([string]$name,[string]$image) {
     $debug=[IO.Path]::Combine($tempDir,$name+'.debug.log')
+    $serial=[IO.Path]::Combine($tempDir,$name+'.serial.log')
     $stderr=[IO.Path]::Combine($tempDir,$name+'.stderr.log')
     $arguments=@('-machine','q35','-m','256M','-smp','4',
         '-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
         '-drive',"format=raw,file=$image,if=ide",'-display','none','-monitor','none',
-        '-serial','none','-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
+        '-serial',"file:$serial",'-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
         '-no-reboot','-no-shutdown')
     $process=Start-Process $Qemu -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     try {
         $deadline=[DateTime]::UtcNow.AddSeconds(90);$content=''
         do {
             Start-Sleep -Milliseconds 250
-            if(Test-Path -LiteralPath $debug){$content=Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue}
+            $debugContent=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+            $serialContent=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+            $content=$debugContent+$serialContent
             if($process.HasExited){
                 $detail=if(Test-Path -LiteralPath $stderr){Get-Content -LiteralPath $stderr -Raw}else{''}
                 throw "${name}: QEMU wurde vor dem Backup-Handoff beendet. $detail"
@@ -117,6 +128,7 @@ function Invoke-BackupCase([string]$name,[string]$image) {
         Write-Host "$name`: beschädigter Hauptkernel kontrolliert über BACKUP.NKI gestartet"
     } finally {
         if(!$process.HasExited){Stop-Process -Id $process.Id -Force}
+        if(!$process.HasExited){$process.WaitForExit(5000)|Out-Null}
         $process.Dispose()
     }
 }

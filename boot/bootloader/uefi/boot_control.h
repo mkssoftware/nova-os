@@ -51,6 +51,9 @@ _Static_assert(sizeof(nova_boot_control_record_t) == 64,
 
 void nova_boot_control_default(nova_boot_control_record_t *record);
 bool nova_boot_control_validate(const nova_boot_control_record_t *record);
+bool nova_boot_control_choose_newest(const nova_boot_control_record_t *copy_a,
+                                     const nova_boot_control_record_t *copy_b,
+                                     nova_boot_control_record_t *selected);
 bool nova_boot_control_prepare_candidate(nova_boot_control_record_t *record, uint32_t slot,
                                          uint32_t max_attempts);
 uint32_t nova_boot_control_select(nova_boot_control_record_t *record, bool *state_changed);

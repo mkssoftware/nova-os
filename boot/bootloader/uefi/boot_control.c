@@ -55,6 +55,25 @@ bool nova_boot_control_validate(const nova_boot_control_record_t *record)
     return record_crc(record)==record->checksum;
 }
 
+static bool sequence_is_newer(uint64_t candidate,uint64_t reference)
+{
+    uint64_t distance=candidate-reference;
+    return distance!=0u&&distance<(UINT64_C(1)<<63);
+}
+
+bool nova_boot_control_choose_newest(const nova_boot_control_record_t *copy_a,
+                                     const nova_boot_control_record_t *copy_b,
+                                     nova_boot_control_record_t *selected)
+{
+    if(!selected)return false;
+    bool valid_a=nova_boot_control_validate(copy_a);
+    bool valid_b=nova_boot_control_validate(copy_b);
+    if(!valid_a&&!valid_b)return false;
+    const nova_boot_control_record_t *choice=!valid_a?copy_b:
+        (!valid_b||!sequence_is_newer(copy_b->sequence,copy_a->sequence)?copy_a:copy_b);
+    *selected=*choice;return true;
+}
+
 bool nova_boot_control_prepare_candidate(nova_boot_control_record_t *record,uint32_t slot,
                                          uint32_t max_attempts)
 {
@@ -103,7 +122,7 @@ static bool read_copy(CHAR16 *name,nova_boot_control_record_t *out)
     if(!runtime||!runtime->GetVariable)return false;
     UINTN size=sizeof(*out);uint32_t attributes=0;
     return !EFI_ERROR(runtime->GetVariable(name,&nova_boot_control_guid,&attributes,&size,out))&&
-           size==sizeof(*out)&&nova_boot_control_validate(out);
+           size==sizeof(*out);
 }
 
 static bool write_current(void)
@@ -116,14 +135,17 @@ static bool write_current(void)
         sizeof(current),&current);
     if(EFI_ERROR(status))return false;
     nova_boot_control_record_t check;
-    return read_copy(name,&check)&&check.sequence==current.sequence&&check.checksum==current.checksum;
+    return read_copy(name,&check)&&nova_boot_control_validate(&check)&&
+           check.sequence==current.sequence&&check.checksum==current.checksum;
 }
 
 bool uefi_boot_control_initialize(EFI_SYSTEM_TABLE *system_table)
 {
     runtime=system_table?system_table->RuntimeServices:0;persistent=false;
     nova_boot_control_record_t a,b;bool have_a=read_copy(state0_name,&a),have_b=read_copy(state1_name,&b);
-    if(have_a||have_b){current=have_a&&(!have_b||a.sequence>=b.sequence)?a:b;persistent=true;
+    if(nova_boot_control_choose_newest(have_a?&a:0,have_b?&b:0,&current)){persistent=true;
+        if((have_a&&!nova_boot_control_validate(&a))||(have_b&&!nova_boot_control_validate(&b)))
+            nova_debug_string("UEFI:BOOT-CONTROL-INVALID-COPY-IGNORED\n");
         nova_debug_string("UEFI:BOOT-CONTROL-RESTORED\n");}
     else{nova_boot_control_default(&current);
         bool first_copy=write_current();bool second_copy=first_copy&&write_current();
