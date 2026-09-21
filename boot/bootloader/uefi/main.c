@@ -300,7 +300,7 @@ static EFI_INPUT_KEY read_key(EFI_SYSTEM_TABLE *system_table)
 
 static void boot_selected(UINTN selection)
 {
-      if (selection == 0) {
+      if (selection == 0 || selection == 4) {
           nova_runtime_shutdown();nova_debug_string("UEFI:RUNTIME-SHUTDOWN\n");
           nova_runtime_destroy();nova_debug_string("UEFI:RUNTIME-DESTROYED\n");
           nova_resource_manager_shutdown();nova_debug_string("UEFI:RESOURCE-MANAGER-SHUTDOWN\n");
@@ -310,15 +310,17 @@ static void boot_selected(UINTN selection)
              framebuffer ownership to the kernel; clearing these contexts
              here made every UEFI boot fall back to text mode. */
           nova_debug_string("UEFI:FRAMEBUFFER-HANDOFF-PRESERVED\n");
-          nova_debug_string("UEFI:START\n");
-          EFI_STATUS status=uefi_boot_kernel(runtime_image_handle,runtime_system_table);
+          bool recovery=selection==4;
+          nova_debug_string(recovery?"UEFI:RECOVERY-START\n":"UEFI:START\n");
+          EFI_STATUS status=recovery?
+              uefi_boot_recovery_kernel(runtime_image_handle,runtime_system_table):
+              uefi_boot_kernel(runtime_image_handle,runtime_system_table);
           (void)status;
           nova_debug_string("UEFI:KERNEL-START-FAILED\n");
     }
     else if (selection == 1) nova_debug_string("UEFI:INSTALL-UNAVAILABLE\n");
     else if (selection == 2) nova_debug_string("UEFI:SETTINGS\n");
     else if (selection == 3) nova_debug_string("UEFI:DIAGNOSTICS\n");
-    else if (selection == 4) nova_debug_string("UEFI:RECOVERY\n");
     else nova_debug_string("UEFI:POWEROFF\n");
 }
 
@@ -340,7 +342,7 @@ static EFI_STATUS text_fallback(EFI_SYSTEM_TABLE *system_table,const char *reaso
     console_write_ascii(system_table,reason);
     console_write_ascii(system_table,"\r\nDer Start wird im sicheren Textmodus fortgesetzt.\r\n");
     console_write_ascii(system_table,"Enter: NovaOS jetzt starten\r\n");
-    console_write_ascii(system_table,"R: Recovery-Status  M: Speicherdiagnose-Status\r\n");
+    console_write_ascii(system_table,"R: Recovery starten  M: Speicherdiagnose-Status\r\n");
     console_write_ascii(system_table,"Automatischer Start in 5 Sekunden.\r\n");
     for(uint32_t tick=0;tick<50;++tick){
         EFI_INPUT_KEY key={0};
@@ -349,8 +351,7 @@ static EFI_STATUS text_fallback(EFI_SYSTEM_TABLE *system_table,const char *reaso
             if(key.UnicodeChar==13){boot_selected(0);nova_debug_string("UEFI:TEXT-CONTINUE\n");
                 return EFI_SUCCESS;}
             if(key.UnicodeChar=='r'||key.UnicodeChar=='R'){
-                nova_debug_string("UEFI:TEXT-RECOVERY-STATUS\n");
-                console_write_ascii(system_table,"Recovery-Backend nicht verfuegbar; Start bleibt sicher.\r\n");
+                nova_debug_string("UEFI:TEXT-RECOVERY-START\n");boot_selected(4);return EFI_SUCCESS;
             }
             if(key.UnicodeChar=='m'||key.UnicodeChar=='M'){
                 nova_debug_string("UEFI:TEXT-MEMORY-STATUS\n");
@@ -452,6 +453,7 @@ static bool handle_action(UINTN *selection_pointer)
         else bootmenu_set_status("Boot: UEFI, Bootphasen und Zeitbudgets wurden lesend erfasst.");
     } else if (view == NOVA_VIEW_RECOVERY) {
         if (selection == 5) navigate_back(selection_pointer);
+        else if(selection==0){boot_selected(4);return true;}
         else show_notice(NOVA_DIALOG_WARNING, "Recovery nicht verfügbar",
                          "Für diese Aktion fehlt ein geprüftes und sicheres Schreib-Backend.");
     } else if (view == NOVA_VIEW_POWER) {

@@ -82,6 +82,18 @@ kernel_entry:
 
     mov esi, message_bib_ok
     call serial_write_string
+    test dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_BOOT_OPTIONS
+    jz .boot_mode_done
+    cmp dword [kernel_context + CONTEXT_BOOT_MODE], NOVA_BOOT_MODE_RECOVERY
+    jne .boot_mode_done
+    mov esi, message_recovery_mode_ok
+    call serial_write_string
+.boot_mode_done:
+    cmp dword [kernel_context + CONTEXT_BOOT_GENERATION], NOVA_BOOT_GENERATION_BACKUP
+    jne .boot_generation_done
+    mov esi, message_backup_generation_ok
+    call serial_write_string
+.boot_generation_done:
     test dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_KERNEL_ID
     jz .kernel_identity_done
     mov esi, message_kernel_identity_ok
@@ -674,6 +686,19 @@ create_kernel_context:
 .boot_options:
     cmp ecx, BIB_BOOT_OPTIONS_SIZE
     jb .invalid
+    cmp dword [edx + 0], NOVA_BOOT_MODE_DIAGNOSTIC
+    ja .invalid
+    or dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_BOOT_OPTIONS
+    mov eax, [edx + 0]
+    mov [kernel_context + CONTEXT_BOOT_MODE], eax
+    mov eax, [edx + 4]
+    mov [kernel_context + CONTEXT_BOOT_FLAGS], eax
+    cmp dword [edx + 8], NOVA_BOOT_GENERATION_RECOVERY
+    ja .invalid
+    mov eax, [edx + 8]
+    mov [kernel_context + CONTEXT_BOOT_GENERATION], eax
+    mov eax, [edx + 12]
+    mov [kernel_context + CONTEXT_FALLBACK_LEVEL], eax
     jmp .advance
 
 .entropy:
@@ -9584,7 +9609,11 @@ CONTEXT_SYSTEM_GENERATION equ 108
 CONTEXT_BOOT_ATTEMPT      equ 112
 CONTEXT_KERNEL_BUILD_ID   equ 116
 CONTEXT_KERNEL_FORMAT     equ 136
-CONTEXT_SIZE              equ 140
+CONTEXT_BOOT_MODE         equ 140
+CONTEXT_BOOT_FLAGS        equ 144
+CONTEXT_BOOT_GENERATION   equ 148
+CONTEXT_FALLBACK_LEVEL    equ 152
+CONTEXT_SIZE              equ 156
 
 CONTEXT_HAS_FIRMWARE      equ 0x01
 CONTEXT_HAS_MEMORY        equ 0x02
@@ -9594,6 +9623,7 @@ CONTEXT_HAS_CPU           equ 0x10
 CONTEXT_HAS_ENTROPY       equ 0x20
 CONTEXT_HAS_SYSTEM        equ 0x40
 CONTEXT_HAS_KERNEL_ID     equ 0x80
+CONTEXT_HAS_BOOT_OPTIONS  equ 0x100
 CONTEXT_REQUIRED          equ CONTEXT_HAS_FIRMWARE | CONTEXT_HAS_MEMORY | CONTEXT_HAS_KERNEL | CONTEXT_HAS_CPU | CONTEXT_HAS_ENTROPY | CONTEXT_HAS_SYSTEM
 
 align 8
@@ -9896,6 +9926,10 @@ message_shutdown_platform:
     db "NOVA: Power Shutdown PLATFORM_OFF", 13, 10, 0
 message_bib_ok:
     db "NOVA: NBHP/BIB v1 validiert", 13, 10, 0
+message_recovery_mode_ok:
+    db "NOVA: Recovery-Modus aus NBHP/BIB aktiv", 13, 10, 0
+message_backup_generation_ok:
+    db "NOVA: Backup-Kernelgeneration aus NBHP/BIB aktiv", 13, 10, 0
 message_acpi_rsdp_ok:
     db "NOVA: ACPI RSDP mit Pruefsumme validiert", 13, 10, 0
 message_acpi_rsdp_missing:

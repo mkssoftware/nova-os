@@ -12,7 +12,12 @@ STAGE1 := $(BOOT_BUILD_DIR)/boot1.bin
 STAGE2 := $(BOOT_BUILD_DIR)/boot2.bin
 KERNEL := $(KERNEL_BUILD_DIR)/kernel.bin
 KERNEL_ELF := $(KERNEL_BUILD_DIR)/kernel.elf
+KERNEL_SOURCES := kernel/arch/x86_64/entry32.asm $(wildcard kernel/arch/x86_64/*.inc) \
+	boot/bootloader/include/layout.inc boot/include/nova_boot_protocol.inc \
+	boot/bootloader/include/nova-art.inc
 KERNEL_IMAGE := $(BUILD_DIR)/kernel.nki
+BACKUP_KERNEL_IMAGE := $(BUILD_DIR)/backup.nki
+RECOVERY_KERNEL_IMAGE := $(BUILD_DIR)/recovery.nki
 DISK_IMAGE := $(BUILD_DIR)/nova-bios.img
 SERIAL_LOG := $(BUILD_DIR)/qemu-serial.log
 DEBUG_LOG := $(BUILD_DIR)/qemu-debug.log
@@ -171,6 +176,9 @@ bootloader:
 kernel:
 	$(MAKE) -C kernel NASM=$(NASM)
 
+$(KERNEL): $(KERNEL_SOURCES)
+	$(MAKE) -C kernel NASM="$(NASM)"
+
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
@@ -292,9 +300,11 @@ $(UEFI_FIRMWARE): scripts/compose-edk2-firmware.ps1 | $(BUILD_DIR)
 
 uefi: $(UEFI_APP) $(UEFI_FIRMWARE)
 
-uefi-image: uefi $(KERNEL_IMAGE)
+uefi-image: uefi $(KERNEL_IMAGE) $(BACKUP_KERNEL_IMAGE) $(RECOVERY_KERNEL_IMAGE)
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-uefi-image.ps1 \
 		-EfiApplication $(UEFI_APP) -KernelImage $(KERNEL_IMAGE) -KernelElf $(KERNEL_ELF) \
+		-BackupKernelImage $(BACKUP_KERNEL_IMAGE) \
+		-RecoveryKernelImage $(RECOVERY_KERNEL_IMAGE) \
 		-OutputImage build/nova-uefi.img
 
 test-uefi-kernel-validation: uefi $(KERNEL_IMAGE) $(KERNEL_ELF) $(ELF64_TEST)
@@ -796,6 +806,18 @@ $(KERNEL_IMAGE): $(KERNEL_ELF) scripts/build-nki.ps1 | $(BUILD_DIR)
 		-File scripts/build-nki.ps1 \
 		-InputFile $(KERNEL_ELF) \
 		-OutputFile $(KERNEL_IMAGE)
+
+$(RECOVERY_KERNEL_IMAGE): $(KERNEL_ELF) scripts/build-nki.ps1 | $(BUILD_DIR)
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/build-nki.ps1 \
+		-InputFile $(KERNEL_ELF) \
+		-OutputFile $(RECOVERY_KERNEL_IMAGE)
+
+$(BACKUP_KERNEL_IMAGE): $(KERNEL_ELF) scripts/build-nki.ps1 | $(BUILD_DIR)
+	powershell.exe -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/build-nki.ps1 \
+		-InputFile $(KERNEL_ELF) \
+		-OutputFile $(BACKUP_KERNEL_IMAGE)
 
 artifact-check: $(KERNEL_IMAGE) scripts/validate-kernel-artifacts.ps1
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \

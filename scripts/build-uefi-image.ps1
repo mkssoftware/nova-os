@@ -2,7 +2,9 @@ param([Parameter(Mandatory=$true)][string]$EfiApplication,
       [Parameter(Mandatory=$true)][string]$OutputImage,
       [string]$KernelImage,
       [string]$KernelElf,
-      [string]$KernelElf64)
+      [string]$KernelElf64,
+      [string]$BackupKernelImage,
+      [string]$RecoveryKernelImage)
 $ErrorActionPreference='Stop'
 $efi=[IO.File]::ReadAllBytes([IO.Path]::GetFullPath($EfiApplication))
 $payloadFiles=@(
@@ -22,6 +24,16 @@ if($KernelElf64){
     $elf64Path=[IO.Path]::GetFullPath($KernelElf64)
     if(!(Test-Path -LiteralPath $elf64Path)){throw "ELF64-Kernel fehlt: $elf64Path"}
     $payloadFiles+=@{Name='KERNEL64';Ext='ELF';Data=[IO.File]::ReadAllBytes($elf64Path);Cluster=0}
+}
+if($BackupKernelImage){
+    $backupPath=[IO.Path]::GetFullPath($BackupKernelImage)
+    if(!(Test-Path -LiteralPath $backupPath)){throw "Backup-NKI fehlt: $backupPath"}
+    $payloadFiles+=@{Name='BACKUP';Ext='NKI';Data=[IO.File]::ReadAllBytes($backupPath);Cluster=0}
+}
+if($RecoveryKernelImage){
+    $recoveryPath=[IO.Path]::GetFullPath($RecoveryKernelImage)
+    if(!(Test-Path -LiteralPath $recoveryPath)){throw "Recovery-NKI fehlt: $recoveryPath"}
+    $payloadFiles+=@{Name='RECOVERY';Ext='NKI';Data=[IO.File]::ReadAllBytes($recoveryPath);Cluster=0}
 }
 $ss=512;$total=131072L;$partFirst=2048L;$partLast=$total-34;$partSectors=$partLast-$partFirst+1
 $image=[byte[]]::new($total*$ss)
@@ -81,6 +93,17 @@ foreach($file in $payloadFiles){
     $fileOffset=($dataStart+($file.Cluster-2))*$ss
     [Array]::Copy($file.Data,0,$image,$fileOffset,$file.Data.Length)
 }
-$out=[IO.Path]::GetFullPath($OutputImage);[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($out))|Out-Null;[IO.File]::WriteAllBytes($out,$image)
+$out=[IO.Path]::GetFullPath($OutputImage);[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($out))|Out-Null
+$temporary=$out+'.tmp-'+[Guid]::NewGuid().ToString('N')
+[IO.File]::WriteAllBytes($temporary,$image)
+try {
+    $written=$false
+    for($attempt=0;$attempt-lt10-and-not$written;$attempt++){
+        try {[IO.File]::Copy($temporary,$out,$true);$written=$true}
+        catch [IO.IOException] {if($attempt-eq9){throw};Start-Sleep -Milliseconds (100*($attempt+1))}
+    }
+} finally {
+    if(Test-Path -LiteralPath $temporary){[IO.File]::Delete($temporary)}
+}
 Write-Host "UEFI-IMG: $out";Write-Host "Groesse: $($image.Length) Bytes";Write-Host "ESP: FAT32 / GPT";Write-Host "BOOTX64.EFI: $($efi.Length) Bytes"
 foreach($file in $payloadFiles|Select-Object -Skip 1){Write-Host ("{0}.{1}: {2} Bytes" -f $file.Name,$file.Ext,$file.Data.Length)}

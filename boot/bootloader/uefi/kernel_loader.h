@@ -4,5 +4,6 @@
 #include "uefi_min.h"
 
 EFI_STATUS uefi_boot_kernel(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_table);
+EFI_STATUS uefi_boot_recovery_kernel(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_table);
 
 #endif

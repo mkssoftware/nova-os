@@ -401,13 +401,15 @@ Das Buildsystem prüft beziehungsweise erzeugt unter anderem:
 - Kernelgrößenlimit
 - ELF32-Container mit GNU-Build-ID und Nova-Requirements-Note
 - NKI mit CRC32 und Build-ID
+- separate `BACKUP.NKI`- und `RECOVERY.NKI`-Container im UEFI-Startmedium
 - Übereinstimmung der NKI- und ELF-Build-ID
 - GPT/FAT32-UEFI-Abbild
 - EFI-Anwendung und zusammengesetzte EDK2-Firmware
 
-Der Kernel-Makefile berücksichtigt jetzt alle `arch/x86_64/*.inc`-Dateien als
-Abhängigkeiten. Änderungen an eingebundenen Kernelmodulen lösen dadurch sicher
-einen Neuaufbau von `kernel.bin` aus.
+Das Root- und Kernel-Makefile berücksichtigt jetzt den Kernel-Assemblerquelltext,
+alle `arch/x86_64/*.inc`-Dateien und die gemeinsamen ABI-Includes als echte
+Abhängigkeiten. Änderungen daran lösen dadurch sicher einen Neuaufbau von
+`kernel.bin`, ELF, NKI, Recovery-NKI und UEFI-Image aus.
 
 Wichtige Befehle:
 
@@ -466,10 +468,18 @@ temporäre Abbilder und prüft:
 - ungültiges direktes ELF64,
 - kontrollierte Meldung von `UEFI:KERNEL-VALIDATION-ERROR`,
 - ausbleibenden `UEFI:KERNEL-HANDOFF-READY`-Marker,
-- keinen stillschweigenden ELF-Fallback bei vorhandenem, aber ungültigem NKI.
+- keinen stillschweigenden ELF-Fallback bei vorhandenem, aber ungültigem NKI,
+- Vorrang von `BACKUP.NKI` vor einem gleichzeitig vorhandenen Recovery-NKI,
+- automatischen Wechsel auf ein separat validiertes `RECOVERY.NKI`, wenn der
+  Hauptkernel beschädigt ist,
+- Übertragung und Kernel-seitige Bestätigung des Recovery-Modus im
+  NBHP/BIB-Boot-Options-TLV.
 
-Alle drei Negativfälle werden derzeit vor dem Kernel-Handoff abgewiesen. Die
-temporären Images und Logs werden anschließend automatisch entfernt.
+Die drei isolierten Negativfälle werden vor dem Kernel-Handoff abgewiesen. Ein
+vierter Test startet bei beschädigtem Haupt-NKI vorrangig das unabhängig
+adressierte Backup-NKI. Ein fünfter Test entfernt die Backupgeneration und
+bestätigt den Wechsel auf Recovery bis `NOVA_KERNEL_READY`. Die temporären
+Images und Logs werden anschließend automatisch entfernt.
 
 Das temporäre Testabbild wurde danach entfernt. Im Buildordner bleiben die
 festgelegten Image-Namen erhalten.
@@ -482,8 +492,10 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 - kryptografischer Kernelsignaturcontainer, Schlüssel-/Revocation-Policy und
   vollständige NovaOS-Trustentscheidung; der UEFI-Secure-Boot- und
   Integritätszustand wird bereits getrennt in den BIB übertragen
-- produktive Auswahl mehrerer Kernelgenerationen, automatischer Rollback und
-  unabhängiger Recovery-Kernel
+- dauerhafter, power-failure-sicherer Boot-Control-Zustand mit Candidate,
+  Known-Good, begrenzten Bootversuchen und Health-Commit; die Laufzeitauswahl
+  `PRIMARY -> BACKUP -> RECOVERY` funktioniert bereits, alle drei Container
+  verwenden derzeit aber noch dasselbe Entwicklungskernelpayload
 - vollständige AP-Aktivierung und echter SMP-Betrieb
 - vollständige Semantic Relationships, Subtypes und Traits
 - mehrere kompatible Semantic Types pro Ressource
@@ -503,7 +515,8 @@ Reihenfolge an:
 
 1. normativen Kernel-Signaturcontainer sowie Schlüssel- und Revocation-Policy
    spezifizieren beziehungsweise implementieren,
-2. Recovery- und Rollback-Kernelauswahl funktional anbinden,
+2. persistenten Boot-Control-Zustand, Bootversuchszähler und Health-Commit auf
+   der jetzt funktionalen A/B-/Recovery-Auswahl aufbauen,
 3. VirtualBox-UEFI mit dem aktuellen GPT/FAT32-Image erneut validieren,
 4. danach die nächsten Kernel- und Semantic-Type-Abschnitte umsetzen.
 

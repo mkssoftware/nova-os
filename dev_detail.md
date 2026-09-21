@@ -1,6 +1,6 @@
 # NovaOS – technische Implementierungsdetails
 
-**Stand:** 17. September 2026  
+**Stand:** 21. September 2026
 **Projekt:** `C:\recoverboot\nova-os`  
 **Ergänzt:** [ENTWICKLUNGSSTAND.md](ENTWICKLUNGSSTAND.md)
 
@@ -194,6 +194,8 @@ Weitere wichtige Artefakte:
 | `build/uefi/EFI/BOOT/BOOTX64.EFI` | NovaOS-UEFI-Anwendung |
 | `build/uefi/edk2-x86_64.fd` | zusammengesetzte EDK2-Testfirmware |
 | `build/kernel.nki` | bevorzugter NKI-Kernelcontainer |
+| `build/backup.nki` | separat adressierbare Known-Good-/Backupgeneration |
+| `build/recovery.nki` | separat adressierbarer UEFI-Recovery-Kernelcontainer |
 | `kernel/build/kernel.elf` | direkt ladbarer ELF32-Kernel |
 | `kernel/build/kernel.bin` | Kernel-Rohpayload |
 | `kernel/build/kernel64-test.elf` | kleiner ELF64-Handoff-Testkernel |
@@ -214,15 +216,17 @@ Weitere wichtige Artefakte:
 - CRC32 über das vollständige NKI-Payload
 - Abgleich zwischen NKI-Build-ID und ELF-Build-ID
 - Erzeugung eines ELF64-Testabbilds mit denselben Metadatenregeln
+- Erzeugung separater Backup- und Recovery-NKI-Container
 - Erzeugung der UEFI-Anwendung
 - Erzeugung einer GPT mit FAT32-EFI-Systempartition
 - Erzeugung der fest benannten BIOS- und UEFI-Images
 
 ### Abhängigkeitskorrektur im Kernel
 
-Alle Dateien unter `kernel/arch/x86_64/*.inc` sind jetzt Make-Abhängigkeiten des
-Kernelbinaries. Änderungen an eingebundenen Kernelmodulen werden dadurch nicht
-mehr versehentlich von einem alten `kernel.bin` verdeckt.
+Der Kernel-Assemblerquelltext, alle Dateien unter `kernel/arch/x86_64/*.inc`
+und die gemeinsamen Boot-ABI-Includes sind jetzt Make-Abhängigkeiten des
+Kernelbinaries. Änderungen daran werden dadurch nicht mehr versehentlich von
+einem alten `kernel.bin`, ELF oder NKI verdeckt.
 
 ## 5. UEFI-Startmedium
 
@@ -238,6 +242,13 @@ Das Skript `scripts/build-uefi-image.ps1` erzeugt:
 - optional `NOVA.NKI`
 - optional `KERNEL.ELF`
 - optional `KERNEL64.ELF`
+- optional `BACKUP.NKI`
+- optional `RECOVERY.NKI`
+
+Das Schreiben des fertigen Images verwendet eine temporäre Datei und kurze
+begrenzte Wiederholungen beim Ersetzen. Dadurch scheitert ein Build nicht mehr
+sofort, wenn ein Windows-Dateiscanner das bisherige Image kurzzeitig geöffnet
+hält.
 
 Die Firmware findet dadurch den standardisierten UEFI-Fallbackpfad ohne einen
 vorher angelegten NVRAM-Booteintrag.
@@ -501,6 +512,20 @@ Der Loader sucht in dieser Reihenfolge:
 2. `KERNEL.ELF`
 3. `KERNEL64.ELF`
 
+Kann der gewählte Hauptkernel nicht gelesen oder validiert werden, wird ein
+separates `BACKUP.NKI` und danach `RECOVERY.NKI` gesucht. Ein beschädigtes NKI
+führt weiterhin niemals zu einem stillen Wechsel auf das normale ELF. Backup
+und Recovery sind ausdrückliche, erneut vollständig validierte NKI-Pfade.
+
+Die umgesetzte Reihenfolge lautet:
+
+```text
+PRIMARY -> BACKUP -> RECOVERY -> kontrollierter Abbruch
+```
+
+Der Recovery-Kernel kann außerdem manuell über die erste Kachel der
+Recovery-Seite oder im UEFI-Textfallback mit `R` gestartet werden.
+
 NKI bleibt damit das bevorzugte Produktionsformat. Ein vorhandenes, aber
 ungültiges NKI wird nicht durch einen unsichereren stillen Fallback umgangen.
 
@@ -668,6 +693,15 @@ Direktes ELF wird als strukturell validiert markiert. NKI wird nach erfolgreiche
 CRC32- und Build-ID-Prüfung als integritätsgeprüft markiert. Ohne echten
 Signaturcontainer wird niemals „Signatur geprüft“ behauptet.
 
+### Boot-Options-TLV
+
+Enthält den Bootmodus, Modusflags, die ausgewählte Generation und die
+Fallbackstufe. Der aktuelle UEFI-Pfad unterscheidet Primärstart, automatisches
+Rollback auf Backup, automatisches Recovery und manuell gewähltes Recovery.
+Der Kernel validiert Modus und Generation, kopiert beide in seinen internen
+Kontext und meldet Backup- oder Recoverybetrieb sichtbar im seriellen
+Startprotokoll.
+
 ### CPU-TLV
 
 Enthält CPU-Herstellerkennung, höchsten CPUID-Basisleaf und wichtige
@@ -738,6 +772,12 @@ prüft:
 - kontrollierten Validierungsfehler
 - ausbleibenden Kernelhandoff
 - keinen stillen Sicherheitsfallback
+- erfolgreichen automatischen Wechsel von einem beschädigten Haupt-NKI auf
+  `BACKUP.NKI`, wobei ein gleichzeitig vorhandenes Recovery-NKI nicht vorzeitig
+  ausgewählt werden darf
+- erfolgreichen automatischen Wechsel von einem beschädigten Haupt-NKI auf
+  `RECOVERY.NKI`
+- Backup-/Recovery-Kennung im NBHP/BIB und deren Kernel-seitige Auswertung
 
 Die Testimages werden in einem eindeutig benannten temporären Unterordner von
 `build/` erstellt und anschließend vollständig entfernt.
@@ -1236,7 +1276,8 @@ NOVA: ACPI MADT, erkannte CPUs (hex): 0x00000004
 - produktiver kryptografischer NKI-Signaturcontainer
 - Schlüssel-, Trust-Anchor- und Revocation-Verwaltung
 - TPM-gestütztes Measured Boot
-- vollständige Recovery- und Rollback-Kernelauswahl
+- persistenter, power-failure-sicherer A/B-Boot-Control-Zustand mit
+  Bootversuchslimit, Health-Commit und dauerhafter Known-Good-Auswahl
 - Kernelkompression mit LZ4, ZSTD und GZIP
 - vollständige AP-Aktivierung und echter SMP-Scheduler
 - persistentes NovaFS
@@ -1275,4 +1316,3 @@ NOVA: ACPI MADT, erkannte CPUs (hex): 0x00000004
 Neue technische Funktionen sollen hier nach ihrer Umsetzung ergänzt werden.
 Dabei muss klar bleiben, ob ein Punkt nur spezifiziert, bereits implementiert,
 automatisiert getestet oder lediglich als zukünftiger ABI-Wert reserviert ist.
-

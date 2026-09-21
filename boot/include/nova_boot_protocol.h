@@ -38,6 +38,25 @@ enum {
     NOVA_BOOT_SECURITY_SIGNATURE_PRESENT = 0x00000008u
 };
 
+typedef enum nova_boot_mode {
+    NOVA_BOOT_MODE_NORMAL = 0,
+    NOVA_BOOT_MODE_RECOVERY = 1,
+    NOVA_BOOT_MODE_SAFE = 2,
+    NOVA_BOOT_MODE_DIAGNOSTIC = 3
+} nova_boot_mode_t;
+
+enum {
+    NOVA_BOOT_OPTION_AUTOMATIC_RECOVERY = 0x00000001u,
+    NOVA_BOOT_OPTION_MANUAL_RECOVERY = 0x00000002u,
+    NOVA_BOOT_OPTION_AUTOMATIC_ROLLBACK = 0x00000004u
+};
+
+typedef enum nova_boot_generation {
+    NOVA_BOOT_GENERATION_PRIMARY = 0,
+    NOVA_BOOT_GENERATION_BACKUP = 1,
+    NOVA_BOOT_GENERATION_RECOVERY = 2
+} nova_boot_generation_t;
+
 typedef enum nova_bib_tlv_type {
     NOVA_BIB_TLV_FIRMWARE    = 1,
     NOVA_BIB_TLV_CPU         = 2,
@@ -155,6 +174,13 @@ typedef struct nova_bib_security {
     uint32_t flags;
 } nova_bib_security_t;
 
+typedef struct nova_bib_boot_options {
+    uint32_t boot_mode;
+    uint32_t flags;
+    uint32_t selected_generation;
+    uint32_t fallback_level;
+} nova_bib_boot_options_t;
+
 typedef struct nova_bib_pointer_info {
     uint64_t address;
     uint32_t flags;
@@ -208,6 +234,7 @@ _Static_assert(sizeof(nova_bib_graphics_t) == 32, "Graphics-TLV muss 32 Byte gro
 _Static_assert(sizeof(nova_bib_kernel_t) == 32, "Kernel-TLV muss 32 Byte groß sein");
 _Static_assert(sizeof(nova_bib_storage_t) == 24, "Storage-TLV muss 24 Byte groß sein");
 _Static_assert(sizeof(nova_bib_security_t) == 16, "Security-TLV muss 16 Byte groß sein");
+_Static_assert(sizeof(nova_bib_boot_options_t) == 16, "Boot-Options-TLV muss 16 Byte groß sein");
 _Static_assert(sizeof(nova_bib_pointer_info_t) == 16, "Pointer-TLV muss 16 Byte groß sein");
 _Static_assert(sizeof(nova_bib_modules_t) == 16, "Modules-TLV muss 16 Byte groß sein");
 _Static_assert(sizeof(nova_bib_timing_t) == 24, "Timing-TLV muss 24 Byte groß sein");

@@ -53,6 +53,74 @@ function Invoke-ValidationCase([string]$name,[string]$image,[string]$forbiddenMa
     }
 }
 
+function Invoke-RecoveryCase([string]$name,[string]$image) {
+    $debug=[IO.Path]::Combine($tempDir,$name+'.debug.log')
+    $stderr=[IO.Path]::Combine($tempDir,$name+'.stderr.log')
+    $arguments=@('-machine','q35','-m','256M','-smp','4',
+        '-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
+        '-drive',"format=raw,file=$image,if=ide",'-display','none','-monitor','none',
+        '-serial','none','-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
+        '-no-reboot','-no-shutdown')
+    $process=Start-Process $Qemu -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
+    try {
+        $deadline=[DateTime]::UtcNow.AddSeconds(90);$content=''
+        do {
+            Start-Sleep -Milliseconds 250
+            if(Test-Path -LiteralPath $debug){$content=Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue}
+            if($process.HasExited){
+                $detail=if(Test-Path -LiteralPath $stderr){Get-Content -LiteralPath $stderr -Raw}else{''}
+                throw "${name}: QEMU wurde vor dem Recovery-Handoff beendet. $detail"
+            }
+        } while($content-notlike'*NOVA_KERNEL_READY*'-and[DateTime]::UtcNow-lt$deadline)
+        foreach($marker in @('UEFI:PRIMARY-KERNEL-VALIDATION-ERROR','UEFI:AUTOMATIC-RECOVERY-SELECTED',
+                             'UEFI:RECOVERY-NKI-VALIDATED','UEFI:KERNEL-HANDOFF-READY',
+                             'NOVA: Recovery-Modus aus NBHP/BIB aktiv','NOVA_KERNEL_READY')){
+            if($content-notlike"*$marker*"){throw "${name}: erwartete Markierung fehlt: $marker"}
+        }
+        if($content-like'*UEFI:ELF32-DIRECT-VALIDATED*'){
+            throw "${name}: beschädigtes Haupt-NKI wurde unzulässig durch das normale ELF ersetzt."
+        }
+        Write-Host "$name`: beschädigter Hauptkernel kontrolliert über RECOVERY.NKI gestartet"
+    } finally {
+        if(!$process.HasExited){Stop-Process -Id $process.Id -Force}
+        $process.Dispose()
+    }
+}
+
+function Invoke-BackupCase([string]$name,[string]$image) {
+    $debug=[IO.Path]::Combine($tempDir,$name+'.debug.log')
+    $stderr=[IO.Path]::Combine($tempDir,$name+'.stderr.log')
+    $arguments=@('-machine','q35','-m','256M','-smp','4',
+        '-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
+        '-drive',"format=raw,file=$image,if=ide",'-display','none','-monitor','none',
+        '-serial','none','-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
+        '-no-reboot','-no-shutdown')
+    $process=Start-Process $Qemu -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
+    try {
+        $deadline=[DateTime]::UtcNow.AddSeconds(90);$content=''
+        do {
+            Start-Sleep -Milliseconds 250
+            if(Test-Path -LiteralPath $debug){$content=Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue}
+            if($process.HasExited){
+                $detail=if(Test-Path -LiteralPath $stderr){Get-Content -LiteralPath $stderr -Raw}else{''}
+                throw "${name}: QEMU wurde vor dem Backup-Handoff beendet. $detail"
+            }
+        } while($content-notlike'*NOVA_KERNEL_READY*'-and[DateTime]::UtcNow-lt$deadline)
+        foreach($marker in @('UEFI:PRIMARY-KERNEL-VALIDATION-ERROR','UEFI:AUTOMATIC-BACKUP-SELECTED',
+                             'UEFI:BACKUP-NKI-VALIDATED','UEFI:KERNEL-HANDOFF-READY',
+                             'NOVA: Backup-Kernelgeneration aus NBHP/BIB aktiv','NOVA_KERNEL_READY')){
+            if($content-notlike"*$marker*"){throw "${name}: erwartete Markierung fehlt: $marker"}
+        }
+        foreach($forbidden in @('UEFI:AUTOMATIC-RECOVERY-SELECTED','UEFI:ELF32-DIRECT-VALIDATED')){
+            if($content-like"*$forbidden*"){throw "${name}: unzulässiger Pfad wurde ausgeführt: $forbidden"}
+        }
+        Write-Host "$name`: beschädigter Hauptkernel kontrolliert über BACKUP.NKI gestartet"
+    } finally {
+        if(!$process.HasExited){Stop-Process -Id $process.Id -Force}
+        $process.Dispose()
+    }
+}
+
 try {
     $badNki=[IO.Path]::Combine($tempDir,'NOVA.NKI')
     $badElf32=[IO.Path]::Combine($tempDir,'KERNEL.ELF')
@@ -64,6 +132,16 @@ try {
     $nkiImage=[IO.Path]::Combine($tempDir,'bad-nki.img')
     & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $badNki -KernelElf $Elf32 -OutputImage $nkiImage | Out-Null
     Invoke-ValidationCase 'bad-nki' $nkiImage 'UEFI:ELF32-DIRECT-VALIDATED'
+
+    $backupImage=[IO.Path]::Combine($tempDir,'bad-primary-with-backup.img')
+    & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $badNki -KernelElf $Elf32 `
+        -BackupKernelImage $Nki -RecoveryKernelImage $Nki -OutputImage $backupImage | Out-Null
+    Invoke-BackupCase 'bad-primary-with-backup' $backupImage
+
+    $recoveryImage=[IO.Path]::Combine($tempDir,'bad-primary-with-recovery.img')
+    & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $badNki -KernelElf $Elf32 `
+        -RecoveryKernelImage $Nki -OutputImage $recoveryImage | Out-Null
+    Invoke-RecoveryCase 'bad-primary-with-recovery' $recoveryImage
 
     $elf32Image=[IO.Path]::Combine($tempDir,'bad-elf32.img')
     & $ImageBuilder -EfiApplication $EfiApplication -KernelElf $badElf32 -OutputImage $elf32Image | Out-Null
