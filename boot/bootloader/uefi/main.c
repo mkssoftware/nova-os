@@ -60,6 +60,7 @@ static uint64_t startup_time_us(void)
 #include "../bootmenu/software_renderer.h"
 #include "../bootmenu/resources.h"
 #include "firmware.h"
+#include "boot_control.h"
 #include "kernel_loader.h"
 
 EFI_STATUS grafik_init(EFI_SYSTEM_TABLE *system_table);
@@ -1073,6 +1074,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     nova_debug_string("UEFI:DIALOG-READY\n");
     uefi_power_initialize(system_table);
     uefi_firmware_initialize(system_table);
+    uefi_boot_control_initialize(system_table);
     bool pointer_available = uefi_pointer_initialize(system_table);
     if(!nova_input_device_scan())return 1;
     pointer_available=uefi_pointer_available();

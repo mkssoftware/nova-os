@@ -1,6 +1,7 @@
 #include "kernel_loader.h"
 #include "../bootmenu/graphics.h"
 #include "firmware.h"
+#include "boot_control.h"
 #include "../../include/nova_boot_protocol.h"
 
 #define EFI_ALLOCATE_ADDRESS 2u
@@ -367,7 +368,11 @@ static UINTN build_bib(const EFI_SYSTEM_TABLE *st,const VOID *map,UINTN map_size
     value=append_tlv(at,NOVA_BIB_TLV_CPU,NOVA_BIB_TLV_FLAG_REQUIRED,32);uint32_t a,b,c,d;__asm__ volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(0),"c"(0));
     bytes_copy(value,&b,4);bytes_copy(value+4,&d,4);bytes_copy(value+8,&c,4);((uint32_t *)value)[3]=a;__asm__ volatile("cpuid":"=a"(a),"=b"(b),"=c"(c),"=d"(d):"a"(1),"c"(0));((uint32_t *)value)[4]=d;((uint32_t *)value)[5]=c;at=value+32;
     value=append_tlv(at,NOVA_BIB_TLV_ENTROPY,NOVA_BIB_TLV_FLAG_REQUIRED,32);uint64_t tsc;uint32_t lo,hi;__asm__ volatile("rdtsc":"=a"(lo),"=d"(hi));tsc=((uint64_t)hi<<32)|lo;bytes_copy(value,&tsc,8);tsc^=0x4e6f76614f535545ull;bytes_copy(value+8,&tsc,8);((uint32_t *)value)[4]=1;((uint32_t *)value)[5]=1;((uint32_t *)value)[6]=16;at=value+32;
-    value=append_tlv(at,NOVA_BIB_TLV_SYSTEM,NOVA_BIB_TLV_FLAG_REQUIRED,16);((uint32_t *)value)[2]=1;at=value+16;
+    value=append_tlv(at,NOVA_BIB_TLV_SYSTEM,NOVA_BIB_TLV_FLAG_REQUIRED,16);
+    nova_bib_system_t *system=(nova_bib_system_t *)value;
+    const nova_boot_control_record_t *control=uefi_boot_control_state();
+    system->generation=0;system->boot_attempt=control?control->attempt_count:0u;
+    system->flags=uefi_boot_control_persistent()?1u:0u;at=value+16;
     uint32_t rsdp=find_acpi_rsdp(st);
     if(rsdp){value=append_tlv(at,NOVA_BIB_TLV_ACPI,0,16);((nova_bib_pointer_info_t *)value)->address=rsdp;at=value+16;}
     value=append_tlv(at,NOVA_BIB_TLV_KERNEL_IDENTITY,0,32);bytes_copy(value,build_id,20);((uint32_t *)value)[5]=kernel_format;((uint32_t *)value)[6]=nki_container?1u:0u;at=value+32;
@@ -379,11 +384,16 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     (void)uefi_firmware_refresh();
     uint8_t *file=0;UINTN size=0;bool nki_container=true;
     bool recovery_mode=recovery_only,automatic_recovery=false,automatic_rollback=false;
-    uint32_t selected_generation=recovery_only?NOVA_BOOT_GENERATION_RECOVERY:NOVA_BOOT_GENERATION_PRIMARY;
+    const nova_boot_control_record_t *control=uefi_boot_control_state();
+    uint32_t requested_slot=recovery_only?NOVA_BOOT_GENERATION_RECOVERY:uefi_boot_control_select();
+    bool candidate_boot=!recovery_only&&control&&control->candidate_slot==requested_slot;
+    uint32_t selected_generation=requested_slot;
     uint32_t fallback_level=0;
     uint32_t architecture=NOVA_BOOT_ARCH_X86_32,kernel_format=NOVA_KERNEL_FORMAT_ELF32;
-    EFI_STATUS status=read_kernel_file(image_handle,st,recovery_only?recovery_nki_path:nki_path,&file,&size);
-    if(!recovery_only&&EFI_ERROR(status)){
+    CHAR16 *initial_path=recovery_only?recovery_nki_path:
+        (requested_slot==NOVA_BOOT_GENERATION_BACKUP?backup_nki_path:nki_path);
+    EFI_STATUS status=read_kernel_file(image_handle,st,initial_path,&file,&size);
+    if(!recovery_only&&requested_slot==NOVA_BOOT_GENERATION_PRIMARY&&!candidate_boot&&EFI_ERROR(status)){
         nki_container=false;file=0;size=0;
         status=read_kernel_file(image_handle,st,elf_path,&file,&size);
         if(EFI_ERROR(status)){
@@ -408,9 +418,13 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
         nova_debug_string(EFI_ERROR(status)?"UEFI:PRIMARY-KERNEL-FILE-ERROR\n":"UEFI:PRIMARY-KERNEL-VALIDATION-ERROR\n");
         nki_container=true;architecture=NOVA_BOOT_ARCH_X86_32;kernel_format=NOVA_KERNEL_FORMAT_ELF32;
         entry=0;load_address=KERNEL_ADDRESS;image_size=0;bytes_zero(build_id,sizeof(build_id));
-        status=read_kernel_file(image_handle,st,backup_nki_path,&file,&size);
+        if(candidate_boot)(void)uefi_boot_control_artifact_failed(requested_slot);
+        uint32_t fallback_slot=candidate_boot&&control?control->known_good_slot:
+            (requested_slot==NOVA_BOOT_GENERATION_PRIMARY?NOVA_BOOT_GENERATION_BACKUP:NOVA_BOOT_GENERATION_PRIMARY);
+        CHAR16 *fallback_path=fallback_slot==NOVA_BOOT_GENERATION_BACKUP?backup_nki_path:nki_path;
+        status=read_kernel_file(image_handle,st,fallback_path,&file,&size);
         if(!EFI_ERROR(status))loaded=load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
-        if(loaded){automatic_rollback=true;selected_generation=NOVA_BOOT_GENERATION_BACKUP;fallback_level=1;}
+        if(loaded){automatic_rollback=true;selected_generation=fallback_slot;fallback_level=1;}
         else{
             if(file)st->BootServices->FreePool(file);
             file=0;size=0;
@@ -426,15 +440,26 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
         if(!EFI_ERROR(status))loaded=load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
     }
     if(!loaded){if(file)st->BootServices->FreePool(file);nova_debug_string("UEFI:KERNEL-VALIDATION-ERROR\n");return 1;}
+    if(candidate_boot&&selected_generation==requested_slot){
+        if(!uefi_boot_control_begin_attempt(requested_slot))nova_debug_string("UEFI:BOOT-CONTROL-ATTEMPT-VOLATILE\n");
+        else nova_debug_string("UEFI:BOOT-CONTROL-CANDIDATE-ATTEMPT\n");
+    }
     if(EFI_ERROR(allocate_fixed(st->BootServices,BIB_ADDRESS,2))){nova_debug_string("UEFI:BIB-MEMORY-ERROR\n");return 1;}
     uint32_t verification_state=nki_container?NOVA_BOOT_VERIFICATION_INTEGRITY_VERIFIED:
                                               NOVA_BOOT_VERIFICATION_STRUCTURE_VALIDATED;
     uint32_t stack_top=0;
     if(!allocate_kernel_stack(st->BootServices,&stack_top)){nova_debug_string("UEFI:KERNEL-STACK-MEMORY-ERROR\n");return 1;}
     st->BootServices->FreePool(file);
+    if(candidate_boot&&!automatic_rollback&&!recovery_mode)
+        nova_debug_string("UEFI:CANDIDATE-KERNEL-SELECTED\n");
     if(automatic_rollback){
-        nova_debug_string("UEFI:AUTOMATIC-BACKUP-SELECTED\n");
-        nova_debug_string("UEFI:BACKUP-NKI-VALIDATED\n");
+        if(selected_generation==NOVA_BOOT_GENERATION_BACKUP){
+            nova_debug_string("UEFI:AUTOMATIC-BACKUP-SELECTED\n");
+            nova_debug_string("UEFI:BACKUP-NKI-VALIDATED\n");
+        }else{
+            nova_debug_string("UEFI:AUTOMATIC-KNOWN-GOOD-SELECTED\n");
+            nova_debug_string("UEFI:KNOWN-GOOD-NKI-VALIDATED\n");
+        }
     }else if(recovery_mode){
         nova_debug_string(automatic_recovery?"UEFI:AUTOMATIC-RECOVERY-SELECTED\n":"UEFI:MANUAL-RECOVERY-SELECTED\n");
         nova_debug_string("UEFI:RECOVERY-NKI-VALIDATED\n");

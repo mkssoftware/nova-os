@@ -484,6 +484,36 @@ Images und Logs werden anschließend automatisch entfernt.
 Das temporäre Testabbild wurde danach entfernt. Im Buildordner bleiben die
 festgelegten Image-Namen erhalten.
 
+### Persistenter UEFI-Boot-Control-Zustand
+
+Der UEFI-Pfad besitzt jetzt einen ersten persistenten A/B-Boot-Control-Kern:
+
+- zwei abwechselnd beschriebene UEFI-Variablen (`NovaBootState0` und
+  `NovaBootState1`),
+- 64-Byte-Datensätze mit Formatversion, Sequenznummer und CRC32,
+- Auswahl der neuesten noch gültigen Kopie beim Start,
+- logischer Active-, Candidate- und Known-Good-Slot,
+- policyfähiges Versuchslimit im Datensatz statt einer fest verdrahteten
+  Entscheidung im Auswahlalgorithmus,
+- sofortige Candidate-Deaktivierung bei einem eindeutig ungültigen Artefakt,
+- automatischer Wechsel zur Known-Good-Generation nach Erreichen des
+  Versuchslimits,
+- sicherer flüchtiger Betrieb, falls UEFI-Variablen nicht geschrieben werden
+  können.
+
+Die Initialisierung schreibt beide redundanten Kopien und liest jede Änderung
+nach dem Schreiben zur Validierung zurück. Der isolierte Zustandsautomat prüft
+Candidate-Auswahl, Versuchszählung, Limit-Rollback, Artefaktfehler und
+CRC-Erkennung. Ein zusätzlicher QEMU-Test startet zweimal mit derselben
+beschreibbaren Firmwarekopie, bestätigt die Wiederherstellung des Zustands beim
+zweiten Start und verlangt in beiden Läufen den vollständigen primären
+NKI-Handoff bis `NOVA_KERNEL_READY`.
+
+Noch nicht umgesetzt ist der sicherheitskritische Health-Commit: Kernel Entry
+allein markiert einen Candidate ausdrücklich nicht als Known-Good. Dafür fehlen
+im aktuellen Dokumentbestand noch die in den ADRs referenzierten detaillierten
+Boot-State-, Attempt-, Known-Good- und Health-Provider-NPSPECs.
+
 ## 10. Noch offene oder nur teilweise umgesetzte Punkte
 
 Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
@@ -492,10 +522,13 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 - kryptografischer Kernelsignaturcontainer, Schlüssel-/Revocation-Policy und
   vollständige NovaOS-Trustentscheidung; der UEFI-Secure-Boot- und
   Integritätszustand wird bereits getrennt in den BIB übertragen
-- dauerhafter, power-failure-sicherer Boot-Control-Zustand mit Candidate,
-  Known-Good, begrenzten Bootversuchen und Health-Commit; die Laufzeitauswahl
-  `PRIMARY -> BACKUP -> RECOVERY` funktioniert bereits, alle drei Container
-  verwenden derzeit aber noch dasselbe Entwicklungskernelpayload
+- autorisierte Candidate-Staging-Schnittstelle, eindeutige Generationen und
+  capabilitygeschützter Health-Commit; der persistente Boot-Control-Kern mit
+  redundanter Speicherung, Candidate, Known-Good, Versuchslimit und Rollback
+  ist vorhanden, alle drei Container verwenden derzeit aber noch dasselbe
+  Entwicklungskernelpayload
+- gezielte Stromausfall-/Schreibabbruch-Fehlerinjektion für beide redundanten
+  Boot-Control-Kopien
 - vollständige AP-Aktivierung und echter SMP-Betrieb
 - vollständige Semantic Relationships, Subtypes und Traits
 - mehrere kompatible Semantic Types pro Ressource
@@ -515,8 +548,8 @@ Reihenfolge an:
 
 1. normativen Kernel-Signaturcontainer sowie Schlüssel- und Revocation-Policy
    spezifizieren beziehungsweise implementieren,
-2. persistenten Boot-Control-Zustand, Bootversuchszähler und Health-Commit auf
-   der jetzt funktionalen A/B-/Recovery-Auswahl aufbauen,
+2. die fehlenden Boot-Control-/Health-NPSPECs ergänzen und darauf die
+   autorisierte Candidate-Aktivierung sowie den Health-Commit aufbauen,
 3. VirtualBox-UEFI mit dem aktuellen GPT/FAT32-Image erneut validieren,
 4. danach die nächsten Kernel- und Semantic-Type-Abschnitte umsetzen.
 

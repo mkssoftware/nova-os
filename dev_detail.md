@@ -1263,6 +1263,39 @@ UEFI:KERNEL-HANDOFF-READY
 NOVA_ELF64_LONG_MODE_READY
 ```
 
+### Persistenter UEFI-Boot-Control-Zustand
+
+Der UEFI-Bootloader verwaltet einen kompakten 64-Byte-Boot-State. Darin stehen
+Active-, Candidate- und Known-Good-Slot, Versuchszähler, policyfähiges Limit,
+letztes Ergebnis und letzter grober Health-Milestone. `CRC32` erkennt
+Beschädigungen; eine monoton steigende Sequenznummer bestimmt die neueste
+gültige Kopie.
+
+Der Zustand liegt redundant in `NovaBootState0` und `NovaBootState1`. Änderungen
+werden abwechselnd geschrieben und sofort zurückgelesen. So bleibt beim
+abgebrochenen Schreiben die vorherige Kopie erhalten. Sind beide Kopien nicht
+lesbar oder Variablenschreibzugriffe nicht möglich, startet der Loader mit
+einem konservativen flüchtigen Standardzustand.
+
+Der Zustandsautomat kann:
+
+- einen vollständig vorbereiteten Slot als Candidate vormerken,
+- Candidate-Bootversuche zählen,
+- nach dem policydefinierten Limit deterministisch Known-Good auswählen,
+- einen eindeutig beschädigten Candidate sofort deaktivieren,
+- den gewählten Slot und Versuchszähler in das NBHP/BIB-Boot-Options-TLV
+  übernehmen.
+
+`make uefi-boot-control-state-check` prüft die Übergänge isoliert.
+`make test-uefi-boot-control` startet QEMU zweimal mit derselben beschreibbaren
+Firmwarekopie, weist damit die Persistenz zwischen zwei Starts nach und prüft
+in beiden Läufen den primären NKI-Pfad bis `NOVA_KERNEL_READY`.
+
+Bewusst fehlt noch `Candidate -> KnownGood`: Die ADR verbietet einen Commit
+allein aufgrund von Kernel Entry. Erst ein künftig spezifizierter,
+capabilitygeschützter Health Provider darf die erforderlichen Milestones
+bestätigen und den Commit auslösen.
+
 ### Erkannte CPUs
 
 Der aktuelle QEMU-Test mit `-smp 4` meldet:
@@ -1276,8 +1309,10 @@ NOVA: ACPI MADT, erkannte CPUs (hex): 0x00000004
 - produktiver kryptografischer NKI-Signaturcontainer
 - Schlüssel-, Trust-Anchor- und Revocation-Verwaltung
 - TPM-gestütztes Measured Boot
-- persistenter, power-failure-sicherer A/B-Boot-Control-Zustand mit
-  Bootversuchslimit, Health-Commit und dauerhafter Known-Good-Auswahl
+- autorisierte Candidate-Staging-Schnittstelle, eindeutige Generationen und
+  capabilitygeschützter Health-Commit; persistente redundante Auswahl,
+  Bootversuchslimit und Known-Good-Rollback sind bereits vorhanden
+- Fehlerinjektion für Stromausfall und abgebrochene UEFI-Variablenschreibvorgänge
 - Kernelkompression mit LZ4, ZSTD und GZIP
 - vollständige AP-Aktivierung und echter SMP-Scheduler
 - persistentes NovaFS

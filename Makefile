@@ -63,7 +63,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check boot-ui-runtime-check vector-geometry-runtime-check svg-runtime-check asset-pipeline-check uefi-firmware-runtime-check uefi-pointer-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image test-uefi-kernel-validation test-firmware-compatibility run test test-uefi test-uefi-input test-uefi-dialog test-uefi-confirmation test-uefi-warning test-uefi-password test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check uefi-boot-control-state-check boot-ui-runtime-check vector-geometry-runtime-check svg-runtime-check asset-pipeline-check uefi-firmware-runtime-check uefi-pointer-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image test-uefi-kernel-validation test-uefi-boot-control test-firmware-compatibility run test test-uefi test-uefi-input test-uefi-dialog test-uefi-confirmation test-uefi-warning test-uefi-password test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -72,6 +72,14 @@ abi-check:
 		tests/boot_protocol_layout.c
 	PATH=/ucrt64/bin:/usr/bin "$(HOST_CC)" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
 		tests/kernel_abi_layout.c
+
+uefi-boot-control-state-check: | $(BUILD_DIR)
+	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
+		"$(HOST_CC)" -O2 -std=c11 -Wall -Wextra -Werror \
+		-Iboot/bootloader/uefi -Iboot/bootloader/bootmenu \
+		tests/uefi_boot_control_state.c boot/bootloader/uefi/boot_control.c \
+		-o $(BUILD_DIR)/uefi-boot-control-state-test.exe
+	$(BUILD_DIR)/uefi-boot-control-state-test.exe
 
 vector-geometry-runtime-check: | $(BUILD_DIR)
 	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
@@ -182,7 +190,7 @@ $(KERNEL): $(KERNEL_SOURCES)
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c boot/bootloader/uefi/kernel_loader.h boot/bootloader/uefi/kernel_transition.S boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/pointer.h boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c \
+$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c boot/bootloader/uefi/kernel_loader.h boot/bootloader/uefi/kernel_transition.S boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/pointer.h boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c boot/bootloader/uefi/boot_control.c boot/bootloader/uefi/boot_control.h \
 		boot/bootloader/uefi/uefi_min.h boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/ui.h \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/motion.h \
@@ -242,7 +250,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c bo
 		$(UEFI_EXTRA_CFLAGS) \
 		-nostdlib -Iboot/bootloader/uefi -Iboot/include -I$(BUILD_DIR)/generated \
 		boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c boot/bootloader/uefi/kernel_transition.S \
-		boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c boot/bootloader/bootmenu/ui.c \
+		boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c boot/bootloader/uefi/boot_control.c boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/compositor.c \
 		boot/bootloader/bootmenu/graphics.c \
 		boot/bootloader/bootmenu/resolution.c \
@@ -312,6 +320,10 @@ test-uefi-kernel-validation: uefi $(KERNEL_IMAGE) $(KERNEL_ELF) $(ELF64_TEST)
 		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -EfiApplication $(UEFI_APP) \
 		-Nki $(KERNEL_IMAGE) -Elf32 $(KERNEL_ELF) -Elf64 $(ELF64_TEST) \
 		-ImageBuilder scripts/build-uefi-image.ps1
+
+test-uefi-boot-control: uefi-image uefi-boot-control-state-check
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-uefi-boot-control.ps1 \
+		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -Image build/nova-uefi.img
 
 test-uefi-image: uefi $(KERNEL_IMAGE)
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-uefi-image.ps1 \
