@@ -1268,8 +1268,8 @@ NOVA_ELF64_LONG_MODE_READY
 Der UEFI-Bootloader verwaltet einen kompakten 64-Byte-Boot-State. Darin stehen
 Active-, Candidate- und Known-Good-Slot, Versuchszähler, policyfähiges Limit,
 letztes Ergebnis und letzter grober Health-Milestone. `CRC32` erkennt
-Beschädigungen; eine monoton steigende Sequenznummer bestimmt die neueste
-gültige Kopie.
+Beschädigungen; eine überlaufsicher verglichene Sequenznummer bestimmt die
+neueste gültige Kopie.
 
 Der Zustand liegt redundant in `NovaBootState0` und `NovaBootState1`. Änderungen
 werden abwechselnd geschrieben und sofort zurückgelesen. So bleibt beim
@@ -1283,13 +1283,21 @@ Der Zustandsautomat kann:
 - Candidate-Bootversuche zählen,
 - nach dem policydefinierten Limit deterministisch Known-Good auswählen,
 - einen eindeutig beschädigten Candidate sofort deaktivieren,
+- bei zwei vorhandenen, aber ungültigen Boot-State-Kopien Fail-Safe direkt den
+  Recovery-Kernel wählen, ohne die forensisch relevanten Kopien zu überschreiben,
 - den gewählten Slot und Versuchszähler in das NBHP/BIB-Boot-Options-TLV
   übernehmen.
 
-`make uefi-boot-control-state-check` prüft die Übergänge isoliert.
-`make test-uefi-boot-control` startet QEMU zweimal mit derselben beschreibbaren
-Firmwarekopie, weist damit die Persistenz zwischen zwei Starts nach und prüft
-in beiden Läufen den primären NKI-Pfad bis `NOVA_KERNEL_READY`.
+`make uefi-boot-control-state-check` prüft beide Slotrichtungen, alle Limits von
+1 bis 16, deterministische Wiederholung, unzulässige Übergänge, CRC-Fehler und
+den Sequenzüberlauf. `make test-uefi-boot-control` startet QEMU zunächst mit
+einer beschreibbaren Firmwarekopie, beschädigt danach die neueste persistente
+Kopie und startet erneut. Der zweite Lauf muss `INVALID-COPY-IGNORED` melden,
+die ältere Kopie wiederherstellen und erneut `NOVA_KERNEL_READY` erreichen.
+Danach beschädigt der Test beide Kopien. Der dritte Start muss
+`BOOT-CONTROL-CORRUPT-RECOVERY`, `AUTOMATIC-RECOVERY-SELECTED` und
+`RECOVERY-NKI-VALIDATED` melden; der Kernel bestätigt den Recovery-Modus aus
+NBHP/BIB und erreicht wiederum `NOVA_KERNEL_READY`.
 
 Bewusst fehlt noch `Candidate -> KnownGood`: Die ADR verbietet einen Commit
 allein aufgrund von Kernel Entry. Erst ein künftig spezifizierter,
@@ -1312,7 +1320,8 @@ NOVA: ACPI MADT, erkannte CPUs (hex): 0x00000004
 - autorisierte Candidate-Staging-Schnittstelle, eindeutige Generationen und
   capabilitygeschützter Health-Commit; persistente redundante Auswahl,
   Bootversuchslimit und Known-Good-Rollback sind bereits vorhanden
-- Fehlerinjektion für Stromausfall und abgebrochene UEFI-Variablenschreibvorgänge
+- echte Prozess-/Stromunterbrechung an jedem UEFI-Schreibzeitpunkt; CRC-Korruption
+  der neuesten Kopie mit erfolgreichem Rückfall ist bereits in QEMU geprüft
 - Kernelkompression mit LZ4, ZSTD und GZIP
 - vollständige AP-Aktivierung und echter SMP-Scheduler
 - persistentes NovaFS

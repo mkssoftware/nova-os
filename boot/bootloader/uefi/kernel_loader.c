@@ -383,17 +383,19 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
 {
     (void)uefi_firmware_refresh();
     uint8_t *file=0;UINTN size=0;bool nki_container=true;
-    bool recovery_mode=recovery_only,automatic_recovery=false,automatic_rollback=false;
+    bool metadata_recovery=uefi_boot_control_requires_recovery();
+    bool recovery_mode=recovery_only||metadata_recovery;
+    bool automatic_recovery=metadata_recovery,automatic_rollback=false;
     const nova_boot_control_record_t *control=uefi_boot_control_state();
-    uint32_t requested_slot=recovery_only?NOVA_BOOT_GENERATION_RECOVERY:uefi_boot_control_select();
-    bool candidate_boot=!recovery_only&&control&&control->candidate_slot==requested_slot;
+    uint32_t requested_slot=recovery_mode?NOVA_BOOT_GENERATION_RECOVERY:uefi_boot_control_select();
+    bool candidate_boot=!recovery_mode&&control&&control->candidate_slot==requested_slot;
     uint32_t selected_generation=requested_slot;
-    uint32_t fallback_level=0;
+    uint32_t fallback_level=metadata_recovery?2u:0u;
     uint32_t architecture=NOVA_BOOT_ARCH_X86_32,kernel_format=NOVA_KERNEL_FORMAT_ELF32;
-    CHAR16 *initial_path=recovery_only?recovery_nki_path:
+    CHAR16 *initial_path=recovery_mode?recovery_nki_path:
         (requested_slot==NOVA_BOOT_GENERATION_BACKUP?backup_nki_path:nki_path);
     EFI_STATUS status=read_kernel_file(image_handle,st,initial_path,&file,&size);
-    if(!recovery_only&&requested_slot==NOVA_BOOT_GENERATION_PRIMARY&&!candidate_boot&&EFI_ERROR(status)){
+    if(!recovery_mode&&requested_slot==NOVA_BOOT_GENERATION_PRIMARY&&!candidate_boot&&EFI_ERROR(status)){
         nki_container=false;file=0;size=0;
         status=read_kernel_file(image_handle,st,elf_path,&file,&size);
         if(EFI_ERROR(status)){
@@ -408,7 +410,7 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
         else if(kernel_format==NOVA_KERNEL_FORMAT_ELF32)loaded=load_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
         else loaded=load_elf64(st->BootServices,file,size,&entry,&load_address,&image_size,build_id);
     }
-    if(!loaded&&recovery_only){
+    if(!loaded&&recovery_mode){
         if(file)st->BootServices->FreePool(file);
         nova_debug_string(EFI_ERROR(status)?"UEFI:RECOVERY-KERNEL-FILE-ERROR\n":"UEFI:KERNEL-VALIDATION-ERROR\n");return 1;
     }

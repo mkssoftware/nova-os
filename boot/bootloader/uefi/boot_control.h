@@ -63,6 +63,7 @@ bool nova_boot_control_artifact_failed(nova_boot_control_record_t *record, uint3
 bool uefi_boot_control_initialize(EFI_SYSTEM_TABLE *system_table);
 const nova_boot_control_record_t *uefi_boot_control_state(void);
 bool uefi_boot_control_persistent(void);
+bool uefi_boot_control_requires_recovery(void);
 uint32_t uefi_boot_control_select(void);
 bool uefi_boot_control_begin_attempt(uint32_t slot);
 bool uefi_boot_control_artifact_failed(uint32_t slot);

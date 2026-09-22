@@ -8,6 +8,7 @@
 static EFI_RUNTIME_SERVICES *runtime;
 static nova_boot_control_record_t current;
 static bool persistent;
+static bool recovery_required;
 static EFI_GUID nova_boot_control_guid={0x4e4f5641u,0x4243u,0x4f4eu,
     {0x54u,0x52u,0x4fu,0x4cu,0x56u,0x31u,0x00u,0x01u}};
 static CHAR16 state0_name[]={'N','o','v','a','B','o','o','t','S','t','a','t','e','0',0};
@@ -141,12 +142,14 @@ static bool write_current(void)
 
 bool uefi_boot_control_initialize(EFI_SYSTEM_TABLE *system_table)
 {
-    runtime=system_table?system_table->RuntimeServices:0;persistent=false;
+    runtime=system_table?system_table->RuntimeServices:0;persistent=false;recovery_required=false;
     nova_boot_control_record_t a,b;bool have_a=read_copy(state0_name,&a),have_b=read_copy(state1_name,&b);
     if(nova_boot_control_choose_newest(have_a?&a:0,have_b?&b:0,&current)){persistent=true;
         if((have_a&&!nova_boot_control_validate(&a))||(have_b&&!nova_boot_control_validate(&b)))
             nova_debug_string("UEFI:BOOT-CONTROL-INVALID-COPY-IGNORED\n");
         nova_debug_string("UEFI:BOOT-CONTROL-RESTORED\n");}
+    else if(have_a||have_b){nova_boot_control_default(&current);recovery_required=true;
+        nova_debug_string("UEFI:BOOT-CONTROL-CORRUPT-RECOVERY\n");}
     else{nova_boot_control_default(&current);
         bool first_copy=write_current();bool second_copy=first_copy&&write_current();
         persistent=first_copy&&second_copy;
@@ -158,6 +161,7 @@ bool uefi_boot_control_initialize(EFI_SYSTEM_TABLE *system_table)
 
 const nova_boot_control_record_t *uefi_boot_control_state(void){return &current;}
 bool uefi_boot_control_persistent(void){return persistent;}
+bool uefi_boot_control_requires_recovery(void){return recovery_required;}
 uint32_t uefi_boot_control_select(void){bool changed=false;uint32_t slot=nova_boot_control_select(&current,&changed);if(changed)persistent=write_current();return slot;}
 bool uefi_boot_control_begin_attempt(uint32_t slot){if(!nova_boot_control_begin_attempt(&current,slot))return false;persistent=write_current();return true;}
 bool uefi_boot_control_artifact_failed(uint32_t slot){if(!nova_boot_control_artifact_failed(&current,slot))return false;persistent=write_current();return true;}

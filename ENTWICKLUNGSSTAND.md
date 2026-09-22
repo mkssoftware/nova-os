@@ -498,16 +498,24 @@ Der UEFI-Pfad besitzt jetzt einen ersten persistenten A/B-Boot-Control-Kern:
 - sofortige Candidate-Deaktivierung bei einem eindeutig ungültigen Artefakt,
 - automatischer Wechsel zur Known-Good-Generation nach Erreichen des
   Versuchslimits,
+- erzwungener automatischer Recovery-Start, wenn vorhandene Bootmetadaten in
+  beiden Kopien ungültig sind; die beschädigten Datensätze werden dabei nicht
+  still mit einem normalen Standardzustand überschrieben,
 - sicherer flüchtiger Betrieb, falls UEFI-Variablen nicht geschrieben werden
   können.
 
 Die Initialisierung schreibt beide redundanten Kopien und liest jede Änderung
 nach dem Schreiben zur Validierung zurück. Der isolierte Zustandsautomat prüft
-Candidate-Auswahl, Versuchszählung, Limit-Rollback, Artefaktfehler und
-CRC-Erkennung. Ein zusätzlicher QEMU-Test startet zweimal mit derselben
-beschreibbaren Firmwarekopie, bestätigt die Wiederherstellung des Zustands beim
-zweiten Start und verlangt in beiden Läufen den vollständigen primären
-NKI-Handoff bis `NOVA_KERNEL_READY`.
+beide Slotrichtungen, alle Versuchslimits von 1 bis 16, deterministische
+Auswahl, Limit-Rollback, Artefaktfehler, abgelehnte Übergänge, CRC-Erkennung und
+den Überlauf der Sequenznummer. Ein zusätzlicher QEMU-Test startet mit einer
+beschreibbaren Firmwarekopie, beschädigt danach gezielt den neuesten
+Boot-State-Datensatz und startet erneut. Der zweite Start verwirft die defekte
+Kopie, stellt die ältere gültige Kopie wieder her und erreicht wie der erste den
+vollständigen primären NKI-Handoff bis `NOVA_KERNEL_READY`. Vor einem dritten
+Start werden beide Kopien beschädigt. Dieser Lauf muss `RECOVERY.NKI` auswählen,
+den automatischen Recovery-Modus über NBHP/BIB an den Kernel übertragen und
+ebenfalls `NOVA_KERNEL_READY` erreichen.
 
 Noch nicht umgesetzt ist der sicherheitskritische Health-Commit: Kernel Entry
 allein markiert einen Candidate ausdrücklich nicht als Known-Good. Dafür fehlen
@@ -527,8 +535,9 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
   redundanter Speicherung, Candidate, Known-Good, Versuchslimit und Rollback
   ist vorhanden, alle drei Container verwenden derzeit aber noch dasselbe
   Entwicklungskernelpayload
-- gezielte Stromausfall-/Schreibabbruch-Fehlerinjektion für beide redundanten
-  Boot-Control-Kopien
+- echte Prozess-/Stromunterbrechung an jedem einzelnen UEFI-Schreibzeitpunkt;
+  die CRC-beschädigte neueste Kopie und der Rückfall auf die ältere Kopie sind
+  bereits in QEMU geprüft
 - vollständige AP-Aktivierung und echter SMP-Betrieb
 - vollständige Semantic Relationships, Subtypes und Traits
 - mehrere kompatible Semantic Types pro Ressource

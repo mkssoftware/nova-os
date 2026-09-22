@@ -52,7 +52,7 @@ function Invoke-ValidationCase([string]$name,[string]$image,[string]$forbiddenMa
         Write-Host "$name`: ungueltiger Kernel kontrolliert abgewiesen"
     } finally {
         if(!$process.HasExited){Stop-Process -Id $process.Id -Force}
-        if(!$process.HasExited){$process.WaitForExit(5000)|Out-Null}
+        $process.WaitForExit()
         $process.Dispose()
     }
 }
@@ -90,7 +90,7 @@ function Invoke-RecoveryCase([string]$name,[string]$image) {
         Write-Host "$name`: beschädigter Hauptkernel kontrolliert über RECOVERY.NKI gestartet"
     } finally {
         if(!$process.HasExited){Stop-Process -Id $process.Id -Force}
-        if(!$process.HasExited){$process.WaitForExit(5000)|Out-Null}
+        $process.WaitForExit()
         $process.Dispose()
     }
 }
@@ -128,7 +128,7 @@ function Invoke-BackupCase([string]$name,[string]$image) {
         Write-Host "$name`: beschädigter Hauptkernel kontrolliert über BACKUP.NKI gestartet"
     } finally {
         if(!$process.HasExited){Stop-Process -Id $process.Id -Force}
-        if(!$process.HasExited){$process.WaitForExit(5000)|Out-Null}
+        $process.WaitForExit()
         $process.Dispose()
     }
 }
@@ -166,6 +166,9 @@ try {
     $env:TMP=$oldTmp;$env:TEMP=$oldTemp
     $resolved=[IO.Path]::GetFullPath($tempDir)
     if($resolved.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase)-and[IO.Directory]::Exists($resolved)){
-        [IO.Directory]::Delete($resolved,$true)
+        for($attempt=0;$attempt-lt20-and[IO.Directory]::Exists($resolved);$attempt++){
+            try{[IO.Directory]::Delete($resolved,$true)}
+            catch [IO.IOException]{if($attempt-eq19){throw};Start-Sleep -Milliseconds 100}
+        }
     }
 }
