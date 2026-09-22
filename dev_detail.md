@@ -1360,3 +1360,62 @@ NOVA: ACPI MADT, erkannte CPUs (hex): 0x00000004
 Neue technische Funktionen sollen hier nach ihrer Umsetzung ergänzt werden.
 Dabei muss klar bleiben, ob ein Punkt nur spezifiziert, bereits implementiert,
 automatisiert getestet oder lediglich als zukünftiger ABI-Wert reserviert ist.
+
+## 58. UI-Architekturkern aus `001-UI`
+
+Die neue Bibliothek `ui/src/runtime.c` setzt die gemeinsamen Invarianten aller
+25 angenommenen UI-NPSPECs in einem betriebssystemunabhängigen C17-Kern um.
+`ui/include/nova/ui/runtime.h` ist der öffentliche Vertrag.
+
+### Modell und Einheiten
+
+`DLU` steht für *Device-independent Layout Unit*. Positionen, Größen, Abstände
+und Rundungsradien bleiben dadurch von physischen Pixeln und einer konkreten
+Displayauflösung unabhängig. Der Display Server löst DLU später mit dem
+jeweiligen Skalierungsfaktor in physische Ausgabe auf.
+
+Retained Nodes besitzen stabile, stark typisierte IDs und getrennte Desired-
+und Actual-Werte. Reconciliation übernimmt nur geänderte Eigenschaften,
+erzeugt Damage und bewahrt die Identität unveränderter Nodes. Ein erfolgreicher
+Scene-Publish prüft Parent-Beziehungen und Zyklen und erhöht erst danach die
+sichtbare Generation.
+
+### Semantik und Accessibility
+
+Rolle, Action, Zielobjekt und erforderliche Capability sind unabhängig von der
+visuellen Repräsentation gespeichert. Der Accessibility Tree wird daraus als
+eigene Datenstruktur erzeugt. Er besitzt eine eigene Generation und eigenen
+Fokus, unterstützt virtuelle Ausschnitte großer Inhalte und führt Actions erst
+nach erneuter Capability-Prüfung aus. Geschützte Nodes geben nicht ihren
+sensiblen Namen in den Accessibility Tree weiter.
+
+### Rendering und Presentation
+
+Damage-Regionen werden begrenzt gespeichert und überlappend zusammengeführt;
+bei unbekanntem oder zu komplexem Damage steht ein vollständiges Redraw bereit.
+Surfaces speichern Buffer Age und ihren Owner. Der Compositor wählt kontrolliert
+zwischen Direct Scanout, austauschbarer GPU-Composition und Software-Fallback.
+Der Frame Scheduler bündelt Änderungen, begrenzt die Queue auf zwei Frames,
+liefert Backpressure und priorisiert Input. VRR-Minimum, -Maximum und aktueller
+Zustand werden pro Display verwaltet; Fixed Refresh bleibt Fallback.
+
+### Window-, Input- und Capability-Grenzen
+
+Window, Surface, Display und Owner verwenden nicht austauschbare ID-Typen.
+Display-Hot-Unplug verschiebt Fenster auf einen verbleibenden Display oder
+suspendiert sie ohne Display. Input wird nach Session, Secure-Input-Zustand,
+Fokus, Scene-Z-Order und Capture geroutet. Touch behält vom Beginn bis Ende ein
+stabiles Ziel; Owner-Ausfall widerruft Capture und isoliert seine Fenster.
+
+Capability Discovery und Authorization sind getrennte Zustände. Semantische
+Contributions für Startmenü, Ribbon und Dashboard werden von der Runtime
+validiert, bei äquivalenten Aktionen dedupliziert und bei Providerausfall
+isoliert entfernt. Sichtbarkeit allein erteilt keine Ausführungsberechtigung.
+
+### Nachweis und verbleibende Provider
+
+`make ui-architecture-runtime-check` kompiliert und testet diese Verträge mit
+striktem Warning-as-Error-Modus. Reale GPU-/Displaytreiber, Shared-Buffer-
+Transporte, Persistenz, Suche, Privacy und ausführende Capability Provider sind
+bewusst außerhalb dieser Runtimegrenze und müssen als nachfolgende
+Systemdienste angebunden werden.

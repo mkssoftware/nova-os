@@ -586,3 +586,32 @@ werden. Neue Einträge müssen klar unterscheiden zwischen:
 - **automatisiert getestet:** durch einen reproduzierbaren Test bestätigt,
 - **manuell geprüft:** visuell oder in einer VM kontrolliert,
 - **offen:** noch nicht oder nur teilweise umgesetzt.
+
+## 14. Native UI-Systemarchitektur
+
+Der vollständige Dokumentbestand und insbesondere die 25 angenommenen
+Spezifikationen in `docs/NPSPEC/sysarchitecture/001-UI` wurden am 22. September
+2026 neu eingelesen. Unter `ui/` existiert nun ein eigenständiger, in C17
+kompilierbarer UI-Architekturkern. Er implementiert die gemeinsamen Verträge
+für Retained Mode, deklaratives Reconciliation, Scene Graph, einen logisch
+getrennten Accessibility Tree, Semantic UI, Theme-/Color-Tokens, Damage
+Tracking, Frame Scheduling, VRR, Display-, Surface-, Window- und Input-Routing
+sowie capabilitybasierte Startmenü-, Ribbon- und Dashboard-Contributions.
+
+Alle Layoutgrößen werden als DLU geführt. Identitäten verschiedener Domänen
+sind als unterschiedliche C-Typen modelliert, damit beispielsweise eine
+`WindowID` nicht versehentlich als `SurfaceID` verwendet wird. Feste Kapazitäten
+und begrenzte Frame Queues vermeiden unbeschränkten Speicherverbrauch.
+
+`make ui-architecture-runtime-check` baut die Runtime mit
+`-Wall -Wextra -Werror` und prüft die zentralen positiven und negativen Pfade.
+Der Test umfasst unter anderem Discovery ohne Autorisierung, capabilitygeprüfte
+Accessibility-Actions, Session-Isolation, sicheren Capture-Abbau bei
+Owner-Ausfall, fehlerhafte Surface-Damage-Daten, Direct Scanout,
+GPU-/Software-Fallback, Provider-Ausfall, Display-Hot-Unplug und VRR.
+
+Noch nicht als Hardwareintegration vorhanden sind reale GPU- und Displaytreiber,
+prozessübergreifende Shared Buffer, persistente Desktop-/Startmenüdaten,
+Suchindex, Privacy-Dienst und ausführender Capability Broker. Die Runtime stellt
+hierfür die kontrollierten Providergrenzen bereit; bis zur Treiberanbindung
+bleibt der Softwarepfad der definierte funktionale Fallback.

@@ -20,7 +20,8 @@ enum NovaServiceId {
     NOVA_SERVICE_NETWORK = 8,
     NOVA_SERVICE_SECURITY = 9,
     NOVA_SERVICE_DIAGNOSTIC = 10,
-    NOVA_SERVICE_POWER = 11
+    NOVA_SERVICE_POWER = 11,
+    NOVA_SERVICE_DISPLAY = 12
 };
 
 enum NovaCoreOperationId {
@@ -47,6 +48,17 @@ enum NovaIpcOperationId {
 enum NovaVfsOperationId {
     NOVA_VFS_OPERATION_OPEN_ROOT = 1,
     NOVA_VFS_OPERATION_LOOKUP = 2
+};
+
+enum NovaDisplayOperationId {
+    NOVA_DISPLAY_OPERATION_QUERY_PRIMARY = 1,
+    NOVA_DISPLAY_OPERATION_SUBMIT_SYSTEM_SCENE = 2
+};
+
+enum NovaDisplaySceneFlags {
+    NOVA_DISPLAY_SCENE_DESKTOP = 1u << 0,
+    NOVA_DISPLAY_SCENE_START_MENU = 1u << 1,
+    NOVA_DISPLAY_SCENE_RIBBON = 1u << 2
 };
 
 enum NovaStatus {
@@ -132,6 +144,33 @@ typedef struct NovaVfsLookupArgumentsV1 {
     uint32_t Reserved;
 } NovaVfsLookupArgumentsV1;
 
+/* Die physische Framebufferadresse bleibt ausschließlich im Kernel. */
+typedef struct NovaDisplayInfoV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t DisplayId;
+    uint32_t WidthPixels;
+    uint32_t HeightPixels;
+    uint32_t PitchBytes;
+    uint32_t BitsPerPixel;
+    uint32_t ScaleMilli;
+    uint64_t Generation;
+} NovaDisplayInfoV1;
+
+/* Deklarative Bootstrap-Szene ohne Pointer oder ausführbaren Inhalt. */
+typedef struct NovaSystemSceneV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint64_t Generation;
+    uint32_t Flags;
+    uint32_t Theme;
+    uint32_t Workspace;
+    uint32_t FocusedElement;
+    uint32_t BackgroundToken;
+    uint32_t AccentToken;
+    uint32_t Reserved[5];
+} NovaSystemSceneV1;
+
 _Static_assert(sizeof(NovaAbiVersion) == 4,
                "NovaAbiVersion ABI size changed");
 _Static_assert(sizeof(NovaSyscallRequestV1) == 32,
@@ -150,6 +189,14 @@ _Static_assert(sizeof(NovaIpcPacketV1) == 48,
                "NovaIpcPacketV1 ABI size changed");
 _Static_assert(sizeof(NovaVfsLookupArgumentsV1) == 32,
                "NovaVfsLookupArgumentsV1 ABI size changed");
+_Static_assert(sizeof(NovaDisplayInfoV1) == 40,
+               "NovaDisplayInfoV1 ABI size changed");
+_Static_assert(offsetof(NovaDisplayInfoV1, Generation) == 32,
+               "NovaDisplayInfoV1 alignment changed");
+_Static_assert(sizeof(NovaSystemSceneV1) == 64,
+               "NovaSystemSceneV1 ABI size changed");
+_Static_assert(offsetof(NovaSystemSceneV1, Flags) == 16,
+               "NovaSystemSceneV1 alignment changed");
 
 /* x86-32: EAX=Service, EBX=Operation, ECX=Major|Minor<<16,
  * EDX=Argumentzeiger, ESI=Argumentgröße, EAX=Status. */

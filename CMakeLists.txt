@@ -14,6 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(NOVA_BUILD_BOOTLOADER "Bootloader bauen" ON)
 option(NOVA_BUILD_KERNEL "Kernel bauen" ON)
+option(NOVA_BUILD_UI "Nova UI Runtime bauen" ON)
 option(NOVA_BUILD_TESTS "Tests bauen" OFF)
 
 add_compile_options(
@@ -28,6 +29,10 @@ endif()
 
 if(NOVA_BUILD_KERNEL)
     add_subdirectory(kernel)
+endif()
+
+if(NOVA_BUILD_UI)
+    add_subdirectory(ui)
 endif()
 
 if(NOVA_BUILD_TESTS)

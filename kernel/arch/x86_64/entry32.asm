@@ -264,6 +264,20 @@ kernel_entry:
     mov esi, message_power_manager_ok
     call serial_write_string
 
+    ; Der Display Server übernimmt den Firmware-Framebuffer als kontrolliertes
+    ; Kernelobjekt. Userspace erhält nur die versionierte Display-Service-ABI.
+    call display_server_initialize
+    jc panic_device_manager
+    cmp dword [display_server_ready], 1
+    jne .display_fallback
+    mov esi, message_display_server_ok
+    call serial_write_string
+    jmp .display_ready
+.display_fallback:
+    mov esi, message_display_server_fallback
+    call serial_write_string
+.display_ready:
+
     ; Userspace ist die nächste, noch nicht abgeschlossene Bootphase. Der Kernel
     ; meldet deshalb bewusst noch keinen operationalen Zustand (Phase 11).
     mov dword [boot_phase_last_success], BOOT_PHASE_ROOT_FILESYSTEM
@@ -3529,6 +3543,7 @@ SYSCALL_SERVICE_VFS         equ 6
 SYSCALL_SERVICE_POWER       equ 7
 SYSCALL_SERVICE_NETWORK     equ 8
 SYSCALL_SERVICE_LOGGING     equ 9
+SYSCALL_SERVICE_DISPLAY     equ 12
 SYSCALL_CORE_EXIT           equ 1
 SYSCALL_CORE_READY          equ 2
 SYSCALL_CORE_CLOSE_HANDLE   equ 3
@@ -3558,6 +3573,8 @@ SYSCALL_NETWORK_LISTEN      equ 12
 SYSCALL_NETWORK_ACCEPT      equ 13
 SYSCALL_LOG_QUERY           equ 1
 SYSCALL_LOG_READ_LATEST     equ 2
+SYSCALL_DISPLAY_QUERY_PRIMARY equ 1
+SYSCALL_DISPLAY_SUBMIT_SCENE equ 2
 SYSCALL_STATUS_OK           equ 0
 SYSCALL_STATUS_ABI          equ -1
 SYSCALL_STATUS_SIZE         equ -4
@@ -3569,6 +3586,12 @@ SYSCALL_STATUS_POINTER      equ -15
 SYSCALL_STATUS_WOULD_BLOCK  equ -19
 SYSCALL_STATUS_TYPE         equ -22
 SYSCALL_STATUS_VALIDATION   equ -23
+DISPLAY_INFO_SIZE           equ 40
+SYSTEM_SCENE_SIZE           equ 64
+DISPLAY_SCENE_DESKTOP       equ 0x00000001
+DISPLAY_SCENE_START_MENU    equ 0x00000002
+DISPLAY_SCENE_RIBBON        equ 0x00000004
+DISPLAY_SCENE_ALLOWED_FLAGS equ DISPLAY_SCENE_DESKTOP | DISPLAY_SCENE_START_MENU | DISPLAY_SCENE_RIBBON
 USER_ADDRESS_MIN            equ USER_CODE_ADDRESS
 USER_ADDRESS_MAX            equ USER_STACK_ADDRESS
 SHARED_SERVICE_ADDRESS      equ 0x00403000
@@ -3577,7 +3600,8 @@ SHARED_SERVICE_SIZE         equ 64
 SHARED_FEATURE_INT80        equ 0x00000001
 SHARED_FEATURE_COPY_IO      equ 0x00000002
 SHARED_FEATURE_PREEMPT      equ 0x00000004
-SHARED_SERVICE_BITMAP       equ 0x000000F7 ; Core, Process, Thread, IPC, VFS, Power, Network
+SHARED_FEATURE_DISPLAY      equ 0x00000008
+SHARED_SERVICE_BITMAP       equ 0x000008F7 ; Core, Process, Thread, IPC, VFS, Power, Network, Display
 
 userspace_initialize:
     ; TSS stellt für Ring-3-Interrupts einen kontrollierten Kernelstack bereit.
@@ -3659,6 +3683,10 @@ userspace_initialize:
     jc .invalid
     mov eax, 2
     mov edx, SECURITY_CAP_NET_QUERY | SECURITY_CAP_NET_CONNECT | SECURITY_CAP_NET_LISTEN | SECURITY_CAP_LOG_READ
+    call security_grant
+    jc .invalid
+    mov eax, 2
+    mov edx, SECURITY_CAP_DISPLAY_SYSTEM_UI
     call security_grant
     jc .invalid
 
@@ -4337,6 +4365,39 @@ userspace_program_start:
     cmp dword [SHARED_SERVICE_ADDRESS + 20], PMM_PAGE_SIZE
     jne .failed
 
+    ; Der System-UI-Prozess sieht ausschließlich Displaymetadaten. Die
+    ; physische Framebufferadresse bleibt hinter dem Display-Service verborgen.
+    mov eax, SYSCALL_SERVICE_DISPLAY
+    mov ebx, SYSCALL_DISPLAY_QUERY_PRIMARY
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 1040
+    mov esi, 40
+    int 0x80
+    test eax, eax
+    jnz .display_unavailable
+    cmp dword [USER_STACK_ADDRESS - 1040], 40
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 1032], 1
+    jne .failed
+    cmp dword [USER_STACK_ADDRESS - 1028], 640
+    jb .failed
+    cmp dword [USER_STACK_ADDRESS - 1024], 480
+    jb .failed
+
+    mov esi, USER_CODE_ADDRESS + userspace_system_scene - userspace_program_start
+    mov edi, USER_STACK_ADDRESS - 1120
+    mov ecx, 16
+    rep movsd
+    mov eax, SYSCALL_SERVICE_DISPLAY
+    mov ebx, SYSCALL_DISPLAY_SUBMIT_SCENE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 1120
+    mov esi, 64
+    int 0x80
+    test eax, eax
+    jnz .failed
+.display_unavailable:
+
     mov eax, SYSCALL_SERVICE_CORE
     mov ebx, SYSCALL_CORE_READY
     mov ecx, SYSCALL_ABI_VERSION
@@ -4384,7 +4445,23 @@ userspace_ipc_packet:
     dd 0
     db "NOVA",0,0,0,0
 userspace_root_path: db '/'
+align 8
+userspace_system_scene:
+    dd 64
+    dw 1, 0
+    dq 1                            ; erste deklarative Scene-Generation
+    dd 0x00000007                   ; Desktop | Startmenü | Ribbon
+    dd 0                            ; systemweites Dark Theme
+    dd 0                            ; Workspace 0
+    dd 2                            ; Startmenü-Suche besitzt Fokus
+    dd 0                            ; Surface.Primary
+    dd 6                            ; Accent.Primary
+    times 5 dd 0
 userspace_program_end:
+
+%if (userspace_program_end - userspace_program_start) > PMM_PAGE_SIZE
+    %error "Initialer Userspace-Code überschreitet seine 4-KiB-Seite"
+%endif
 
 ; ESI=Userspace-Adresse, ECX=Länge. CF=0 nur für vollständig enthaltene
 ; Bereiche des aktuellen Prozesses; Überläufe werden vor dem Zugriff erkannt.
@@ -4474,6 +4551,8 @@ syscall_dispatch:
     je .network
     cmp dword [edx + 44], SYSCALL_SERVICE_LOGGING
     je .logging
+    cmp dword [edx + 44], SYSCALL_SERVICE_DISPLAY
+    je .display
     cmp dword [edx + 44], SYSCALL_SERVICE_CORE
     jne .unknown_service
     cmp dword [edx + 32], SYSCALL_CORE_READY
@@ -4587,6 +4666,107 @@ syscall_dispatch:
     mov edx, [syscall_frame]
     mov dword [edx + 44], SYSCALL_STATUS_OK
     ret
+.display:
+    cmp dword [edx + 40], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    mov eax, [userspace_pid]
+    mov edx, SECURITY_CAP_DISPLAY_SYSTEM_UI
+    call security_check
+    jc .access_denied
+    cmp dword [display_server_ready], 1
+    jne .display_unavailable
+    mov edx, [syscall_frame]
+    cmp dword [edx + 32], SYSCALL_DISPLAY_QUERY_PRIMARY
+    je .display_query
+    cmp dword [edx + 32], SYSCALL_DISPLAY_SUBMIT_SCENE
+    je .display_submit
+    jmp .unknown_operation
+.display_query:
+    cmp dword [edx + 20], DISPLAY_INFO_SIZE
+    jb .bad_size
+    mov dword [syscall_display_info + 0], DISPLAY_INFO_SIZE
+    mov dword [syscall_display_info + 4], SYSCALL_ABI_VERSION
+    mov eax, [display_primary_id]
+    mov [syscall_display_info + 8], eax
+    mov eax, [kernel_context + CONTEXT_WIDTH]
+    mov [syscall_display_info + 12], eax
+    mov eax, [kernel_context + CONTEXT_HEIGHT]
+    mov [syscall_display_info + 16], eax
+    mov eax, [kernel_context + CONTEXT_PITCH]
+    mov [syscall_display_info + 20], eax
+    mov eax, [kernel_context + CONTEXT_BPP]
+    mov [syscall_display_info + 24], eax
+    mov dword [syscall_display_info + 28], 1000 ; DLU-Skalierung
+    mov eax, [display_generation]
+    mov [syscall_display_info + 32], eax
+    mov dword [syscall_display_info + 36], 0
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov esi, syscall_display_info
+    mov ecx, DISPLAY_INFO_SIZE
+    call syscall_copy_buffer_to_user
+    jc .bad_pointer
+    mov esi, message_display_query_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.display_submit:
+    cmp dword [edx + 20], SYSTEM_SCENE_SIZE
+    jb .bad_size
+    mov esi, [edx + 36]
+    mov edi, syscall_display_scene
+    mov ecx, SYSTEM_SCENE_SIZE
+    call syscall_copy_from_user
+    jc .bad_pointer
+    cmp dword [syscall_display_scene + 0], SYSTEM_SCENE_SIZE
+    jne .bad_size
+    cmp dword [syscall_display_scene + 4], SYSCALL_ABI_VERSION
+    jne .bad_abi
+    cmp dword [syscall_display_scene + 12], 0
+    jne .bad_reserved
+    mov eax, [syscall_display_scene + 8]
+    cmp eax, [display_scene_generation]
+    jbe .display_validation
+    mov ecx, [syscall_display_scene + 16]
+    test ecx, ~DISPLAY_SCENE_ALLOWED_FLAGS
+    jnz .display_validation
+    cmp ecx, DISPLAY_SCENE_ALLOWED_FLAGS
+    jne .display_validation
+    cmp dword [syscall_display_scene + 20], 2
+    ja .display_validation
+    cmp dword [syscall_display_scene + 24], 31
+    ja .display_validation
+    cmp dword [syscall_display_scene + 32], 13
+    jae .display_validation
+    cmp dword [syscall_display_scene + 36], 13
+    jae .display_validation
+    cmp dword [syscall_display_scene + 44], 0
+    jne .bad_reserved
+    cmp dword [syscall_display_scene + 48], 0
+    jne .bad_reserved
+    cmp dword [syscall_display_scene + 52], 0
+    jne .bad_reserved
+    cmp dword [syscall_display_scene + 56], 0
+    jne .bad_reserved
+    cmp dword [syscall_display_scene + 60], 0
+    jne .bad_reserved
+    mov [display_scene_generation], eax
+    mov [display_scene_flags], ecx
+    call draw_desktop_scene
+    inc dword [display_present_count]
+    inc dword [display_generation]
+    mov esi, message_display_scene_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.display_validation:
+    mov eax, SYSCALL_STATUS_VALIDATION
+    jmp .reject
+.display_unavailable:
+    mov eax, SYSCALL_STATUS_SERVICE
+    jmp .reject
 .log_bad_pointer:
     pop esi
     jmp .bad_pointer
@@ -5789,6 +5969,8 @@ syscall_network_stream_bind: times 28 db 0
 syscall_network_listen: times 20 db 0
 syscall_network_accept: times 20 db 0
 syscall_log_result: times 32 db 0
+syscall_display_info: times DISPLAY_INFO_SIZE db 0
+syscall_display_scene: times SYSTEM_SCENE_SIZE db 0
 
 OBJECT_TYPE_IPC_ENDPOINT equ 11
 
@@ -5907,7 +6089,7 @@ shared_service_page_initialize:
     mov dword [edi + 0], SHARED_SERVICE_SIGNATURE
     mov dword [edi + 4], SHARED_SERVICE_SIZE
     mov dword [edi + 8], SYSCALL_ABI_VERSION
-    mov dword [edi + 12], SHARED_FEATURE_INT80 | SHARED_FEATURE_COPY_IO | SHARED_FEATURE_PREEMPT
+    mov dword [edi + 12], SHARED_FEATURE_INT80 | SHARED_FEATURE_COPY_IO | SHARED_FEATURE_PREEMPT | SHARED_FEATURE_DISPLAY
     mov dword [edi + 16], SHARED_SERVICE_BITMAP
     mov dword [edi + 20], PMM_PAGE_SIZE
     mov dword [edi + 24], 100
@@ -5931,6 +6113,59 @@ shared_service_page_initialize:
 shared_service_page: dd 0
 userspace_ready_seen: dd 0
 
+; ---------------------------------------------------------------------------
+; Bootstrap Display Server ABI 1.0
+; ---------------------------------------------------------------------------
+; Der Kernel behält MMIO und die physische Framebufferadresse. Der initiale
+; System-UI-Prozess reicht ausschließlich validierte semantische Szenen ein.
+display_server_initialize:
+    mov dword [display_server_ready], 0
+    mov dword [display_primary_id], 0
+    mov dword [display_generation], 1
+    mov dword [display_scene_generation], 0
+    mov dword [display_scene_flags], 0
+    mov dword [display_present_count], 0
+    test dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_GRAPHICS
+    jz .fallback
+    cmp dword [kernel_context + CONTEXT_FRAMEBUFFER], 0
+    je .fallback
+    cmp dword [kernel_context + CONTEXT_BPP], 32
+    jne .fallback
+    cmp dword [kernel_context + CONTEXT_WIDTH], 640
+    jb .fallback
+    cmp dword [kernel_context + CONTEXT_HEIGHT], 480
+    jb .fallback
+    mov eax, [kernel_context + CONTEXT_WIDTH]
+    shl eax, 2
+    cmp [kernel_context + CONTEXT_PITCH], eax
+    jb .invalid
+    mov dword [display_primary_id], 1
+    mov dword [display_server_ready], 1
+.fallback:
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+display_server_api:
+    dd 40
+    dw 1, 0
+    dd display_server_ready
+    dd display_primary_id
+    dd display_generation
+    dd display_scene_generation
+    dd display_present_count
+    dd display_server_initialize
+    dd draw_desktop_scene
+display_server_ready:     dd 0
+display_primary_id:       dd 0
+display_generation:       dd 0
+display_scene_generation: dd 0
+display_scene_flags:      dd 0
+display_present_count:    dd 0
+
 ; Kernel Security / Capability Manager (ADR-2013)
 SECURITY_API_SIZE       equ 32
 SECURITY_CAPACITY       equ PROCESS_CAPACITY
@@ -5949,7 +6184,8 @@ SECURITY_CAP_NET_RAW   equ 0x00000400
 SECURITY_CAP_NET_CONNECT equ 0x00000800
 SECURITY_CAP_NET_LISTEN equ 0x00001000
 SECURITY_CAP_LOG_READ   equ 0x00002000
-SECURITY_KERNEL_CAPS    equ 0x00003FFF
+SECURITY_CAP_DISPLAY_SYSTEM_UI equ 0x00004000
+SECURITY_KERNEL_CAPS    equ 0x00007FFF
 
 security_initialize:
     mov edi, security_table
@@ -8637,6 +8873,276 @@ serial_write_hex32:
     popad
     ret
 
+; Erste vom Ring-3-System-UI-Prozess deklarierte Nova-Desktop-Szene. Der
+; Userspace bestimmt nur semantische Sichtbarkeit und Generation; Geometrie,
+; Theme-Tokens und der eigentliche Framebufferzugriff bleiben im Display Server.
+draw_desktop_scene:
+    pushad
+    cmp dword [display_server_ready], 1
+    jne .done
+    test dword [display_scene_flags], DISPLAY_SCENE_DESKTOP
+    jz .done
+
+    mov eax, NOVA_COLOR_DESKTOP_BG
+    xor ebx, ebx
+    xor ecx, ecx
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    mov esi, [kernel_context + CONTEXT_HEIGHT]
+    call fill_rectangle
+
+    ; Akzentlinie und geschützte Systemmarke.
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    shr ebx, 3
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    sub edx, ebx
+    sub edx, ebx
+    mov eax, NOVA_COLOR_BLUE
+    xor ecx, ecx
+    mov esi, 13
+    call fill_rounded_rectangle
+    mov dword [logo_x], 24
+    mov dword [logo_y], 36
+    mov dword [logo_color], NOVA_COLOR_BLUE
+    mov byte [logo_compact], 1
+    mov byte [logo_mirror], 1
+    call draw_nova_logo
+    mov esi, text_brand_compact
+    mov ebx, 32
+    mov ecx, 154
+    mov edx, NOVA_COLOR_BLUE
+    mov ebp, 3
+    call draw_text
+    mov esi, text_desktop_workspace
+    mov ebx, 42
+    mov ecx, 205
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+
+    test dword [display_scene_flags], DISPLAY_SCENE_RIBBON
+    jz .start_menu
+    mov eax, NOVA_COLOR_BLUE
+    mov ebx, 170
+    mov ecx, 34
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    sub edx, 194
+    mov esi, 92
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_SURFACE
+    mov ebx, 171
+    mov ecx, 35
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    sub edx, 196
+    mov esi, 90
+    call fill_rounded_rectangle
+    mov esi, text_ribbon_start
+    mov ebx, 194
+    mov ecx, 48
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_ribbon_file
+    mov ebx, 270
+    mov ecx, 48
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov esi, text_ribbon_view
+    mov ebx, 336
+    mov ecx, 48
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_BLUE
+    mov ebx, 190
+    mov ecx, 72
+    mov edx, 104
+    mov esi, 38
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_ELEVATED
+    mov ebx, 304
+    mov ecx, 72
+    mov edx, 104
+    mov esi, 38
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_ELEVATED
+    mov ebx, 418
+    mov ecx, 72
+    mov edx, 104
+    mov esi, 38
+    call fill_rounded_rectangle
+    mov esi, text_ribbon_new
+    mov ebx, 210
+    mov ecx, 84
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_ribbon_open
+    mov ebx, 324
+    mov ecx, 84
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_ribbon_settings
+    mov ebx, 429
+    mov ecx, 84
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+
+.start_menu:
+    test dword [display_scene_flags], DISPLAY_SCENE_START_MENU
+    jz .status
+    mov eax, NOVA_COLOR_BLUE
+    mov ebx, 170
+    mov ecx, 142
+    mov edx, 360
+    mov esi, [kernel_context + CONTEXT_HEIGHT]
+    sub esi, 166
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_SURFACE
+    mov ebx, 171
+    mov ecx, 143
+    mov edx, 358
+    mov esi, [kernel_context + CONTEXT_HEIGHT]
+    sub esi, 168
+    call fill_rounded_rectangle
+
+    mov eax, NOVA_COLOR_ELEVATED
+    mov ebx, 190
+    mov ecx, 162
+    mov edx, 320
+    mov esi, 42
+    call fill_rounded_rectangle
+    mov esi, text_start_search
+    mov ebx, 210
+    mov ecx, 176
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov esi, text_start_pinned
+    mov ebx, 192
+    mov ecx, 224
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+
+    mov eax, NOVA_COLOR_ELEVATED
+    mov ebx, 190
+    mov ecx, 250
+    mov edx, 96
+    mov esi, 54
+    call fill_rounded_rectangle
+    mov ebx, 298
+    call fill_rounded_rectangle
+    mov ebx, 406
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_TILE_ALT
+    mov ebx, 190
+    mov ecx, 316
+    call fill_rounded_rectangle
+    mov ebx, 298
+    call fill_rounded_rectangle
+    mov ebx, 406
+    call fill_rounded_rectangle
+    mov esi, text_tile_files
+    mov ebx, 210
+    mov ecx, 270
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_tile_settings
+    mov ebx, 310
+    mov ecx, 270
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_tile_terminal
+    mov ebx, 417
+    mov ecx, 270
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_tile_recovery
+    mov ebx, 202
+    mov ecx, 336
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_tile_help
+    mov ebx, 322
+    mov ecx, 336
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_tile_power
+    mov ebx, 430
+    mov ecx, 336
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+
+    mov esi, text_start_user
+    mov ebx, 194
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 52
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov esi, text_start_power
+    mov ebx, 442
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 52
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+
+.status:
+    cmp dword [kernel_context + CONTEXT_WIDTH], 800
+    jb .footer
+    mov eax, NOVA_COLOR_SURFACE
+    mov ebx, 550
+    mov ecx, 142
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    sub edx, 574
+    mov esi, 220
+    call fill_rounded_rectangle
+    mov esi, text_desktop_welcome
+    mov ebx, 570
+    mov ecx, 170
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 2
+    call draw_text
+    mov esi, text_desktop_ready
+    mov ebx, 570
+    mov ecx, 218
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_SUCCESS
+    mov ebx, 570
+    mov ecx, 264
+    mov edx, 12
+    mov esi, 12
+    call fill_rounded_rectangle
+    mov esi, text_desktop_services
+    mov ebx, 592
+    mov ecx, 266
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+.footer:
+    mov esi, text_desktop_footer
+    mov ebx, 42
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 28
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+.done:
+    popad
+    ret
+
 draw_boot_screen:
     jmp draw_kernel_log_screen
 
@@ -9647,6 +10153,11 @@ NOVA_COLOR_LOG_PANEL  equ 0x00121212
 NOVA_COLOR_BUTTON     equ 0x00292929
 NOVA_COLOR_ERROR      equ 0x00B6154B
 NOVA_COLOR_ERROR_TEXT equ 0x00A9A9A9
+NOVA_COLOR_DESKTOP_BG equ 0x00070D15
+NOVA_COLOR_SURFACE    equ 0x00111A25
+NOVA_COLOR_ELEVATED   equ 0x001C2938
+NOVA_COLOR_TILE_ALT   equ 0x00233343
+NOVA_COLOR_MUTED      equ 0x0096A6B8
 
 align 4
 rect_color:    dd 0
@@ -9679,6 +10190,48 @@ text_brand:
     db "NOVA OS", 0
 text_brand_compact:
     db "NovaOS", 0
+text_desktop_workspace:
+    db "WORKSPACE 1", 0
+text_ribbon_start:
+    db "START", 0
+text_ribbon_file:
+    db "DATEI", 0
+text_ribbon_view:
+    db "ANSICHT", 0
+text_ribbon_new:
+    db "Neu", 0
+text_ribbon_open:
+    db "Oeffnen", 0
+text_ribbon_settings:
+    db "Optionen", 0
+text_start_search:
+    db "Suchen: Apps, Dateien und Aktionen", 0
+text_start_pinned:
+    db "ANGEHEFTET", 0
+text_tile_files:
+    db "Dateien", 0
+text_tile_settings:
+    db "System", 0
+text_tile_terminal:
+    db "Terminal", 0
+text_tile_recovery:
+    db "Recovery", 0
+text_tile_help:
+    db "Hilfe", 0
+text_tile_power:
+    db "Energie", 0
+text_start_user:
+    db "Nova Benutzer", 0
+text_start_power:
+    db "Ausschalten", 0
+text_desktop_welcome:
+    db "Nova Desktop", 0
+text_desktop_ready:
+    db "Die erste System-UI-Szene",10,"wird aus Ring 3 dargestellt.", 0
+text_desktop_services:
+    db "Display Server aktiv", 0
+text_desktop_footer:
+    db "SYSTEM UI  |  DISPLAY 1  |  DLU 100%", 0
 text_logsystem:
     db "Logsystem", 0
 text_escape:
@@ -9860,6 +10413,14 @@ message_shutdown:
     db "NOVA: Shutdown angefordert, System wird ausgeschaltet", 13, 10, 0
 message_power_manager_ok:
     db "NOVA: Power Manager ABI 1.0 und Shutdown-Pfad bereit", 13, 10, 0
+message_display_server_ok:
+    db "NOVA: Display Server ABI 1.0, Firmware-Framebuffer uebernommen", 13, 10, 0
+message_display_server_fallback:
+    db "NOVA: Display Server ohne Grafikprovider, Text-Fallback aktiv", 13, 10, 0
+message_display_query_ok:
+    db "NOVA: Userspace Display.QueryPrimary ohne MMIO-Adresse erfolgreich", 13, 10, 0
+message_display_scene_ok:
+    db "NOVA: Desktop, Startmenue und Ribbon aus Ring-3-Szene praesentiert", 13, 10, 0
 message_power_query_ok:
     db "NOVA: Userspace Power.QuerySystem capability-geprueft", 13, 10, 0
 message_power_wake_acquire_ok:
