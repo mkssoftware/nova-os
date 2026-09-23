@@ -52,7 +52,12 @@ Startmenüs übernommen.
 - Fensterzustände für Explorer, Sheet und Fähigkeiten Studio einschließlich
   Aktivieren, Verschieben, Minimieren, Maximieren, Wiederherstellen und Schließen
 - automatisierter nativer Runtime-Test ohne Heap- oder Betriebssystemabhängigkeit
+- produktive Darstellung von Branding, globaler Befehlsleiste, Systemstatus,
+  NovaWindow-Explorer, Nova-Orb, Aurora-Taskleiste und dreispaltigem Startmenü
+  durch den Kernel-Software-Renderer
+- vollständiger Ring-3-Eingabepfad für Fokus, Startmenü und geordnetes
+  Herunterfahren; reine semantische Fokuswechsel vermeiden unnötige Vollframes
 
-Die nächsten Änderungen binden diese Shell-Zustände an den produktiven
-Ring-3-Szenenvertrag und den Kernel-Software-Renderer, damit die neue Gestaltung
-im UEFI-QEMU-Start sichtbar und bedienbar wird.
+Als nächste sichtbare Ausbaustufe werden Explorer-Auswahl und
+Fensterinteraktionen an Maus- und Tastaturereignisse gebunden. Danach folgen
+die produktiven Szenen für Nova Sheet und Fähigkeiten Studio.

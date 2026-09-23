@@ -4916,10 +4916,17 @@ syscall_dispatch:
     cmp dword [syscall_display_scene + 60], 0
     jne .bad_reserved
     mov [display_scene_generation], eax
+    mov ebx, [display_scene_flags]
     mov [display_scene_flags], ecx
     mov eax, [syscall_display_scene + 28]
     mov [display_scene_focus], eax
+    ; Reine Fokusnavigation aktualisiert nur den semantischen Fokus. Solange
+    ; sich keine sichtbare Schicht aendert, muss der teure Software-Framebuffer
+    ; nicht vollstaendig neu aufgebaut werden.
+    cmp ebx, ecx
+    je .display_presented
     call draw_desktop_scene
+.display_presented:
     inc dword [display_present_count]
     inc dword [display_generation]
     mov esi, message_display_scene_ok
@@ -9106,6 +9113,697 @@ draw_desktop_scene:
     test dword [display_scene_flags], DISPLAY_SCENE_DESKTOP
     jz .done
 
+    ; Ruhiger Navy-Hintergrund mit einer sehr schmalen Aurora-Lichtkante.
+    mov eax, NOVA_COLOR_DESKTOP_BG
+    xor ebx, ebx
+    xor ecx, ecx
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    mov esi, [kernel_context + CONTEXT_HEIGHT]
+    call fill_rectangle
+    mov eax, NOVA_COLOR_BLUE
+    xor ebx, ebx
+    xor ecx, ecx
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    shr edx, 2
+    mov esi, 2
+    call fill_rectangle
+    mov eax, NOVA_COLOR_PURPLE
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    shr ebx, 2
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    shr edx, 1
+    call fill_rectangle
+    mov eax, NOVA_COLOR_CYAN_SOFT
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    imul ebx, ebx, 3
+    shr ebx, 2
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    sub edx, ebx
+    call fill_rectangle
+
+    call draw_shell_header
+
+    test dword [display_scene_flags], DISPLAY_SCENE_RIBBON
+    jz .menu
+    call draw_shell_explorer
+.menu:
+    test dword [display_scene_flags], DISPLAY_SCENE_START_MENU
+    jz .taskbar
+    call draw_shell_start_menu
+.taskbar:
+    test dword [display_scene_flags], DISPLAY_SCENE_TASKBAR
+    jz .done
+    call draw_shell_taskbar
+.done:
+    popad
+    ret
+
+; Geschuetzter Systemkopf: Branding, globale Befehlspalette und reduzierte
+; Statusinformationen. Alle Positionen werden aus der Displaybreite abgeleitet.
+draw_shell_header:
+    pushad
+    mov esi, text_shell_brand
+    mov ebx, 24
+    mov ecx, 18
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 2
+    call draw_text
+    mov esi, text_shell_tagline
+    mov ebx, 24
+    mov ecx, 45
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+
+    mov dword [shell_command_width], 420
+    cmp dword [kernel_context + CONTEXT_WIDTH], 1000
+    jae .command_geometry
+    mov dword [shell_command_width], 320
+.command_geometry:
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, [shell_command_width]
+    shr ebx, 1
+    mov [shell_command_x], ebx
+    mov eax, NOVA_COLOR_BORDER_ACTIVE
+    mov ecx, 15
+    mov edx, [shell_command_width]
+    mov esi, 42
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_ACRYLIC
+    mov ebx, [shell_command_x]
+    inc ebx
+    mov ecx, 16
+    mov edx, [shell_command_width]
+    sub edx, 2
+    mov esi, 40
+    call fill_rounded_rectangle
+    mov ebx, [shell_command_x]
+    add ebx, 25
+    mov ecx, 36
+    mov edx, 14
+    call draw_nova_orb
+    mov esi, text_shell_command
+    mov ebx, [shell_command_x]
+    add ebx, 49
+    mov ecx, 29
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    cmp dword [kernel_context + CONTEXT_WIDTH], 1000
+    jb .done
+    mov esi, text_shell_status
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, 292
+    mov ecx, 23
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_shell_date
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, 130
+    mov ecx, 44
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+.done:
+    popad
+    ret
+
+; Erste echte Anwendungsflaeche: Explorer als gemeinsame NovaWindow-Komponente
+; mit Titelzeile, Navigation, Sidebar, Ordnerkarten, Dateiliste und Statusbar.
+draw_shell_explorer:
+    pushad
+    mov dword [shell_window_x], 56
+    cmp dword [kernel_context + CONTEXT_WIDTH], 1000
+    jae .window_x_ready
+    mov dword [shell_window_x], 20
+.window_x_ready:
+    mov eax, [kernel_context + CONTEXT_WIDTH]
+    mov ebx, [shell_window_x]
+    shl ebx, 1
+    sub eax, ebx
+    mov [shell_window_width], eax
+    mov dword [shell_window_y], 78
+    mov eax, [kernel_context + CONTEXT_HEIGHT]
+    sub eax, 180
+    mov [shell_window_height], eax
+
+    mov eax, NOVA_COLOR_WINDOW_BORDER
+    mov ebx, [shell_window_x]
+    mov ecx, [shell_window_y]
+    mov edx, [shell_window_width]
+    mov esi, [shell_window_height]
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_WINDOW
+    mov ebx, [shell_window_x]
+    inc ebx
+    mov ecx, [shell_window_y]
+    inc ecx
+    mov edx, [shell_window_width]
+    sub edx, 2
+    mov esi, [shell_window_height]
+    sub esi, 2
+    call fill_rounded_rectangle
+
+    mov esi, text_explorer_title
+    mov ebx, [shell_window_x]
+    add ebx, 24
+    mov ecx, [shell_window_y]
+    add ecx, 18
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 2
+    call draw_text
+    mov esi, text_window_controls
+    mov ebx, [shell_window_x]
+    add ebx, [shell_window_width]
+    sub ebx, 126
+    mov ecx, [shell_window_y]
+    add ecx, 20
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+
+    ; Navigation und Breadcrumb.
+    mov eax, NOVA_COLOR_PANEL_SOFT
+    mov ebx, [shell_window_x]
+    add ebx, 190
+    mov ecx, [shell_window_y]
+    add ecx, 56
+    mov edx, [shell_window_width]
+    sub edx, 420
+    mov esi, 38
+    call fill_rounded_rectangle
+    mov esi, text_explorer_navigation
+    mov ebx, [shell_window_x]
+    add ebx, 24
+    mov ecx, [shell_window_y]
+    add ecx, 69
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov esi, text_explorer_breadcrumb
+    mov ebx, [shell_window_x]
+    add ebx, 210
+    mov ecx, [shell_window_y]
+    add ecx, 69
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    cmp dword [kernel_context + CONTEXT_WIDTH], 1000
+    jb .toolbar
+    mov eax, NOVA_COLOR_PANEL_SOFT
+    mov ebx, [shell_window_x]
+    add ebx, [shell_window_width]
+    sub ebx, 214
+    mov ecx, [shell_window_y]
+    add ecx, 56
+    mov edx, 190
+    mov esi, 38
+    call fill_rounded_rectangle
+    mov esi, text_explorer_search
+    add ebx, 16
+    mov ecx, [shell_window_y]
+    add ecx, 69
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+.toolbar:
+    mov esi, text_explorer_toolbar
+    mov ebx, [shell_window_x]
+    add ebx, 210
+    mov ecx, [shell_window_y]
+    add ecx, 114
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+
+    ; Sidebar.
+    mov eax, NOVA_COLOR_SIDEBAR
+    mov ebx, [shell_window_x]
+    add ebx, 1
+    mov ecx, [shell_window_y]
+    add ecx, 104
+    mov edx, 176
+    mov esi, [shell_window_height]
+    sub esi, 105
+    call fill_rectangle
+    mov esi, text_explorer_quick
+    mov ebx, [shell_window_x]
+    add ebx, 22
+    mov ecx, [shell_window_y]
+    add ecx, 124
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_SELECTION
+    mov ebx, [shell_window_x]
+    add ebx, 12
+    mov ecx, [shell_window_y]
+    add ecx, 184
+    mov edx, 152
+    mov esi, 30
+    call fill_rounded_rectangle
+    mov esi, text_explorer_sidebar
+    mov ebx, [shell_window_x]
+    add ebx, 24
+    mov ecx, [shell_window_y]
+    add ecx, 154
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+
+    ; Inhalt beginnt rechts neben der Sidebar.
+    mov esi, text_explorer_folders
+    mov ebx, [shell_window_x]
+    add ebx, 202
+    mov ecx, [shell_window_y]
+    add ecx, 154
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov dword [shell_card_x], ebx
+    xor edi, edi
+.folder_loop:
+    cmp edi, 4
+    jae .files
+    mov eax, NOVA_COLOR_CARD_BORDER
+    mov ebx, [shell_card_x]
+    mov ecx, [shell_window_y]
+    add ecx, 178
+    mov edx, 132
+    mov esi, 56
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_CARD
+    inc ebx
+    inc ecx
+    mov edx, 130
+    mov esi, 54
+    call fill_rounded_rectangle
+    mov esi, [shell_folder_labels + edi * 4]
+    mov ebx, [shell_card_x]
+    add ebx, 14
+    mov ecx, [shell_window_y]
+    add ecx, 198
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    add dword [shell_card_x], 142
+    mov eax, [shell_card_x]
+    add eax, 132
+    mov ebx, [shell_window_x]
+    add ebx, [shell_window_width]
+    sub ebx, 18
+    cmp eax, ebx
+    ja .files
+    inc edi
+    jmp .folder_loop
+.files:
+    mov esi, text_explorer_files
+    mov ebx, [shell_window_x]
+    add ebx, 202
+    mov ecx, [shell_window_y]
+    add ecx, 258
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_PANEL_SOFT
+    mov ebx, [shell_window_x]
+    add ebx, 190
+    mov ecx, [shell_window_y]
+    add ecx, 282
+    mov edx, [shell_window_width]
+    sub edx, 208
+    mov esi, 30
+    call fill_rounded_rectangle
+    mov esi, text_explorer_columns
+    mov ebx, [shell_window_x]
+    add ebx, 204
+    mov ecx, [shell_window_y]
+    add ecx, 292
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov esi, text_explorer_file_rows
+    mov ebx, [shell_window_x]
+    add ebx, 204
+    mov ecx, [shell_window_y]
+    add ecx, 330
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    mov esi, text_explorer_footer
+    mov ebx, [shell_window_x]
+    add ebx, 202
+    mov ecx, [shell_window_y]
+    add ecx, [shell_window_height]
+    sub ecx, 24
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    popad
+    ret
+
+; Dreispaltiges Startmenue. Nur dieses Bauteil folgt der separaten
+; Startmenue-Referenz; Desktop und Taskleiste bleiben im Aurora-Shell-Stil.
+draw_shell_start_menu:
+    pushad
+    mov eax, [kernel_context + CONTEXT_WIDTH]
+    sub eax, 48
+    cmp eax, 900
+    jbe .width_ready
+    mov eax, 900
+.width_ready:
+    mov [shell_menu_width], eax
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, eax
+    shr ebx, 1
+    mov [shell_menu_x], ebx
+    mov eax, [kernel_context + CONTEXT_HEIGHT]
+    sub eax, 190
+    cmp eax, 540
+    jbe .height_ready
+    mov eax, 540
+.height_ready:
+    mov [shell_menu_height], eax
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 104
+    sub ecx, eax
+    mov [shell_menu_y], ecx
+    mov eax, NOVA_COLOR_BORDER_ACTIVE
+    mov ebx, [shell_menu_x]
+    mov edx, [shell_menu_width]
+    mov esi, [shell_menu_height]
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_MENU
+    inc ebx
+    inc ecx
+    sub edx, 2
+    sub esi, 2
+    call fill_rounded_rectangle
+
+    ; Linke Navigation.
+    mov esi, text_start_brand
+    mov ebx, [shell_menu_x]
+    add ebx, 28
+    mov ecx, [shell_menu_y]
+    add ecx, 28
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 2
+    call draw_text
+    mov eax, NOVA_COLOR_SELECTION
+    mov ebx, [shell_menu_x]
+    add ebx, 16
+    mov ecx, [shell_menu_y]
+    add ecx, 72
+    mov edx, 170
+    mov esi, 36
+    call fill_rounded_rectangle
+    mov esi, text_start_navigation
+    mov ebx, [shell_menu_x]
+    add ebx, 30
+    mov ecx, [shell_menu_y]
+    add ecx, 84
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    mov esi, text_start_navigation_lower
+    mov ebx, [shell_menu_x]
+    add ebx, 30
+    mov ecx, [shell_menu_y]
+    add ecx, [shell_menu_height]
+    sub ecx, 74
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+
+    ; Mittlere App- und Vorschlagsspalte.
+    mov esi, text_start_pinned_v2
+    mov ebx, [shell_menu_x]
+    add ebx, 214
+    mov ecx, [shell_menu_y]
+    add ecx, 30
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov dword [shell_card_x], 0
+.app_loop:
+    mov edi, [shell_card_x]
+    cmp edi, 8
+    jae .suggestions
+    mov eax, edi
+    and eax, 3
+    imul eax, eax, 92
+    mov ebx, [shell_menu_x]
+    add ebx, 210
+    add ebx, eax
+    mov eax, edi
+    shr eax, 2
+    imul eax, eax, 74
+    mov ecx, [shell_menu_y]
+    add ecx, 60
+    add ecx, eax
+    mov eax, NOVA_COLOR_CARD
+    mov edx, 82
+    mov esi, 64
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_PURPLE_SOFT
+    mov edx, 28
+    mov esi, 28
+    add ebx, 27
+    add ecx, 8
+    call fill_rounded_rectangle
+    mov esi, [shell_app_labels + edi * 4]
+    sub ebx, 19
+    add ecx, 35
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    inc dword [shell_card_x]
+    jmp .app_loop
+.suggestions:
+    mov esi, text_start_suggestions
+    mov ebx, [shell_menu_x]
+    add ebx, 214
+    mov ecx, [shell_menu_y]
+    add ecx, 226
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_CARD
+    mov ebx, [shell_menu_x]
+    add ebx, 210
+    mov ecx, [shell_menu_y]
+    add ecx, 252
+    mov edx, 358
+    mov esi, 68
+    call fill_rounded_rectangle
+    mov esi, text_start_suggestion_items
+    add ebx, 14
+    add ecx, 14
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_PANEL_SOFT
+    mov ebx, [shell_menu_x]
+    add ebx, 210
+    mov ecx, [shell_menu_y]
+    add ecx, [shell_menu_height]
+    sub ecx, 54
+    mov edx, 358
+    mov esi, 36
+    call fill_rounded_rectangle
+    mov esi, text_start_search_v2
+    add ebx, 16
+    add ecx, 12
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+
+    ; Rechte Widgetspalte wird bei kompakten Displays ausgeblendet.
+    cmp dword [shell_menu_width], 760
+    jb .done
+    mov esi, text_start_profile
+    mov ebx, [shell_menu_x]
+    add ebx, [shell_menu_width]
+    sub ebx, 286
+    mov ecx, [shell_menu_y]
+    add ecx, 30
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_CARD
+    mov ebx, [shell_menu_x]
+    add ebx, [shell_menu_width]
+    sub ebx, 300
+    mov ecx, [shell_menu_y]
+    add ecx, 60
+    mov edx, 280
+    mov esi, 88
+    call fill_rounded_rectangle
+    mov esi, text_start_clock_widget
+    add ebx, 18
+    add ecx, 16
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 2
+    call draw_text
+    mov eax, NOVA_COLOR_CARD
+    mov ebx, [shell_menu_x]
+    add ebx, [shell_menu_width]
+    sub ebx, 300
+    mov ecx, [shell_menu_y]
+    add ecx, 158
+    mov edx, 280
+    mov esi, 96
+    call fill_rounded_rectangle
+    mov esi, text_start_ai_widget
+    add ebx, 18
+    add ecx, 16
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_CARD
+    mov ebx, [shell_menu_x]
+    add ebx, [shell_menu_width]
+    sub ebx, 300
+    mov ecx, [shell_menu_y]
+    add ecx, 264
+    mov edx, 280
+    mov esi, 104
+    call fill_rounded_rectangle
+    mov esi, text_start_system_widget
+    add ebx, 18
+    add ecx, 16
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+.done:
+    popad
+    ret
+
+draw_shell_taskbar:
+    pushad
+    mov eax, [kernel_context + CONTEXT_HEIGHT]
+    sub eax, 86
+    mov [shell_taskbar_y], eax
+    mov eax, NOVA_COLOR_WINDOW_BORDER
+    mov ebx, 20
+    mov ecx, [shell_taskbar_y]
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    sub edx, 40
+    mov esi, 68
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_TASKBAR
+    mov ebx, 21
+    mov ecx, [shell_taskbar_y]
+    inc ecx
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    sub edx, 42
+    mov esi, 66
+    call fill_rounded_rectangle
+
+    ; Dezent segmentierte Aurora-Oberkante.
+    mov eax, NOVA_COLOR_BLUE
+    mov ebx, 42
+    mov ecx, [shell_taskbar_y]
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    sub edx, 84
+    shr edx, 2
+    mov esi, 2
+    call fill_rectangle
+    mov eax, NOVA_COLOR_PURPLE
+    add ebx, edx
+    shl edx, 1
+    call fill_rectangle
+    mov eax, NOVA_COLOR_ORANGE
+    add ebx, edx
+    shr edx, 1
+    call fill_rectangle
+
+    mov ebx, 57
+    mov ecx, [shell_taskbar_y]
+    add ecx, 34
+    mov edx, 24
+    call draw_nova_orb
+    mov eax, NOVA_COLOR_PANEL_SOFT
+    mov ebx, 94
+    mov ecx, [shell_taskbar_y]
+    add ecx, 13
+    mov edx, 210
+    mov esi, 42
+    call fill_rounded_rectangle
+    mov esi, text_taskbar_search_v2
+    mov ebx, 112
+    mov ecx, [shell_taskbar_y]
+    add ecx, 28
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+
+    mov dword [shell_card_x], 318
+    xor edi, edi
+.pin_loop:
+    cmp edi, 6
+    jae .status
+    mov eax, NOVA_COLOR_CARD
+    mov ebx, [shell_card_x]
+    mov ecx, [shell_taskbar_y]
+    add ecx, 13
+    mov edx, 42
+    mov esi, 42
+    call fill_rounded_rectangle
+    mov esi, [shell_pin_labels + edi * 4]
+    add ebx, 15
+    add ecx, 15
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    cmp edi, 0
+    jne .next_pin
+    mov eax, NOVA_COLOR_CYAN_SOFT
+    mov ebx, [shell_card_x]
+    add ebx, 15
+    mov ecx, [shell_taskbar_y]
+    add ecx, 60
+    mov edx, 12
+    mov esi, 2
+    call fill_rectangle
+.next_pin:
+    add dword [shell_card_x], 50
+    mov eax, [shell_card_x]
+    add eax, 42
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, 270
+    cmp eax, ebx
+    jae .status
+    inc edi
+    jmp .pin_loop
+.status:
+    mov esi, text_taskbar_status_v2
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, 242
+    mov ecx, [shell_taskbar_y]
+    add ecx, 17
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    mov esi, text_taskbar_date_v2
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, 126
+    mov ecx, [shell_taskbar_y]
+    add ecx, 38
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    popad
+    ret
+
+draw_desktop_scene_legacy:
+    pushad
+    cmp dword [display_server_ready], 1
+    jne .done
+    test dword [display_scene_flags], DISPLAY_SCENE_DESKTOP
+    jz .done
+
     mov eax, NOVA_COLOR_DESKTOP_BG
     xor ebx, ebx
     xor ecx, ecx
@@ -10115,6 +10813,86 @@ draw_panic_smile:
     popad
     ret
 
+; EBX=Mittelpunkt X, ECX=Mittelpunkt Y, EDX=Radius. Der Orb wird aus drei
+; konzentrischen Flaechen aufgebaut und bleibt damit auch ohne GPU rund.
+draw_nova_orb:
+    pushad
+    mov [orb_x], ebx
+    mov [orb_y], ecx
+    mov [orb_radius], edx
+    mov eax, NOVA_COLOR_PURPLE_SOFT
+    call fill_circle
+    mov eax, NOVA_COLOR_BLUE
+    mov edx, [orb_radius]
+    sub edx, 4
+    mov ebx, [orb_x]
+    mov ecx, [orb_y]
+    call fill_circle
+    mov eax, NOVA_COLOR_ORB_CORE
+    mov edx, [orb_radius]
+    sub edx, 8
+    mov ebx, [orb_x]
+    mov ecx, [orb_y]
+    call fill_circle
+    mov esi, text_orb_n
+    mov ebx, [orb_x]
+    sub ebx, 4
+    mov ecx, [orb_y]
+    sub ecx, 6
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    popad
+    ret
+
+; EAX=Farbe, EBX=Mittelpunkt X, ECX=Mittelpunkt Y, EDX=Radius.
+fill_circle:
+    pushad
+    mov [circle_color], eax
+    mov [circle_x], ebx
+    mov [circle_y], ecx
+    mov [circle_radius], edx
+    imul edx, edx
+    mov [circle_radius_squared], edx
+    mov ebp, [circle_radius]
+    neg ebp
+.row:
+    mov eax, [circle_radius]
+    cmp ebp, eax
+    jg .done
+    mov ecx, [circle_radius]
+    neg ecx
+.column:
+    mov eax, [circle_radius]
+    cmp ecx, eax
+    jg .next_row
+    mov eax, ecx
+    imul eax, eax
+    mov edx, ebp
+    imul edx, edx
+    add eax, edx
+    cmp eax, [circle_radius_squared]
+    ja .next_column
+    mov edi, [circle_y]
+    add edi, ebp
+    imul edi, [kernel_context + CONTEXT_PITCH]
+    add edi, [kernel_context + CONTEXT_FRAMEBUFFER]
+    mov eax, [circle_x]
+    add eax, ecx
+    shl eax, 2
+    add edi, eax
+    mov eax, [circle_color]
+    mov [edi], eax
+.next_column:
+    inc ecx
+    jmp .column
+.next_row:
+    inc ebp
+    jmp .row
+.done:
+    popad
+    ret
+
 fill_rounded_rectangle:
     pushad
     mov [round_color], eax
@@ -10522,6 +11300,23 @@ NOVA_COLOR_SURFACE    equ 0x00111A25
 NOVA_COLOR_ELEVATED   equ 0x001C2938
 NOVA_COLOR_TILE_ALT   equ 0x00233343
 NOVA_COLOR_MUTED      equ 0x0096A6B8
+NOVA_COLOR_TEXT          equ 0x00EAF1FA
+NOVA_COLOR_ACRYLIC       equ 0x00101A2A
+NOVA_COLOR_WINDOW        equ 0x00081220
+NOVA_COLOR_WINDOW_BORDER equ 0x00304768
+NOVA_COLOR_BORDER_ACTIVE equ 0x003D7DFF
+NOVA_COLOR_PANEL_SOFT    equ 0x00101A2B
+NOVA_COLOR_SIDEBAR       equ 0x000B1524
+NOVA_COLOR_CARD          equ 0x00131F32
+NOVA_COLOR_CARD_BORDER   equ 0x00243C5D
+NOVA_COLOR_SELECTION     equ 0x00203D71
+NOVA_COLOR_MENU          equ 0x000B1424
+NOVA_COLOR_TASKBAR       equ 0x000C1627
+NOVA_COLOR_PURPLE        equ 0x00854DFF
+NOVA_COLOR_PURPLE_SOFT   equ 0x004B2A82
+NOVA_COLOR_CYAN_SOFT     equ 0x0029B8D4
+NOVA_COLOR_ORANGE        equ 0x00DD8A3A
+NOVA_COLOR_ORB_CORE      equ 0x00070B1B
 
 align 4
 rect_color:    dd 0
@@ -10549,6 +11344,145 @@ round_x:       dd 0
 round_y:       dd 0
 round_width:   dd 0
 round_height:  dd 0
+circle_color:  dd 0
+circle_x:      dd 0
+circle_y:      dd 0
+circle_radius: dd 0
+circle_radius_squared: dd 0
+orb_x:         dd 0
+orb_y:         dd 0
+orb_radius:    dd 0
+shell_command_x:     dd 0
+shell_command_width: dd 0
+shell_window_x:      dd 0
+shell_window_y:      dd 0
+shell_window_width:  dd 0
+shell_window_height: dd 0
+shell_menu_x:        dd 0
+shell_menu_y:        dd 0
+shell_menu_width:    dd 0
+shell_menu_height:   dd 0
+shell_taskbar_y:     dd 0
+shell_card_x:        dd 0
+
+text_orb_n:
+    db "N",0
+text_shell_brand:
+    db "NOVA",0x94,"S",0
+text_shell_tagline:
+    db "Dein System. Deine Freiheit.",0
+text_shell_command:
+    db "Befehl eingeben oder suchen...   Ctrl K",0
+text_shell_status:
+    db "WLAN   TON   AKKU 100%    18:42",0
+text_shell_date:
+    db "21. Mai 2024",0
+text_explorer_title:
+    db "Explorer",0
+text_window_controls:
+    db "-     []     X",0
+text_explorer_navigation:
+    db "<     >     Aktualisieren",0
+text_explorer_breadcrumb:
+    db "System  >  Benutzer  >  Matthias  >  Dokumente",0
+text_explorer_search:
+    db "In Dokumente suchen...",0
+text_explorer_toolbar:
+    db "+ Neu     Ausschneiden   Kopieren   Einf",0x81,"gen   L",0x94,"schen   Sortieren   Anzeigen",0
+text_explorer_quick:
+    db "SCHNELLZUGRIFF",0
+text_explorer_sidebar:
+    db "Start",10,"Desktop",10,"Dokumente",10,"Downloads",10,"Bilder",10,"Musik",10,"Videos",10,10
+    db "GER",0x84,"TE & VOLUMES",10,"System",10,"Daten",10,"Backup",10,10,"Netzwerk",0
+text_explorer_folders:
+    db "Ordner",0
+text_folder_projects:
+    db "Projekte",0
+text_folder_work:
+    db "Beruf",0
+text_folder_private:
+    db "Privat",0
+text_folder_notes:
+    db "Notizen",0
+align 4
+shell_folder_labels:
+    dd text_folder_projects,text_folder_work,text_folder_private,text_folder_notes
+text_explorer_files:
+    db "Dateien",0
+text_explorer_columns:
+    db "NAME                                      ",0x84,"NDERUNGSDATUM       TYP              GR",0x99,"SSE",0
+text_explorer_file_rows:
+    db "Projektplan_NovaOS.docx                 21.05.2024 10:21     Nova Dokument    2,4 MB",10
+    db "Anforderungen_Systemarchitektur.pdf     20.05.2024 16:45     PDF Dokument     1,8 MB",10
+    db "Budget_",0x9A,"bersicht.xlsx                    19.05.2024 09:12     Nova Sheet       956 KB",10
+    db "nova_flow_config.json                   16.05.2024 12:11     JSON Datei       8 KB",0
+text_explorer_footer:
+    db "12 Elemente    5 Ordner    7 Dateien                                  548 GB frei",0
+
+text_start_brand:
+    db "NOVA",0
+text_start_navigation:
+    db "Start",10,10,"Apps",10,10,"Dokumente",10,10,"Personen",10,10,"F",0x84,"higkeiten",10,10,"System",0
+text_start_navigation_lower:
+    db "Einstellungen",10,10,"Ein/Aus",0
+text_start_pinned_v2:
+    db "Angeheftet",0
+text_app_files:
+    db "Dateien",0
+text_app_browser:
+    db "Browser",0
+text_app_mail:
+    db "Mail",0
+text_app_sheet:
+    db "Sheet",0
+text_app_code:
+    db "Code",0
+text_app_terminal:
+    db "Terminal",0
+text_app_skills:
+    db "Skills",0
+text_app_settings:
+    db "System",0
+align 4
+shell_app_labels:
+    dd text_app_files,text_app_browser,text_app_mail,text_app_sheet
+    dd text_app_code,text_app_terminal,text_app_skills,text_app_settings
+text_start_suggestions:
+    db "Vorschl",0x84,"ge",0
+text_start_suggestion_items:
+    db "Q2 Financial Report",10,"Project Orion",10,"AI Meeting Notes",0
+text_start_search_v2:
+    db "Nach Apps, Dateien und F",0x84,"higkeiten suchen...",0
+text_start_profile:
+    db "Matthias   Nova Benutzer",0
+text_start_clock_widget:
+    db "DIENSTAG, 21. MAI",10,"18:42",0
+text_start_ai_widget:
+    db "NOVA AI",10,"Wie kann ich dir",10,"heute helfen?",0
+text_start_system_widget:
+    db "SYSTEM",10,"CPU 32%   RAM 64%",10,"Speicher 58%   Netz aktiv",0
+
+text_taskbar_search_v2:
+    db "Suche oder Befehl eingeben...",0
+text_pin_files:
+    db "D",0
+text_pin_browser:
+    db "W",0
+text_pin_mail:
+    db "M",0
+text_pin_code:
+    db "C",0
+text_pin_terminal:
+    db ">",0
+text_pin_sheet:
+    db "S",0
+align 4
+shell_pin_labels:
+    dd text_pin_files,text_pin_browser,text_pin_mail,text_pin_code,text_pin_terminal,text_pin_sheet
+text_taskbar_status_v2:
+    db "^   WLAN   TON   100%    18:42",0
+text_taskbar_date_v2:
+    db "21. Mai 2024",0
 
 text_brand:
     db "NOVA OS", 0
