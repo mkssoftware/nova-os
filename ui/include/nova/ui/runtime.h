@@ -297,7 +297,8 @@ typedef struct {
 typedef enum {
     NOVA_UI_CONTRIBUTION_START = 0,
     NOVA_UI_CONTRIBUTION_RIBBON,
-    NOVA_UI_CONTRIBUTION_DASHBOARD
+    NOVA_UI_CONTRIBUTION_DASHBOARD,
+    NOVA_UI_CONTRIBUTION_TASKBAR
 } nova_ui_contribution_kind_t;
 
 typedef struct {

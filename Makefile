@@ -63,7 +63,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 IMAGE_SECTORS := 2880
 KERNEL_LBA := 65
 
-.PHONY: all abi-check ui-architecture-runtime-check uefi-boot-control-state-check boot-ui-runtime-check vector-geometry-runtime-check svg-runtime-check asset-pipeline-check uefi-firmware-runtime-check uefi-pointer-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image test-uefi-kernel-validation test-uefi-boot-control test-firmware-compatibility run test test-uefi test-uefi-input test-uefi-dialog test-uefi-confirmation test-uefi-warning test-uefi-password test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
+.PHONY: all abi-check ui-architecture-runtime-check uefi-boot-control-state-check boot-ui-runtime-check vector-geometry-runtime-check svg-runtime-check asset-pipeline-check uefi-firmware-runtime-check uefi-pointer-runtime-check artifact-check bootloader kernel image uefi uefi-image test-uefi-image test-uefi-kernel-validation test-uefi-boot-control test-uefi-display-server test-firmware-compatibility run test test-uefi test-uefi-input test-uefi-dialog test-uefi-confirmation test-uefi-warning test-uefi-password test-uefi-software-renderer test-uefi-context test-uefi-tooltip-breadcrumb test-uefi-settings-controls test-uefi-list-controls test-uefi-help-search test-uefi-firmware test-uefi-progress test-uefi-scrollview test-uefi-recovery-tiles test-uefi-ui-recovery test-uefi-power test-uefi-themes test-uefi-resolutions test-mouse test-theme test-ui-flows test-recovery test-platform test-bios-vbe-fallback test-elf test-elf64 test-elf-invalid test-elf-validation test-build-id test-corrupt clean
 
 all: image
 
@@ -484,6 +484,7 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:ANIMATION-RESOURCE-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RENDER-QUALITY-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:SOFTWARE-RENDERER-READY" $(UEFI_DEBUG_LOG)
+
 	grep -F "UEFI:RESOURCE-LOADER-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-CACHE-READY" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:RESOURCE-VERSIONING-READY" $(UEFI_DEBUG_LOG)
@@ -522,6 +523,10 @@ test-uefi: boot-ui-runtime-check uefi
 	grep -F "UEFI:RUNTIME-DESTROYED" $(UEFI_DEBUG_LOG)
 	grep -F "UEFI:GAL-SHUTDOWN" $(UEFI_DEBUG_LOG)
 	@echo "QEMU UEFI Bootmanager- und Countdown-Test erfolgreich"
+
+test-uefi-display-server: uefi-image
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-uefi-display-server.ps1 \
+		-Qemu "$(QEMU64)" -Firmware $(UEFI_FIRMWARE) -Image $(BUILD_DIR)/nova-uefi.img
 
 test-uefi-input: uefi
 	powershell.exe -NoProfile -ExecutionPolicy Bypass \

@@ -1364,7 +1364,7 @@ automatisiert getestet oder lediglich als zukünftiger ABI-Wert reserviert ist.
 ## 58. UI-Architekturkern aus `001-UI`
 
 Die neue Bibliothek `ui/src/runtime.c` setzt die gemeinsamen Invarianten aller
-25 angenommenen UI-NPSPECs in einem betriebssystemunabhängigen C17-Kern um.
+26 angenommenen UI-NPSPECs in einem betriebssystemunabhängigen C17-Kern um.
 `ui/include/nova/ui/runtime.h` ist der öffentliche Vertrag.
 
 ### Modell und Einheiten
@@ -1419,3 +1419,33 @@ striktem Warning-as-Error-Modus. Reale GPU-/Displaytreiber, Shared-Buffer-
 Transporte, Persistenz, Suche, Privacy und ausführende Capability Provider sind
 bewusst außerhalb dieser Runtimegrenze und müssen als nachfolgende
 Systemdienste angebunden werden.
+
+## 59. Display Server und erste Ring-3-System-UI
+
+Der Kernel stellt mit Service-ID 12 eine Display-ABI bereit. Der
+System-UI-Prozess fragt über `Display.QueryPrimary` kontrollierte Metadaten ab
+und übergibt anschließend eine `NovaSystemSceneV1`. Diese Struktur enthält
+keine Pointer, Bufferadressen oder ausführbare Daten, sondern nur Generation,
+Szenenflags, Theme, Workspace, Fokus und semantische Color-Tokens.
+
+Die Framebufferadresse aus dem NBHP/BIB bleibt ausschließlich im Kernel. Vor
+einer Scene-Presentation prüft der Dispatcher:
+
+- `SECURITY_CAP_DISPLAY_SYSTEM_UI`,
+- ABI-Version und exakte Strukturgröße,
+- streng steigende Scene-Generation,
+- ausschließlich bekannte Scene-Flags,
+- gültige Theme-, Workspace- und Tokenbereiche,
+- vollständig nullgesetzte reservierte Felder.
+
+Die erste Scene aktiviert Desktop, Startmenü, Ribbon und Taskleiste. Bei 1.000
+oder mehr horizontalen Pixeln zeigt die Taskleiste getrennte App-, Status-,
+Uhr- und Benachrichtigungsbereiche; darunter wechselt sie auf einen kompakten
+Statusbereich. Das Startmenü reserviert den unteren Raum für die schwebende
+Taskleiste. Providerbeiträge für die Taskleiste verwenden dieselbe dynamische
+Capability- und Fehlerisolation wie Ribbon und Dashboard.
+
+`scripts/test-uefi-display-server.ps1` bootet das stabile GPT/FAT32-Image mit
+einer privaten Firmwarekopie und verlangt die Display-Server-, Query-, Scene-
+und Kernel-Ready-Marker. Der reale QEMU-Frame wurde zusätzlich als
+`build/nova-desktop.png` visuell geprüft.

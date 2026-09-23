@@ -1,6 +1,6 @@
 # Nova UI Runtime
 
-Dieses Subsystem ist die erste ausführbare Referenzimplementierung für die 25
+Dieses Subsystem ist die erste ausführbare Referenzimplementierung für die 26
 angenommenen Spezifikationen unter `docs/NPSPEC/sysarchitecture/001-UI`.
 
 ## Implementierter Kern
@@ -21,7 +21,7 @@ angenommenen Spezifikationen unter `docs/NPSPEC/sysarchitecture/001-UI`.
 - session-isoliertes Input-Routing mit Z-Order-Hit-Test, Fokus, Touch-Zielbindung,
   Secure Input und widerrufbarem Pointer Capture
 - dynamische Capability-Verfügbarkeit, getrennte Discovery/Authorization und
-  kontrollierte Start-, Ribbon- und Dashboard-Contributions
+  kontrollierte Start-, Ribbon-, Dashboard- und Taskleisten-Contributions
 - Fehlerisolation für ungültige Surfaces, Provider, Owner und Displays
 
 ## Systemgrenze
@@ -40,4 +40,3 @@ make ui-architecture-runtime-check
 
 Der Test wird mit C17, `-Wall -Wextra -Werror` gebaut und prüft die zentralen
 Invarianten aller Architekturblöcke einschließlich negativer Sicherheitsfälle.
-

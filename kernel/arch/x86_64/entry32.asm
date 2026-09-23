@@ -3591,7 +3591,8 @@ SYSTEM_SCENE_SIZE           equ 64
 DISPLAY_SCENE_DESKTOP       equ 0x00000001
 DISPLAY_SCENE_START_MENU    equ 0x00000002
 DISPLAY_SCENE_RIBBON        equ 0x00000004
-DISPLAY_SCENE_ALLOWED_FLAGS equ DISPLAY_SCENE_DESKTOP | DISPLAY_SCENE_START_MENU | DISPLAY_SCENE_RIBBON
+DISPLAY_SCENE_TASKBAR       equ 0x00000008
+DISPLAY_SCENE_ALLOWED_FLAGS equ DISPLAY_SCENE_DESKTOP | DISPLAY_SCENE_START_MENU | DISPLAY_SCENE_RIBBON | DISPLAY_SCENE_TASKBAR
 USER_ADDRESS_MIN            equ USER_CODE_ADDRESS
 USER_ADDRESS_MAX            equ USER_STACK_ADDRESS
 SHARED_SERVICE_ADDRESS      equ 0x00403000
@@ -4450,7 +4451,7 @@ userspace_system_scene:
     dd 64
     dw 1, 0
     dq 1                            ; erste deklarative Scene-Generation
-    dd 0x00000007                   ; Desktop | Startmenü | Ribbon
+    dd 0x0000000F                   ; Desktop | Startmenü | Ribbon | Taskleiste
     dd 0                            ; systemweites Dark Theme
     dd 0                            ; Workspace 0
     dd 2                            ; Startmenü-Suche besitzt Fokus
@@ -8998,14 +8999,14 @@ draw_desktop_scene:
     mov ecx, 142
     mov edx, 360
     mov esi, [kernel_context + CONTEXT_HEIGHT]
-    sub esi, 166
+    sub esi, 228
     call fill_rounded_rectangle
     mov eax, NOVA_COLOR_SURFACE
     mov ebx, 171
     mov ecx, 143
     mov edx, 358
     mov esi, [kernel_context + CONTEXT_HEIGHT]
-    sub esi, 168
+    sub esi, 230
     call fill_rounded_rectangle
 
     mov eax, NOVA_COLOR_ELEVATED
@@ -9085,14 +9086,14 @@ draw_desktop_scene:
     mov esi, text_start_user
     mov ebx, 194
     mov ecx, [kernel_context + CONTEXT_HEIGHT]
-    sub ecx, 52
+    sub ecx, 114
     mov edx, NOVA_COLOR_MUTED
     mov ebp, 1
     call draw_text
     mov esi, text_start_power
     mov ebx, 442
     mov ecx, [kernel_context + CONTEXT_HEIGHT]
-    sub ecx, 52
+    sub ecx, 114
     mov edx, NOVA_COLOR_WHITE
     mov ebp, 1
     call draw_text
@@ -9132,6 +9133,115 @@ draw_desktop_scene:
     mov ebp, 1
     call draw_text
 .footer:
+    test dword [display_scene_flags], DISPLAY_SCENE_TASKBAR
+    jz .footer_text
+    ; Schwebende, geschützte Taskleiste. Die Grundnavigation bleibt links
+    ; vorhersehbar; Status und Uhr sind rechts gruppiert.
+    mov eax, NOVA_COLOR_BLUE
+    mov ebx, 170
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 74
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    sub edx, 194
+    mov esi, 54
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_SURFACE
+    mov ebx, 171
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 73
+    mov edx, [kernel_context + CONTEXT_WIDTH]
+    sub edx, 196
+    mov esi, 52
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_BLUE
+    mov ebx, 184
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 64
+    mov edx, 76
+    mov esi, 36
+    call fill_rounded_rectangle
+    mov esi, text_taskbar_start
+    mov ebx, 200
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 52
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_ELEVATED
+    mov ebx, 270
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 64
+    mov edx, 164
+    mov esi, 36
+    call fill_rounded_rectangle
+    mov esi, text_taskbar_search
+    mov ebx, 288
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 52
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    cmp dword [kernel_context + CONTEXT_WIDTH], 1000
+    jb .taskbar_compact
+    mov eax, NOVA_COLOR_TILE_ALT
+    mov ebx, 444
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 64
+    mov edx, 38
+    mov esi, 36
+    call fill_rounded_rectangle
+    mov ebx, 492
+    call fill_rounded_rectangle
+    mov ebx, 540
+    call fill_rounded_rectangle
+    mov esi, text_taskbar_apps
+    mov ebx, 457
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 52
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_taskbar_apps
+    mov ebx, 505
+    call draw_text
+    mov esi, text_taskbar_apps
+    mov ebx, 553
+    call draw_text
+    mov esi, text_taskbar_status
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, 386
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 52
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov esi, text_taskbar_clock
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, 258
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 52
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+    mov esi, text_taskbar_notify
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, 202
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 52
+    mov edx, NOVA_COLOR_BLUE
+    mov ebp, 1
+    call draw_text
+    jmp .footer_text
+.taskbar_compact:
+    mov esi, text_taskbar_compact
+    mov ebx, [kernel_context + CONTEXT_WIDTH]
+    sub ebx, 154
+    mov ecx, [kernel_context + CONTEXT_HEIGHT]
+    sub ecx, 52
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 1
+    call draw_text
+.footer_text:
     mov esi, text_desktop_footer
     mov ebx, 42
     mov ecx, [kernel_context + CONTEXT_HEIGHT]
@@ -10231,7 +10341,21 @@ text_desktop_ready:
 text_desktop_services:
     db "Display Server aktiv", 0
 text_desktop_footer:
-    db "SYSTEM UI  |  DISPLAY 1  |  DLU 100%", 0
+    db "SYSTEM UI", 0
+text_taskbar_start:
+    db "NOVA", 0
+text_taskbar_search:
+    db "Suche", 0
+text_taskbar_apps:
+    db "N", 0
+text_taskbar_status:
+    db "NET  TON  DE", 0
+text_taskbar_clock:
+    db "18:42", 0
+text_taskbar_notify:
+    db "INFO", 0
+text_taskbar_compact:
+    db "NET  18:42", 0
 text_logsystem:
     db "Logsystem", 0
 text_escape:
@@ -10420,7 +10544,7 @@ message_display_server_fallback:
 message_display_query_ok:
     db "NOVA: Userspace Display.QueryPrimary ohne MMIO-Adresse erfolgreich", 13, 10, 0
 message_display_scene_ok:
-    db "NOVA: Desktop, Startmenue und Ribbon aus Ring-3-Szene praesentiert", 13, 10, 0
+    db "NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert", 13, 10, 0
 message_power_query_ok:
     db "NOVA: Userspace Power.QuerySystem capability-geprueft", 13, 10, 0
 message_power_wake_acquire_ok:

@@ -199,6 +199,14 @@ int main(void) {
     ribbon.provider.value = 702u;
     expect(nova_ui_contribution_add(&runtime, ribbon) == NOVA_UI_CONFLICT,
            "äquivalente Provider erzeugen keine doppelte Ribbon-Aktion");
+    ribbon.id = 802u;
+    ribbon.provider = edit_capability.provider;
+    ribbon.kind = NOVA_UI_CONTRIBUTION_TASKBAR;
+    (void)snprintf(ribbon.label, sizeof(ribbon.label), "Bild bearbeiten");
+    expect(nova_ui_contribution_add(&runtime, ribbon) == NOVA_UI_OK &&
+               nova_ui_contribution_count_visible(
+                   &runtime, NOVA_UI_CONTRIBUTION_TASKBAR) == 1u,
+           "Taskleiste übernimmt kontrollierte semantische Contributions");
 
     memset(&input, 0, sizeof(input));
     input.type = NOVA_UI_INPUT_POINTER_BUTTON;
@@ -250,8 +258,10 @@ int main(void) {
     expect(nova_ui_provider_failed(&runtime, edit_capability.provider) == NOVA_UI_OK &&
                nova_ui_contribution_count_visible(
                    &runtime, NOVA_UI_CONTRIBUTION_RIBBON) == 0u &&
+               nova_ui_contribution_count_visible(
+                   &runtime, NOVA_UI_CONTRIBUTION_TASKBAR) == 0u &&
                runtime.diagnostics.isolated_provider_failures == 1u,
-           "Provider-Ausfall entfernt Beitrag ohne Ausfall der UI");
+           "Provider-Ausfall entfernt Ribbon und Taskleiste ohne Ausfall der UI");
     expect(nova_ui_display_disconnect(&runtime, display.id) == NOVA_UI_OK,
            "Display-Hot-Unplug wird kontrolliert reconciled");
 

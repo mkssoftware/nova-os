@@ -58,7 +58,8 @@ enum NovaDisplayOperationId {
 enum NovaDisplaySceneFlags {
     NOVA_DISPLAY_SCENE_DESKTOP = 1u << 0,
     NOVA_DISPLAY_SCENE_START_MENU = 1u << 1,
-    NOVA_DISPLAY_SCENE_RIBBON = 1u << 2
+    NOVA_DISPLAY_SCENE_RIBBON = 1u << 2,
+    NOVA_DISPLAY_SCENE_TASKBAR = 1u << 3
 };
 
 enum NovaStatus {

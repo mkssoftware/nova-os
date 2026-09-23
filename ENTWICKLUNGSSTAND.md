@@ -589,14 +589,15 @@ werden. Neue Einträge müssen klar unterscheiden zwischen:
 
 ## 14. Native UI-Systemarchitektur
 
-Der vollständige Dokumentbestand und insbesondere die 25 angenommenen
-Spezifikationen in `docs/NPSPEC/sysarchitecture/001-UI` wurden am 22. September
+Der vollständige Dokumentbestand und insbesondere die 26 angenommenen
+Spezifikationen in `docs/NPSPEC/sysarchitecture/001-UI` wurden am 23. September
 2026 neu eingelesen. Unter `ui/` existiert nun ein eigenständiger, in C17
 kompilierbarer UI-Architekturkern. Er implementiert die gemeinsamen Verträge
 für Retained Mode, deklaratives Reconciliation, Scene Graph, einen logisch
 getrennten Accessibility Tree, Semantic UI, Theme-/Color-Tokens, Damage
 Tracking, Frame Scheduling, VRR, Display-, Surface-, Window- und Input-Routing
-sowie capabilitybasierte Startmenü-, Ribbon- und Dashboard-Contributions.
+sowie capabilitybasierte Startmenü-, Ribbon-, Dashboard- und
+Taskleisten-Contributions.
 
 Alle Layoutgrößen werden als DLU geführt. Identitäten verschiedener Domänen
 sind als unterschiedliche C-Typen modelliert, damit beispielsweise eine
@@ -615,3 +616,20 @@ prozessübergreifende Shared Buffer, persistente Desktop-/Startmenüdaten,
 Suchindex, Privacy-Dienst und ausführender Capability Broker. Die Runtime stellt
 hierfür die kontrollierten Providergrenzen bereit; bis zur Treiberanbindung
 bleibt der Softwarepfad der definierte funktionale Fallback.
+
+### Kernel-/Userspace-Displaypfad
+
+Der initiale Ring-3-Systemdienst verwendet nun `NOVA_SERVICE_DISPLAY` ABI 1.0.
+`Display.QueryPrimary` liefert ausschließlich Display-ID, Größe, Pitch, BPP,
+DLU-Skalierung und Generation; die physische GOP-Framebufferadresse bleibt im
+Kernel. `Display.SubmitSystemScene` übernimmt eine pointerfreie, 64 Byte große
+deklarative Szene. Größe, ABI, monotone Generation, Flags, Theme-/Color-Tokens,
+Workspace und reservierte Felder werden vor jeder Darstellung validiert.
+
+Der Kernel-Display-Provider rendert daraus die erste sichtbare System-UI mit
+Desktop, geöffnetem Startmenü, Ribbon und schwebender Taskleiste. Der
+System-UI-Prozess benötigt dafür `SECURITY_CAP_DISPLAY_SYSTEM_UI`; normale
+Anwendungen erhalten weder MMIO noch diese geschützte Rolle. Das aktuelle
+`build/nova-uefi.img` enthält diesen Stand. Der automatisierte QEMU-Test
+`make test-uefi-display-server` bestätigt Kernel-Handoff, capabilitygeprüfte
+Displayabfrage, Scene-Presentation und `NOVA_KERNEL_READY`.
