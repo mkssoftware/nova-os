@@ -657,3 +657,15 @@ Seitenverhältnisses. Der Kernel bewahrt diesen Framebuffer bis zur ersten
 Ring-3-Desktop-Szene. Die bestehende Kernelkonsole bleibt im Code für Fehler-
 und Diagnosepfade erhalten, wird beim erfolgreichen Start aber nicht mehr
 gezeichnet. Der UEFI-QEMU-Test verlangt `UEFI:BOOTSPLASH-READY`.
+
+### NovaOS Desktop-Redesign
+
+Die fünf neuen Designreferenzen wurden als ein gemeinsames NovaOS-System
+ausgewertet. Die ersten vier bestimmen Desktop, Fenster, Taskleiste und Apps;
+die Startmenü-Referenz gilt ausschließlich für das Startmenü. Unter `ui/` sind
+nun zentrale Aurora-/Acrylic-Tokens sowie eine heapfreie Desktop-Shell-Schicht
+vorhanden. Sie verwaltet responsive DLU-Geometrie, Taskleisten-Pins,
+Startmenü-Transition, Outside-Click, Escape, `Ctrl+K` und Fensterzustände für
+Explorer, Nova Sheet und Fähigkeiten Studio. `make ui-shell-runtime-check`
+prüft diese Verträge automatisiert. Die sichtbare Anbindung an die produktive
+Ring-3-Szene ist der nächste Umsetzungsschritt.

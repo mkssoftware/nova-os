@@ -1501,3 +1501,25 @@ Logkonsole mehr. Der UEFI-Splash bleibt damit während der Kernelinitialisierung
 sichtbar und wird erst durch die erste validierte Ring-3-Systemszene ersetzt.
 Die Funktionen für Kernel-Log- und Fehlerdarstellung bleiben vorhanden und
 können von Fehler- und Diagnosepfaden weiterhin verwendet werden.
+
+## 62. NovaOS Aurora-Designsystem und Desktop-Shell
+
+`ui/include/nova/ui/design.h` definiert die gemeinsame visuelle Sprache der
+neuen Referenzen. Dazu gehören semantische Farben für Desktop, Acrylic,
+verschiedene Surface-Ebenen, Text, Borders, Blau, Violett, Cyan, Magenta und
+Statuszustände. Radien, Abstandsgrundmaß, Control-/Taskleistenhöhe,
+Transparenz, Blur, Schatten und Motion-Zeiten sind ebenfalls zentrale Tokens.
+
+`ui/include/nova/ui/shell.h` und `ui/src/shell.c` bilden den heapfreien
+Shell-Zustand. Das responsive Layout reserviert Branding, globale
+Befehlsleiste, Systemstatus, Arbeitsbereich, schwebende Taskleiste und das
+dreispaltige Startmenü. Explorer, Nova Sheet und Fähigkeiten Studio besitzen
+stabile Fensteridentitäten und Zustände für Aktivieren, Verschieben,
+Minimieren, Maximieren, Wiederherstellen und Schließen. Taskleistenaktivierung
+stellt minimierte Apps wieder her.
+
+Der Startmenüzustand unterstützt Nova-Orb-Toggle, Outside-Click, Escape und eine
+begrenzte 190-ms-Transition. `Ctrl+K` öffnet und fokussiert die globale Command
+Palette. `tests/ui_shell_runtime.c` validiert das Designsystem, die Shell-
+Geometrie bei 1920×1080 und 1280×720 sowie alle genannten Interaktionen mit
+`-Wall -Wextra -Werror`.
