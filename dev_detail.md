@@ -1478,3 +1478,26 @@ neue Szene präsentiert. Das erste `Esc` schließt danach das Startmenü. Ein
 zweites `Esc` wird bei
 geschlossenem Startmenü nicht an die UI delegiert, sondern durchläuft den
 geordneten Power-Manager-Pfad bis `NOVA: Power Shutdown PLATFORM_OFF`.
+
+## 61. UEFI-Bootsplash und ruhiger Kernelstart
+
+Die Quelldatei `boot/image/bootsplash.png` wird von
+`scripts/build-bootsplash.ps1` mit hochwertigem Downsampling nach 1280×720
+konvertiert. Das interne NBS1-Format besitzt einen 32-Byte-Header mit Breite,
+Höhe, Stride, verlustfreiem RGB888-Format, Payloadgröße und CRC32. Dadurch muss weder ein
+PNG-Decoder noch ein mehrere Megabyte großer RGBA-Puffer in den begrenzten
+Kernelcontainer aufgenommen werden.
+
+`scripts/build-uefi-image.ps1` legt die Ressource als `SPLASH.NBS` in die
+FAT32-ESP. Der UEFI-Kernellader liest sie vor dem letzten Memory-Map-Snapshot,
+prüft Header, Grenzen, Format, exakte Dateigröße und CRC32 und rendert sie bei
+abweichenden GOP-Auflösungen bilinear gefiltert sowie seitenverhältnistreu mit
+schwarzen Letterbox-Flächen direkt in den aktiven
+GOP-Framebuffer. Danach meldet er `UEFI:BOOTSPLASH-READY` und übergibt denselben
+Framebuffer über NBHP/BIB an den Kernel.
+
+`kernel_operational_prepare` zeichnet beim erfolgreichen Grafikstart keine
+Logkonsole mehr. Der UEFI-Splash bleibt damit während der Kernelinitialisierung
+sichtbar und wird erst durch die erste validierte Ring-3-Systemszene ersetzt.
+Die Funktionen für Kernel-Log- und Fehlerdarstellung bleiben vorhanden und
+können von Fehler- und Diagnosepfaden weiterhin verwendet werden.

@@ -70,6 +70,7 @@ try {
 
     foreach($marker in @(
         'UEFI:KERNEL-HANDOFF-READY',
+        'UEFI:BOOTSPLASH-READY',
         'NOVA: Display Server ABI 1.0, Firmware-Framebuffer uebernommen',
         'NOVA: Userspace Display.QueryPrimary ohne MMIO-Adresse erfolgreich',
         'NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert',

@@ -36,6 +36,7 @@ VBE_FALLBACK_DEBUG_LOG := $(BUILD_DIR)/qemu-vbe-fallback-debug.log
 UEFI_DIR := $(BUILD_DIR)/uefi
 UEFI_APP := $(UEFI_DIR)/EFI/BOOT/BOOTX64.EFI
 UEFI_FIRMWARE := $(UEFI_DIR)/edk2-x86_64.fd
+BOOT_SPLASH := $(BUILD_DIR)/bootsplash.nbs
 UEFI_DEBUG_LOG := $(BUILD_DIR)/qemu-uefi-debug.log
 UEFI_INPUT_DEBUG_LOG := $(BUILD_DIR)/qemu-uefi-input-debug.log
 UEFI_POWER_DEBUG_LOG := $(BUILD_DIR)/qemu-uefi-power-debug.log
@@ -315,11 +316,16 @@ $(UEFI_FIRMWARE): scripts/compose-edk2-firmware.ps1 | $(BUILD_DIR)
 
 uefi: $(UEFI_APP) $(UEFI_FIRMWARE)
 
-uefi-image: uefi $(KERNEL_IMAGE) $(BACKUP_KERNEL_IMAGE) $(RECOVERY_KERNEL_IMAGE)
+$(BOOT_SPLASH): boot/image/bootsplash.png scripts/build-bootsplash.ps1 | $(BUILD_DIR)
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-bootsplash.ps1 \
+		-InputFile boot/image/bootsplash.png -OutputFile $(BOOT_SPLASH)
+
+uefi-image: uefi $(KERNEL_IMAGE) $(BACKUP_KERNEL_IMAGE) $(RECOVERY_KERNEL_IMAGE) $(BOOT_SPLASH)
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-uefi-image.ps1 \
 		-EfiApplication $(UEFI_APP) -KernelImage $(KERNEL_IMAGE) -KernelElf $(KERNEL_ELF) \
 		-BackupKernelImage $(BACKUP_KERNEL_IMAGE) \
 		-RecoveryKernelImage $(RECOVERY_KERNEL_IMAGE) \
+		-BootSplash $(BOOT_SPLASH) \
 		-OutputImage build/nova-uefi.img
 
 test-uefi-kernel-validation: uefi $(KERNEL_IMAGE) $(KERNEL_ELF) $(ELF64_TEST)

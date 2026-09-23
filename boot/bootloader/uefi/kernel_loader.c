@@ -64,6 +64,12 @@ static CHAR16 elf_path[]={'\\','K','E','R','N','E','L','.','E','L','F',0};
 static CHAR16 elf64_path[]={'\\','K','E','R','N','E','L','6','4','.','E','L','F',0};
 static CHAR16 backup_nki_path[]={'\\','B','A','C','K','U','P','.','N','K','I',0};
 static CHAR16 recovery_nki_path[]={'\\','R','E','C','O','V','E','R','Y','.','N','K','I',0};
+static CHAR16 bootsplash_path[]={'\\','S','P','L','A','S','H','.','N','B','S',0};
+
+typedef struct {
+    uint8_t magic[4];
+    uint32_t header_size,width,height,stride,format,payload_size,payload_crc32;
+} nova_bootsplash_header;
 
 static void bytes_zero(void *target,UINTN length){uint8_t *p=target;while(length--)*p++=0;}
 static void bytes_copy(void *target,const void *source,UINTN length){uint8_t *d=target;const uint8_t *s=source;while(length--)*d++=*s++;}
@@ -72,6 +78,121 @@ static bool bytes_equal(const void *left,const void *right,UINTN length)
 static uint32_t crc32_with_zero(const uint8_t *data,UINTN size,UINTN zero_offset,UINTN zero_size)
 {uint32_t crc=0xffffffffu;for(UINTN i=0;i<size;++i){uint8_t value=(i>=zero_offset&&i<zero_offset+zero_size)?0:data[i];crc^=value;for(uint32_t bit=0;bit<8;++bit)crc=(crc>>1)^((crc&1)?0xedb88320u:0);}return ~crc;}
 static bool range_valid(UINTN offset,UINTN length,UINTN total){return offset<=total&&length<=total-offset;}
+static EFI_STATUS read_kernel_file(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,
+                                   CHAR16 *path,uint8_t **data,UINTN *size);
+
+static void bootsplash_write_pixel(const nova_graphics_context_t *graphics,
+                                   uint32_t x,uint32_t y,uint32_t rgba)
+{
+    uint32_t bytes=(graphics->bits_per_pixel+7u)/8u;
+    uint8_t *row=(uint8_t *)graphics->framebuffer+(uint64_t)y*graphics->pitch;
+    uint32_t native=nova_graphics_convert_pixel(rgba,graphics->pixel_format,
+        graphics->red_mask,graphics->green_mask,graphics->blue_mask,graphics->alpha_mask);
+    if(bytes==2)((uint16_t *)row)[x]=(uint16_t)native;
+    else if(bytes==3){uint8_t *pixel=row+x*3u;pixel[0]=(uint8_t)native;
+        pixel[1]=(uint8_t)(native>>8);pixel[2]=(uint8_t)(native>>16);}
+    else ((uint32_t *)row)[x]=native;
+}
+
+static uint32_t bootsplash_read_pixel(const nova_bootsplash_header *header,
+                                      const uint8_t *pixels,uint32_t x,uint32_t y)
+{
+    UINTN offset=(UINTN)y*header->stride;
+    if(header->format==2u){
+        offset+=(UINTN)x*3u;
+        return 0xff000000u|(uint32_t)pixels[offset]<<16|
+            (uint32_t)pixels[offset+1]<<8|pixels[offset+2];
+    }
+    offset+=(UINTN)x*2u;
+    uint16_t rgb565=(uint16_t)(pixels[offset]|(uint16_t)pixels[offset+1]<<8);
+    uint8_t red=(uint8_t)((((rgb565>>11)&31u)*255u+15u)/31u);
+    uint8_t green=(uint8_t)((((rgb565>>5)&63u)*255u+31u)/63u);
+    uint8_t blue=(uint8_t)(((rgb565&31u)*255u+15u)/31u);
+    return 0xff000000u|(uint32_t)red<<16|(uint32_t)green<<8|blue;
+}
+
+static uint8_t bootsplash_lerp_channel(uint32_t first,uint32_t second,
+                                       uint32_t shift,uint32_t fraction)
+{
+    uint32_t a=(first>>shift)&0xffu,b=(second>>shift)&0xffu;
+    return (uint8_t)((a*(65536u-fraction)+b*fraction+32768u)>>16);
+}
+
+static uint32_t bootsplash_sample_bilinear(const nova_bootsplash_header *header,
+    const uint8_t *pixels,uint32_t x,uint32_t y,uint32_t target_width,
+    uint32_t target_height)
+{
+    if(target_width==header->width&&target_height==header->height)
+        return bootsplash_read_pixel(header,pixels,x,y);
+    uint64_t x_fixed=target_width>1u?(uint64_t)x*(header->width-1u)*65536u/(target_width-1u):0;
+    uint64_t y_fixed=target_height>1u?(uint64_t)y*(header->height-1u)*65536u/(target_height-1u):0;
+    uint32_t x0=(uint32_t)(x_fixed>>16),y0=(uint32_t)(y_fixed>>16);
+    uint32_t x1=x0+1u<header->width?x0+1u:x0;
+    uint32_t y1=y0+1u<header->height?y0+1u:y0;
+    uint32_t fx=(uint32_t)x_fixed&0xffffu,fy=(uint32_t)y_fixed&0xffffu;
+    uint32_t p00=bootsplash_read_pixel(header,pixels,x0,y0);
+    uint32_t p10=bootsplash_read_pixel(header,pixels,x1,y0);
+    uint32_t p01=bootsplash_read_pixel(header,pixels,x0,y1);
+    uint32_t p11=bootsplash_read_pixel(header,pixels,x1,y1);
+    uint32_t top_r=bootsplash_lerp_channel(p00,p10,16,fx);
+    uint32_t top_g=bootsplash_lerp_channel(p00,p10,8,fx);
+    uint32_t top_b=bootsplash_lerp_channel(p00,p10,0,fx);
+    uint32_t bottom_r=bootsplash_lerp_channel(p01,p11,16,fx);
+    uint32_t bottom_g=bootsplash_lerp_channel(p01,p11,8,fx);
+    uint32_t bottom_b=bootsplash_lerp_channel(p01,p11,0,fx);
+    uint32_t red=(top_r*(65536u-fy)+bottom_r*fy+32768u)>>16;
+    uint32_t green=(top_g*(65536u-fy)+bottom_g*fy+32768u)>>16;
+    uint32_t blue=(top_b*(65536u-fy)+bottom_b*fy+32768u)>>16;
+    return 0xff000000u|red<<16|green<<8|blue;
+}
+
+static bool show_bootsplash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
+{
+    uint8_t *file=0;UINTN size=0;
+    EFI_STATUS status=read_kernel_file(image,st,bootsplash_path,&file,&size);
+    if(EFI_ERROR(status)||!file)return false;
+    bool valid=false;
+    if(size>=sizeof(nova_bootsplash_header)){
+        const nova_bootsplash_header *header=(const nova_bootsplash_header *)file;
+        const uint8_t expected[4]={'N','B','S','1'};
+        uint32_t source_bytes=header->format==1u?2u:header->format==2u?3u:0u;
+        uint64_t expected_payload=(uint64_t)header->width*header->height*source_bytes;
+        valid=bytes_equal(header->magic,expected,4)&&header->header_size==32u&&
+            header->width>=64u&&header->width<=1920u&&
+            header->height>=64u&&header->height<=1080u&&
+            source_bytes&&header->stride==header->width*source_bytes&&
+            expected_payload==header->payload_size&&
+            range_valid(header->header_size,header->payload_size,size)&&
+            header->header_size+header->payload_size==size&&
+            crc32_with_zero(file+header->header_size,header->payload_size,
+                            header->payload_size,0)==header->payload_crc32;
+        const nova_graphics_context_t *graphics=nova_graphics_context();
+        valid=valid&&graphics&&graphics->initialized&&graphics->framebuffer;
+        if(valid){
+            for(uint32_t y=0;y<graphics->height;++y)
+                for(uint32_t x=0;x<graphics->width;++x)
+                    bootsplash_write_pixel(graphics,x,y,0xff000000u);
+            uint32_t target_width=graphics->width;
+            uint32_t target_height=(uint32_t)((uint64_t)target_width*header->height/header->width);
+            if(target_height>graphics->height){
+                target_height=graphics->height;
+                target_width=(uint32_t)((uint64_t)target_height*header->width/header->height);
+            }
+            uint32_t left=(graphics->width-target_width)/2u;
+            uint32_t top=(graphics->height-target_height)/2u;
+            const uint8_t *pixels=file+header->header_size;
+            for(uint32_t y=0;y<target_height;++y){
+                for(uint32_t x=0;x<target_width;++x){
+                    uint32_t rgba=bootsplash_sample_bilinear(header,pixels,x,y,
+                                                              target_width,target_height);
+                    bootsplash_write_pixel(graphics,left+x,top+y,rgba);
+                }
+            }
+        }
+    }
+    st->BootServices->FreePool(file);
+    return valid;
+}
 
 static EFI_STATUS allocate_fixed(EFI_BOOT_SERVICES *bs,uint64_t address,UINTN pages)
 {EFI_PHYSICAL_ADDRESS value=address;efi_allocate_pages_fn fn=(efi_allocate_pages_fn)bs->AllocatePages;return fn(EFI_ALLOCATE_ADDRESS,EFI_LOADER_DATA,pages,&value);}
@@ -102,7 +223,7 @@ static EFI_STATUS read_kernel_file(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,CHAR16 
     uint64_t end=~0ull;status=file->SetPosition(file,end);
     if(!EFI_ERROR(status))status=file->GetPosition(file,&end);
     if(!EFI_ERROR(status))status=file->SetPosition(file,0);
-    if(EFI_ERROR(status)||!end||end>1024u*1024u){file->Close(file);return 1;}
+    if(EFI_ERROR(status)||!end||end>8u*1024u*1024u){file->Close(file);return 1;}
     efi_allocate_pool_fn allocate=(efi_allocate_pool_fn)st->BootServices->AllocatePool;
     status=allocate(EFI_LOADER_DATA,(UINTN)end,(VOID **)data);
     if(!EFI_ERROR(status)){*size=(UINTN)end;status=file->Read(file,size,*data);}
@@ -469,6 +590,8 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     else nova_debug_string(kernel_format==NOVA_KERNEL_FORMAT_ELF32?"UEFI:ELF32-DIRECT-VALIDATED\n":"UEFI:ELF64-DIRECT-VALIDATED\n");
     nova_debug_string(nki_container?"UEFI:KERNEL-INTEGRITY-VERIFIED\n":"UEFI:KERNEL-STRUCTURE-VALIDATED\n");
     nova_debug_string("UEFI:KERNEL-SIGNATURE-NOT-PRESENT\n");
+    if(show_bootsplash(image_handle,st))nova_debug_string("UEFI:BOOTSPLASH-READY\n");
+    else nova_debug_string("UEFI:BOOTSPLASH-ERROR\n");
     UINTN map_capacity=0,map_size=0,map_key=0,descriptor_size=0;uint32_t descriptor_version=0;VOID *map=0;
     efi_exit_boot_services_fn exit_bs=(efi_exit_boot_services_fn)st->BootServices->ExitBootServices;
     for(unsigned attempt=0;attempt<3;++attempt){

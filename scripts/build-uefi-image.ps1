@@ -4,7 +4,8 @@ param([Parameter(Mandatory=$true)][string]$EfiApplication,
       [string]$KernelElf,
       [string]$KernelElf64,
       [string]$BackupKernelImage,
-      [string]$RecoveryKernelImage)
+      [string]$RecoveryKernelImage,
+      [string]$BootSplash)
 $ErrorActionPreference='Stop'
 $efi=[IO.File]::ReadAllBytes([IO.Path]::GetFullPath($EfiApplication))
 $payloadFiles=@(
@@ -34,6 +35,11 @@ if($RecoveryKernelImage){
     $recoveryPath=[IO.Path]::GetFullPath($RecoveryKernelImage)
     if(!(Test-Path -LiteralPath $recoveryPath)){throw "Recovery-NKI fehlt: $recoveryPath"}
     $payloadFiles+=@{Name='RECOVERY';Ext='NKI';Data=[IO.File]::ReadAllBytes($recoveryPath);Cluster=0}
+}
+if($BootSplash){
+    $splashPath=[IO.Path]::GetFullPath($BootSplash)
+    if(!(Test-Path -LiteralPath $splashPath)){throw "Bootsplash fehlt: $splashPath"}
+    $payloadFiles+=@{Name='SPLASH';Ext='NBS';Data=[IO.File]::ReadAllBytes($splashPath);Cluster=0}
 }
 $ss=512;$total=131072L;$partFirst=2048L;$partLast=$total-34;$partSectors=$partLast-$partFirst+1
 $image=[byte[]]::new($total*$ss)

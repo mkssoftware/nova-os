@@ -644,3 +644,16 @@ Displayabfrage, Scene-Presentation und `NOVA_KERNEL_READY`. Zusätzlich sendet
 er über QMP `Tab` und zweimal `Esc`: `Tab` muss eine neue visuelle Fokusszene
 erzeugen, das erste `Esc` das Startmenü schließen und das zweite bis
 `PLATFORM_OFF` gelangen.
+
+### UEFI-Bootsplash statt Kernelkonsole
+
+Der normale UEFI-Start zeigt nach dem Bootmanager nicht mehr den grafischen
+Kernel-Logbildschirm. `boot/image/bootsplash.png` wird beim Build deterministisch
+in eine CRC32-geschützte RGB888-Ressource mit 1280×720 Pixeln umgewandelt und
+als `SPLASH.NBS` in die EFI-Systempartition gelegt. Der Kernellader validiert
+und skaliert die Ressource unmittelbar vor `ExitBootServices` mit bilinearer
+Filterung und unter Beibehaltung des
+Seitenverhältnisses. Der Kernel bewahrt diesen Framebuffer bis zur ersten
+Ring-3-Desktop-Szene. Die bestehende Kernelkonsole bleibt im Code für Fehler-
+und Diagnosepfade erhalten, wird beim erfolgreichen Start aber nicht mehr
+gezeichnet. Der UEFI-QEMU-Test verlangt `UEFI:BOOTSPLASH-READY`.

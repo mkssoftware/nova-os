@@ -7595,7 +7595,9 @@ kernel_operational_prepare:
     jz .text_mode
     cmp dword [kernel_context + CONTEXT_BPP], 32
     jne .text_mode
-    call draw_boot_screen
+    ; Der UEFI-Kernellader hat den verifizierten Bootsplash bereits direkt vor
+    ; ExitBootServices dargestellt. Der normale Kernelstart bewahrt diesen
+    ; Framebuffer, bis die Ring-3-System-UI ihre erste Szene präsentiert.
     mov esi, message_framebuffer_ok
     call serial_write_string
     jmp .ready
