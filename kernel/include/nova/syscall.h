@@ -52,7 +52,15 @@ enum NovaVfsOperationId {
 
 enum NovaDisplayOperationId {
     NOVA_DISPLAY_OPERATION_QUERY_PRIMARY = 1,
-    NOVA_DISPLAY_OPERATION_SUBMIT_SYSTEM_SCENE = 2
+    NOVA_DISPLAY_OPERATION_SUBMIT_SYSTEM_SCENE = 2,
+    NOVA_DISPLAY_OPERATION_POLL_INPUT = 3
+};
+
+enum NovaSystemInputAction {
+    NOVA_SYSTEM_INPUT_TOGGLE_START = 1,
+    NOVA_SYSTEM_INPUT_CLOSE_START = 2,
+    NOVA_SYSTEM_INPUT_FOCUS_NEXT = 3,
+    NOVA_SYSTEM_INPUT_ACTIVATE = 4
 };
 
 enum NovaDisplaySceneFlags {
@@ -70,7 +78,9 @@ enum NovaStatus {
     NOVA_STATUS_SERVICE_UNKNOWN = -8,
     NOVA_STATUS_OPERATION_UNKNOWN = -9,
     NOVA_STATUS_ACCESS_DENIED = -13,
-    NOVA_STATUS_INVALID_USER_POINTER = -15
+    NOVA_STATUS_INVALID_USER_POINTER = -15,
+    NOVA_STATUS_WOULD_BLOCK = -19,
+    NOVA_STATUS_VALIDATION_FAILED = -23
 };
 
 typedef struct NovaAbiVersion {
@@ -172,6 +182,16 @@ typedef struct NovaSystemSceneV1 {
     uint32_t Reserved[5];
 } NovaSystemSceneV1;
 
+typedef struct NovaSystemInputEventV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t Action;
+    uint32_t ScanCode;
+    uint64_t MonotonicTick;
+    uint32_t TargetElement;
+    uint32_t Reserved;
+} NovaSystemInputEventV1;
+
 _Static_assert(sizeof(NovaAbiVersion) == 4,
                "NovaAbiVersion ABI size changed");
 _Static_assert(sizeof(NovaSyscallRequestV1) == 32,
@@ -198,6 +218,10 @@ _Static_assert(sizeof(NovaSystemSceneV1) == 64,
                "NovaSystemSceneV1 ABI size changed");
 _Static_assert(offsetof(NovaSystemSceneV1, Flags) == 16,
                "NovaSystemSceneV1 alignment changed");
+_Static_assert(sizeof(NovaSystemInputEventV1) == 32,
+               "NovaSystemInputEventV1 ABI size changed");
+_Static_assert(offsetof(NovaSystemInputEventV1, MonotonicTick) == 16,
+               "NovaSystemInputEventV1 alignment changed");
 
 /* x86-32: EAX=Service, EBX=Operation, ECX=Major|Minor<<16,
  * EDX=Argumentzeiger, ESI=Argumentgröße, EAX=Status. */

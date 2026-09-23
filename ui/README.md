@@ -20,6 +20,8 @@ angenommenen Spezifikationen unter `docs/NPSPEC/sysarchitecture/001-UI`.
 - begrenzte Damage-Listen, Buffer Age, Frame-Coalescing, Backpressure und VRR
 - session-isoliertes Input-Routing mit Z-Order-Hit-Test, Fokus, Touch-Zielbindung,
   Secure Input und widerrufbarem Pointer Capture
+- erste Kernel-/Ring-3-Anbindung über pointerfreie `Display.PollInput`-Events;
+  Nova-Taste, Escape, Tab und Enter steuern die Bootstrap-Systemszene
 - dynamische Capability-Verfügbarkeit, getrennte Discovery/Authorization und
   kontrollierte Start-, Ribbon-, Dashboard- und Taskleisten-Contributions
 - Fehlerisolation für ungültige Surfaces, Provider, Owner und Displays

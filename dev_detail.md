@@ -1449,3 +1449,32 @@ Capability- und Fehlerisolation wie Ribbon und Dashboard.
 einer privaten Firmwarekopie und verlangt die Display-Server-, Query-, Scene-
 und Kernel-Ready-Marker. Der reale QEMU-Frame wurde zusätzlich als
 `build/nova-desktop.png` visuell geprüft.
+
+## 60. Geschützter Input Router für die System-UI
+
+Die Display-ABI besitzt nun die nichtblockierende Operation
+`Display.PollInput`. Sie liefert eine pointerfreie, 32 Byte große
+`NovaSystemInputEventV1` mit Aktion, ursprünglichem Scan-Code, monotonem Tick
+und semantischem Zielelement. Zugriff erhält weiterhin ausschließlich der
+Prozess mit `SECURITY_CAP_DISPLAY_SYSTEM_UI`.
+
+Der Kernel verarbeitet sowohl PS/2-Scan-Code-Set 1 als auch Set 2 einschließlich
+Extended- und Break-Präfixen. Er gibt keine Controllerports an Ring 3 frei,
+sondern reduziert die Eingabe auf vier Aktionen: Startmenü umschalten,
+Startmenü schließen, Fokus weiterschalten und fokussiertes Element aktivieren.
+Eine feste Ein-Ereignis-Warteschlange begrenzt Speicher und Eingabefluten;
+Überlauf wird gezählt und nicht dynamisch alloziert.
+
+Der Bootstrap-System-UI-Prozess pollt diese Events, verändert seine bestehende
+deklarative `NovaSystemSceneV1`, erhöht die Generation und reicht die Szene
+erneut ein. Dadurch bleibt der Kernel für Validierung und Darstellung
+zuständig, während Sichtbarkeit und Fokus aus dem Ring-3-Zustand kommen. Das
+Suchfeld und die sechs Startmenü-Kacheln zeichnen den aktuellen Fokus sichtbar
+mit dem Nova-Akzenttoken.
+
+Der QEMU-Test sendet über QMP reale virtuelle Tastendrücke. Er weist zunächst
+nach, dass `Tab` den Fokus über den vollständigen Inputpfad verschiebt und eine
+neue Szene präsentiert. Das erste `Esc` schließt danach das Startmenü. Ein
+zweites `Esc` wird bei
+geschlossenem Startmenü nicht an die UI delegiert, sondern durchläuft den
+geordneten Power-Manager-Pfad bis `NOVA: Power Shutdown PLATFORM_OFF`.

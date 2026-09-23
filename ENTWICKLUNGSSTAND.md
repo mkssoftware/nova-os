@@ -626,10 +626,21 @@ Kernel. `Display.SubmitSystemScene` übernimmt eine pointerfreie, 64 Byte große
 deklarative Szene. Größe, ABI, monotone Generation, Flags, Theme-/Color-Tokens,
 Workspace und reservierte Felder werden vor jeder Darstellung validiert.
 
+Die erste Eingabeanbindung ist ebenfalls aktiv. Der Kernel normalisiert
+PS/2-Scan-Codes aus Set 1 und 2 in begrenzte semantische Ereignisse und liefert
+sie über `Display.PollInput` an die capabilitygeschützte Ring-3-System-UI. Die
+Nova-/Windows-Taste schaltet das Startmenü um, `Tab` bewegt den semantischen
+Fokus und `Enter` erzeugt eine Aktivierungsaktion. `Esc` schließt zuerst ein
+geöffnetes Startmenü; ist es bereits geschlossen, startet der geordnete
+Power-Manager-Shutdown.
+
 Der Kernel-Display-Provider rendert daraus die erste sichtbare System-UI mit
 Desktop, geöffnetem Startmenü, Ribbon und schwebender Taskleiste. Der
 System-UI-Prozess benötigt dafür `SECURITY_CAP_DISPLAY_SYSTEM_UI`; normale
 Anwendungen erhalten weder MMIO noch diese geschützte Rolle. Das aktuelle
 `build/nova-uefi.img` enthält diesen Stand. Der automatisierte QEMU-Test
 `make test-uefi-display-server` bestätigt Kernel-Handoff, capabilitygeprüfte
-Displayabfrage, Scene-Presentation und `NOVA_KERNEL_READY`.
+Displayabfrage, Scene-Presentation und `NOVA_KERNEL_READY`. Zusätzlich sendet
+er über QMP `Tab` und zweimal `Esc`: `Tab` muss eine neue visuelle Fokusszene
+erzeugen, das erste `Esc` das Startmenü schließen und das zweite bis
+`PLATFORM_OFF` gelangen.

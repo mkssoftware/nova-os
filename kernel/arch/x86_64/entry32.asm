@@ -2519,6 +2519,114 @@ io_wait:
     out 0x80, al
     ret
 
+; Wandelt PS/2-Scan-Codes aus Set 1 oder 2 in wenige semantische Aktionen um.
+; Ausgabe EAX: 0 = verarbeitet/ignoriert, 2 = Diagnose-Panic, 3 = Shutdown.
+input_router_handle_scancode:
+    movzx ebx, al
+    cmp al, 0xE0
+    jne .not_extended_prefix
+    mov byte [keyboard_extended], 1
+    xor eax, eax
+    ret
+.not_extended_prefix:
+    cmp al, 0xF0
+    jne .not_break_prefix
+    mov byte [keyboard_break_pending], 1
+    xor eax, eax
+    ret
+.not_break_prefix:
+    cmp byte [keyboard_break_pending], 0
+    je .not_set2_break
+    mov byte [keyboard_break_pending], 0
+    mov byte [keyboard_extended], 0
+    xor eax, eax
+    ret
+.not_set2_break:
+    test al, 0x80                    ; Break-Code aus Set 1
+    jz .make_code
+    mov byte [keyboard_extended], 0
+    xor eax, eax
+    ret
+.make_code:
+    cmp byte [keyboard_extended], 0
+    je .plain
+    mov byte [keyboard_extended], 0
+    cmp al, 0x5B                    ; linke Windows/Nova-Taste, Set 1
+    je .toggle_start
+    cmp al, 0x1F                    ; linke Windows/Nova-Taste, Set 2
+    je .toggle_start
+    xor eax, eax
+    ret
+.plain:
+    cmp al, 0x58                    ; F12, Set 1
+    je .panic
+    cmp al, 0x07                    ; F12, Set 2
+    je .panic
+    cmp al, 0x01                    ; Escape, Set 1
+    je .escape
+    cmp al, 0x76                    ; Escape, Set 2
+    je .escape
+    cmp al, 0x0F                    ; Tab, Set 1
+    je .focus_next
+    cmp al, 0x0D                    ; Tab, Set 2
+    je .focus_next
+    cmp al, 0x1C                    ; Enter, Set 1
+    je .activate
+    cmp al, 0x5A                    ; Enter, Set 2
+    je .activate
+    xor eax, eax
+    ret
+.toggle_start:
+    mov eax, SYSTEM_INPUT_TOGGLE_START
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.escape:
+    test dword [display_scene_flags], DISPLAY_SCENE_START_MENU
+    jz .shutdown
+    mov eax, SYSTEM_INPUT_CLOSE_START
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.focus_next:
+    mov eax, SYSTEM_INPUT_FOCUS_NEXT
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.activate:
+    mov eax, SYSTEM_INPUT_ACTIVATE
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.panic:
+    mov eax, 2
+    ret
+.shutdown:
+    mov eax, 3
+    ret
+
+; EAX = Aktion, EBX = ursprünglicher Scan-Code. Ein einzelner Slot begrenzt
+; Speicherverbrauch und verhindert Eingabefluten im Bootstrap-Displaypfad.
+input_router_enqueue:
+    cmp dword [display_server_ready], 1
+    jne .ignored
+    cmp dword [userspace_ready_seen], 1
+    jne .ignored
+    cmp dword [display_input_pending], 0
+    jne .dropped
+    mov [display_input_action], eax
+    mov [display_input_scancode], ebx
+    mov ecx, [timer_ticks]
+    mov [display_input_tick], ecx
+    mov ecx, [display_scene_focus]
+    mov [display_input_target], ecx
+    mov dword [display_input_pending], 1
+.ignored:
+    ret
+.dropped:
+    inc dword [display_input_dropped]
+    ret
+
 interrupt_dispatch:
     push ebp
     mov ebp, esp
@@ -2549,13 +2657,10 @@ interrupt_dispatch:
     test al, 0x01
     jz .timer_schedule
     in al, 0x60
-    cmp al, 0x58
+    call input_router_handle_scancode
+    cmp eax, 2
     je .debug_panic
-    cmp al, 0x07
-    je .debug_panic
-    cmp al, 0x01
-    je kernel_shutdown
-    cmp al, 0x76
+    cmp eax, 3
     je kernel_shutdown
 .timer_schedule:
     mov eax, [interrupt_return_frame]
@@ -2574,13 +2679,10 @@ interrupt_dispatch:
     mov dword [0xFEE000B0], 0
 .keyboard_read:
     in al, 0x60                     ; Controllerdaten quittieren
-    cmp al, 0x58                    ; F12 Make-Code in Scan-Code-Set 1
+    call input_router_handle_scancode
+    cmp eax, 2
     je .debug_panic
-    cmp al, 0x07                    ; F12 Make-Code in Scan-Code-Set 2
-    je .debug_panic
-    cmp al, 0x01                    ; Escape: geordneter Shutdown
-    je kernel_shutdown
-    cmp al, 0x76
+    cmp eax, 3
     je kernel_shutdown
     jmp .keyboard_ack
 .debug_panic:
@@ -3575,6 +3677,7 @@ SYSCALL_LOG_QUERY           equ 1
 SYSCALL_LOG_READ_LATEST     equ 2
 SYSCALL_DISPLAY_QUERY_PRIMARY equ 1
 SYSCALL_DISPLAY_SUBMIT_SCENE equ 2
+SYSCALL_DISPLAY_POLL_INPUT   equ 3
 SYSCALL_STATUS_OK           equ 0
 SYSCALL_STATUS_ABI          equ -1
 SYSCALL_STATUS_SIZE         equ -4
@@ -3588,6 +3691,11 @@ SYSCALL_STATUS_TYPE         equ -22
 SYSCALL_STATUS_VALIDATION   equ -23
 DISPLAY_INFO_SIZE           equ 40
 SYSTEM_SCENE_SIZE           equ 64
+SYSTEM_INPUT_EVENT_SIZE     equ 32
+SYSTEM_INPUT_TOGGLE_START   equ 1
+SYSTEM_INPUT_CLOSE_START    equ 2
+SYSTEM_INPUT_FOCUS_NEXT     equ 3
+SYSTEM_INPUT_ACTIVATE       equ 4
 DISPLAY_SCENE_DESKTOP       equ 0x00000001
 DISPLAY_SCENE_START_MENU    equ 0x00000002
 DISPLAY_SCENE_RIBBON        equ 0x00000004
@@ -4368,6 +4476,7 @@ userspace_program_start:
 
     ; Der System-UI-Prozess sieht ausschließlich Displaymetadaten. Die
     ; physische Framebufferadresse bleibt hinter dem Display-Service verborgen.
+    mov dword [USER_STACK_ADDRESS - 1200], 0
     mov eax, SYSCALL_SERVICE_DISPLAY
     mov ebx, SYSCALL_DISPLAY_QUERY_PRIMARY
     mov ecx, SYSCALL_ABI_VERSION
@@ -4397,6 +4506,7 @@ userspace_program_start:
     int 0x80
     test eax, eax
     jnz .failed
+    mov dword [USER_STACK_ADDRESS - 1200], 1
 .display_unavailable:
 
     mov eax, SYSCALL_SERVICE_CORE
@@ -4408,6 +4518,55 @@ userspace_program_start:
     test eax, eax
     jnz .failed
 .running:
+    cmp dword [USER_STACK_ADDRESS - 1200], 1
+    jne .idle
+    mov eax, SYSCALL_SERVICE_DISPLAY
+    mov ebx, SYSCALL_DISPLAY_POLL_INPUT
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 1184
+    mov esi, SYSTEM_INPUT_EVENT_SIZE
+    int 0x80
+    cmp eax, SYSCALL_STATUS_WOULD_BLOCK
+    je .idle
+    test eax, eax
+    jnz .failed
+
+    mov eax, [USER_STACK_ADDRESS - 1176] ; semantische Eingabeaktion
+    cmp eax, SYSTEM_INPUT_TOGGLE_START
+    je .toggle_start
+    cmp eax, SYSTEM_INPUT_CLOSE_START
+    je .close_start
+    cmp eax, SYSTEM_INPUT_FOCUS_NEXT
+    je .focus_next
+    cmp eax, SYSTEM_INPUT_ACTIVATE
+    je .activate
+    jmp .failed
+.toggle_start:
+    xor dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    jmp .present_input_scene
+.close_start:
+    and dword [USER_STACK_ADDRESS - 1104], ~DISPLAY_SCENE_START_MENU
+    jmp .present_input_scene
+.focus_next:
+    inc dword [USER_STACK_ADDRESS - 1092]
+    cmp dword [USER_STACK_ADDRESS - 1092], 8
+    jbe .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 2
+    jmp .present_input_scene
+.activate:
+    ; Aktivierung ist bereits ein validiertes semantisches Ereignis. In der
+    ; Bootstrap-Szene quittieren wir es mit einer neuen Szenengeneration.
+.present_input_scene:
+    inc dword [USER_STACK_ADDRESS - 1112]
+    mov eax, SYSCALL_SERVICE_DISPLAY
+    mov ebx, SYSCALL_DISPLAY_SUBMIT_SCENE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, USER_STACK_ADDRESS - 1120
+    mov esi, SYSTEM_SCENE_SIZE
+    int 0x80
+    test eax, eax
+    jnz .failed
+.idle:
     pause
     jmp .running
 .failed:
@@ -4681,6 +4840,8 @@ syscall_dispatch:
     je .display_query
     cmp dword [edx + 32], SYSCALL_DISPLAY_SUBMIT_SCENE
     je .display_submit
+    cmp dword [edx + 32], SYSCALL_DISPLAY_POLL_INPUT
+    je .display_poll_input
     jmp .unknown_operation
 .display_query:
     cmp dword [edx + 20], DISPLAY_INFO_SIZE
@@ -4732,7 +4893,9 @@ syscall_dispatch:
     mov ecx, [syscall_display_scene + 16]
     test ecx, ~DISPLAY_SCENE_ALLOWED_FLAGS
     jnz .display_validation
-    cmp ecx, DISPLAY_SCENE_ALLOWED_FLAGS
+    mov ebx, ecx
+    and ebx, DISPLAY_SCENE_DESKTOP | DISPLAY_SCENE_RIBBON | DISPLAY_SCENE_TASKBAR
+    cmp ebx, DISPLAY_SCENE_DESKTOP | DISPLAY_SCENE_RIBBON | DISPLAY_SCENE_TASKBAR
     jne .display_validation
     cmp dword [syscall_display_scene + 20], 2
     ja .display_validation
@@ -4754,6 +4917,8 @@ syscall_dispatch:
     jne .bad_reserved
     mov [display_scene_generation], eax
     mov [display_scene_flags], ecx
+    mov eax, [syscall_display_scene + 28]
+    mov [display_scene_focus], eax
     call draw_desktop_scene
     inc dword [display_present_count]
     inc dword [display_generation]
@@ -4762,6 +4927,41 @@ syscall_dispatch:
     mov edx, [syscall_frame]
     mov dword [edx + 44], SYSCALL_STATUS_OK
     ret
+.display_poll_input:
+    cmp dword [edx + 20], SYSTEM_INPUT_EVENT_SIZE
+    jb .bad_size
+    cmp dword [display_input_pending], 1
+    jne .display_input_empty
+    mov dword [syscall_display_input + 0], SYSTEM_INPUT_EVENT_SIZE
+    mov dword [syscall_display_input + 4], SYSCALL_ABI_VERSION
+    mov eax, [display_input_action]
+    mov [syscall_display_input + 8], eax
+    mov eax, [display_input_scancode]
+    mov [syscall_display_input + 12], eax
+    mov eax, [display_input_tick]
+    mov [syscall_display_input + 16], eax
+    mov dword [syscall_display_input + 20], 0
+    mov eax, [display_input_target]
+    mov [syscall_display_input + 24], eax
+    mov dword [syscall_display_input + 28], 0
+    mov edx, [syscall_frame]
+    mov edi, [edx + 36]
+    mov esi, syscall_display_input
+    mov ecx, SYSTEM_INPUT_EVENT_SIZE
+    call syscall_copy_buffer_to_user
+    jc .bad_pointer
+    pushfd
+    cli
+    mov dword [display_input_pending], 0
+    popfd
+    mov esi, message_display_input_ok
+    call serial_write_string
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+    ret
+.display_input_empty:
+    mov eax, SYSCALL_STATUS_WOULD_BLOCK
+    jmp .reject
 .display_validation:
     mov eax, SYSCALL_STATUS_VALIDATION
     jmp .reject
@@ -5972,6 +6172,7 @@ syscall_network_accept: times 20 db 0
 syscall_log_result: times 32 db 0
 syscall_display_info: times DISPLAY_INFO_SIZE db 0
 syscall_display_scene: times SYSTEM_SCENE_SIZE db 0
+syscall_display_input: times SYSTEM_INPUT_EVENT_SIZE db 0
 
 OBJECT_TYPE_IPC_ENDPOINT equ 11
 
@@ -6125,7 +6326,16 @@ display_server_initialize:
     mov dword [display_generation], 1
     mov dword [display_scene_generation], 0
     mov dword [display_scene_flags], 0
+    mov dword [display_scene_focus], 0
     mov dword [display_present_count], 0
+    mov dword [display_input_pending], 0
+    mov dword [display_input_action], 0
+    mov dword [display_input_scancode], 0
+    mov dword [display_input_tick], 0
+    mov dword [display_input_target], 0
+    mov dword [display_input_dropped], 0
+    mov byte [keyboard_extended], 0
+    mov byte [keyboard_break_pending], 0
     test dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_GRAPHICS
     jz .fallback
     cmp dword [kernel_context + CONTEXT_FRAMEBUFFER], 0
@@ -6165,7 +6375,17 @@ display_primary_id:       dd 0
 display_generation:       dd 0
 display_scene_generation: dd 0
 display_scene_flags:      dd 0
+display_scene_focus:      dd 0
 display_present_count:    dd 0
+display_input_pending:    dd 0
+display_input_action:     dd 0
+display_input_scancode:   dd 0
+display_input_tick:       dd 0
+display_input_target:     dd 0
+display_input_dropped:    dd 0
+keyboard_extended:        db 0
+keyboard_break_pending:   db 0
+align 4
 
 ; Kernel Security / Capability Manager (ADR-2013)
 SECURITY_API_SIZE       equ 32
@@ -9010,6 +9230,10 @@ draw_desktop_scene:
     call fill_rounded_rectangle
 
     mov eax, NOVA_COLOR_ELEVATED
+    cmp dword [display_scene_focus], 2
+    jne .search_color_ready
+    mov eax, NOVA_COLOR_BLUE
+.search_color_ready:
     mov ebx, 190
     mov ecx, 162
     mov edx, 320
@@ -9029,21 +9253,49 @@ draw_desktop_scene:
     call draw_text
 
     mov eax, NOVA_COLOR_ELEVATED
+    cmp dword [display_scene_focus], 3
+    jne .tile_files_color_ready
+    mov eax, NOVA_COLOR_BLUE
+.tile_files_color_ready:
     mov ebx, 190
     mov ecx, 250
     mov edx, 96
     mov esi, 54
     call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_ELEVATED
+    cmp dword [display_scene_focus], 4
+    jne .tile_settings_color_ready
+    mov eax, NOVA_COLOR_BLUE
+.tile_settings_color_ready:
     mov ebx, 298
     call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_ELEVATED
+    cmp dword [display_scene_focus], 5
+    jne .tile_terminal_color_ready
+    mov eax, NOVA_COLOR_BLUE
+.tile_terminal_color_ready:
     mov ebx, 406
     call fill_rounded_rectangle
     mov eax, NOVA_COLOR_TILE_ALT
+    cmp dword [display_scene_focus], 6
+    jne .tile_recovery_color_ready
+    mov eax, NOVA_COLOR_BLUE
+.tile_recovery_color_ready:
     mov ebx, 190
     mov ecx, 316
     call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_TILE_ALT
+    cmp dword [display_scene_focus], 7
+    jne .tile_help_color_ready
+    mov eax, NOVA_COLOR_BLUE
+.tile_help_color_ready:
     mov ebx, 298
     call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_TILE_ALT
+    cmp dword [display_scene_focus], 8
+    jne .tile_power_color_ready
+    mov eax, NOVA_COLOR_BLUE
+.tile_power_color_ready:
     mov ebx, 406
     call fill_rounded_rectangle
     mov esi, text_tile_files
@@ -10545,6 +10797,8 @@ message_display_query_ok:
     db "NOVA: Userspace Display.QueryPrimary ohne MMIO-Adresse erfolgreich", 13, 10, 0
 message_display_scene_ok:
     db "NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert", 13, 10, 0
+message_display_input_ok:
+    db "NOVA: Input-Router-Ereignis an Ring-3-System-UI zugestellt", 13, 10, 0
 message_power_query_ok:
     db "NOVA: Userspace Power.QuerySystem capability-geprueft", 13, 10, 0
 message_power_wake_acquire_ok:
