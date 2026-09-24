@@ -1523,3 +1523,29 @@ begrenzte 190-ms-Transition. `Ctrl+K` öffnet und fokussiert die globale Command
 Palette. `tests/ui_shell_runtime.c` validiert das Designsystem, die Shell-
 Geometrie bei 1920×1080 und 1280×720 sowie alle genannten Interaktionen mit
 `-Wall -Wextra -Werror`.
+
+## 63. Produktive Aurora-Desktop-Szene
+
+Der Kernel-Display-Provider rendert die neue Shell jetzt aus der validierten
+Ring-3-Systemszene. Der sichtbare Pfad enthält Navy-/Aurora-Hintergrund,
+Branding, globale Befehlsleiste, Systemstatus, einen runden Nova-Orb, die
+Acrylic-Taskleiste und das dreispaltige Startmenü. Alle Elemente entstehen aus
+Framebuffer-Primitiven und Text; kein Referenzbild wird als UI-Hintergrund
+verwendet.
+
+Das erste gemeinsame NovaWindow stellt den Explorer mit Navigation,
+Breadcrumb, Suche, Toolbar, Sidebar, Ordnerkarten, Dateiliste und Statuszeile
+dar. Zusätzlich existieren produktive Arbeitsbereiche für Nova Sheet mit
+Ribbon, Budgettabelle und Fähigkeitenpanel sowie für Fähigkeiten Studio mit
+Navigation, Katalog, Node-Canvas und Inspector.
+
+Die pointerfreie Systemszene verwendet das validierte Workspace-Feld für die
+aktive Anwendung. Im Startmenü schaltet `Tab` den sichtbaren Fokus weiter und
+`Enter` öffnet Explorer, Nova Sheet oder Fähigkeiten Studio. Ein reiner
+Fokuswechsel bestätigt weiterhin eine neue Szenengeneration, vermeidet aber
+einen identischen vollständigen Software-Frame. Sichtbarkeits- und
+Workspacewechsel werden vollständig neu gezeichnet.
+
+Das aktuelle `build/nova-uefi.img` wurde neu erzeugt. Architektur-, Shell- und
+UEFI-Displaytests laufen erfolgreich; der QEMU-Test bestätigt außerdem das
+Schließen des Startmenüs und den geordneten Shutdown bis `PLATFORM_OFF`.

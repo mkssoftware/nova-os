@@ -4549,13 +4549,29 @@ userspace_program_start:
     jmp .present_input_scene
 .focus_next:
     inc dword [USER_STACK_ADDRESS - 1092]
-    cmp dword [USER_STACK_ADDRESS - 1092], 8
+    cmp dword [USER_STACK_ADDRESS - 1092], 10
     jbe .present_input_scene
     mov dword [USER_STACK_ADDRESS - 1092], 2
     jmp .present_input_scene
 .activate:
-    ; Aktivierung ist bereits ein validiertes semantisches Ereignis. In der
-    ; Bootstrap-Szene quittieren wir es mit einer neuen Szenengeneration.
+    mov eax, [USER_STACK_ADDRESS - 1092]
+    cmp eax, 3
+    je .open_explorer
+    cmp eax, 6
+    je .open_sheet
+    cmp eax, 9
+    je .open_studio
+    jmp .present_input_scene
+.open_explorer:
+    mov dword [USER_STACK_ADDRESS - 1096], 0
+    jmp .open_workspace
+.open_sheet:
+    mov dword [USER_STACK_ADDRESS - 1096], 1
+    jmp .open_workspace
+.open_studio:
+    mov dword [USER_STACK_ADDRESS - 1096], 2
+.open_workspace:
+    and dword [USER_STACK_ADDRESS - 1104], ~DISPLAY_SCENE_START_MENU
 .present_input_scene:
     inc dword [USER_STACK_ADDRESS - 1112]
     mov eax, SYSCALL_SERVICE_DISPLAY
@@ -4917,14 +4933,20 @@ syscall_dispatch:
     jne .bad_reserved
     mov [display_scene_generation], eax
     mov ebx, [display_scene_flags]
+    mov edi, [display_scene_workspace]
     mov [display_scene_flags], ecx
+    mov esi, [syscall_display_scene + 24]
+    mov [display_scene_workspace], esi
     mov eax, [syscall_display_scene + 28]
     mov [display_scene_focus], eax
     ; Reine Fokusnavigation aktualisiert nur den semantischen Fokus. Solange
     ; sich keine sichtbare Schicht aendert, muss der teure Software-Framebuffer
     ; nicht vollstaendig neu aufgebaut werden.
     cmp ebx, ecx
+    jne .display_redraw
+    cmp edi, esi
     je .display_presented
+.display_redraw:
     call draw_desktop_scene
 .display_presented:
     inc dword [display_present_count]
@@ -6334,6 +6356,7 @@ display_server_initialize:
     mov dword [display_scene_generation], 0
     mov dword [display_scene_flags], 0
     mov dword [display_scene_focus], 0
+    mov dword [display_scene_workspace], 0
     mov dword [display_present_count], 0
     mov dword [display_input_pending], 0
     mov dword [display_input_action], 0
@@ -6383,6 +6406,7 @@ display_generation:       dd 0
 display_scene_generation: dd 0
 display_scene_flags:      dd 0
 display_scene_focus:      dd 0
+display_scene_workspace:  dd 0
 display_present_count:    dd 0
 display_input_pending:    dd 0
 display_input_action:     dd 0
@@ -9145,7 +9169,17 @@ draw_desktop_scene:
 
     test dword [display_scene_flags], DISPLAY_SCENE_RIBBON
     jz .menu
+    cmp dword [display_scene_workspace], 1
+    je .sheet
+    cmp dword [display_scene_workspace], 2
+    je .studio
     call draw_shell_explorer
+    jmp .menu
+.sheet:
+    call draw_shell_sheet
+    jmp .menu
+.studio:
+    call draw_shell_studio
 .menu:
     test dword [display_scene_flags], DISPLAY_SCENE_START_MENU
     jz .taskbar
@@ -9463,6 +9497,297 @@ draw_shell_explorer:
     popad
     ret
 
+; Nova Sheet nutzt dieselbe Fensterhülle, aber ein app-spezifisches Ribbon,
+; eine fokussierte Budgettabelle und das einklappbare Fähigkeitenpanel.
+draw_shell_sheet:
+    pushad
+    mov dword [shell_window_x], 40
+    mov dword [shell_window_y], 78
+    mov eax, [kernel_context + CONTEXT_WIDTH]
+    sub eax, 80
+    mov [shell_window_width], eax
+    mov eax, [kernel_context + CONTEXT_HEIGHT]
+    sub eax, 180
+    mov [shell_window_height], eax
+    mov eax, NOVA_COLOR_WINDOW_BORDER
+    mov ebx, [shell_window_x]
+    mov ecx, [shell_window_y]
+    mov edx, [shell_window_width]
+    mov esi, [shell_window_height]
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_WINDOW
+    inc ebx
+    inc ecx
+    sub edx, 2
+    sub esi, 2
+    call fill_rounded_rectangle
+    mov esi, text_sheet_title
+    mov ebx, [shell_window_x]
+    add ebx, 22
+    mov ecx, [shell_window_y]
+    add ecx, 16
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 2
+    call draw_text
+    mov esi, text_window_controls
+    mov ebx, [shell_window_x]
+    add ebx, [shell_window_width]
+    sub ebx, 126
+    mov ecx, [shell_window_y]
+    add ecx, 18
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov esi, text_sheet_tabs
+    mov ebx, [shell_window_x]
+    add ebx, 22
+    mov ecx, [shell_window_y]
+    add ecx, 56
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_PANEL_SOFT
+    mov ebx, [shell_window_x]
+    add ebx, 12
+    mov ecx, [shell_window_y]
+    add ecx, 78
+    mov edx, [shell_window_width]
+    sub edx, 24
+    mov esi, 82
+    call fill_rounded_rectangle
+    mov esi, text_sheet_ribbon
+    add ebx, 14
+    add ecx, 16
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_PANEL_SOFT
+    mov ebx, [shell_window_x]
+    add ebx, 12
+    mov ecx, [shell_window_y]
+    add ecx, 170
+    mov edx, [shell_window_width]
+    sub edx, 24
+    mov esi, 34
+    call fill_rounded_rectangle
+    mov esi, text_sheet_formula
+    add ebx, 12
+    add ecx, 11
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+
+    mov esi, text_sheet_heading
+    mov ebx, [shell_window_x]
+    add ebx, 28
+    mov ecx, [shell_window_y]
+    add ecx, 222
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 2
+    call draw_text
+    mov eax, NOVA_COLOR_SELECTION
+    mov ebx, [shell_window_x]
+    add ebx, 18
+    mov ecx, [shell_window_y]
+    add ecx, 254
+    mov edx, [shell_window_width]
+    sub edx, 310
+    mov esi, 32
+    call fill_rounded_rectangle
+    mov esi, text_sheet_columns
+    add ebx, 10
+    add ecx, 11
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_BORDER_ACTIVE
+    mov ebx, [shell_window_x]
+    add ebx, 126
+    mov ecx, [shell_window_y]
+    add ecx, 288
+    mov edx, 84
+    mov esi, 28
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_CARD
+    inc ebx
+    inc ecx
+    sub edx, 2
+    sub esi, 2
+    call fill_rounded_rectangle
+    mov esi, text_sheet_rows
+    mov ebx, [shell_window_x]
+    add ebx, 28
+    mov ecx, [shell_window_y]
+    add ecx, 296
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+
+    cmp dword [kernel_context + CONTEXT_WIDTH], 1000
+    jb .footer
+    mov eax, NOVA_COLOR_CARD
+    mov ebx, [shell_window_x]
+    add ebx, [shell_window_width]
+    sub ebx, 274
+    mov ecx, [shell_window_y]
+    add ecx, 212
+    mov edx, 254
+    mov esi, [shell_window_height]
+    sub esi, 252
+    call fill_rounded_rectangle
+    mov esi, text_sheet_capabilities
+    add ebx, 18
+    add ecx, 18
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+.footer:
+    mov esi, text_sheet_footer
+    mov ebx, [shell_window_x]
+    add ebx, 24
+    mov ecx, [shell_window_y]
+    add ecx, [shell_window_height]
+    sub ecx, 24
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    popad
+    ret
+
+; Fähigkeiten Studio: Navigation, Capability-Katalog, Node-Canvas und
+; Inspector sind getrennte echte Panels und keine eingebettete Rastergrafik.
+draw_shell_studio:
+    pushad
+    mov dword [shell_window_x], 24
+    mov dword [shell_window_y], 78
+    mov eax, [kernel_context + CONTEXT_WIDTH]
+    sub eax, 48
+    mov [shell_window_width], eax
+    mov eax, [kernel_context + CONTEXT_HEIGHT]
+    sub eax, 180
+    mov [shell_window_height], eax
+    mov eax, NOVA_COLOR_WINDOW_BORDER
+    mov ebx, [shell_window_x]
+    mov ecx, [shell_window_y]
+    mov edx, [shell_window_width]
+    mov esi, [shell_window_height]
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_WINDOW
+    inc ebx
+    inc ecx
+    sub edx, 2
+    sub esi, 2
+    call fill_rounded_rectangle
+    mov esi, text_studio_title
+    mov ebx, [shell_window_x]
+    add ebx, 184
+    mov ecx, [shell_window_y]
+    add ecx, 16
+    mov edx, NOVA_COLOR_WHITE
+    mov ebp, 2
+    call draw_text
+    mov esi, text_studio_steps
+    mov ebx, [shell_window_x]
+    add ebx, 184
+    mov ecx, [shell_window_y]
+    add ecx, 54
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_SIDEBAR
+    mov ebx, [shell_window_x]
+    add ebx, 1
+    mov ecx, [shell_window_y]
+    add ecx, 1
+    mov edx, 164
+    mov esi, [shell_window_height]
+    sub esi, 2
+    call fill_rounded_rectangle
+    mov esi, text_studio_navigation
+    mov ebx, [shell_window_x]
+    add ebx, 20
+    mov ecx, [shell_window_y]
+    add ecx, 28
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+
+    mov eax, NOVA_COLOR_CARD
+    mov ebx, [shell_window_x]
+    add ebx, 178
+    mov ecx, [shell_window_y]
+    add ecx, 86
+    mov edx, 250
+    mov esi, [shell_window_height]
+    sub esi, 104
+    call fill_rounded_rectangle
+    mov esi, text_studio_catalog
+    add ebx, 14
+    add ecx, 16
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+
+    mov eax, NOVA_COLOR_PANEL_SOFT
+    mov ebx, [shell_window_x]
+    add ebx, 440
+    mov ecx, [shell_window_y]
+    add ecx, 86
+    mov edx, [shell_window_width]
+    sub edx, 720
+    mov esi, [shell_window_height]
+    sub esi, 104
+    call fill_rounded_rectangle
+    mov esi, text_studio_canvas
+    add ebx, 18
+    add ecx, 16
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    mov eax, NOVA_COLOR_SELECTION
+    mov ebx, [shell_window_x]
+    add ebx, 466
+    mov ecx, [shell_window_y]
+    add ecx, 142
+    mov edx, 132
+    mov esi, 52
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_PURPLE_SOFT
+    add ebx, 178
+    add ecx, 76
+    call fill_rounded_rectangle
+    mov eax, NOVA_COLOR_CARD_BORDER
+    sub ebx, 84
+    add ecx, 82
+    call fill_rounded_rectangle
+    mov esi, text_studio_nodes
+    mov ebx, [shell_window_x]
+    add ebx, 482
+    mov ecx, [shell_window_y]
+    add ecx, 160
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+
+    mov eax, NOVA_COLOR_CARD
+    mov ebx, [shell_window_x]
+    add ebx, [shell_window_width]
+    sub ebx, 266
+    mov ecx, [shell_window_y]
+    add ecx, 86
+    mov edx, 250
+    mov esi, [shell_window_height]
+    sub esi, 104
+    call fill_rounded_rectangle
+    mov esi, text_studio_inspector
+    add ebx, 16
+    add ecx, 16
+    mov edx, NOVA_COLOR_TEXT
+    mov ebp, 1
+    call draw_text
+    popad
+    ret
+
 ; Dreispaltiges Startmenue. Nur dieses Bauteil folgt der separaten
 ; Startmenue-Referenz; Desktop und Taskleiste bleiben im Aurora-Shell-Stil.
 draw_shell_start_menu:
@@ -9563,6 +9888,12 @@ draw_shell_start_menu:
     add ecx, 60
     add ecx, eax
     mov eax, NOVA_COLOR_CARD
+    mov ebp, edi
+    add ebp, 3
+    cmp [display_scene_focus], ebp
+    jne .app_color_ready
+    mov eax, NOVA_COLOR_SELECTION
+.app_color_ready:
     mov edx, 82
     mov esi, 64
     call fill_rounded_rectangle
@@ -11483,6 +11814,55 @@ text_taskbar_status_v2:
     db "^   WLAN   TON   100%    18:42",0
 text_taskbar_date_v2:
     db "21. Mai 2024",0
+
+text_sheet_title:
+    db "Nova Sheet - Budget_",0x9A,"bersicht.nova",0
+text_sheet_tabs:
+    db "Datei   Start   Einf",0x81,"gen   Daten   Ansicht   Formeln   ",0x9A,"berpr",0x81,"fen   Automatisieren   Nova F",0x84,"higkeiten",0
+text_sheet_ribbon:
+    db "ZWISCHENABLAGE          SCHRIFTART          AUSRICHTUNG          ZAHL          FORMATVORLAGEN          ZELLEN",10
+    db "Einf",0x81,"gen  Kopieren      Nova Sans  11      Links  Mitte      W",0x84,"hrung      Tabelle  Zellenformat      Einf",0x81,"gen  L",0x94,"schen",0
+text_sheet_formula:
+    db "B2     fx     15.750,00",0
+text_sheet_heading:
+    db "Budget ",0x9A,"bersicht 2024",0
+text_sheet_columns:
+    db "KATEGORIE       MAI        JUNI       JULI       AUGUST     SEPTEMBER     GESAMT      BUDGET      ABWEICHUNG",0
+text_sheet_rows:
+    db "Einnahmen       15.750     16.230     17.100     15.980     16.540        81.600      82.000      +400",10
+    db "Miete           -4.500     -4.500     -4.500     -4.500     -4.500        -22.500     -22.500       0",10
+    db "Verpflegung     -2.300     -2.450     -2.620     -2.510     -2.480        -12.360     -12.000      -360",10
+    db "Transport         -850       -780       -920       -810       -810         -4.240      -4.500      +260",10
+    db "Sparen          -2.500     -2.500     -2.500     -2.500     -2.500        -12.500     -12.500       0",10
+    db "Saldo            3.350      3.650      4.030      3.350      3.790         18.550      18.500       +50",0
+text_sheet_capabilities:
+    db "NOVA F",0x84,"HIGKEITEN",10,10
+    db "Daten verstehen",10,"  Analyse starten",10,"  Erkl",0x84,"rungen",10,"  Datenqualit",0x84,"t pr",0x81,"fen",10,10
+    db "Visualisieren",10,"  Diagramm erstellen",10,"  Pivot-Tabelle",10,"  Heatmap",10,10
+    db "Automatisieren",10,"  Regel erstellen",10,"  Bericht generieren",0
+text_sheet_footer:
+    db "Bereit     ",0x9A,"bersicht   Einnahmen   Ausgaben   Analyse                         100%",0
+
+text_studio_title:
+    db "F",0x84,"higkeiten Studio",0
+text_studio_steps:
+    db "1 Info      2 Bausteine      3 Verbindung      4 Verhalten      5 Testen",0
+text_studio_navigation:
+    db "NOVA",10,10,"",0x9A,"bersicht",10,10,"F",0x84,"higkeiten",10,10,"Meine F",0x84,"higkeiten",10,10
+    db "Entdecken",10,10,"Favoriten",10,10,"Vorlagen",10,10,"STUDIO",10,"Erstellen",10,10,"Kombinieren",10,10,"Testen",0
+text_studio_catalog:
+    db "F",0x84,"HIGKEITEN-KATALOG",10,10,"F",0x84,"higkeiten suchen...",10,10
+    db "Datei-Import          +",10,10,"Daten-Filter          +",10,10,"Berechnung             +",10,10
+    db "Diagramm-Generator    +",10,10,"KI-Analyse             +",10,10,"Bericht-Export         +",0
+text_studio_canvas:
+    db "MEINE F",0x84,"HIGKEIT: BUDGET ANALYSE PRO                         100%   FIT",0
+text_studio_nodes:
+    db "Datei-Import",10,10,10,"Daten-Filter",10,10,10,"Berechnung",10,10,10
+    db "Diagramm-Generator       KI-Analyse",10,10,10,"Bericht-Export",0
+text_studio_inspector:
+    db "EIGENSCHAFTEN",10,10,"Daten-Filter",10,10,"ALLGEMEIN",10,"Name",10,"Beschreibung",10,"Version 1.0.0",10,10
+    db "EING",0x84,"NGE",10,"Daten",10,10,"AUSG",0x84,"NGE",10,"Gefilterte Daten",10,10
+    db "EINSTELLUNGEN",10,"Filterregeln",10,"Sortierung",10,10,"Erweiterte Optionen",0
 
 text_brand:
     db "NOVA OS", 0

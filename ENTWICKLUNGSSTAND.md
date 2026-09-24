@@ -667,5 +667,12 @@ nun zentrale Aurora-/Acrylic-Tokens sowie eine heapfreie Desktop-Shell-Schicht
 vorhanden. Sie verwaltet responsive DLU-Geometrie, Taskleisten-Pins,
 Startmenü-Transition, Outside-Click, Escape, `Ctrl+K` und Fensterzustände für
 Explorer, Nova Sheet und Fähigkeiten Studio. `make ui-shell-runtime-check`
-prüft diese Verträge automatisiert. Die sichtbare Anbindung an die produktive
-Ring-3-Szene ist der nächste Umsetzungsschritt.
+prüft diese Verträge automatisiert.
+
+Die Shell ist inzwischen an die produktive Ring-3-Szene angebunden. Nach dem
+Bootsplash erscheinen Branding, globale Befehlsleiste, Systemstatus, ein
+Explorer-Fenster, die abgesetzte Aurora-Taskleiste und das dreispaltige
+Startmenü. Über die Tastatur lassen sich Explorer, Nova Sheet und Fähigkeiten
+Studio als unterschiedliche Arbeitsbereiche aktivieren. Der QEMU-Displaytest
+bestätigt Scene-Presentation, Fokusweitergabe, Schließen des Startmenüs und
+geordneten Shutdown.
