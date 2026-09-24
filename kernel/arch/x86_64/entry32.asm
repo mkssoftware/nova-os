@@ -3696,6 +3696,10 @@ SYSTEM_INPUT_TOGGLE_START   equ 1
 SYSTEM_INPUT_CLOSE_START    equ 2
 SYSTEM_INPUT_FOCUS_NEXT     equ 3
 SYSTEM_INPUT_ACTIVATE       equ 4
+SYSTEM_INPUT_NAVIGATE_UP    equ 5
+SYSTEM_INPUT_NAVIGATE_DOWN  equ 6
+SYSTEM_INPUT_NAVIGATE_LEFT  equ 7
+SYSTEM_INPUT_NAVIGATE_RIGHT equ 8
 DISPLAY_SCENE_DESKTOP       equ 0x00000001
 DISPLAY_SCENE_START_MENU    equ 0x00000002
 DISPLAY_SCENE_RIBBON        equ 0x00000004
@@ -9169,17 +9173,7 @@ draw_desktop_scene:
 
     test dword [display_scene_flags], DISPLAY_SCENE_RIBBON
     jz .menu
-    cmp dword [display_scene_workspace], 1
-    je .sheet
-    cmp dword [display_scene_workspace], 2
-    je .studio
-    call draw_shell_explorer
-    jmp .menu
-.sheet:
-    call draw_shell_sheet
-    jmp .menu
-.studio:
-    call draw_shell_studio
+    call draw_shell_workspace
 .menu:
     test dword [display_scene_flags], DISPLAY_SCENE_START_MENU
     jz .taskbar
@@ -9190,6 +9184,20 @@ draw_desktop_scene:
     call draw_shell_taskbar
 .done:
     popad
+    ret
+
+draw_shell_workspace:
+    cmp dword [display_scene_workspace], 1
+    je .sheet
+    cmp dword [display_scene_workspace], 2
+    je .studio
+    call draw_shell_explorer
+    ret
+.sheet:
+    call draw_shell_sheet
+    ret
+.studio:
+    call draw_shell_studio
     ret
 
 ; Geschuetzter Systemkopf: Branding, globale Befehlspalette und reduzierte
