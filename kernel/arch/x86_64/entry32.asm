@@ -2555,6 +2555,22 @@ input_router_handle_scancode:
     je .toggle_start
     cmp al, 0x1F                    ; linke Windows/Nova-Taste, Set 2
     je .toggle_start
+    cmp al, 0x48                    ; Pfeil hoch, Set 1
+    je .navigate_up
+    cmp al, 0x75                    ; Pfeil hoch, Set 2
+    je .navigate_up
+    cmp al, 0x50                    ; Pfeil runter, Set 1
+    je .navigate_down
+    cmp al, 0x72                    ; Pfeil runter, Set 2
+    je .navigate_down
+    cmp al, 0x4B                    ; Pfeil links, Set 1
+    je .navigate_left
+    cmp al, 0x6B                    ; Pfeil links, Set 2
+    je .navigate_left
+    cmp al, 0x4D                    ; Pfeil rechts, Set 1
+    je .navigate_right
+    cmp al, 0x74                    ; Pfeil rechts, Set 2
+    je .navigate_right
     xor eax, eax
     ret
 .plain:
@@ -2595,6 +2611,26 @@ input_router_handle_scancode:
     ret
 .activate:
     mov eax, SYSTEM_INPUT_ACTIVATE
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.navigate_up:
+    mov eax, SYSTEM_INPUT_NAVIGATE_UP
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.navigate_down:
+    mov eax, SYSTEM_INPUT_NAVIGATE_DOWN
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.navigate_left:
+    mov eax, SYSTEM_INPUT_NAVIGATE_LEFT
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.navigate_right:
+    mov eax, SYSTEM_INPUT_NAVIGATE_RIGHT
     call input_router_enqueue
     xor eax, eax
     ret
@@ -3749,10 +3785,30 @@ userspace_initialize:
     rep stosd
     mov esi, userspace_program_start
     mov edi, [userspace_code_page]
-    mov ecx, userspace_program_end - userspace_program_start
+    mov ecx, PMM_PAGE_SIZE
     rep movsb
     mov eax, USER_CODE_ADDRESS
     mov edx, [userspace_code_page]
+    mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_USER
+    call paging_map_page
+    jc .invalid
+
+    ; Die interaktive System-UI belegt zwei fest begrenzte Codeseiten. Beide
+    ; sind user-lesbar und ausführbar, aber weiterhin nicht beschreibbar.
+    call pmm_alloc_page
+    test eax, eax
+    jz .invalid
+    mov [userspace_code_page_2], eax
+    mov edi, eax
+    xor eax, eax
+    mov ecx, PMM_PAGE_SIZE / 4
+    rep stosd
+    mov esi, userspace_program_start + PMM_PAGE_SIZE
+    mov edi, [userspace_code_page_2]
+    mov ecx, userspace_program_end - userspace_program_start - PMM_PAGE_SIZE
+    rep movsb
+    mov eax, USER_CODE_ADDRESS + PMM_PAGE_SIZE
+    mov edx, [userspace_code_page_2]
     mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_USER
     call paging_map_page
     jc .invalid
@@ -4544,18 +4600,85 @@ userspace_program_start:
     je .focus_next
     cmp eax, SYSTEM_INPUT_ACTIVATE
     je .activate
+    cmp eax, SYSTEM_INPUT_NAVIGATE_UP
+    je .navigate_previous
+    cmp eax, SYSTEM_INPUT_NAVIGATE_LEFT
+    je .navigate_previous
+    cmp eax, SYSTEM_INPUT_NAVIGATE_DOWN
+    je .navigate_next
+    cmp eax, SYSTEM_INPUT_NAVIGATE_RIGHT
+    je .navigate_next
     jmp .failed
 .toggle_start:
     xor dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    jz .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 2
     jmp .present_input_scene
 .close_start:
     and dword [USER_STACK_ADDRESS - 1104], ~DISPLAY_SCENE_START_MENU
     jmp .present_input_scene
 .focus_next:
+    test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    jz .navigate_next
     inc dword [USER_STACK_ADDRESS - 1092]
     cmp dword [USER_STACK_ADDRESS - 1092], 10
     jbe .present_input_scene
     mov dword [USER_STACK_ADDRESS - 1092], 2
+    jmp .present_input_scene
+.navigate_previous:
+    test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    jz .workspace_previous
+    dec dword [USER_STACK_ADDRESS - 1092]
+    cmp dword [USER_STACK_ADDRESS - 1092], 2
+    jae .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 10
+    jmp .present_input_scene
+.workspace_previous:
+    cmp dword [USER_STACK_ADDRESS - 1096], 1
+    je .sheet_previous
+    cmp dword [USER_STACK_ADDRESS - 1096], 2
+    je .studio_previous
+    dec dword [USER_STACK_ADDRESS - 1092]
+    cmp dword [USER_STACK_ADDRESS - 1092], 20
+    jae .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 23
+    jmp .present_input_scene
+.sheet_previous:
+    dec dword [USER_STACK_ADDRESS - 1092]
+    cmp dword [USER_STACK_ADDRESS - 1092], 40
+    jae .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 45
+    jmp .present_input_scene
+.studio_previous:
+    dec dword [USER_STACK_ADDRESS - 1092]
+    cmp dword [USER_STACK_ADDRESS - 1092], 60
+    jae .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 65
+    jmp .present_input_scene
+.navigate_next:
+    test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    jnz .focus_next
+    cmp dword [USER_STACK_ADDRESS - 1096], 1
+    je .sheet_next
+    cmp dword [USER_STACK_ADDRESS - 1096], 2
+    je .studio_next
+    inc dword [USER_STACK_ADDRESS - 1092]
+    cmp dword [USER_STACK_ADDRESS - 1092], 23
+    jbe .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 20
+    jmp .present_input_scene
+.sheet_next:
+    inc dword [USER_STACK_ADDRESS - 1092]
+    cmp dword [USER_STACK_ADDRESS - 1092], 45
+    jbe .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 40
+    jmp .present_input_scene
+.studio_next:
+    inc dword [USER_STACK_ADDRESS - 1092]
+    cmp dword [USER_STACK_ADDRESS - 1092], 65
+    jbe .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 60
     jmp .present_input_scene
 .activate:
     mov eax, [USER_STACK_ADDRESS - 1092]
@@ -4568,12 +4691,15 @@ userspace_program_start:
     jmp .present_input_scene
 .open_explorer:
     mov dword [USER_STACK_ADDRESS - 1096], 0
+    mov dword [USER_STACK_ADDRESS - 1092], 20
     jmp .open_workspace
 .open_sheet:
     mov dword [USER_STACK_ADDRESS - 1096], 1
+    mov dword [USER_STACK_ADDRESS - 1092], 40
     jmp .open_workspace
 .open_studio:
     mov dword [USER_STACK_ADDRESS - 1096], 2
+    mov dword [USER_STACK_ADDRESS - 1092], 60
 .open_workspace:
     and dword [USER_STACK_ADDRESS - 1104], ~DISPLAY_SCENE_START_MENU
 .present_input_scene:
@@ -4639,8 +4765,8 @@ userspace_system_scene:
     times 5 dd 0
 userspace_program_end:
 
-%if (userspace_program_end - userspace_program_start) > PMM_PAGE_SIZE
-    %error "Initialer Userspace-Code überschreitet seine 4-KiB-Seite"
+%if (userspace_program_end - userspace_program_start) > (PMM_PAGE_SIZE * 2)
+    %error "Initialer Userspace-Code überschreitet seine zwei 4-KiB-Seiten"
 %endif
 
 ; ESI=Userspace-Adresse, ECX=Länge. CF=0 nur für vollständig enthaltene
@@ -4941,15 +5067,24 @@ syscall_dispatch:
     mov [display_scene_flags], ecx
     mov esi, [syscall_display_scene + 24]
     mov [display_scene_workspace], esi
+    mov edx, [display_scene_focus]
     mov eax, [syscall_display_scene + 28]
     mov [display_scene_focus], eax
-    ; Reine Fokusnavigation aktualisiert nur den semantischen Fokus. Solange
-    ; sich keine sichtbare Schicht aendert, muss der teure Software-Framebuffer
-    ; nicht vollstaendig neu aufgebaut werden.
+    ; Sichtbarkeits- und Workspacewechsel erzeugen einen Vollframe. Ein reiner
+    ; Fokuswechsel zeichnet dagegen nur das betroffene Startmenue oder Fenster.
     cmp ebx, ecx
     jne .display_redraw
     cmp edi, esi
+    jne .display_redraw
+    cmp edx, eax
     je .display_presented
+    test ecx, DISPLAY_SCENE_START_MENU
+    jz .display_focus_workspace
+    call draw_shell_start_menu
+    jmp .display_presented
+.display_focus_workspace:
+    call draw_shell_workspace
+    jmp .display_presented
 .display_redraw:
     call draw_desktop_scene
 .display_presented:
@@ -6175,6 +6310,7 @@ userspace_tid:        dd 0
 userspace_process_handle: dd 0
 userspace_thread_handle:  dd 0
 userspace_code_page:  dd 0
+userspace_code_page_2: dd 0
 userspace_stack_page: dd 0
 userspace_exit_seen:  dd 0
 userspace_exit_code:  dd 0
@@ -9485,6 +9621,23 @@ draw_shell_explorer:
     mov edx, NOVA_COLOR_MUTED
     mov ebp, 1
     call draw_text
+    mov eax, [display_scene_focus]
+    sub eax, 20
+    cmp eax, 3
+    jbe .file_focus_ready
+    xor eax, eax
+.file_focus_ready:
+    imul eax, eax, 24
+    mov ecx, [shell_window_y]
+    add ecx, 324
+    add ecx, eax
+    mov eax, NOVA_COLOR_SELECTION
+    mov ebx, [shell_window_x]
+    add ebx, 194
+    mov edx, [shell_window_width]
+    sub edx, 216
+    mov esi, 22
+    call fill_rounded_rectangle
     mov esi, text_explorer_file_rows
     mov ebx, [shell_window_x]
     add ebx, 204
@@ -9613,6 +9766,14 @@ draw_shell_sheet:
     add ebx, 126
     mov ecx, [shell_window_y]
     add ecx, 288
+    mov edi, [display_scene_focus]
+    sub edi, 40
+    cmp edi, 5
+    jbe .cell_focus_ready
+    xor edi, edi
+.cell_focus_ready:
+    imul edi, edi, 24
+    add ecx, edi
     mov edx, 84
     mov esi, 28
     call fill_rounded_rectangle
@@ -9752,6 +9913,27 @@ draw_shell_studio:
     mov edx, NOVA_COLOR_MUTED
     mov ebp, 1
     call draw_text
+    mov edi, [display_scene_focus]
+    sub edi, 60
+    cmp edi, 5
+    jbe .node_focus_ready
+    xor edi, edi
+.node_focus_ready:
+    mov ebx, [shell_window_x]
+    add ebx, 464
+    cmp edi, 3
+    jb .node_focus_column_ready
+    sub edi, 3
+    add ebx, 178
+.node_focus_column_ready:
+    imul edi, edi, 82
+    mov ecx, [shell_window_y]
+    add ecx, 140
+    add ecx, edi
+    mov eax, NOVA_COLOR_BORDER_ACTIVE
+    mov edx, 136
+    mov esi, 56
+    call fill_rounded_rectangle
     mov eax, NOVA_COLOR_SELECTION
     mov ebx, [shell_window_x]
     add ebx, 466

@@ -676,3 +676,10 @@ Startmenü. Über die Tastatur lassen sich Explorer, Nova Sheet und Fähigkeiten
 Studio als unterschiedliche Arbeitsbereiche aktivieren. Der QEMU-Displaytest
 bestätigt Scene-Presentation, Fokusweitergabe, Schließen des Startmenüs und
 geordneten Shutdown.
+
+Pfeiltasten navigieren inzwischen innerhalb der aktiven Oberfläche. Explorer,
+Nova Sheet und Fähigkeiten Studio zeigen den jeweiligen Datei-, Zell- oder
+Node-Fokus sichtbar an. Der Display-Provider zeichnet bei solchen
+Fokusänderungen nur das betroffene Fenster beziehungsweise Startmenü neu. Der
+automatisierte QEMU-Test prüft diese Navigation mit einer realen virtuellen
+Pfeiltaste.

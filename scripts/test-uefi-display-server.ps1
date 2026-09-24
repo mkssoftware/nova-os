@@ -93,6 +93,20 @@ try {
 
     $initialPresentCount=$presentCount
     $initialInputCount=$inputCount
+    Send-QmpKey -Port $qmpPort -Key 'right'
+    do {
+        Start-Sleep -Milliseconds 100
+        $serialText=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+        $debugText=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+        $content=$debugText+$serialText
+        $presentCount=([regex]::Matches($content,'NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert')).Count
+        $inputCount=([regex]::Matches($content,'NOVA: Input-Router-Ereignis an Ring-3-System-UI zugestellt')).Count
+    } while(($inputCount-le$initialInputCount-or$presentCount-le$initialPresentCount)-and[DateTime]::UtcNow-lt$deadline)
+    if($inputCount-le$initialInputCount){throw 'Pfeil rechts wurde nicht als semantische Navigation zugestellt'}
+    if($presentCount-le$initialPresentCount){throw 'Ring-3-System-UI hat nach Pfeil rechts keinen Fokusframe praesentiert'}
+
+    $initialPresentCount=$presentCount
+    $initialInputCount=$inputCount
     Send-QmpKey -Port $qmpPort -Key 'esc'
     do {
         Start-Sleep -Milliseconds 100
@@ -115,7 +129,7 @@ try {
     if($content-notlike'*NOVA: Power Shutdown PLATFORM_OFF*'){
         throw 'Escape bei geschlossenem Startmenue hat keinen geordneten Shutdown ausgeloest'
     }
-    Write-Host 'UEFI Display Server: Tab setzt Fokus; Escape schliesst Startmenue und startet danach den geordneten Shutdown'
+    Write-Host 'UEFI Display Server: Tab und Pfeiltasten navigieren; Escape schliesst Startmenue und startet danach den geordneten Shutdown'
     $completed=$true
 } finally {
     if(!$process.HasExited){Stop-Process -Id $process.Id -Force}

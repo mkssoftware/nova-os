@@ -1549,3 +1549,25 @@ Workspacewechsel werden vollständig neu gezeichnet.
 Das aktuelle `build/nova-uefi.img` wurde neu erzeugt. Architektur-, Shell- und
 UEFI-Displaytests laufen erfolgreich; der QEMU-Test bestätigt außerdem das
 Schließen des Startmenüs und den geordneten Shutdown bis `PLATFORM_OFF`.
+
+## 64. Semantische Anwendungsnavigation
+
+Der PS/2-Eingabepfad normalisiert die vier Pfeiltasten aus Scan-Code-Set 1 und
+2 zu richtungsbezogenen System-UI-Aktionen. Ring 3 führt getrennte,
+begrenzte Fokusbereiche für Startmenü, Explorer-Dateien, Sheet-Zeilen und
+Studio-Nodes. Beim Öffnen einer Anwendung wird ein gültiger Startfokus gesetzt;
+beim erneuten Öffnen des Startmenüs kehrt der Fokus kontrolliert zur Suche
+zurück.
+
+Fokusänderungen zeichnen nicht mehr den gesamten Desktop. Der Display-Provider
+rekonstruiert nur das geöffnete Startmenü oder das aktive NovaWindow.
+Explorer-Zeilen erhalten eine Auswahlfläche, Nova Sheet verschiebt den
+Zellrahmen über die Budgetzeilen und Fähigkeiten Studio markiert den gewählten
+Node. Sichtbarkeits- oder Workspacewechsel bleiben vollständige Frames.
+
+Da der gewachsene interaktive Ring-3-Dienst die ursprüngliche 4-KiB-Codeseite
+überschreitet, besitzt er jetzt zwei einzeln allozierte und gemappte
+Codeseiten. Beide Seiten sind user-lesbar und ausführbar, aber nicht
+beschreibbar; die feste Obergrenze von 8 KiB wird beim Assemblieren geprüft.
+Der QEMU-Displaytest sendet zusätzlich eine reale Pfeil-rechts-Eingabe über QMP
+und verlangt sowohl die Zustellung als auch eine neue Scene-Presentation.
