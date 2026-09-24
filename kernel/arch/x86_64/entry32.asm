@@ -2644,6 +2644,8 @@ input_router_handle_scancode:
 ; EAX = Aktion, EBX = ursprünglicher Scan-Code. Ein einzelner Slot begrenzt
 ; Speicherverbrauch und verhindert Eingabefluten im Bootstrap-Displaypfad.
 input_router_enqueue:
+    mov edx, [display_scene_focus]
+input_router_enqueue_target:
     cmp dword [display_server_ready], 1
     jne .ignored
     cmp dword [userspace_ready_seen], 1
@@ -2654,8 +2656,7 @@ input_router_enqueue:
     mov [display_input_scancode], ebx
     mov ecx, [timer_ticks]
     mov [display_input_tick], ecx
-    mov ecx, [display_scene_focus]
-    mov [display_input_target], ecx
+    mov [display_input_target], edx
     mov dword [display_input_pending], 1
 .ignored:
     ret
@@ -2692,12 +2693,18 @@ interrupt_dispatch:
     in al, 0x64                     ; Fallback, falls QEMU IRQ1 nicht zustellt
     test al, 0x01
     jz .timer_schedule
+    mov ah, al
     in al, 0x60
+    test ah, 0x20                   ; AUX-Daten stammen von der PS/2-Maus
+    jnz .timer_mouse
     call input_router_handle_scancode
     cmp eax, 2
     je .debug_panic
     cmp eax, 3
     je kernel_shutdown
+    jmp .timer_schedule
+.timer_mouse:
+    call ps2_mouse_handle_byte
 .timer_schedule:
     mov eax, [interrupt_return_frame]
     push eax
@@ -3669,7 +3676,7 @@ USER_CODE_SELECTOR equ 0x1B
 USER_DATA_SELECTOR equ 0x23
 TSS_SELECTOR       equ 0x28
 USER_CODE_ADDRESS  equ 0x00400000
-USER_STACK_ADDRESS equ 0x00402000
+USER_STACK_ADDRESS equ 0x00403000
 PROCESS_FLAG_SYSTEM_SERVICE equ 0x00000002
 PROCESS_FLAG_USERSPACE      equ 0x00000004
 SYSCALL_ABI_VERSION         equ 0x00000001
@@ -3736,6 +3743,7 @@ SYSTEM_INPUT_NAVIGATE_UP    equ 5
 SYSTEM_INPUT_NAVIGATE_DOWN  equ 6
 SYSTEM_INPUT_NAVIGATE_LEFT  equ 7
 SYSTEM_INPUT_NAVIGATE_RIGHT equ 8
+SYSTEM_INPUT_POINTER_ACTIVATE equ 9
 DISPLAY_SCENE_DESKTOP       equ 0x00000001
 DISPLAY_SCENE_START_MENU    equ 0x00000002
 DISPLAY_SCENE_RIBBON        equ 0x00000004
@@ -4608,6 +4616,8 @@ userspace_program_start:
     je .navigate_next
     cmp eax, SYSTEM_INPUT_NAVIGATE_RIGHT
     je .navigate_next
+    cmp eax, SYSTEM_INPUT_POINTER_ACTIVATE
+    je .pointer_activate
     jmp .failed
 .toggle_start:
     xor dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
@@ -4679,6 +4689,12 @@ userspace_program_start:
     cmp dword [USER_STACK_ADDRESS - 1092], 65
     jbe .present_input_scene
     mov dword [USER_STACK_ADDRESS - 1092], 60
+    jmp .present_input_scene
+.pointer_activate:
+    mov eax, [USER_STACK_ADDRESS - 1160]
+    mov [USER_STACK_ADDRESS - 1092], eax
+    test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    jnz .activate
     jmp .present_input_scene
 .activate:
     mov eax, [USER_STACK_ADDRESS - 1092]
@@ -5080,13 +5096,20 @@ syscall_dispatch:
     je .display_presented
     test ecx, DISPLAY_SCENE_START_MENU
     jz .display_focus_workspace
+    mov byte [mouse_cursor_valid], 0
     call draw_shell_start_menu
-    jmp .display_presented
+    jmp .display_redrawn
 .display_focus_workspace:
+    mov byte [mouse_cursor_valid], 0
     call draw_shell_workspace
-    jmp .display_presented
+    jmp .display_redrawn
 .display_redraw:
+    mov byte [mouse_cursor_valid], 0
     call draw_desktop_scene
+.display_redrawn:
+    cmp byte [mouse_ready], 1
+    jne .display_presented
+    call draw_mouse_cursor
 .display_presented:
     inc dword [display_present_count]
     inc dword [display_generation]
@@ -6485,6 +6508,328 @@ shared_service_page: dd 0
 userspace_ready_seen: dd 0
 
 ; ---------------------------------------------------------------------------
+; PS/2-Maus im pollingbasierten Bootstrap-Pfad
+; ---------------------------------------------------------------------------
+ps2_mouse_wait_write:
+    mov ecx, 0x10000
+.wait:
+    in al, 0x64
+    test al, 0x02
+    jz .ready
+    loop .wait
+    stc
+    ret
+.ready:
+    clc
+    ret
+
+ps2_mouse_wait_read:
+    mov ecx, 0x10000
+.wait:
+    in al, 0x64
+    test al, 0x01
+    jnz .ready
+    loop .wait
+    stc
+    ret
+.ready:
+    clc
+    ret
+
+; AL=Gerätekommando, CF=0 nur bei ACK 0xFA.
+ps2_mouse_command:
+    mov bl, al
+    call ps2_mouse_wait_write
+    jc .failed
+    mov al, 0xD4
+    out 0x64, al
+    call ps2_mouse_wait_write
+    jc .failed
+    mov al, bl
+    out 0x60, al
+    call ps2_mouse_wait_read
+    jc .failed
+    in al, 0x60
+    cmp al, 0xFA
+    jne .failed
+    clc
+    ret
+.failed:
+    stc
+    ret
+
+ps2_mouse_initialize:
+    pushfd
+    cli
+    pushad
+    mov byte [mouse_ready], 0
+    mov byte [mouse_packet_index], 0
+    mov byte [mouse_buttons], 0
+    mov byte [mouse_cursor_valid], 0
+    mov eax, [kernel_context + CONTEXT_WIDTH]
+    shr eax, 1
+    mov [mouse_x], eax
+    mov eax, [kernel_context + CONTEXT_HEIGHT]
+    shr eax, 1
+    mov [mouse_y], eax
+    call ps2_mouse_wait_write
+    jc .done
+    mov al, 0xA8                    ; Auxiliary-Port aktivieren
+    out 0x64, al
+    mov al, 0xF6                    ; Standardwerte
+    call ps2_mouse_command
+    jc .done
+    mov al, 0xF4                    ; Datenreporting aktivieren
+    call ps2_mouse_command
+    jc .done
+    mov byte [mouse_ready], 1
+.done:
+    popad
+    popfd
+    ret
+
+; AL=ein Byte des dreiteiligen Standard-PS/2-Pakets.
+ps2_mouse_handle_byte:
+    pushad
+    cmp byte [mouse_ready], 1
+    jne .done
+    movzx ecx, byte [mouse_packet_index]
+    test ecx, ecx
+    jnz .store
+    test al, 0x08                   ; Synchronisationsbit des ersten Bytes
+    jz .done
+.store:
+    mov [mouse_packet + ecx], al
+    inc ecx
+    cmp ecx, 3
+    jb .pending
+    mov byte [mouse_packet_index], 0
+    movsx eax, byte [mouse_packet + 1]
+    add [mouse_x], eax
+    movsx eax, byte [mouse_packet + 2]
+    sub [mouse_y], eax
+    cmp dword [mouse_x], 0
+    jge .x_upper
+    mov dword [mouse_x], 0
+.x_upper:
+    mov eax, [kernel_context + CONTEXT_WIDTH]
+    sub eax, 12
+    cmp [mouse_x], eax
+    jle .y_lower
+    mov [mouse_x], eax
+.y_lower:
+    cmp dword [mouse_y], 0
+    jge .y_upper
+    mov dword [mouse_y], 0
+.y_upper:
+    mov eax, [kernel_context + CONTEXT_HEIGHT]
+    sub eax, 16
+    cmp [mouse_y], eax
+    jle .draw
+    mov [mouse_y], eax
+.draw:
+    call draw_mouse_cursor
+    mov al, [mouse_packet]
+    and al, 1
+    mov ah, [mouse_buttons]
+    and ah, 1
+    mov bl, [mouse_packet]
+    and bl, 7
+    mov [mouse_buttons], bl
+    test al, al
+    jz .done
+    test ah, ah
+    jnz .done
+    call mouse_dispatch_click
+    jmp .done
+.pending:
+    mov [mouse_packet_index], cl
+.done:
+    popad
+    ret
+
+mouse_dispatch_click:
+    pushad
+    ; Nova-Orb in der schwebenden Taskleiste.
+    cmp dword [mouse_x], 92
+    ja .menu
+    mov eax, [kernel_context + CONTEXT_HEIGHT]
+    sub eax, 88
+    cmp [mouse_y], eax
+    jb .menu
+    mov eax, SYSTEM_INPUT_TOGGLE_START
+    call input_router_enqueue
+    jmp .done
+.menu:
+    test dword [display_scene_flags], DISPLAY_SCENE_START_MENU
+    jz .workspace
+    mov eax, [mouse_x]
+    sub eax, [shell_menu_x]
+    sub eax, 210
+    js .done
+    cmp eax, 358
+    jae .done
+    xor edx, edx
+    mov ecx, 92
+    div ecx
+    cmp edx, 82
+    jae .done
+    mov ebx, eax                    ; Spalte
+    mov eax, [mouse_y]
+    sub eax, [shell_menu_y]
+    sub eax, 60
+    js .done
+    cmp eax, 138
+    jae .done
+    xor edx, edx
+    mov ecx, 74
+    div ecx
+    cmp edx, 64
+    jae .done
+    shl eax, 2
+    add eax, ebx
+    add eax, 3
+    cmp eax, 10
+    ja .done
+    mov edx, eax
+    mov eax, SYSTEM_INPUT_POINTER_ACTIVATE
+    call input_router_enqueue_target
+    jmp .done
+.workspace:
+    cmp dword [display_scene_workspace], 1
+    je .sheet
+    cmp dword [display_scene_workspace], 2
+    je .studio
+    mov eax, [mouse_y]
+    sub eax, [shell_window_y]
+    sub eax, 324
+    js .done
+    xor edx, edx
+    mov ecx, 24
+    div ecx
+    cmp eax, 3
+    ja .done
+    add eax, 20
+    jmp .focus
+.sheet:
+    mov eax, [mouse_y]
+    sub eax, [shell_window_y]
+    sub eax, 288
+    js .done
+    xor edx, edx
+    mov ecx, 24
+    div ecx
+    cmp eax, 5
+    ja .done
+    add eax, 40
+    jmp .focus
+.studio:
+    mov eax, [mouse_y]
+    sub eax, [shell_window_y]
+    sub eax, 140
+    js .done
+    xor edx, edx
+    mov ecx, 82
+    div ecx
+    cmp eax, 2
+    ja .done
+    mov edx, eax
+    mov eax, [mouse_x]
+    sub eax, [shell_window_x]
+    cmp eax, 620
+    jb .studio_left
+    add edx, 3
+.studio_left:
+    mov eax, edx
+    add eax, 60
+.focus:
+    mov edx, eax
+    mov eax, SYSTEM_INPUT_POINTER_ACTIVATE
+    call input_router_enqueue_target
+.done:
+    popad
+    ret
+
+; Software-Cursor mit gesichertem 12x16-Hintergrund.
+draw_mouse_cursor:
+    pushad
+    cmp byte [mouse_cursor_valid], 1
+    jne .save
+    xor ebp, ebp
+.restore_row:
+    cmp ebp, 16
+    jae .save
+    xor ecx, ecx
+.restore_column:
+    cmp ecx, 12
+    jae .restore_next
+    mov edi, [mouse_saved_y]
+    add edi, ebp
+    imul edi, [kernel_context + CONTEXT_PITCH]
+    add edi, [kernel_context + CONTEXT_FRAMEBUFFER]
+    mov eax, [mouse_saved_x]
+    add eax, ecx
+    shl eax, 2
+    add edi, eax
+    mov eax, ebp
+    imul eax, 12
+    add eax, ecx
+    mov eax, [mouse_background + eax * 4]
+    mov [edi], eax
+    inc ecx
+    jmp .restore_column
+.restore_next:
+    inc ebp
+    jmp .restore_row
+.save:
+    mov eax, [mouse_x]
+    mov [mouse_saved_x], eax
+    mov eax, [mouse_y]
+    mov [mouse_saved_y], eax
+    xor ebp, ebp
+.draw_row:
+    cmp ebp, 16
+    jae .complete
+    xor ecx, ecx
+.draw_column:
+    cmp ecx, 12
+    jae .draw_next
+    mov edi, [mouse_y]
+    add edi, ebp
+    imul edi, [kernel_context + CONTEXT_PITCH]
+    add edi, [kernel_context + CONTEXT_FRAMEBUFFER]
+    mov eax, [mouse_x]
+    add eax, ecx
+    shl eax, 2
+    add edi, eax
+    mov eax, ebp
+    imul eax, 12
+    add eax, ecx
+    mov edx, [edi]
+    mov [mouse_background + eax * 4], edx
+    ; Klassischer, schlanker Pfeil: linke Kante plus wachsende Diagonale.
+    test ecx, ecx
+    jz .paint
+    cmp ebp, 12
+    jae .next_pixel
+    mov eax, ebp
+    shr eax, 1
+    cmp ecx, eax
+    ja .next_pixel
+.paint:
+    mov dword [edi], NOVA_COLOR_WHITE
+.next_pixel:
+    inc ecx
+    jmp .draw_column
+.draw_next:
+    inc ebp
+    jmp .draw_row
+.complete:
+    mov byte [mouse_cursor_valid], 1
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
 ; Bootstrap Display Server ABI 1.0
 ; ---------------------------------------------------------------------------
 ; Der Kernel behält MMIO und die physische Framebufferadresse. Der initiale
@@ -6520,6 +6865,7 @@ display_server_initialize:
     shl eax, 2
     cmp [kernel_context + CONTEXT_PITCH], eax
     jb .invalid
+    call ps2_mouse_initialize
     mov dword [display_primary_id], 1
     mov dword [display_server_ready], 1
 .fallback:
@@ -6556,6 +6902,18 @@ display_input_target:     dd 0
 display_input_dropped:    dd 0
 keyboard_extended:        db 0
 keyboard_break_pending:   db 0
+mouse_ready:              db 0
+mouse_packet_index:       db 0
+mouse_buttons:            db 0
+mouse_cursor_valid:       db 0
+align 4
+mouse_x:                  dd 0
+mouse_y:                  dd 0
+mouse_saved_x:            dd 0
+mouse_saved_y:            dd 0
+mouse_packet:             times 3 db 0
+align 4
+mouse_background:         times 12 * 16 dd 0
 align 4
 
 ; Kernel Security / Capability Manager (ADR-2013)
