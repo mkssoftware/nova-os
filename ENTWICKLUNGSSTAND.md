@@ -713,3 +713,49 @@ Die vorhandenen drei Kernelthreads sind inzwischen echte verwaltete Tasks im
 Kernel-Root-Scope. Der Timer-Scheduler spiegelt seine Round-Robin-Auswahl in den
 Taskzuständen `Ready` und `Running`, ohne Cancellation- oder Terminalzustände zu
 überschreiben. Die Zuordnung bleibt über feste Task-IDs introspektierbar.
+
+Task-Deadlines verwenden jetzt die monotone 100-Hz-Kernelzeit und unterscheiden
+Hard, Firm und Soft. Child-Tasks können eine Parent-Deadline verschärfen, aber
+nicht verlängern. Deadline Miss und Cancellation bleiben getrennte Zustände;
+eine Cancel-Policy verwendet anschließend den normalen kooperativen
+Cancellation-Pfad. Der IRQ0-Poll ist durch die feste Taskkapazität begrenzt.
+
+Mehrere Tasks lassen sich nun als Task Group mit `WaitAll` oder `FailFast`
+verwalten. `WaitAll` wartet auf alle erforderlichen Ergebnisse. `FailFast`
+propagiert den ersten Fehler, fordert Cancellation für verbleibende Tasks an
+und erreicht den terminalen Fehlerzustand erst nach vollständigem Drain. Damit
+bleiben Gruppen-Lifecycle, Fehler und Scope-Abschluss konsistent.
+
+Auf dieser Grundlage ist nun auch der erste gemeinsame Async-I/O-Unterbau
+vorhanden. I/O-Requests sind eindeutig einer Task und ihrem Scope zugeordnet,
+übernehmen deren Deadline und liefern genau eine Completion mit Erfolg,
+Teilerfolg, Fehler, Cancellation oder Deadline Miss. Die feste Queue mit acht
+offenen Requests erzeugt bei Überlastung definierte Backpressure. Task-Abbruch
+und Deadline-Miss schließen abhängige Requests kontrolliert, ohne einen Thread
+pro I/O anzulegen. Ein echter Geräteprovider ist in diesem Schritt noch nicht
+angebunden; das Modell stellt dafür die geprüfte ABI- und Lifecycle-Basis bereit.
+
+Der I/O-Scheduler verarbeitet jetzt die Klassen Realtime, Interactive, Normal,
+Background und Maintenance. Angeforderte und wirksame Priorität bleiben
+getrennt, wobei unprivilegierte Realtime-Anforderungen kontrolliert begrenzt
+werden. Deadline-Requests können niedrigere Priorität überstimmen; ansonsten
+gelten wirksame Priorität und FIFO-Alter. Eine begrenzte Aging-Regel hebt lange
+wartende Requests schrittweise an und verhindert dadurch Starvation. Requeue
+erhält Identität und Wartehistorie, wenn ein späterer Provider vorübergehend
+keine Kapazität besitzt.
+
+Ein separates I/O-QoS-Modell ergänzt diesen Scheduler. Profile beschreiben
+Latenzziel, Durchsatzwunsch, Bandbreitengrenze, Klasse und ein Budget für offene
+Requests. Harte Anforderungen durchlaufen Admission Control: Ohne geeigneten
+Provider werden Durchsatz- oder Bandbreitengarantien abgewiesen, statt nur auf
+dem Papier zugesagt zu werden. Weiche, derzeit nicht vollständig erfüllbare
+Wünsche bleiben nutzbar, sind jedoch explizit als degradiert markiert.
+Completion-Accounting erfasst beobachtete Latenz, Bytes und Zielverletzungen;
+Budgetüberschreitungen werden kontrolliert gedrosselt und gezählt.
+
+Terminale I/O-Ergebnisse werden jetzt außerdem über eine eigene Completion
+Queue zugestellt. Der begrenzte 16er-FIFO enthält Request-ID, Ergebnisstatus,
+Bytes, Fehler, Zeitstempel und Latenz und kann mehrere Einträge als Batch
+ausgeben. Submission- und Completion-Reihenfolge sind dadurch nicht gekoppelt.
+Ein voller Ring wächst nicht unkontrolliert; Overflow wird gezählt, während das
+autoritative Ergebnis weiterhin im Request-Datensatz erhalten bleibt.

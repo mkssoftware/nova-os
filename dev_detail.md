@@ -1635,3 +1635,152 @@ verbunden.
 Der Thread-Manager-Selbsttest validiert Owner, Root-Scope-Zuordnung und die
 vollständige Taskbelegung aller drei Scheduler-Slots. Der UEFI-End-to-End-Test
 verlangt nun auch den erfolgreichen Thread-Manager-Marker.
+
+## 68. Hierarchische Task-Deadlines
+
+Tasks können nun eine absolute Deadline auf der monotonen 100-Hz-PIT-Zeitbasis
+erhalten. Die ABI unterscheidet Hard-, Firm- und Soft-Deadlines sowie die
+Miss-Policies `Continue`, `Cancel` und `Fail`. Deadline-Klasse, effektiver Tick,
+Policy und Miss-Zustand bleiben getrennt introspektierbar.
+
+Eine Child-Task darf das Zeitbudget ihrer Parent-Task nicht verlängern. Fordert
+sie eine spätere Deadline an, klemmt der Kernel die effektive Deadline auf die
+frühere Parent-Grenze. Eine geerbte Hard-Deadline bleibt hard. Hard Deadlines
+mit stiller `Continue`-Policy oder bereits abgelaufenem Zeitbudget werden durch
+die Bootstrap-Admission-Control abgewiesen.
+
+IRQ0 prüft bewaffnete Deadlines begrenzt über die feste Tasktabelle. Ein Miss
+wird zunächst als eigener Deadline-Zustand gezählt. `Cancel` fordert danach den
+normalen kooperativen Task-Abbruch an; `Fail` setzt einen kontrollierten
+terminalen Fehlerzustand. Es erfolgt kein harter Thread-Kill.
+
+Der Selbsttest prüft Parent-Clamping, Klassenvererbung, Miss-Erkennung und die
+Weiterleitung in den Cancellation Point. Das versionierte ABI steht in
+`kernel/include/nova/task_deadline.h`.
+
+## 69. Task Groups mit WaitAll und FailFast
+
+Der Kernel bündelt mehrere Tasks jetzt in begrenzten Task Groups. Jede Gruppe
+besitzt eine stabile ID, einen Prozess-Owner, genau einen Scope und eine
+explizite Completion-/Failure-Policy. Die Zuordnung eines Tasks erfolgt über
+eine feste Sidecar-Tabelle und verändert das Task-ABI nicht.
+
+`WaitAll` bleibt offen, bis alle erforderlichen Tasks terminal sind. `FailFast`
+wechselt beim ersten Fehler zunächst in `Failing`, fordert für verbleibende
+Tasks kooperative Cancellation an und wird erst nach deren Cleanup und Drain
+terminal `Failed`. Eine explizit gecancelte Gruppe folgt entsprechend
+`Cancelling` zu `Cancelled`.
+
+Task-Completion, Task-Fehler, Cancellation Points und deadlinebedingte Fehler
+melden ihren Ausgang an die owning Group. Dadurch gehen Fehler nicht verloren,
+und eine Gruppe wird nicht erfolgreich abgeschlossen, solange abhängige Arbeit
+ungelöst ist.
+
+Der Selbsttest prüft einen erfolgreichen WaitAll-Lauf sowie FailFast mit
+Fehlerweitergabe, Cancellation des zweiten Tasks und vollständigem Drain. Das
+öffentliche ABI steht in `kernel/include/nova/task_group.h`.
+
+## 70. Begrenztes asynchrones I/O-Request-Modell
+
+Der Kernel besitzt nun ein erstes gemeinsames, completion-basiertes I/O-Modell.
+Ein `IORequest` beschreibt Owner-Prozess, owning Task und Scope, Operation,
+Ziel- und Buffer-Handle, Länge, Priorität und eine stabile Request-ID. Es werden
+bewusst nur Handle-Identitäten und keine rohen Userspace- oder MMIO-Adressen im
+öffentlichen Datensatz geführt.
+
+Request-Erzeugung, spätere Provider-Ausführung und Completion sind getrennte
+Phasen. Eine Completion unterscheidet vollständigen Erfolg, Teilerfolg,
+kontrollierten Fehler, Cancellation und Deadline Miss. Der Zustandsautomat
+akzeptiert genau einen terminalen Ausgang; verspätete zweite Completions oder
+Cancellation nach Abschluss werden abgewiesen.
+
+Jeder Request gehört zu einer aktiven verwalteten Task und übernimmt deren
+Scope sowie eine bewaffnete monotone Deadline. Task-Cancellation beendet noch
+offene Requests kontrolliert. IRQ0 erkennt Deadline-Misses über die feste
+Tabelle, bewahrt den Miss als eigenen Completion-Status und macht den Request
+anschließend terminal. Es wird kein Thread pro I/O erzeugt.
+
+Die Queue ist auf acht gleichzeitig offene Requests begrenzt. Ist sie voll,
+wird die Einreichung deterministisch als Backpressure abgewiesen und gezählt,
+statt unbeschränkt Kernel-Speicher zu belegen. Der Start-Selbsttest prüft
+partielle Completion, Scope-/Deadline-Vererbung, volle Queue, Backpressure,
+Cancellation-Propagation und die Eindeutigkeit terminaler Ergebnisse. Das
+versionierte 32-Byte-API und der 64-Byte-Request-Datensatz stehen in
+`kernel/include/nova/io_request.h`. Konkrete Geräteprovider folgen getrennt.
+
+## 71. I/O-Prioritäten und zentraler I/O-Scheduler
+
+Das I/O-Modell unterstützt nun die fünf logischen Klassen `Realtime`,
+`Interactive`, `Normal`, `Background` und `Maintenance`. Fehlt eine Angabe,
+wird `Normal` verwendet. Angeforderte und tatsächlich wirksame Priorität sind
+getrennt im Request sichtbar. Die Bootstrap-Policy begrenzt eine nicht durch
+weitere Rechte belegte Realtime-Anforderung auf `Interactive`; Priorität wird
+damit nicht implizit zu einer Berechtigung.
+
+Der neue zentrale I/O-Scheduler löst Submission- und Ausführungsreihenfolge
+voneinander. Requests mit Deadline werden nach der frühesten Zeitgrenze
+ausgewählt. Ohne zeitliche Vorgabe entscheiden wirksame Priorität und danach
+das Einreichungsalter. Ein vom Provider wegen eigener Backpressure noch nicht
+übernommener Request kann ohne Verlust seiner Identität wieder eingereiht
+werden.
+
+Nicht ausgewählte Requests sammeln begrenzte Aging-Runden. Nach vier Runden
+werden niedrige Klassen schrittweise bis maximal `Interactive` angehoben. Das
+verhindert Starvation, ohne stillschweigend Realtime-Rechte zu vergeben. Queue,
+Einreichungszeit, Dispatch-Zeit, Aging, Dispatch- und Promotion-Zähler sind
+über feste Datensätze beziehungsweise Sidecars introspektierbar.
+
+Der Selbsttest beweist die Policy-Begrenzung, den Vorrang einer Maintenance-
+Anfrage mit Deadline vor einer Realtime-Anforderung ohne Deadline, Requeue,
+Completion und vollständigen Scope-Abschluss. Das ABI steht in
+`kernel/include/nova/io_scheduler.h`.
+
+## 72. I/O Quality of Service und Admission Control
+
+I/O-Requests können nun einem eigenständigen QoS-Profil zugeordnet werden.
+Das Profil hält Klasse, Latenzziel, Mindestdurchsatz, maximale Bandbreite und
+ein Budget für gleichzeitig offene Requests. QoS, Request-Priorität und
+Deadline bleiben getrennte Eigenschaften; die Profilklasse darf lediglich die
+wirksame Scheduler-Priorität innerhalb der bestehenden Policy verschärfen.
+
+Harte und weiche Anforderungen werden verschieden behandelt. Die aktuelle
+Bootstrap-Implementierung kann ein hartes Latenzziel ab zwei PIT-Ticks prüfen.
+Harte Durchsatz- oder Bandbreitengarantien werden ohne messenden Geräteprovider
+bei der Admission Control abgewiesen. Weiche Wünsche dürfen angenommen werden,
+werden dann aber ausdrücklich als `Degraded` samt Ursache ausgewiesen. Dadurch
+täuscht der Kernel keine noch nicht belegbare Garantie vor.
+
+`MaximumOutstanding` dient als erstes pro Profil zurechenbares Ressourcenbudget.
+Ist es ausgeschöpft, wird das Attach kontrolliert gedrosselt und gezählt; eine
+hohe QoS-Klasse umgeht weder die globale Queue noch dieses Budget. Bei terminaler
+Completion erfasst der Kernel aktive Requests, beobachtete Latenz, übertragene
+Bytes und Zielverletzungen getrennt von den angeforderten Werten.
+
+Der Selbsttest prüft weiche Degradation, Ablehnung einer harten, nicht belegbaren
+Garantie, Owner-Zuordnung, Budgetdrosselung und Completion-Accounting. Das
+versionierte ABI steht in `kernel/include/nova/io_qos.h`.
+
+## 73. I/O Completion Queue und Batch-Zustellung
+
+Terminale I/O-Ausgänge werden nun zusätzlich zum autoritativen Request-Zustand
+als eigene `IOCompletion`-Datensätze veröffentlicht. Jeder 32-Byte-Eintrag
+enthält Request-ID, Owner, Status, tatsächlich übertragene Bytes, Fehlercode,
+Completion-Tick, beobachtete Latenz und Deadline-/Request-Flags. Dadurch bleibt
+eine Completion eindeutig einem Request zuordenbar, auch wenn dessen Tabellenslot
+später wiederverwendet wird.
+
+Die Completion Queue ist als begrenzter FIFO-Ring mit 16 Einträgen umgesetzt.
+Consumer können einen oder mehrere Einträge in einem Aufruf abholen. Diese
+Batch-Zustellung bildet die gemeinsame Grundlage für spätere Event-, Future-
+oder `async`/`await`-Adapter, ohne einen Callback oder Thread pro I/O zu erzwingen.
+Submission- und Completion-Reihenfolge sind ausdrücklich unabhängig.
+
+Erfolg, Partial, Fehler, Cancellation und Deadline Miss werden aus allen
+terminalen Request-Pfaden veröffentlicht. Erst dieser Punkt erlaubt die sichere
+Wiederverwendung des zugehörigen Buffers nach dessen I/O-Semantik. Ist der Ring
+voll, wächst er nicht unbeschränkt: Der Overflow wird explizit gezählt, während
+der terminale Zustand weiterhin im Request-Datensatz erhalten bleibt.
+
+Der Selbsttest prüft Batch-Dequeue, vollständige und partielle Übertragung,
+Abschlussreihenfolge `B,A`, Ring-Wrap und sichtbaren Overflow beim siebzehnten
+ungelesenen Ergebnis. Das ABI steht in `kernel/include/nova/io_completion.h`.

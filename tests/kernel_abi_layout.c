@@ -11,6 +11,12 @@
 #include "../kernel/include/nova/thread.h"
 #include "../kernel/include/nova/task_scope.h"
 #include "../kernel/include/nova/task.h"
+#include "../kernel/include/nova/task_deadline.h"
+#include "../kernel/include/nova/task_group.h"
+#include "../kernel/include/nova/io_request.h"
+#include "../kernel/include/nova/io_scheduler.h"
+#include "../kernel/include/nova/io_qos.h"
+#include "../kernel/include/nova/io_completion.h"
 
 _Static_assert(NOVA_BOOT_PHASE_COUNT==12,"Kernel boot phase count changed");
 _Static_assert(NOVA_BOOT_PHASE_OPERATIONAL==11,"Kernel operational phase changed");
@@ -38,5 +44,16 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(nova_task_scope_record_t)==32&&
            sizeof(nova_task_scope_api_t)==32&&
            sizeof(nova_task_record_t)==32&&sizeof(nova_task_api_t)==32&&
+           sizeof(nova_task_deadline_record_t)==16&&
+           sizeof(nova_task_deadline_api_t)==32&&
+           sizeof(nova_task_group_record_t)==32&&
+           sizeof(nova_task_group_api_t)==32&&
+           sizeof(nova_io_request_record_t)==64&&
+           sizeof(nova_io_request_api_t)==32&&
+           sizeof(nova_io_scheduler_api_t)==32&&
+           sizeof(nova_io_qos_record_t)==64&&
+           sizeof(nova_io_qos_api_t)==32&&
+           sizeof(nova_io_completion_record_t)==32&&
+           sizeof(nova_io_completion_api_t)==32&&
            sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==32;
 }

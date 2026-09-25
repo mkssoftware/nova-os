@@ -200,6 +200,47 @@ kernel_entry:
     mov esi, message_task_manager_ok
     call serial_write_string
 
+    call task_deadline_manager_initialize
+    jc panic_task_deadline_manager
+    call task_deadline_manager_self_test
+    jc panic_task_deadline_manager
+    mov esi, message_task_deadline_manager_ok
+    call serial_write_string
+
+    call task_group_manager_initialize
+    jc panic_task_group_manager
+    call task_group_manager_self_test
+    jc panic_task_group_manager
+    mov esi, message_task_group_manager_ok
+    call serial_write_string
+
+    call io_request_manager_initialize
+    jc panic_io_request_manager
+    call io_completion_initialize
+    jc panic_io_completion
+    call io_request_manager_self_test
+    jc panic_io_request_manager
+    mov esi, message_io_request_manager_ok
+    call serial_write_string
+    call io_completion_self_test
+    jc panic_io_completion
+    mov esi, message_io_completion_ok
+    call serial_write_string
+
+    call io_scheduler_initialize
+    jc panic_io_scheduler
+    call io_scheduler_self_test
+    jc panic_io_scheduler
+    mov esi, message_io_scheduler_ok
+    call serial_write_string
+
+    call io_qos_initialize
+    jc panic_io_qos
+    call io_qos_self_test
+    jc panic_io_qos
+    mov esi, message_io_qos_ok
+    call serial_write_string
+
     call security_initialize
     jc panic_security
     call security_self_test
@@ -353,6 +394,42 @@ panic_task_manager:
     mov eax, 0x00002019
     mov edx, 25
     mov esi, message_task_manager_error
+    jmp kernel_panic
+
+panic_task_deadline_manager:
+    mov eax, 0x0000201A
+    mov edx, 26
+    mov esi, message_task_deadline_manager_error
+    jmp kernel_panic
+
+panic_task_group_manager:
+    mov eax, 0x0000201B
+    mov edx, 27
+    mov esi, message_task_group_manager_error
+    jmp kernel_panic
+
+panic_io_request_manager:
+    mov eax, 0x0000201C
+    mov edx, 28
+    mov esi, message_io_request_manager_error
+    jmp kernel_panic
+
+panic_io_completion:
+    mov eax, 0x0000201F
+    mov edx, 31
+    mov esi, message_io_completion_error
+    jmp kernel_panic
+
+panic_io_scheduler:
+    mov eax, 0x0000201D
+    mov edx, 29
+    mov esi, message_io_scheduler_error
+    jmp kernel_panic
+
+panic_io_qos:
+    mov eax, 0x0000201E
+    mov edx, 30
+    mov esi, message_io_qos_error
     jmp kernel_panic
 
 panic_security:
@@ -2732,6 +2809,9 @@ interrupt_dispatch:
 .timer_mouse:
     call ps2_mouse_handle_byte
 .timer_schedule:
+    call task_deadline_poll
+    call io_request_poll_deadlines
+    call io_cancel_for_requested_tasks
     mov eax, [interrupt_return_frame]
     push eax
     call scheduler_on_tick
@@ -4104,6 +4184,16 @@ task_create:
     inc ecx
     jmp .scan
 .slot:
+    mov edx, edi
+    sub edx, task_table
+    shr edx, 5
+    mov dword [task_group_ids + edx * 4], 0
+    shl edx, 4
+    add edx, task_deadline_table
+    mov dword [edx + 0], 0
+    mov dword [edx + 4], 0
+    mov dword [edx + 8], 0
+    mov dword [edx + 12], 0
     mov eax, [task_next_id]
     mov [edi + TASK_ID], eax
     mov edx, [task_temp_owner]
@@ -4229,6 +4319,7 @@ task_request_cancel:
 .propagated:
     test ebp, ebp
     jnz .propagate
+    call io_cancel_for_requested_tasks
     popfd
     clc
     ret
@@ -4281,7 +4372,10 @@ task_checkpoint:
     jc .invalid
     cmp dword [eax + TASK_STATE], TASK_STATE_CANCEL_REQUEST
     jne .active
+    mov [task_terminal_record], eax
     mov dword [eax + TASK_STATE], TASK_STATE_CANCELLED
+    call task_group_on_terminal
+    mov eax, [task_terminal_record]
     call task_release_scope
     jc .invalid
     mov eax, 1
@@ -4311,9 +4405,42 @@ task_complete:
     jb .invalid
     cmp dword [eax + TASK_STATE], TASK_STATE_WAITING
     ja .invalid
+    mov [task_terminal_record], eax
     mov dword [eax + TASK_STATE], TASK_STATE_COMPLETED
     mov edx, [task_temp_result]
     mov [eax + TASK_RESULT], edx
+    call task_group_on_terminal
+    mov eax, [task_terminal_record]
+    call task_release_scope
+    jc .invalid
+    mov eax, [task_temp_complete_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Task-ID, EDX=Fehlercode. Kontrollierter terminaler Fehlerpfad.
+task_fail:
+    pushfd
+    cli
+    mov [task_temp_complete_id], eax
+    mov [task_temp_result], edx
+    call task_lookup
+    jc .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CREATED
+    jb .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_WAITING
+    ja .invalid
+    mov [task_terminal_record], eax
+    mov dword [eax + TASK_STATE], TASK_STATE_FAILED
+    mov edx, [task_temp_result]
+    mov [eax + TASK_RESULT], edx
+    call task_group_on_terminal
+    mov eax, [task_terminal_record]
     call task_release_scope
     jc .invalid
     mov eax, [task_temp_complete_id]
@@ -4434,12 +4561,2252 @@ task_temp_cancel_id:      dd 0
 task_temp_cancel_reason:  dd 0
 task_temp_complete_id:    dd 0
 task_temp_result:         dd 0
+task_terminal_record:     dd 0
 task_test_scope:          dd 0
 task_test_parent:         dd 0
 task_test_child:          dd 0
 align 4
 task_table:
     times TASK_CAPACITY * TASK_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Hierarchische Task-Deadlines auf monotoner PIT-Zeitbasis
+; NPSPEC-CONCURRENCY-DEADLINE-0001 / ADR-CONCURRENCY-0004
+; ---------------------------------------------------------------------------
+
+TASK_DEADLINE_API_SIZE       equ 32
+TASK_DEADLINE_CLOCK_HZ       equ 100
+TASK_DEADLINE_CLASS_HARD     equ 1
+TASK_DEADLINE_CLASS_FIRM     equ 2
+TASK_DEADLINE_CLASS_SOFT     equ 3
+TASK_DEADLINE_POLICY_CONTINUE equ 1
+TASK_DEADLINE_POLICY_CANCEL  equ 2
+TASK_DEADLINE_POLICY_FAIL    equ 3
+TASK_DEADLINE_STATE_NONE     equ 0
+TASK_DEADLINE_STATE_ARMED    equ 1
+TASK_DEADLINE_STATE_MISSED   equ 2
+TASK_DEADLINE_ABSOLUTE       equ 0
+TASK_DEADLINE_CLASS          equ 4
+TASK_DEADLINE_POLICY         equ 8
+TASK_DEADLINE_STATE          equ 12
+TASK_DEADLINE_CAPABILITIES   equ 0x0000000F
+TASK_CANCEL_REASON_DEADLINE  equ 0x444C4E45
+
+task_deadline_manager_initialize:
+    mov edi, task_deadline_table
+    xor eax, eax
+    mov ecx, (TASK_CAPACITY * 16) / 4
+    rep stosd
+    mov dword [task_deadline_miss_count], 0
+    mov dword [task_deadline_manager_ready], 1
+    clc
+    ret
+
+; EAX=Taskdatensatz. EAX=zugehoeriger Deadline-Datensatz.
+task_deadline_record_for_task:
+    sub eax, task_table
+    shr eax, 1                       ; 32 Byte Task -> 16 Byte Deadline
+    add eax, task_deadline_table
+    ret
+
+; EAX=Task-ID, EDX=absoluter Tick, EBX=Klasse, ECX=Miss-Policy.
+; Eine Parent-Deadline wird niemals verlaengert.
+task_deadline_set:
+    pushfd
+    cli
+    mov [task_deadline_temp_task], eax
+    mov [task_deadline_temp_tick], edx
+    mov [task_deadline_temp_class], ebx
+    mov [task_deadline_temp_policy], ecx
+    cmp ebx, TASK_DEADLINE_CLASS_HARD
+    jb .invalid
+    cmp ebx, TASK_DEADLINE_CLASS_SOFT
+    ja .invalid
+    cmp ecx, TASK_DEADLINE_POLICY_CONTINUE
+    jb .invalid
+    cmp ecx, TASK_DEADLINE_POLICY_FAIL
+    ja .invalid
+    test edx, edx
+    jz .invalid
+
+    call task_lookup
+    jc .invalid
+    mov [task_deadline_temp_record], eax
+    cmp dword [eax + TASK_STATE], TASK_STATE_CREATED
+    jb .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_WAITING
+    ja .invalid
+
+    mov eax, [eax + TASK_PARENT]
+    test eax, eax
+    jz .validate_effective
+    call task_lookup
+    jc .invalid
+    call task_deadline_record_for_task
+    cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
+    jne .validate_effective
+    mov edx, [task_deadline_temp_tick]
+    sub edx, [eax + TASK_DEADLINE_ABSOLUTE]
+    jle .inherit_class
+    mov edx, [eax + TASK_DEADLINE_ABSOLUTE]
+    mov [task_deadline_temp_tick], edx
+.inherit_class:
+    cmp dword [eax + TASK_DEADLINE_CLASS], TASK_DEADLINE_CLASS_HARD
+    jne .validate_effective
+    mov dword [task_deadline_temp_class], TASK_DEADLINE_CLASS_HARD
+
+.validate_effective:
+    cmp dword [task_deadline_temp_class], TASK_DEADLINE_CLASS_HARD
+    jne .store
+    cmp dword [task_deadline_temp_policy], TASK_DEADLINE_POLICY_CONTINUE
+    je .invalid                       ; Hard Miss darf nicht still ignoriert werden
+    mov eax, [task_deadline_temp_tick]
+    sub eax, [timer_ticks]
+    jle .invalid                       ; minimale Bootstrap-Admission-Control
+
+.store:
+    mov eax, [task_deadline_temp_record]
+    call task_deadline_record_for_task
+    mov edx, [task_deadline_temp_tick]
+    mov [eax + TASK_DEADLINE_ABSOLUTE], edx
+    mov edx, [task_deadline_temp_class]
+    mov [eax + TASK_DEADLINE_CLASS], edx
+    mov edx, [task_deadline_temp_policy]
+    mov [eax + TASK_DEADLINE_POLICY], edx
+    mov dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
+    mov eax, [task_deadline_temp_tick]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; Wird aus IRQ0 und Tests aufgerufen. Deadline Miss und Cancellation bleiben
+; getrennte Zustandsinformationen.
+task_deadline_poll:
+    cmp dword [task_deadline_manager_ready], 1
+    jne .done
+    mov eax, [timer_ticks]
+    mov [task_deadline_poll_tick], eax
+    xor ecx, ecx
+.scan:
+    cmp ecx, TASK_CAPACITY
+    jae .done
+    mov edi, ecx
+    shl edi, 5
+    add edi, task_table
+    cmp dword [edi + TASK_STATE], TASK_STATE_CREATED
+    jb .next
+    cmp dword [edi + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jae .next
+    mov eax, ecx
+    shl eax, 4
+    add eax, task_deadline_table
+    cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
+    jne .next
+    mov edx, [task_deadline_poll_tick]
+    sub edx, [eax + TASK_DEADLINE_ABSOLUTE]
+    jl .next
+    mov dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_MISSED
+    inc dword [task_deadline_miss_count]
+    mov edx, [eax + TASK_DEADLINE_POLICY]
+    cmp edx, TASK_DEADLINE_POLICY_CANCEL
+    je .cancel
+    cmp edx, TASK_DEADLINE_POLICY_FAIL
+    je .fail
+    jmp .next
+.cancel:
+    mov eax, [edi + TASK_ID]
+    mov edx, TASK_CANCEL_REASON_DEADLINE
+    push ecx
+    call task_request_cancel
+    pop ecx
+    jmp .next
+.fail:
+    mov dword [edi + TASK_STATE], TASK_STATE_FAILED
+    mov dword [edi + TASK_RESULT], TASK_CANCEL_REASON_DEADLINE
+    push edi
+    mov eax, edi
+    call task_group_on_terminal
+    pop edi
+    mov eax, edi
+    push ecx
+    call task_release_scope
+    pop ecx
+.next:
+    inc ecx
+    jmp .scan
+.done:
+    clc
+    ret
+
+task_deadline_manager_self_test:
+    ; Parent 100 Ticks, Child fordert 200: effektiv bleiben 100 und Hard.
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [task_deadline_test_scope], eax
+    mov eax, 1
+    mov edx, [task_deadline_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [task_deadline_test_parent], eax
+    mov edx, [timer_ticks]
+    add edx, 100
+    mov [task_deadline_test_parent_tick], edx
+    mov ebx, TASK_DEADLINE_CLASS_HARD
+    mov ecx, TASK_DEADLINE_POLICY_CANCEL
+    call task_deadline_set
+    jc .invalid
+
+    mov eax, 1
+    mov edx, [task_deadline_test_scope]
+    mov ebx, [task_deadline_test_parent]
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [task_deadline_test_child], eax
+    mov edx, [timer_ticks]
+    add edx, 200
+    mov ebx, TASK_DEADLINE_CLASS_SOFT
+    mov ecx, TASK_DEADLINE_POLICY_CANCEL
+    call task_deadline_set
+    jc .invalid
+    mov eax, [task_deadline_test_child]
+    call task_lookup
+    jc .invalid
+    call task_deadline_record_for_task
+    mov edx, [task_deadline_test_parent_tick]
+    cmp [eax + TASK_DEADLINE_ABSOLUTE], edx
+    jne .invalid
+    cmp dword [eax + TASK_DEADLINE_CLASS], TASK_DEADLINE_CLASS_HARD
+    jne .invalid
+    mov eax, [task_deadline_test_child]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [task_deadline_test_parent]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [task_deadline_test_scope]
+    call task_scope_close
+    jc .invalid
+
+    ; Eine bereits erreichte Firm-Deadline fordert kooperative Cancellation an.
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [task_deadline_test_scope], eax
+    mov eax, 1
+    mov edx, [task_deadline_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [task_deadline_test_parent], eax
+    mov edx, [timer_ticks]
+    mov ebx, TASK_DEADLINE_CLASS_FIRM
+    mov ecx, TASK_DEADLINE_POLICY_CANCEL
+    call task_deadline_set
+    jc .invalid
+    call task_deadline_poll
+    mov eax, [task_deadline_test_parent]
+    call task_lookup
+    jc .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jne .invalid
+    cmp dword [eax + TASK_CANCEL_REASON], TASK_CANCEL_REASON_DEADLINE
+    jne .invalid
+    call task_deadline_record_for_task
+    cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_MISSED
+    jne .invalid
+    cmp dword [task_deadline_miss_count], 1
+    jne .invalid
+    mov eax, [task_deadline_test_parent]
+    call task_checkpoint
+    jc .invalid
+    mov eax, [task_deadline_test_scope]
+    call task_scope_close
+    jc .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+task_deadline_manager_api:
+    dd TASK_DEADLINE_API_SIZE
+    dw 1, 0
+    dd TASK_DEADLINE_CLOCK_HZ
+    dd TASK_DEADLINE_CAPABILITIES
+    dd task_deadline_set
+    dd task_deadline_poll
+    dd task_deadline_table
+    dd task_deadline_miss_count
+
+task_deadline_manager_ready:    dd 0
+task_deadline_miss_count:       dd 0
+task_deadline_poll_tick:        dd 0
+task_deadline_temp_task:        dd 0
+task_deadline_temp_tick:        dd 0
+task_deadline_temp_class:       dd 0
+task_deadline_temp_policy:      dd 0
+task_deadline_temp_record:      dd 0
+task_deadline_test_scope:       dd 0
+task_deadline_test_parent:      dd 0
+task_deadline_test_child:       dd 0
+task_deadline_test_parent_tick: dd 0
+align 4
+task_deadline_table:
+    times TASK_CAPACITY * 16 db 0
+
+; ---------------------------------------------------------------------------
+; Task Groups mit WaitAll, FailFast, Cancellation und Drain
+; NPSPEC-CONCURRENCY-TASKGROUP-0001
+; ---------------------------------------------------------------------------
+
+TASK_GROUP_API_SIZE          equ 32
+TASK_GROUP_CAPACITY          equ 4
+TASK_GROUP_RECORD_SIZE       equ 32
+TASK_GROUP_STATE_EMPTY       equ 0
+TASK_GROUP_STATE_OPEN        equ 1
+TASK_GROUP_STATE_CANCELLING  equ 2
+TASK_GROUP_STATE_FAILING     equ 3
+TASK_GROUP_STATE_COMPLETED   equ 4
+TASK_GROUP_STATE_CANCELLED   equ 5
+TASK_GROUP_STATE_FAILED      equ 6
+TASK_GROUP_POLICY_WAIT_ALL   equ 1
+TASK_GROUP_POLICY_FAIL_FAST  equ 2
+TASK_GROUP_CAPABILITIES      equ 0x0000000F
+TASK_GROUP_ID                equ 0
+TASK_GROUP_OWNER             equ 4
+TASK_GROUP_SCOPE             equ 8
+TASK_GROUP_STATE             equ 12
+TASK_GROUP_POLICY            equ 16
+TASK_GROUP_REQUIRED          equ 20
+TASK_GROUP_ACTIVE            equ 24
+TASK_GROUP_FAILURES          equ 28
+TASK_CANCEL_REASON_GROUP     equ 0x47525043
+
+task_group_manager_initialize:
+    mov edi, task_group_table
+    xor eax, eax
+    mov ecx, (TASK_GROUP_CAPACITY * TASK_GROUP_RECORD_SIZE) / 4
+    rep stosd
+    mov edi, task_group_ids
+    mov ecx, TASK_CAPACITY
+    rep stosd
+    mov dword [task_group_count], 0
+    mov dword [task_group_next_id], 1
+    mov dword [task_group_manager_ready], 1
+    clc
+    ret
+
+; EAX=Owner-PID, EDX=Scope-ID, EBX=Policy. EAX=Group-ID.
+task_group_create:
+    pushfd
+    cli
+    mov [task_group_temp_owner], eax
+    mov [task_group_temp_scope], edx
+    mov [task_group_temp_policy], ebx
+    cmp ebx, TASK_GROUP_POLICY_WAIT_ALL
+    jb .invalid
+    cmp ebx, TASK_GROUP_POLICY_FAIL_FAST
+    ja .invalid
+    call process_lookup
+    jc .invalid
+    mov eax, [task_group_temp_scope]
+    call task_scope_lookup
+    jc .invalid
+    cmp dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_OPEN
+    jne .invalid
+    mov edx, [task_group_temp_owner]
+    cmp [eax + TASK_SCOPE_OWNER], edx
+    jne .invalid
+    xor ecx, ecx
+.scan:
+    cmp ecx, TASK_GROUP_CAPACITY
+    jae .invalid
+    mov edi, ecx
+    shl edi, 5
+    add edi, task_group_table
+    cmp dword [edi + TASK_GROUP_STATE], TASK_GROUP_STATE_EMPTY
+    je .slot
+    cmp dword [edi + TASK_GROUP_STATE], TASK_GROUP_STATE_COMPLETED
+    jae .slot
+    inc ecx
+    jmp .scan
+.slot:
+    mov eax, [task_group_next_id]
+    mov [edi + TASK_GROUP_ID], eax
+    mov edx, [task_group_temp_owner]
+    mov [edi + TASK_GROUP_OWNER], edx
+    mov edx, [task_group_temp_scope]
+    mov [edi + TASK_GROUP_SCOPE], edx
+    mov dword [edi + TASK_GROUP_STATE], TASK_GROUP_STATE_OPEN
+    mov edx, [task_group_temp_policy]
+    mov [edi + TASK_GROUP_POLICY], edx
+    mov dword [edi + TASK_GROUP_REQUIRED], 0
+    mov dword [edi + TASK_GROUP_ACTIVE], 0
+    mov dword [edi + TASK_GROUP_FAILURES], 0
+    inc dword [task_group_count]
+    inc dword [task_group_next_id]
+    mov eax, [edi + TASK_GROUP_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Group-ID. EAX=Datensatz oder 0.
+task_group_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, TASK_GROUP_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 5
+    add edx, task_group_table
+    cmp dword [edx + TASK_GROUP_STATE], TASK_GROUP_STATE_EMPTY
+    je .next
+    cmp [edx + TASK_GROUP_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Group-ID, EDX=Task-ID.
+task_group_attach:
+    pushfd
+    cli
+    mov [task_group_temp_id], eax
+    mov [task_group_temp_task], edx
+    call task_group_lookup
+    jc .invalid
+    cmp dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_OPEN
+    jne .invalid
+    mov [task_group_temp_record], eax
+    mov eax, [task_group_temp_task]
+    call task_lookup
+    jc .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CREATED
+    jb .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_WAITING
+    ja .invalid
+    mov edx, [task_group_temp_record]
+    mov ecx, [edx + TASK_GROUP_OWNER]
+    cmp [eax + TASK_OWNER], ecx
+    jne .invalid
+    mov ecx, [edx + TASK_GROUP_SCOPE]
+    cmp [eax + TASK_RECORD_SCOPE], ecx
+    jne .invalid
+    mov ecx, eax
+    sub ecx, task_table
+    shr ecx, 5
+    cmp dword [task_group_ids + ecx * 4], 0
+    jne .invalid
+    mov eax, [task_group_temp_id]
+    mov [task_group_ids + ecx * 4], eax
+    inc dword [edx + TASK_GROUP_REQUIRED]
+    inc dword [edx + TASK_GROUP_ACTIVE]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Group-ID, EDX=Grund. Markiert aktive Mitglieder kooperativ.
+task_group_cancel_remaining:
+    mov [task_group_temp_id], eax
+    mov [task_group_temp_reason], edx
+    xor ecx, ecx
+.scan:
+    cmp ecx, TASK_CAPACITY
+    jae .done
+    mov eax, [task_group_ids + ecx * 4]
+    cmp eax, [task_group_temp_id]
+    jne .next
+    mov edi, ecx
+    shl edi, 5
+    add edi, task_table
+    cmp dword [edi + TASK_STATE], TASK_STATE_CREATED
+    jb .next
+    cmp dword [edi + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jae .next
+    mov eax, [edi + TASK_ID]
+    mov edx, [task_group_temp_reason]
+    push ecx
+    call task_request_cancel
+    pop ecx
+.next:
+    inc ecx
+    jmp .scan
+.done:
+    clc
+    ret
+
+; EAX=Group-ID, EDX=Grund.
+task_group_cancel:
+    pushfd
+    cli
+    mov [task_group_temp_id], eax
+    mov [task_group_temp_reason], edx
+    call task_group_lookup
+    jc .invalid
+    cmp dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_OPEN
+    jne .invalid
+    mov dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_CANCELLING
+    mov eax, [task_group_temp_id]
+    mov edx, [task_group_temp_reason]
+    call task_group_cancel_remaining
+    popfd
+    clc
+    ret
+.invalid:
+    popfd
+    stc
+    ret
+
+; EAX=terminaler Taskdatensatz. Aktualisiert Group-Policy und Drain-Zustand.
+task_group_on_terminal:
+    cmp dword [task_group_manager_ready], 1
+    jne .done
+    mov [task_group_terminal_task], eax
+    mov ecx, eax
+    sub ecx, task_table
+    shr ecx, 5
+    mov eax, [task_group_ids + ecx * 4]
+    test eax, eax
+    jz .done
+    mov [task_group_temp_id], eax
+    call task_group_lookup
+    jc .invalid
+    mov [task_group_temp_record], eax
+    cmp dword [eax + TASK_GROUP_ACTIVE], 0
+    je .invalid
+    dec dword [eax + TASK_GROUP_ACTIVE]
+
+    mov edi, [task_group_terminal_task]
+    cmp dword [edi + TASK_STATE], TASK_STATE_FAILED
+    jne .check_cancelled
+    inc dword [eax + TASK_GROUP_FAILURES]
+    cmp dword [eax + TASK_GROUP_POLICY], TASK_GROUP_POLICY_FAIL_FAST
+    jne .finalize
+    mov dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_FAILING
+    mov eax, [task_group_temp_id]
+    mov edx, [edi + TASK_RESULT]
+    call task_group_cancel_remaining
+    jmp .finalize_reload
+.check_cancelled:
+    cmp dword [edi + TASK_STATE], TASK_STATE_CANCELLED
+    jne .finalize
+    cmp dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_OPEN
+    jne .finalize
+    mov dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_CANCELLING
+.finalize_reload:
+    mov eax, [task_group_temp_id]
+    call task_group_lookup
+    jc .invalid
+.finalize:
+    cmp dword [eax + TASK_GROUP_ACTIVE], 0
+    jne .done
+    cmp dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_CANCELLING
+    je .cancelled
+    cmp dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_FAILING
+    je .failed
+    cmp dword [eax + TASK_GROUP_FAILURES], 0
+    jne .failed
+    mov dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_COMPLETED
+    jmp .terminal
+.cancelled:
+    mov dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_CANCELLED
+    jmp .terminal
+.failed:
+    mov dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_FAILED
+.terminal:
+    dec dword [task_group_count]
+.done:
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+task_group_manager_self_test:
+    ; WaitAll wird erst nach beiden erfolgreichen Tasks terminal.
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [task_group_test_scope], eax
+    mov eax, 1
+    mov edx, [task_group_test_scope]
+    mov ebx, TASK_GROUP_POLICY_WAIT_ALL
+    call task_group_create
+    jc .invalid
+    mov [task_group_test_group], eax
+    mov eax, 1
+    mov edx, [task_group_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [task_group_test_task1], eax
+    mov edx, eax
+    mov eax, [task_group_test_group]
+    call task_group_attach
+    jc .invalid
+    mov eax, 1
+    mov edx, [task_group_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [task_group_test_task2], eax
+    mov edx, eax
+    mov eax, [task_group_test_group]
+    call task_group_attach
+    jc .invalid
+    mov eax, [task_group_test_task1]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [task_group_test_group]
+    call task_group_lookup
+    jc .invalid
+    cmp dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_OPEN
+    jne .invalid
+    cmp dword [eax + TASK_GROUP_ACTIVE], 1
+    jne .invalid
+    mov eax, [task_group_test_task2]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [task_group_test_group]
+    call task_group_lookup
+    jc .invalid
+    cmp dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_COMPLETED
+    jne .invalid
+    mov eax, [task_group_test_scope]
+    call task_scope_close
+    jc .invalid
+
+    ; FailFast fordert fuer verbleibende Tasks Cancellation an und drainiert.
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [task_group_test_scope], eax
+    mov eax, 1
+    mov edx, [task_group_test_scope]
+    mov ebx, TASK_GROUP_POLICY_FAIL_FAST
+    call task_group_create
+    jc .invalid
+    mov [task_group_test_group], eax
+    mov eax, 1
+    mov edx, [task_group_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [task_group_test_task1], eax
+    mov edx, eax
+    mov eax, [task_group_test_group]
+    call task_group_attach
+    jc .invalid
+    mov eax, 1
+    mov edx, [task_group_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [task_group_test_task2], eax
+    mov edx, eax
+    mov eax, [task_group_test_group]
+    call task_group_attach
+    jc .invalid
+    mov eax, [task_group_test_task1]
+    mov edx, 0x4641494C
+    call task_fail
+    jc .invalid
+    mov eax, [task_group_test_task2]
+    call task_lookup
+    jc .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jne .invalid
+    mov eax, [task_group_test_task2]
+    call task_checkpoint
+    jc .invalid
+    mov eax, [task_group_test_group]
+    call task_group_lookup
+    jc .invalid
+    cmp dword [eax + TASK_GROUP_STATE], TASK_GROUP_STATE_FAILED
+    jne .invalid
+    cmp dword [eax + TASK_GROUP_FAILURES], 1
+    jne .invalid
+    mov eax, [task_group_test_scope]
+    call task_scope_close
+    jc .invalid
+    cmp dword [task_group_count], 0
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+task_group_manager_api:
+    dd TASK_GROUP_API_SIZE
+    dw 1, 0
+    dd TASK_GROUP_CAPACITY
+    dd TASK_GROUP_CAPABILITIES
+    dd task_group_create
+    dd task_group_attach
+    dd task_group_cancel
+    dd task_group_table
+
+task_group_manager_ready: dd 0
+task_group_count:         dd 0
+task_group_next_id:       dd 0
+task_group_temp_owner:    dd 0
+task_group_temp_scope:    dd 0
+task_group_temp_policy:   dd 0
+task_group_temp_id:       dd 0
+task_group_temp_task:     dd 0
+task_group_temp_reason:   dd 0
+task_group_temp_record:   dd 0
+task_group_terminal_task: dd 0
+task_group_test_scope:    dd 0
+task_group_test_group:    dd 0
+task_group_test_task1:    dd 0
+task_group_test_task2:    dd 0
+align 4
+task_group_table:
+    times TASK_GROUP_CAPACITY * TASK_GROUP_RECORD_SIZE db 0
+task_group_ids:
+    times TASK_CAPACITY dd 0
+
+; ---------------------------------------------------------------------------
+; Begrenztes completion-basiertes Async-I/O-Grundmodell
+; NPSPEC-IO-REQUEST/COMPLETION/ASYNC/DEADLINE-0001
+; ---------------------------------------------------------------------------
+
+IO_REQUEST_API_SIZE             equ 32
+IO_REQUEST_CAPACITY             equ 8
+IO_REQUEST_RECORD_SIZE          equ 64
+IO_REQUEST_STATE_EMPTY          equ 0
+IO_REQUEST_STATE_PENDING        equ 1
+IO_REQUEST_STATE_RUNNING        equ 2
+IO_REQUEST_STATE_COMPLETED      equ 3
+IO_REQUEST_STATE_FAILED         equ 4
+IO_REQUEST_STATE_CANCELLED      equ 5
+IO_COMPLETION_NONE              equ 0
+IO_COMPLETION_SUCCESS           equ 1
+IO_COMPLETION_PARTIAL           equ 2
+IO_COMPLETION_FAILED            equ 3
+IO_COMPLETION_CANCELLED         equ 4
+IO_COMPLETION_DEADLINE_MISS     equ 5
+IO_CAP_ASYNC_COMPLETION         equ 0x00000001
+IO_CAP_BOUNDED_QUEUE            equ 0x00000002
+IO_CAP_TASK_OWNERSHIP           equ 0x00000004
+IO_CAP_DEADLINE                 equ 0x00000008
+IO_FLAG_DEADLINE_INHERITED      equ 0x00000001
+IO_FLAG_DEADLINE_MISSED         equ 0x00000002
+IO_CANCEL_REASON_DEADLINE       equ 0x494F444C
+IO_REQUEST_ID                   equ 0
+IO_REQUEST_OWNER                equ 4
+IO_REQUEST_TASK                 equ 8
+IO_REQUEST_SCOPE                equ 12
+IO_REQUEST_OPERATION            equ 16
+IO_REQUEST_STATE                equ 20
+IO_REQUEST_TARGET               equ 24
+IO_REQUEST_BUFFER               equ 28
+IO_REQUEST_LENGTH               equ 32
+IO_REQUEST_TRANSFERRED          equ 36
+IO_REQUEST_DEADLINE             equ 40
+IO_REQUEST_PRIORITY             equ 44
+IO_REQUEST_COMPLETION           equ 48
+IO_REQUEST_ERROR                equ 52
+IO_REQUEST_FLAGS                equ 56
+IO_REQUEST_EFFECTIVE_PRIORITY   equ 60
+IO_PRIORITY_REALTIME            equ 1
+IO_PRIORITY_INTERACTIVE         equ 2
+IO_PRIORITY_NORMAL              equ 3
+IO_PRIORITY_BACKGROUND          equ 4
+IO_PRIORITY_MAINTENANCE         equ 5
+
+io_request_manager_initialize:
+    mov edi, io_request_table
+    xor eax, eax
+    mov ecx, (IO_REQUEST_CAPACITY * IO_REQUEST_RECORD_SIZE) / 4
+    rep stosd
+    mov edi, io_request_submit_ticks
+    mov ecx, IO_REQUEST_CAPACITY * 3
+    rep stosd
+    mov dword [io_request_next_id], 1
+    mov dword [io_request_outstanding], 0
+    mov dword [io_request_backpressure_count], 0
+    mov dword [io_request_deadline_miss_count], 0
+    mov dword [io_request_manager_ready], 1
+    clc
+    ret
+
+; EAX=Owner-PID, EDX=Task-ID, EBX=Operation, ECX=Target-Handle,
+; ESI=Buffer-Handle, EDI=Laenge, EBP=Prioritaet (0..3). EAX=Request-ID.
+; Request-Erzeugung, Ausfuehrung und Completion bleiben getrennt.
+io_request_submit:
+    pushfd
+    cli
+    mov [io_request_temp_owner], eax
+    mov [io_request_temp_task], edx
+    mov [io_request_temp_operation], ebx
+    mov [io_request_temp_target], ecx
+    mov [io_request_temp_buffer], esi
+    mov [io_request_temp_length], edi
+    mov [io_request_temp_priority], ebp
+    test ebx, ebx
+    jz .invalid
+    test ecx, ecx
+    jz .invalid
+    test esi, esi
+    jz .invalid
+    test edi, edi
+    jz .invalid
+    cmp ebp, IO_PRIORITY_MAINTENANCE
+    ja .invalid
+    call process_lookup
+    jc .invalid
+    mov eax, [io_request_temp_task]
+    call task_lookup
+    jc .invalid
+    mov [io_request_temp_task_record], eax
+    mov edx, [io_request_temp_owner]
+    cmp [eax + TASK_OWNER], edx
+    jne .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CREATED
+    jb .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_WAITING
+    ja .invalid
+
+    xor ecx, ecx
+.scan:
+    cmp ecx, IO_REQUEST_CAPACITY
+    jae .backpressure
+    mov edi, ecx
+    shl edi, 6
+    add edi, io_request_table
+    cmp dword [edi + IO_REQUEST_STATE], IO_REQUEST_STATE_EMPTY
+    je .slot
+    cmp dword [edi + IO_REQUEST_STATE], IO_REQUEST_STATE_COMPLETED
+    jae .slot
+    inc ecx
+    jmp .scan
+.slot:
+    mov [io_request_temp_record], edi
+    mov [io_request_temp_slot], ecx
+    mov dword [io_request_submit_ticks + ecx * 4], 0
+    mov dword [io_request_dispatch_ticks + ecx * 4], 0
+    mov dword [io_request_wait_rounds + ecx * 4], 0
+    mov dword [io_request_qos_ids + ecx * 4], 0
+    xor eax, eax
+    mov ecx, IO_REQUEST_RECORD_SIZE / 4
+    rep stosd
+    mov edi, [io_request_temp_record]
+    mov eax, [io_request_next_id]
+    mov [edi + IO_REQUEST_ID], eax
+    mov edx, [io_request_temp_owner]
+    mov [edi + IO_REQUEST_OWNER], edx
+    mov edx, [io_request_temp_task]
+    mov [edi + IO_REQUEST_TASK], edx
+    mov edx, [io_request_temp_task_record]
+    mov edx, [edx + TASK_RECORD_SCOPE]
+    mov [edi + IO_REQUEST_SCOPE], edx
+    mov edx, [io_request_temp_operation]
+    mov [edi + IO_REQUEST_OPERATION], edx
+    mov dword [edi + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    mov edx, [io_request_temp_target]
+    mov [edi + IO_REQUEST_TARGET], edx
+    mov edx, [io_request_temp_buffer]
+    mov [edi + IO_REQUEST_BUFFER], edx
+    mov edx, [io_request_temp_length]
+    mov [edi + IO_REQUEST_LENGTH], edx
+    mov edx, [io_request_temp_priority]
+    test edx, edx
+    jnz .priority_requested
+    mov edx, IO_PRIORITY_NORMAL
+.priority_requested:
+    mov [edi + IO_REQUEST_PRIORITY], edx
+    ; Bootstrap-Policy: eine unprivilegierte Realtime-Anforderung wird auf
+    ; Interactive begrenzt. Prioritaet bleibt damit Dringlichkeit, nicht Recht.
+    cmp edx, IO_PRIORITY_REALTIME
+    jne .priority_effective
+    mov edx, IO_PRIORITY_INTERACTIVE
+.priority_effective:
+    mov [edi + IO_REQUEST_EFFECTIVE_PRIORITY], edx
+
+    mov eax, [io_request_temp_task_record]
+    call task_deadline_record_for_task
+    cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
+    jne .ready
+    mov edx, [eax + TASK_DEADLINE_ABSOLUTE]
+    mov [edi + IO_REQUEST_DEADLINE], edx
+    or dword [edi + IO_REQUEST_FLAGS], IO_FLAG_DEADLINE_INHERITED
+.ready:
+    mov ecx, [io_request_temp_slot]
+    mov edx, [timer_ticks]
+    mov [io_request_submit_ticks + ecx * 4], edx
+    inc dword [io_request_next_id]
+    inc dword [io_request_outstanding]
+    mov eax, [edi + IO_REQUEST_ID]
+    popfd
+    clc
+    ret
+.backpressure:
+    inc dword [io_request_backpressure_count]
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Request-ID. EAX=Datensatz oder 0.
+io_request_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, IO_REQUEST_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, io_request_table
+    cmp dword [edx + IO_REQUEST_STATE], IO_REQUEST_STATE_EMPTY
+    je .next
+    cmp [edx + IO_REQUEST_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Request-ID, EDX=uebertragene Bytes, EBX=Fehlercode (0=Erfolg).
+; Genau ein terminales Ergebnis wird akzeptiert.
+io_request_complete:
+    pushfd
+    cli
+    mov [io_request_temp_id], eax
+    mov [io_request_temp_transferred], edx
+    mov [io_request_temp_error], ebx
+    call io_request_lookup
+    jc .invalid
+    mov [io_request_temp_record], eax
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    je .active
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_RUNNING
+    jne .invalid
+.active:
+    mov edx, [io_request_temp_transferred]
+    cmp edx, [eax + IO_REQUEST_LENGTH]
+    ja .invalid
+    mov [eax + IO_REQUEST_TRANSFERRED], edx
+    mov ebx, [io_request_temp_error]
+    test ebx, ebx
+    jnz .failed
+    mov dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_COMPLETED
+    cmp edx, [eax + IO_REQUEST_LENGTH]
+    jne .partial
+    mov dword [eax + IO_REQUEST_COMPLETION], IO_COMPLETION_SUCCESS
+    jmp .terminal
+.partial:
+    mov dword [eax + IO_REQUEST_COMPLETION], IO_COMPLETION_PARTIAL
+    jmp .terminal
+.failed:
+    mov dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_FAILED
+    mov dword [eax + IO_REQUEST_COMPLETION], IO_COMPLETION_FAILED
+    mov [eax + IO_REQUEST_ERROR], ebx
+.terminal:
+    push eax
+    call io_qos_on_terminal
+    pop eax
+    call io_completion_publish
+    dec dword [io_request_outstanding]
+    mov eax, [io_request_temp_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Request-ID, EDX=Abbruchgrund. Zu spaete Abbrueche werden abgewiesen.
+io_request_cancel:
+    pushfd
+    cli
+    mov [io_request_temp_id], eax
+    mov [io_request_temp_error], edx
+    call io_request_lookup
+    jc .invalid
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    je .active
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_RUNNING
+    jne .invalid
+.active:
+    mov dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_CANCELLED
+    mov dword [eax + IO_REQUEST_COMPLETION], IO_COMPLETION_CANCELLED
+    mov edx, [io_request_temp_error]
+    mov [eax + IO_REQUEST_ERROR], edx
+    push eax
+    call io_qos_on_terminal
+    pop eax
+    call io_completion_publish
+    dec dword [io_request_outstanding]
+    mov eax, [io_request_temp_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; Structured Concurrency: offene Requests folgen dem Cancellation-Zustand
+; ihrer besitzenden Task, ohne einen Thread pro I/O anzulegen.
+io_cancel_for_requested_tasks:
+    cmp dword [io_request_manager_ready], 1
+    jne .done
+    xor ecx, ecx
+.scan:
+    cmp ecx, IO_REQUEST_CAPACITY
+    jae .done
+    mov edi, ecx
+    shl edi, 6
+    add edi, io_request_table
+    cmp dword [edi + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    je .check
+    cmp dword [edi + IO_REQUEST_STATE], IO_REQUEST_STATE_RUNNING
+    jne .next
+.check:
+    mov eax, [edi + IO_REQUEST_TASK]
+    push ecx
+    call task_lookup
+    pop ecx
+    jc .next
+    cmp dword [eax + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jne .next
+    mov edx, [eax + TASK_CANCEL_REASON]
+    mov eax, [edi + IO_REQUEST_ID]
+    push ecx
+    call io_request_cancel
+    pop ecx
+.next:
+    inc ecx
+    jmp .scan
+.done:
+    clc
+    ret
+
+; Monotone PIT-Ticks entscheiden Deadline-Misses. Der Miss bleibt als eigener
+; Completion-Status sichtbar; anschliessend ist der Request terminal beendet.
+io_request_poll_deadlines:
+    cmp dword [io_request_manager_ready], 1
+    jne .done
+    mov eax, [timer_ticks]
+    mov [io_request_poll_tick], eax
+    xor ecx, ecx
+.scan:
+    cmp ecx, IO_REQUEST_CAPACITY
+    jae .done
+    mov edi, ecx
+    shl edi, 6
+    add edi, io_request_table
+    cmp dword [edi + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    je .check
+    cmp dword [edi + IO_REQUEST_STATE], IO_REQUEST_STATE_RUNNING
+    jne .next
+.check:
+    test dword [edi + IO_REQUEST_FLAGS], IO_FLAG_DEADLINE_INHERITED
+    jz .next
+    mov eax, [io_request_poll_tick]
+    sub eax, [edi + IO_REQUEST_DEADLINE]
+    jl .next
+    or dword [edi + IO_REQUEST_FLAGS], IO_FLAG_DEADLINE_MISSED
+    mov dword [edi + IO_REQUEST_STATE], IO_REQUEST_STATE_CANCELLED
+    mov dword [edi + IO_REQUEST_COMPLETION], IO_COMPLETION_DEADLINE_MISS
+    mov dword [edi + IO_REQUEST_ERROR], IO_CANCEL_REASON_DEADLINE
+    mov eax, edi
+    push ecx
+    push eax
+    call io_qos_on_terminal
+    pop eax
+    call io_completion_publish
+    pop ecx
+    dec dword [io_request_outstanding]
+    inc dword [io_request_deadline_miss_count]
+.next:
+    inc ecx
+    jmp .scan
+.done:
+    clc
+    ret
+
+; ---------------------------------------------------------------------------
+; Begrenzte FIFO-Completion-Queue mit Batch-Dequeue
+; NPSPEC-IO-COMPLETION-0001 / ADR-IO-0001
+; ---------------------------------------------------------------------------
+
+IO_COMPLETION_API_SIZE       equ 32
+IO_COMPLETION_CAPACITY       equ 16
+IO_COMPLETION_RECORD_SIZE    equ 32
+IO_COMPLETION_CAPABILITIES   equ 0x0000000F
+IO_COMPLETION_REQUEST_ID     equ 0
+IO_COMPLETION_OWNER          equ 4
+IO_COMPLETION_STATUS         equ 8
+IO_COMPLETION_BYTES          equ 12
+IO_COMPLETION_ERROR          equ 16
+IO_COMPLETION_TICK           equ 20
+IO_COMPLETION_LATENCY        equ 24
+IO_COMPLETION_FLAGS          equ 28
+
+io_completion_initialize:
+    mov edi, io_completion_queue
+    xor eax, eax
+    mov ecx, (IO_COMPLETION_CAPACITY * IO_COMPLETION_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [io_completion_head], 0
+    mov dword [io_completion_tail], 0
+    mov dword [io_completion_count], 0
+    mov dword [io_completion_overflow_count], 0
+    mov dword [io_completion_manager_ready], 1
+    clc
+    ret
+
+; EAX=terminaler IORequest-Datensatz. Der Request bleibt die autoritative
+; Historie; die Queue ist der effiziente, batchfaehige Zustellmechanismus.
+io_completion_publish:
+    cmp dword [io_completion_manager_ready], 1
+    jne .done
+    cmp dword [io_completion_count], IO_COMPLETION_CAPACITY
+    jae .overflow
+    mov [io_completion_temp_request], eax
+    mov ecx, eax
+    sub ecx, io_request_table
+    shr ecx, 6
+    mov [io_completion_temp_request_slot], ecx
+    mov edi, [io_completion_tail]
+    shl edi, 5
+    add edi, io_completion_queue
+    mov esi, [io_completion_temp_request]
+    mov eax, [esi + IO_REQUEST_ID]
+    mov [edi + IO_COMPLETION_REQUEST_ID], eax
+    mov eax, [esi + IO_REQUEST_OWNER]
+    mov [edi + IO_COMPLETION_OWNER], eax
+    mov eax, [esi + IO_REQUEST_COMPLETION]
+    mov [edi + IO_COMPLETION_STATUS], eax
+    mov eax, [esi + IO_REQUEST_TRANSFERRED]
+    mov [edi + IO_COMPLETION_BYTES], eax
+    mov eax, [esi + IO_REQUEST_ERROR]
+    mov [edi + IO_COMPLETION_ERROR], eax
+    mov eax, [timer_ticks]
+    mov [edi + IO_COMPLETION_TICK], eax
+    mov ecx, [io_completion_temp_request_slot]
+    sub eax, [io_request_submit_ticks + ecx * 4]
+    mov [edi + IO_COMPLETION_LATENCY], eax
+    mov eax, [esi + IO_REQUEST_FLAGS]
+    mov [edi + IO_COMPLETION_FLAGS], eax
+    mov eax, [io_completion_tail]
+    inc eax
+    and eax, IO_COMPLETION_CAPACITY - 1
+    mov [io_completion_tail], eax
+    inc dword [io_completion_count]
+.done:
+    clc
+    ret
+.overflow:
+    inc dword [io_completion_overflow_count]
+    stc
+    ret
+
+; EAX=Kernel-Zielpuffer, ECX=maximale Eintraege. EAX=kopierte Anzahl.
+; Der begrenzte Batch vermeidet einen Wakeup beziehungsweise Call pro Request.
+io_completion_dequeue_batch:
+    pushfd
+    cli
+    test eax, eax
+    jz .invalid
+    test ecx, ecx
+    jz .invalid
+    cmp ecx, IO_COMPLETION_CAPACITY
+    ja .invalid
+    mov [io_completion_batch_destination], eax
+    mov [io_completion_batch_limit], ecx
+    mov dword [io_completion_batch_count], 0
+.copy:
+    mov ecx, [io_completion_batch_count]
+    cmp ecx, [io_completion_batch_limit]
+    jae .complete
+    cmp dword [io_completion_count], 0
+    je .complete
+    mov esi, [io_completion_head]
+    shl esi, 5
+    add esi, io_completion_queue
+    mov edi, [io_completion_batch_destination]
+    mov ecx, IO_COMPLETION_RECORD_SIZE / 4
+    rep movsd
+    mov [io_completion_batch_destination], edi
+    mov eax, [io_completion_head]
+    inc eax
+    and eax, IO_COMPLETION_CAPACITY - 1
+    mov [io_completion_head], eax
+    dec dword [io_completion_count]
+    inc dword [io_completion_batch_count]
+    jmp .copy
+.complete:
+    mov eax, [io_completion_batch_count]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+io_completion_self_test:
+    ; Die vorausgehenden Request-Tests muessen bereits Completions erzeugt haben.
+    cmp dword [io_completion_count], 0
+    je .invalid
+    mov eax, io_completion_test_batch
+    mov ecx, IO_COMPLETION_CAPACITY
+    call io_completion_dequeue_batch
+    jc .invalid
+    test eax, eax
+    jz .invalid
+    cmp dword [io_completion_count], 0
+    jne .invalid
+
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [io_completion_test_scope], eax
+    mov eax, 1
+    mov edx, [io_completion_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [io_completion_test_task], eax
+
+    mov eax, 1
+    mov edx, [io_completion_test_task]
+    mov ebx, 4
+    mov ecx, 0x700
+    mov esi, 0x800
+    mov edi, 64
+    xor ebp, ebp
+    call io_request_submit
+    jc .invalid
+    mov [io_completion_test_request1], eax
+    mov eax, 1
+    mov edx, [io_completion_test_task]
+    mov ebx, 4
+    mov ecx, 0x701
+    mov esi, 0x801
+    mov edi, 64
+    xor ebp, ebp
+    call io_request_submit
+    jc .invalid
+    mov [io_completion_test_request2], eax
+
+    ; Abschlussreihenfolge B,A beweist die Trennung von Submission und Queue.
+    mov eax, [io_completion_test_request2]
+    mov edx, 64
+    xor ebx, ebx
+    call io_request_complete
+    jc .invalid
+    mov eax, [io_completion_test_request1]
+    mov edx, 32
+    xor ebx, ebx
+    call io_request_complete
+    jc .invalid
+    mov eax, io_completion_test_batch
+    mov ecx, 1
+    call io_completion_dequeue_batch
+    jc .invalid
+    cmp eax, 1
+    jne .invalid
+    mov eax, [io_completion_test_request2]
+    cmp [io_completion_test_batch + IO_COMPLETION_REQUEST_ID], eax
+    jne .invalid
+    cmp dword [io_completion_test_batch + IO_COMPLETION_STATUS], IO_COMPLETION_SUCCESS
+    jne .invalid
+    mov eax, io_completion_test_batch
+    mov ecx, IO_COMPLETION_CAPACITY
+    call io_completion_dequeue_batch
+    jc .invalid
+    cmp eax, 1
+    jne .invalid
+    mov eax, [io_completion_test_request1]
+    cmp [io_completion_test_batch + IO_COMPLETION_REQUEST_ID], eax
+    jne .invalid
+    cmp dword [io_completion_test_batch + IO_COMPLETION_STATUS], IO_COMPLETION_PARTIAL
+    jne .invalid
+    cmp dword [io_completion_test_batch + IO_COMPLETION_BYTES], 32
+    jne .invalid
+
+    ; Die Zustellung ist ebenfalls begrenzt: 16 Eintraege bleiben erhalten,
+    ; der siebzehnte Overflow wird sichtbar gezaehlt statt Speicher zu wachsen.
+    xor ecx, ecx
+.fill:
+    cmp ecx, IO_COMPLETION_CAPACITY + 1
+    jae .filled
+    push ecx
+    mov eax, 1
+    mov edx, [io_completion_test_task]
+    mov ebx, 5
+    mov ecx, 0x702
+    mov esi, 0x802
+    mov edi, 16
+    xor ebp, ebp
+    call io_request_submit
+    jc .fill_invalid
+    mov edx, 16
+    xor ebx, ebx
+    call io_request_complete
+    jc .fill_invalid
+    pop ecx
+    inc ecx
+    jmp .fill
+.fill_invalid:
+    pop ecx
+    jmp .invalid
+.filled:
+    cmp dword [io_completion_count], IO_COMPLETION_CAPACITY
+    jne .invalid
+    cmp dword [io_completion_overflow_count], 1
+    jne .invalid
+    mov eax, io_completion_test_batch
+    mov ecx, IO_COMPLETION_CAPACITY
+    call io_completion_dequeue_batch
+    jc .invalid
+    cmp eax, IO_COMPLETION_CAPACITY
+    jne .invalid
+    cmp dword [io_completion_count], 0
+    jne .invalid
+
+    mov eax, [io_completion_test_task]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [io_completion_test_scope]
+    call task_scope_close
+    jc .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+io_completion_api:
+    dd IO_COMPLETION_API_SIZE
+    dw 1, 0
+    dd IO_COMPLETION_CAPACITY
+    dd IO_COMPLETION_CAPABILITIES
+    dd io_completion_dequeue_batch
+    dd io_completion_queue
+    dd io_completion_count
+    dd io_completion_overflow_count
+
+io_completion_manager_ready:      dd 0
+io_completion_head:               dd 0
+io_completion_tail:               dd 0
+io_completion_count:              dd 0
+io_completion_overflow_count:     dd 0
+io_completion_temp_request:       dd 0
+io_completion_temp_request_slot:  dd 0
+io_completion_batch_destination:  dd 0
+io_completion_batch_limit:        dd 0
+io_completion_batch_count:        dd 0
+io_completion_test_scope:         dd 0
+io_completion_test_task:          dd 0
+io_completion_test_request1:      dd 0
+io_completion_test_request2:      dd 0
+align 4
+io_completion_queue:
+    times IO_COMPLETION_CAPACITY * IO_COMPLETION_RECORD_SIZE db 0
+io_completion_test_batch:
+    times IO_COMPLETION_CAPACITY * IO_COMPLETION_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
+; Eine begrenzte Aging-Stufe verhindert dauerhafte Starvation.
+; NPSPEC-IO-PRIORITY/SCHEDULER-0001
+; ---------------------------------------------------------------------------
+
+IO_SCHEDULER_API_SIZE       equ 32
+IO_SCHEDULER_CAPABILITIES   equ 0x0000000F
+IO_SCHEDULER_AGING_ROUNDS   equ 4
+
+io_scheduler_initialize:
+    mov dword [io_scheduler_dispatch_count], 0
+    mov dword [io_scheduler_promotion_count], 0
+    mov dword [io_scheduler_ready], 1
+    clc
+    ret
+
+; Waehlt einen pending Request. Deadline Requests werden nach fruehester
+; Deadline sortiert; sonst entscheiden effektive Prioritaet und Wartealter.
+; EAX=Request-ID, CF=1 wenn die Queue keine ausfuehrbare Arbeit enthaelt.
+io_scheduler_select:
+    pushfd
+    cli
+    mov dword [io_scheduler_candidate], 0
+    mov dword [io_scheduler_candidate_slot], 0
+    xor ecx, ecx
+.scan:
+    cmp ecx, IO_REQUEST_CAPACITY
+    jae .selected
+    mov edi, ecx
+    shl edi, 6
+    add edi, io_request_table
+    cmp dword [edi + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    jne .next
+    mov esi, [io_scheduler_candidate]
+    test esi, esi
+    jz .choose
+    test dword [edi + IO_REQUEST_FLAGS], IO_FLAG_DEADLINE_INHERITED
+    jz .current_without_deadline
+    test dword [esi + IO_REQUEST_FLAGS], IO_FLAG_DEADLINE_INHERITED
+    jz .choose
+    mov eax, [edi + IO_REQUEST_DEADLINE]
+    sub eax, [esi + IO_REQUEST_DEADLINE]
+    jl .choose
+    jg .next
+    jmp .priority
+.current_without_deadline:
+    test dword [esi + IO_REQUEST_FLAGS], IO_FLAG_DEADLINE_INHERITED
+    jnz .next
+.priority:
+    mov eax, [edi + IO_REQUEST_EFFECTIVE_PRIORITY]
+    cmp eax, [esi + IO_REQUEST_EFFECTIVE_PRIORITY]
+    jb .choose
+    ja .next
+    mov eax, [io_request_submit_ticks + ecx * 4]
+    mov edx, [io_scheduler_candidate_slot]
+    cmp eax, [io_request_submit_ticks + edx * 4]
+    jae .next
+.choose:
+    mov [io_scheduler_candidate], edi
+    mov [io_scheduler_candidate_slot], ecx
+.next:
+    inc ecx
+    jmp .scan
+.selected:
+    mov edi, [io_scheduler_candidate]
+    test edi, edi
+    jz .empty
+    mov dword [edi + IO_REQUEST_STATE], IO_REQUEST_STATE_RUNNING
+    mov ecx, [io_scheduler_candidate_slot]
+    mov eax, [timer_ticks]
+    mov [io_request_dispatch_ticks + ecx * 4], eax
+    mov dword [io_request_wait_rounds + ecx * 4], 0
+    inc dword [io_scheduler_dispatch_count]
+
+    ; Nicht ausgewaehlte Requests altern begrenzt bis Interactive. Realtime
+    ; bleibt einer expliziten Policy vorbehalten und wird nicht erzwungen.
+    xor ecx, ecx
+.age:
+    cmp ecx, IO_REQUEST_CAPACITY
+    jae .return
+    cmp ecx, [io_scheduler_candidate_slot]
+    je .age_next
+    mov esi, ecx
+    shl esi, 6
+    add esi, io_request_table
+    cmp dword [esi + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    jne .age_next
+    inc dword [io_request_wait_rounds + ecx * 4]
+    cmp dword [io_request_wait_rounds + ecx * 4], IO_SCHEDULER_AGING_ROUNDS
+    jb .age_next
+    mov dword [io_request_wait_rounds + ecx * 4], 0
+    cmp dword [esi + IO_REQUEST_EFFECTIVE_PRIORITY], IO_PRIORITY_INTERACTIVE
+    jbe .age_next
+    dec dword [esi + IO_REQUEST_EFFECTIVE_PRIORITY]
+    inc dword [io_scheduler_promotion_count]
+.age_next:
+    inc ecx
+    jmp .age
+.return:
+    mov eax, [edi + IO_REQUEST_ID]
+    popfd
+    clc
+    ret
+.empty:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; Provider-Backpressure darf einen ausgewaehlten Request ohne Identitaets- oder
+; Altersverlust wieder in die begrenzte Scheduler-Queue stellen.
+io_scheduler_requeue:
+    pushfd
+    cli
+    call io_request_lookup
+    jc .invalid
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_RUNNING
+    jne .invalid
+    mov dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    mov eax, [eax + IO_REQUEST_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+io_scheduler_self_test:
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [io_scheduler_test_scope], eax
+
+    ; Unprivilegiertes Realtime wird policy-konform auf Interactive begrenzt.
+    mov eax, 1
+    mov edx, [io_scheduler_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [io_scheduler_test_fast_task], eax
+    mov eax, 1
+    mov edx, [io_scheduler_test_fast_task]
+    mov ebx, 1
+    mov ecx, 0x300
+    mov esi, 0x400
+    mov edi, 256
+    mov ebp, IO_PRIORITY_REALTIME
+    call io_request_submit
+    jc .invalid
+    mov [io_scheduler_test_fast_request], eax
+    call io_request_lookup
+    jc .invalid
+    cmp dword [eax + IO_REQUEST_PRIORITY], IO_PRIORITY_REALTIME
+    jne .invalid
+    cmp dword [eax + IO_REQUEST_EFFECTIVE_PRIORITY], IO_PRIORITY_INTERACTIVE
+    jne .invalid
+
+    ; Eine Maintenance-Anfrage mit Deadline geht trotz niedrigerer Prioritaet
+    ; vor der rein prioritaetsgesteuerten Anfrage in Ausfuehrung.
+    mov eax, 1
+    mov edx, [io_scheduler_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [io_scheduler_test_deadline_task], eax
+    mov edx, [timer_ticks]
+    add edx, 100
+    mov ebx, TASK_DEADLINE_CLASS_SOFT
+    mov ecx, TASK_DEADLINE_POLICY_CANCEL
+    call task_deadline_set
+    jc .invalid
+    mov eax, 1
+    mov edx, [io_scheduler_test_deadline_task]
+    mov ebx, 2
+    mov ecx, 0x301
+    mov esi, 0x401
+    mov edi, 256
+    mov ebp, IO_PRIORITY_MAINTENANCE
+    call io_request_submit
+    jc .invalid
+    mov [io_scheduler_test_deadline_request], eax
+
+    call io_scheduler_select
+    jc .invalid
+    cmp eax, [io_scheduler_test_deadline_request]
+    jne .invalid
+    call io_scheduler_requeue
+    jc .invalid
+    call io_scheduler_select
+    jc .invalid
+    cmp eax, [io_scheduler_test_deadline_request]
+    jne .invalid
+    mov edx, 256
+    xor ebx, ebx
+    call io_request_complete
+    jc .invalid
+    call io_scheduler_select
+    jc .invalid
+    cmp eax, [io_scheduler_test_fast_request]
+    jne .invalid
+    mov edx, 256
+    xor ebx, ebx
+    call io_request_complete
+    jc .invalid
+    cmp dword [io_request_outstanding], 0
+    jne .invalid
+
+    mov eax, [io_scheduler_test_fast_task]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [io_scheduler_test_deadline_task]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [io_scheduler_test_scope]
+    call task_scope_close
+    jc .invalid
+    cmp dword [task_count], 0
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+io_scheduler_api:
+    dd IO_SCHEDULER_API_SIZE
+    dw 1, 0
+    dd 5
+    dd IO_SCHEDULER_CAPABILITIES
+    dd io_scheduler_select
+    dd io_scheduler_requeue
+    dd io_request_outstanding
+    dd io_scheduler_dispatch_count
+
+io_scheduler_ready:                 dd 0
+io_scheduler_dispatch_count:        dd 0
+io_scheduler_promotion_count:       dd 0
+io_scheduler_candidate:             dd 0
+io_scheduler_candidate_slot:        dd 0
+io_scheduler_test_scope:            dd 0
+io_scheduler_test_fast_task:        dd 0
+io_scheduler_test_deadline_task:    dd 0
+io_scheduler_test_fast_request:     dd 0
+io_scheduler_test_deadline_request: dd 0
+
+; ---------------------------------------------------------------------------
+; I/O Quality of Service: getrennte Profile, Admission und Accounting
+; NPSPEC-IO-QOS-0001 / ADR-IO-0003 und ADR-IO-0006
+; ---------------------------------------------------------------------------
+
+IO_QOS_API_SIZE             equ 32
+IO_QOS_CAPACITY             equ 4
+IO_QOS_RECORD_SIZE          equ 64
+IO_QOS_STATE_EMPTY          equ 0
+IO_QOS_STATE_ACCEPTED       equ 1
+IO_QOS_STATE_DEGRADED       equ 2
+IO_QOS_STATE_REJECTED       equ 3
+IO_QOS_HARD_LATENCY         equ 0x00000001
+IO_QOS_HARD_THROUGHPUT      equ 0x00000002
+IO_QOS_HARD_BANDWIDTH       equ 0x00000004
+IO_QOS_DEGRADE_THROUGHPUT   equ 0x00000001
+IO_QOS_DEGRADE_BANDWIDTH    equ 0x00000002
+IO_QOS_CAPABILITIES         equ 0x0000000F
+IO_QOS_PROFILE_ID           equ 0
+IO_QOS_OWNER                equ 4
+IO_QOS_CLASS                equ 8
+IO_QOS_REQUIREMENTS         equ 12
+IO_QOS_LATENCY_TARGET       equ 16
+IO_QOS_MIN_THROUGHPUT       equ 20
+IO_QOS_MAX_BANDWIDTH        equ 24
+IO_QOS_MAX_OUTSTANDING      equ 28
+IO_QOS_ACTIVE_REQUESTS      equ 32
+IO_QOS_STATE                equ 36
+IO_QOS_OBSERVED_LATENCY     equ 40
+IO_QOS_VIOLATIONS           equ 44
+IO_QOS_COMPLETED_BYTES_LOW  equ 48
+IO_QOS_COMPLETED_BYTES_HIGH equ 52
+IO_QOS_DEGRADATION_REASON   equ 56
+
+io_qos_initialize:
+    mov edi, io_qos_table
+    xor eax, eax
+    mov ecx, (IO_QOS_CAPACITY * IO_QOS_RECORD_SIZE) / 4
+    rep stosd
+    mov edi, io_request_qos_ids
+    mov ecx, IO_REQUEST_CAPACITY
+    rep stosd
+    mov dword [io_qos_next_id], 1
+    mov dword [io_qos_rejection_count], 0
+    mov dword [io_qos_throttle_count], 0
+    mov dword [io_qos_manager_ready], 1
+    clc
+    ret
+
+; EAX=Owner, EDX=QoS-Klasse (0=Normal), EBX=Hard-Flags,
+; ECX=Latenzziel, ESI=Min-Durchsatz, EDI=Max-Bandbreite,
+; EBP=maximal offene Requests (0=2). EAX=Profil-ID.
+io_qos_create:
+    pushfd
+    cli
+    mov [io_qos_temp_owner], eax
+    mov [io_qos_temp_class], edx
+    mov [io_qos_temp_requirements], ebx
+    mov [io_qos_temp_latency], ecx
+    mov [io_qos_temp_throughput], esi
+    mov [io_qos_temp_bandwidth], edi
+    mov [io_qos_temp_outstanding], ebp
+    call process_lookup
+    jc .invalid
+    cmp dword [io_qos_temp_requirements], IO_QOS_HARD_LATENCY | IO_QOS_HARD_THROUGHPUT | IO_QOS_HARD_BANDWIDTH
+    ja .invalid
+    mov edx, [io_qos_temp_class]
+    test edx, edx
+    jnz .class_set
+    mov edx, IO_PRIORITY_NORMAL
+    mov [io_qos_temp_class], edx
+.class_set:
+    cmp edx, IO_PRIORITY_REALTIME
+    jb .invalid
+    cmp edx, IO_PRIORITY_MAINTENANCE
+    ja .invalid
+    mov ebp, [io_qos_temp_outstanding]
+    test ebp, ebp
+    jnz .outstanding_set
+    mov ebp, 2
+    mov [io_qos_temp_outstanding], ebp
+.outstanding_set:
+    cmp ebp, IO_REQUEST_CAPACITY
+    ja .reject
+    test dword [io_qos_temp_requirements], IO_QOS_HARD_THROUGHPUT | IO_QOS_HARD_BANDWIDTH
+    jnz .reject                         ; kein Provider darf Garantie vortaeuschen
+    test dword [io_qos_temp_requirements], IO_QOS_HARD_LATENCY
+    jz .find
+    cmp dword [io_qos_temp_latency], 2  ; Bootstrap-Admission: mindestens 20 ms
+    jb .reject
+.find:
+    xor ecx, ecx
+.scan:
+    cmp ecx, IO_QOS_CAPACITY
+    jae .reject
+    mov edi, ecx
+    shl edi, 6
+    add edi, io_qos_table
+    cmp dword [edi + IO_QOS_STATE], IO_QOS_STATE_EMPTY
+    je .slot
+    inc ecx
+    jmp .scan
+.slot:
+    mov [io_qos_temp_record], edi
+    xor eax, eax
+    mov ecx, IO_QOS_RECORD_SIZE / 4
+    rep stosd
+    mov edi, [io_qos_temp_record]
+    mov eax, [io_qos_next_id]
+    mov [edi + IO_QOS_PROFILE_ID], eax
+    mov edx, [io_qos_temp_owner]
+    mov [edi + IO_QOS_OWNER], edx
+    mov edx, [io_qos_temp_class]
+    mov [edi + IO_QOS_CLASS], edx
+    mov edx, [io_qos_temp_requirements]
+    mov [edi + IO_QOS_REQUIREMENTS], edx
+    mov edx, [io_qos_temp_latency]
+    mov [edi + IO_QOS_LATENCY_TARGET], edx
+    mov edx, [io_qos_temp_throughput]
+    mov [edi + IO_QOS_MIN_THROUGHPUT], edx
+    mov edx, [io_qos_temp_bandwidth]
+    mov [edi + IO_QOS_MAX_BANDWIDTH], edx
+    mov edx, [io_qos_temp_outstanding]
+    mov [edi + IO_QOS_MAX_OUTSTANDING], edx
+    mov dword [edi + IO_QOS_STATE], IO_QOS_STATE_ACCEPTED
+    xor edx, edx
+    cmp dword [edi + IO_QOS_MIN_THROUGHPUT], 0
+    je .check_bandwidth
+    or edx, IO_QOS_DEGRADE_THROUGHPUT
+.check_bandwidth:
+    cmp dword [edi + IO_QOS_MAX_BANDWIDTH], 0
+    je .degradation_done
+    or edx, IO_QOS_DEGRADE_BANDWIDTH
+.degradation_done:
+    test edx, edx
+    jz .accepted
+    mov dword [edi + IO_QOS_STATE], IO_QOS_STATE_DEGRADED
+    mov [edi + IO_QOS_DEGRADATION_REASON], edx
+.accepted:
+    inc dword [io_qos_next_id]
+    mov eax, [edi + IO_QOS_PROFILE_ID]
+    popfd
+    clc
+    ret
+.reject:
+    inc dword [io_qos_rejection_count]
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+io_qos_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, IO_QOS_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, io_qos_table
+    cmp dword [edx + IO_QOS_STATE], IO_QOS_STATE_EMPTY
+    je .next
+    cmp [edx + IO_QOS_PROFILE_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Request-ID, EDX=Profil-ID. Budget und Owner werden vor Bindung geprueft.
+io_qos_attach:
+    pushfd
+    cli
+    mov [io_qos_temp_request], eax
+    mov [io_qos_temp_profile], edx
+    call io_request_lookup
+    jc .invalid
+    mov [io_qos_temp_request_record], eax
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    jne .invalid
+    mov eax, [io_qos_temp_profile]
+    call io_qos_lookup
+    jc .invalid
+    mov [io_qos_temp_record], eax
+    mov edx, [io_qos_temp_request_record]
+    mov ecx, [edx + IO_REQUEST_OWNER]
+    cmp [eax + IO_QOS_OWNER], ecx
+    jne .invalid
+    mov ecx, [eax + IO_QOS_ACTIVE_REQUESTS]
+    cmp ecx, [eax + IO_QOS_MAX_OUTSTANDING]
+    jae .throttle
+    mov ecx, edx
+    sub ecx, io_request_table
+    shr ecx, 6
+    cmp dword [io_request_qos_ids + ecx * 4], 0
+    jne .invalid
+    mov eax, [io_qos_temp_profile]
+    mov [io_request_qos_ids + ecx * 4], eax
+    mov eax, [io_qos_temp_record]
+    inc dword [eax + IO_QOS_ACTIVE_REQUESTS]
+    mov eax, [eax + IO_QOS_CLASS]
+    cmp eax, IO_PRIORITY_REALTIME
+    jne .class_ready
+    mov eax, IO_PRIORITY_INTERACTIVE
+.class_ready:
+    mov edx, [io_qos_temp_request_record]
+    cmp eax, [edx + IO_REQUEST_EFFECTIVE_PRIORITY]
+    jae .attached
+    mov [edx + IO_REQUEST_EFFECTIVE_PRIORITY], eax
+.attached:
+    mov eax, [io_qos_temp_request]
+    popfd
+    clc
+    ret
+.throttle:
+    inc dword [io_qos_throttle_count]
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=terminaler Requestdatensatz. Beobachtete Werte bleiben vom angeforderten
+; Profil getrennt; eine Zielverletzung wird explizit gezaehlt.
+io_qos_on_terminal:
+    cmp dword [io_qos_manager_ready], 1
+    jne .done
+    mov [io_qos_terminal_request], eax
+    mov ecx, eax
+    sub ecx, io_request_table
+    shr ecx, 6
+    mov eax, [io_request_qos_ids + ecx * 4]
+    test eax, eax
+    jz .done
+    mov [io_qos_temp_slot], ecx
+    call io_qos_lookup
+    jc .done
+    cmp dword [eax + IO_QOS_ACTIVE_REQUESTS], 0
+    je .done
+    dec dword [eax + IO_QOS_ACTIVE_REQUESTS]
+    mov edx, [timer_ticks]
+    mov ecx, [io_qos_temp_slot]
+    sub edx, [io_request_submit_ticks + ecx * 4]
+    mov [eax + IO_QOS_OBSERVED_LATENCY], edx
+    mov ecx, [eax + IO_QOS_LATENCY_TARGET]
+    test ecx, ecx
+    jz .bytes
+    cmp edx, ecx
+    jbe .bytes
+    inc dword [eax + IO_QOS_VIOLATIONS]
+.bytes:
+    mov edx, [io_qos_terminal_request]
+    mov edx, [edx + IO_REQUEST_TRANSFERRED]
+    add [eax + IO_QOS_COMPLETED_BYTES_LOW], edx
+    adc dword [eax + IO_QOS_COMPLETED_BYTES_HIGH], 0
+.done:
+    clc
+    ret
+
+io_qos_self_test:
+    ; Weiche, providerabhaengige Durchsatzwuensche werden sichtbar degradiert.
+    mov eax, 1
+    mov edx, IO_PRIORITY_INTERACTIVE
+    xor ebx, ebx
+    mov ecx, 50
+    mov esi, 4096
+    xor edi, edi
+    mov ebp, 1
+    call io_qos_create
+    jc .invalid
+    mov [io_qos_test_profile], eax
+    call io_qos_lookup
+    jc .invalid
+    cmp dword [eax + IO_QOS_STATE], IO_QOS_STATE_DEGRADED
+    jne .invalid
+    test dword [eax + IO_QOS_DEGRADATION_REASON], IO_QOS_DEGRADE_THROUGHPUT
+    jz .invalid
+
+    ; Eine nicht belegbare harte Durchsatzgarantie wird nicht vorgetaeuscht.
+    mov eax, 1
+    mov edx, IO_PRIORITY_NORMAL
+    mov ebx, IO_QOS_HARD_THROUGHPUT
+    xor ecx, ecx
+    mov esi, 4096
+    xor edi, edi
+    mov ebp, 1
+    call io_qos_create
+    jnc .invalid
+    cmp dword [io_qos_rejection_count], 1
+    jne .invalid
+
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [io_qos_test_scope], eax
+    mov eax, 1
+    mov edx, [io_qos_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [io_qos_test_task], eax
+
+    ; MaxOutstanding=1 isoliert das Profil und erzeugt beim zweiten Attach
+    ; kontrollierte Drosselung statt stiller Budgetueberschreitung.
+    mov eax, 1
+    mov edx, [io_qos_test_task]
+    mov ebx, 3
+    mov ecx, 0x500
+    mov esi, 0x600
+    mov edi, 128
+    mov ebp, IO_PRIORITY_NORMAL
+    call io_request_submit
+    jc .invalid
+    mov [io_qos_test_request1], eax
+    mov edx, [io_qos_test_profile]
+    call io_qos_attach
+    jc .invalid
+    mov eax, 1
+    mov edx, [io_qos_test_task]
+    mov ebx, 3
+    mov ecx, 0x501
+    mov esi, 0x601
+    mov edi, 128
+    mov ebp, IO_PRIORITY_NORMAL
+    call io_request_submit
+    jc .invalid
+    mov [io_qos_test_request2], eax
+    mov edx, [io_qos_test_profile]
+    call io_qos_attach
+    jnc .invalid
+    cmp dword [io_qos_throttle_count], 1
+    jne .invalid
+    mov eax, [io_qos_test_request1]
+    mov edx, 128
+    xor ebx, ebx
+    call io_request_complete
+    jc .invalid
+    mov eax, [io_qos_test_profile]
+    call io_qos_lookup
+    jc .invalid
+    cmp dword [eax + IO_QOS_ACTIVE_REQUESTS], 0
+    jne .invalid
+    cmp dword [eax + IO_QOS_COMPLETED_BYTES_LOW], 128
+    jne .invalid
+    mov eax, [io_qos_test_request2]
+    mov edx, 0x514F5343               ; "QOSC"
+    call io_request_cancel
+    jc .invalid
+    mov eax, [io_qos_test_task]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [io_qos_test_scope]
+    call task_scope_close
+    jc .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+io_qos_api:
+    dd IO_QOS_API_SIZE
+    dw 1, 0
+    dd IO_QOS_CAPACITY
+    dd IO_QOS_CAPABILITIES
+    dd io_qos_create
+    dd io_qos_attach
+    dd io_qos_table
+    dd io_qos_rejection_count
+
+io_qos_manager_ready:        dd 0
+io_qos_next_id:              dd 0
+io_qos_rejection_count:      dd 0
+io_qos_throttle_count:       dd 0
+io_qos_temp_owner:           dd 0
+io_qos_temp_class:           dd 0
+io_qos_temp_requirements:    dd 0
+io_qos_temp_latency:         dd 0
+io_qos_temp_throughput:      dd 0
+io_qos_temp_bandwidth:       dd 0
+io_qos_temp_outstanding:     dd 0
+io_qos_temp_record:          dd 0
+io_qos_temp_request:         dd 0
+io_qos_temp_profile:         dd 0
+io_qos_temp_request_record:  dd 0
+io_qos_terminal_request:     dd 0
+io_qos_temp_slot:            dd 0
+io_qos_test_profile:         dd 0
+io_qos_test_scope:           dd 0
+io_qos_test_task:            dd 0
+io_qos_test_request1:        dd 0
+io_qos_test_request2:        dd 0
+align 4
+io_qos_table:
+    times IO_QOS_CAPACITY * IO_QOS_RECORD_SIZE db 0
+
+io_request_manager_self_test:
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [io_request_test_scope], eax
+    mov eax, 1
+    mov edx, [io_request_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [io_request_test_task], eax
+    mov edx, [timer_ticks]
+    add edx, 100
+    mov [io_request_test_deadline], edx
+    mov ebx, TASK_DEADLINE_CLASS_SOFT
+    mov ecx, TASK_DEADLINE_POLICY_CANCEL
+    call task_deadline_set
+    jc .invalid
+
+    ; Partial Completion prueft getrennte Request-/Completion-Zustaende.
+    mov eax, 1
+    mov edx, [io_request_test_task]
+    mov ebx, 1
+    mov ecx, 0x100
+    mov esi, 0x200
+    mov edi, 4096
+    mov ebp, 1
+    call io_request_submit
+    jc .invalid
+    mov [io_request_test_first], eax
+    call io_request_lookup
+    jc .invalid
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    jne .invalid
+    mov edx, [io_request_test_scope]
+    cmp [eax + IO_REQUEST_SCOPE], edx
+    jne .invalid
+    mov edx, [io_request_test_deadline]
+    cmp [eax + IO_REQUEST_DEADLINE], edx
+    jne .invalid
+    mov eax, [io_request_test_first]
+    mov edx, 2048
+    xor ebx, ebx
+    call io_request_complete
+    jc .invalid
+    mov eax, [io_request_test_first]
+    call io_request_lookup
+    jc .invalid
+    cmp dword [eax + IO_REQUEST_COMPLETION], IO_COMPLETION_PARTIAL
+    jne .invalid
+
+    ; Alle acht Slots belegen; der neunte Request muss Backpressure melden.
+    xor ecx, ecx
+.fill:
+    cmp ecx, IO_REQUEST_CAPACITY
+    jae .full
+    push ecx
+    mov eax, 1
+    mov edx, [io_request_test_task]
+    mov ebx, 2
+    mov ecx, 0x101
+    mov esi, 0x201
+    mov edi, 512
+    xor ebp, ebp
+    call io_request_submit
+    pop ecx
+    jc .invalid
+    test ecx, ecx
+    jnz .filled
+    mov [io_request_test_cancelled], eax
+.filled:
+    inc ecx
+    jmp .fill
+.full:
+    mov eax, 1
+    mov edx, [io_request_test_task]
+    mov ebx, 2
+    mov ecx, 0x102
+    mov esi, 0x202
+    mov edi, 512
+    xor ebp, ebp
+    call io_request_submit
+    jnc .invalid
+    cmp dword [io_request_backpressure_count], 1
+    jne .invalid
+    cmp dword [io_request_outstanding], IO_REQUEST_CAPACITY
+    jne .invalid
+
+    mov eax, [io_request_test_task]
+    mov edx, 0x494F4341               ; "IOCA"
+    call task_request_cancel
+    jc .invalid
+    cmp dword [io_request_outstanding], 0
+    jne .invalid
+    mov eax, [io_request_test_cancelled]
+    call io_request_lookup
+    jc .invalid
+    cmp dword [eax + IO_REQUEST_COMPLETION], IO_COMPLETION_CANCELLED
+    jne .invalid
+    mov eax, [io_request_test_cancelled]
+    mov edx, 512
+    xor ebx, ebx
+    call io_request_complete
+    jnc .invalid                       ; terminale Completion bleibt eindeutig
+    mov eax, [io_request_test_task]
+    call task_checkpoint
+    jc .invalid
+    cmp eax, 1
+    jne .invalid
+    mov eax, [io_request_test_scope]
+    call task_scope_close
+    jc .invalid
+    cmp dword [task_count], 0
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+io_request_manager_api:
+    dd IO_REQUEST_API_SIZE
+    dw 1, 0
+    dd IO_REQUEST_CAPACITY
+    dd IO_CAP_ASYNC_COMPLETION | IO_CAP_BOUNDED_QUEUE | IO_CAP_TASK_OWNERSHIP | IO_CAP_DEADLINE
+    dd io_request_submit
+    dd io_request_complete
+    dd io_request_cancel
+    dd io_request_table
+
+io_request_manager_ready:        dd 0
+io_request_next_id:              dd 0
+io_request_outstanding:          dd 0
+io_request_backpressure_count:   dd 0
+io_request_deadline_miss_count:  dd 0
+io_request_poll_tick:            dd 0
+io_request_temp_owner:           dd 0
+io_request_temp_task:            dd 0
+io_request_temp_operation:       dd 0
+io_request_temp_target:          dd 0
+io_request_temp_buffer:          dd 0
+io_request_temp_length:          dd 0
+io_request_temp_priority:        dd 0
+io_request_temp_slot:            dd 0
+io_request_temp_id:              dd 0
+io_request_temp_transferred:     dd 0
+io_request_temp_error:           dd 0
+io_request_temp_record:          dd 0
+io_request_temp_task_record:     dd 0
+io_request_test_scope:           dd 0
+io_request_test_task:            dd 0
+io_request_test_deadline:        dd 0
+io_request_test_first:           dd 0
+io_request_test_cancelled:       dd 0
+align 4
+io_request_table:
+    times IO_REQUEST_CAPACITY * IO_REQUEST_RECORD_SIZE db 0
+io_request_submit_ticks:
+    times IO_REQUEST_CAPACITY dd 0
+io_request_dispatch_ticks:
+    times IO_REQUEST_CAPACITY dd 0
+io_request_wait_rounds:
+    times IO_REQUEST_CAPACITY dd 0
+io_request_qos_ids:
+    times IO_REQUEST_CAPACITY dd 0
 
 ; ---------------------------------------------------------------------------
 ; Initialer x86-32 Userspace-Prozess (Bootphase 10)
@@ -13642,6 +16009,30 @@ message_task_manager_ok:
     db "NOVA: Task ABI 1.0, Lifecycle und kooperative Cancellation aktiv", 13, 10, 0
 message_task_manager_error:
     db "NOVA PANIC: Task Manager nicht initialisierbar", 13, 10, 0
+message_task_deadline_manager_ok:
+    db "NOVA: Task Deadline ABI 1.0, Parent-Clamp und Miss-Policy aktiv", 13, 10, 0
+message_task_deadline_manager_error:
+    db "NOVA PANIC: Task Deadline Manager nicht initialisierbar", 13, 10, 0
+message_task_group_manager_ok:
+    db "NOVA: Task Group ABI 1.0, WaitAll, FailFast und Drain aktiv", 13, 10, 0
+message_task_group_manager_error:
+    db "NOVA PANIC: Task Group Manager nicht initialisierbar", 13, 10, 0
+message_io_request_manager_ok:
+    db "NOVA: Async IO ABI 1.0, Completion, Deadline und Backpressure aktiv", 13, 10, 0
+message_io_request_manager_error:
+    db "NOVA PANIC: Async IO Request Manager nicht initialisierbar", 13, 10, 0
+message_io_completion_ok:
+    db "NOVA: IO Completion Queue ABI 1.0, FIFO und Batch aktiv", 13, 10, 0
+message_io_completion_error:
+    db "NOVA PANIC: IO Completion Queue nicht initialisierbar", 13, 10, 0
+message_io_scheduler_ok:
+    db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
+message_io_scheduler_error:
+    db "NOVA PANIC: IO Scheduler nicht initialisierbar", 13, 10, 0
+message_io_qos_ok:
+    db "NOVA: IO QoS ABI 1.0, Admission, Degradation und Accounting aktiv", 13, 10, 0
+message_io_qos_error:
+    db "NOVA PANIC: IO QoS Manager nicht initialisierbar", 13, 10, 0
 message_security_ok:
     db "NOVA: Security ABI 1.0 Capabilities aktiv", 13, 10, 0
 message_security_error:
