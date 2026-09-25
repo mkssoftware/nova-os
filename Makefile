@@ -72,7 +72,7 @@ abi-check:
 	PATH=/ucrt64/bin:/usr/bin "$(HOST_CC)" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
 		tests/boot_protocol_layout.c
 	PATH=/ucrt64/bin:/usr/bin "$(HOST_CC)" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
-		tests/kernel_abi_layout.c
+		-Ikernel/include tests/kernel_abi_layout.c
 
 ui-architecture-runtime-check: | $(BUILD_DIR)
 	PATH=/ucrt64/bin:/usr/bin TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \

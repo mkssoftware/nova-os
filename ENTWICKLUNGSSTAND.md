@@ -1,6 +1,6 @@
 # NovaOS – aktueller Entwicklungsstand
 
-**Stand:** 17. September 2026  
+**Stand:** 25. September 2026
 **Projektpfad:** `C:\recoverboot\nova-os`  
 **Aktueller Schwerpunkt:** UEFI-Bootpfad und Kernel-Handoff
 
@@ -683,3 +683,33 @@ Node-Fokus sichtbar an. Der Display-Provider zeichnet bei solchen
 Fokusänderungen nur das betroffene Fenster beziehungsweise Startmenü neu. Der
 automatisierte QEMU-Test prüft diese Navigation mit einer realen virtuellen
 Pfeiltaste.
+
+## 15. Task-Scopes und Structured Concurrency
+
+Der Kernel implementiert jetzt den ersten angenommenen
+Structured-Concurrency-Unterbau. Der initiale Kernelprozess besitzt einen
+dauerhaften Root-Scope, dem die vorhandenen Kernelthreads über ihr versioniertes
+ABI-Record zugeordnet sind. Weitere Scopes besitzen eine stabile ID, einen
+expliziten Prozess-Owner und optional einen Parent-Scope.
+
+Cancellation wird an alle Nachfahren weitergegeben und speichert einen
+eindeutigen Grund. Ein Parent-Scope kann nicht geschlossen werden, solange noch
+aktive Kinder existieren. Die feste Tabelle ist bewusst begrenzt und verhindert
+unbeschränkte Allokation im frühen Kernel.
+
+ABI-Layout, positiver Lifecycle und negative Abschlussfälle werden automatisch
+geprüft. Der QEMU-UEFI-End-to-End-Test verlangt den erfolgreichen
+Task-Scope-Selbsttest und erreicht anschließend weiterhin Ring 3, die
+Desktop-Szene und den geordneten Shutdown bis `PLATFORM_OFF`.
+
+Darauf aufbauend verwaltet der Kernel jetzt einzelne Tasks mit stabiler ID,
+Prozess-Owner, owning Scope, optionalem Parent, Resultat und Cancellation-Grund.
+Cancellation wird hierarchisch angefordert, aber nicht als harter Thread-Abbruch
+ausgeführt. Erst ein expliziter Cancellation Point schließt Cleanup und den
+terminalen `Cancelled`-Zustand ab. Solange ein Task nicht terminal ist, bleibt
+sein Scope aktiv und kann nicht erfolgreich geschlossen werden.
+
+Die vorhandenen drei Kernelthreads sind inzwischen echte verwaltete Tasks im
+Kernel-Root-Scope. Der Timer-Scheduler spiegelt seine Round-Robin-Auswahl in den
+Taskzuständen `Ready` und `Running`, ohne Cancellation- oder Terminalzustände zu
+überschreiben. Die Zuordnung bleibt über feste Task-IDs introspektierbar.

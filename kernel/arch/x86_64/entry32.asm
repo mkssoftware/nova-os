@@ -186,6 +186,20 @@ kernel_entry:
     mov esi, message_process_manager_ok
     call serial_write_string
 
+    call task_scope_manager_initialize
+    jc panic_task_scope_manager
+    call task_scope_manager_self_test
+    jc panic_task_scope_manager
+    mov esi, message_task_scope_manager_ok
+    call serial_write_string
+
+    call task_manager_initialize
+    jc panic_task_manager
+    call task_manager_self_test
+    jc panic_task_manager
+    mov esi, message_task_manager_ok
+    call serial_write_string
+
     call security_initialize
     jc panic_security
     call security_self_test
@@ -327,6 +341,18 @@ panic_process_manager:
     mov eax, 0x00002011
     mov edx, 11
     mov esi, message_process_manager_error
+    jmp kernel_panic
+
+panic_task_scope_manager:
+    mov eax, 0x00002018
+    mov edx, 24
+    mov esi, message_task_scope_manager_error
+    jmp kernel_panic
+
+panic_task_manager:
+    mov eax, 0x00002019
+    mov edx, 25
+    mov esi, message_task_manager_error
     jmp kernel_panic
 
 panic_security:
@@ -3668,6 +3694,752 @@ process_temp_slot:  dd 0
 align 4
 process_table:
     times PROCESS_CAPACITY * PROCESS_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Strukturierte Nebenlaeufigkeit: Task-Scopes
+; NPSPEC-CONCURRENCY-TASK/STRUCTURED/CANCELLATION-0001
+; ---------------------------------------------------------------------------
+
+TASK_SCOPE_API_SIZE        equ 32
+TASK_SCOPE_CAPACITY        equ 8
+TASK_SCOPE_RECORD_SIZE     equ 32
+TASK_SCOPE_STATE_EMPTY     equ 0
+TASK_SCOPE_STATE_OPEN      equ 1
+TASK_SCOPE_STATE_CANCELLING equ 2
+TASK_SCOPE_STATE_CLOSED    equ 3
+TASK_SCOPE_CAP_HIERARCHY   equ 0x00000001
+TASK_SCOPE_CAP_CANCELLATION equ 0x00000002
+TASK_SCOPE_CAP_BOUNDED     equ 0x00000004
+TASK_SCOPE_ID              equ 0
+TASK_SCOPE_OWNER           equ 4
+TASK_SCOPE_PARENT          equ 8
+TASK_SCOPE_STATE           equ 12
+TASK_SCOPE_CHILDREN        equ 16
+TASK_SCOPE_FLAGS           equ 20
+TASK_SCOPE_CANCEL_REASON   equ 24
+TASK_SCOPE_ACTIVE_TASKS    equ 28
+
+task_scope_manager_initialize:
+    mov edi, task_scope_table
+    xor eax, eax
+    mov ecx, (TASK_SCOPE_CAPACITY * TASK_SCOPE_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [task_scope_count], 0
+    mov dword [task_scope_next_id], 1
+    mov dword [task_scope_kernel_root_id], 0
+
+    ; Der initiale Kernelprozess besitzt einen dauerhaften Root-Scope. Jeder
+    ; spaeter registrierte Kernelthread wird diesem Scope zugeordnet.
+    mov eax, 1
+    xor edx, edx
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [task_scope_kernel_root_id], eax
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; EAX=Owner-PID, EDX=Parent-Scope oder 0, EBX=Flags. EAX=Scope-ID.
+task_scope_create:
+    pushfd
+    cli
+    mov [task_scope_temp_owner], eax
+    mov [task_scope_temp_parent], edx
+    mov [task_scope_temp_flags], ebx
+
+    call process_lookup
+    jc .invalid
+
+    cmp dword [task_scope_temp_parent], 0
+    je .find_slot
+    mov eax, [task_scope_temp_parent]
+    call task_scope_lookup
+    jc .invalid
+    cmp dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_OPEN
+    jne .invalid
+    mov edx, [task_scope_temp_owner]
+    cmp [eax + TASK_SCOPE_OWNER], edx
+    jne .invalid
+
+.find_slot:
+    xor ecx, ecx
+.scan:
+    cmp ecx, TASK_SCOPE_CAPACITY
+    jae .invalid
+    mov edi, ecx
+    shl edi, 5
+    add edi, task_scope_table
+    cmp dword [edi + TASK_SCOPE_STATE], TASK_SCOPE_STATE_EMPTY
+    je .slot
+    cmp dword [edi + TASK_SCOPE_STATE], TASK_SCOPE_STATE_CLOSED
+    je .slot
+    inc ecx
+    jmp .scan
+.slot:
+    mov eax, [task_scope_next_id]
+    mov [edi + TASK_SCOPE_ID], eax
+    mov edx, [task_scope_temp_owner]
+    mov [edi + TASK_SCOPE_OWNER], edx
+    mov edx, [task_scope_temp_parent]
+    mov [edi + TASK_SCOPE_PARENT], edx
+    mov dword [edi + TASK_SCOPE_STATE], TASK_SCOPE_STATE_OPEN
+    mov dword [edi + TASK_SCOPE_CHILDREN], 0
+    mov edx, [task_scope_temp_flags]
+    mov [edi + TASK_SCOPE_FLAGS], edx
+    mov dword [edi + TASK_SCOPE_CANCEL_REASON], 0
+    mov dword [edi + TASK_SCOPE_ACTIVE_TASKS], 0
+
+    cmp dword [task_scope_temp_parent], 0
+    je .created
+    mov eax, [task_scope_temp_parent]
+    call task_scope_lookup
+    jc .invalid
+    inc dword [eax + TASK_SCOPE_CHILDREN]
+.created:
+    inc dword [task_scope_count]
+    inc dword [task_scope_next_id]
+    mov eax, [edi + TASK_SCOPE_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Scope-ID. EAX=Datensatz oder 0.
+task_scope_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, TASK_SCOPE_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 5
+    add edx, task_scope_table
+    cmp dword [edx + TASK_SCOPE_STATE], TASK_SCOPE_STATE_EMPTY
+    je .next
+    cmp [edx + TASK_SCOPE_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Scope-ID, EDX=Cancellation-Grund. Propagiert hierarchisch.
+task_scope_cancel:
+    pushfd
+    cli
+    mov [task_scope_temp_cancel_id], eax
+    mov [task_scope_temp_cancel_reason], edx
+    call task_scope_lookup
+    jc .invalid
+    cmp dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_CLOSED
+    je .invalid
+    mov dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_CANCELLING
+    mov edx, [task_scope_temp_cancel_reason]
+    mov [eax + TASK_SCOPE_CANCEL_REASON], edx
+
+    ; Bei jeder Runde werden alle direkten Kinder bereits abgebrochener
+    ; Scopes markiert. Die feste Tabellenkapazitaet begrenzt Laufzeit und
+    ; Speicherverbrauch deterministisch.
+.propagate:
+    xor ebp, ebp
+    xor ecx, ecx
+.scan_children:
+    cmp ecx, TASK_SCOPE_CAPACITY
+    jae .propagated
+    mov edi, ecx
+    shl edi, 5
+    add edi, task_scope_table
+    cmp dword [edi + TASK_SCOPE_STATE], TASK_SCOPE_STATE_OPEN
+    jne .next_child
+    mov eax, [edi + TASK_SCOPE_PARENT]
+    test eax, eax
+    jz .next_child
+    push ecx
+    push edi
+    call task_scope_lookup
+    pop edi
+    pop ecx
+    jc .invalid
+    cmp dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_CANCELLING
+    jne .next_child
+    mov dword [edi + TASK_SCOPE_STATE], TASK_SCOPE_STATE_CANCELLING
+    mov eax, [eax + TASK_SCOPE_CANCEL_REASON]
+    mov [edi + TASK_SCOPE_CANCEL_REASON], eax
+    mov ebp, 1
+.next_child:
+    inc ecx
+    jmp .scan_children
+.propagated:
+    test ebp, ebp
+    jnz .propagate
+    mov edx, [task_scope_temp_cancel_reason]
+    call task_manager_cancel_scopes
+    popfd
+    clc
+    ret
+.invalid:
+    popfd
+    stc
+    ret
+
+; EAX=Scope-ID. Abschluss ist erst ohne aktive Kinder zulaessig.
+task_scope_close:
+    pushfd
+    cli
+    mov [task_scope_temp_close_id], eax
+    call task_scope_lookup
+    jc .invalid
+    cmp dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_OPEN
+    je .state_valid
+    cmp dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_CANCELLING
+    jne .invalid
+.state_valid:
+    cmp dword [eax + TASK_SCOPE_CHILDREN], 0
+    jne .invalid
+    cmp dword [eax + TASK_SCOPE_ACTIVE_TASKS], 0
+    jne .invalid
+    mov edi, eax
+    mov eax, [edi + TASK_SCOPE_PARENT]
+    test eax, eax
+    jz .close
+    call task_scope_lookup
+    jc .invalid
+    cmp dword [eax + TASK_SCOPE_CHILDREN], 0
+    je .invalid
+    dec dword [eax + TASK_SCOPE_CHILDREN]
+.close:
+    mov dword [edi + TASK_SCOPE_STATE], TASK_SCOPE_STATE_CLOSED
+    dec dword [task_scope_count]
+    mov eax, [task_scope_temp_close_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+task_scope_manager_self_test:
+    cmp dword [task_scope_kernel_root_id], 1
+    jne .invalid
+    mov eax, 1
+    xor edx, edx
+    mov ebx, 0x10
+    call task_scope_create
+    jc .invalid
+    mov [task_scope_test_parent], eax
+    mov eax, 1
+    mov edx, [task_scope_test_parent]
+    mov ebx, 0x20
+    call task_scope_create
+    jc .invalid
+    mov [task_scope_test_child], eax
+
+    mov eax, [task_scope_test_parent]
+    call task_scope_close
+    jnc .invalid                      ; aktives Kind verhindert Scope-Ende
+
+    mov eax, [task_scope_test_parent]
+    mov edx, 0x43414E43               ; "CANC"
+    call task_scope_cancel
+    jc .invalid
+    mov eax, [task_scope_test_child]
+    call task_scope_lookup
+    jc .invalid
+    cmp dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_CANCELLING
+    jne .invalid
+    cmp dword [eax + TASK_SCOPE_CANCEL_REASON], 0x43414E43
+    jne .invalid
+
+    mov eax, [task_scope_test_child]
+    call task_scope_close
+    jc .invalid
+    mov eax, [task_scope_test_parent]
+    call task_scope_close
+    jc .invalid
+    cmp dword [task_scope_count], 1
+    jne .invalid
+    mov eax, [task_scope_kernel_root_id]
+    call task_scope_lookup
+    jc .invalid
+    cmp dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_OPEN
+    jne .invalid
+    cmp dword [eax + TASK_SCOPE_CHILDREN], 0
+    jne .invalid
+    cmp dword [eax + TASK_SCOPE_ACTIVE_TASKS], 0
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+task_scope_manager_api:
+    dd TASK_SCOPE_API_SIZE
+    dw 1, 0
+    dd TASK_SCOPE_CAPACITY
+    dd TASK_SCOPE_CAP_HIERARCHY | TASK_SCOPE_CAP_CANCELLATION | TASK_SCOPE_CAP_BOUNDED
+    dd task_scope_create
+    dd task_scope_cancel
+    dd task_scope_close
+    dd task_scope_table
+
+task_scope_count:              dd 0
+task_scope_next_id:            dd 0
+task_scope_kernel_root_id:     dd 0
+task_scope_temp_owner:         dd 0
+task_scope_temp_parent:        dd 0
+task_scope_temp_flags:         dd 0
+task_scope_temp_cancel_id:     dd 0
+task_scope_temp_cancel_reason: dd 0
+task_scope_temp_close_id:      dd 0
+task_scope_test_parent:        dd 0
+task_scope_test_child:         dd 0
+align 4
+task_scope_table:
+    times TASK_SCOPE_CAPACITY * TASK_SCOPE_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Verwaltete Kernel-Tasks innerhalb strukturierter Scopes
+; NPSPEC-CONCURRENCY-TASK/CANCELLATION-0001
+; ---------------------------------------------------------------------------
+
+TASK_API_SIZE             equ 32
+TASK_CAPACITY             equ 8
+TASK_RECORD_SIZE          equ 32
+TASK_STATE_EMPTY          equ 0
+TASK_STATE_CREATED        equ 1
+TASK_STATE_READY          equ 2
+TASK_STATE_RUNNING        equ 3
+TASK_STATE_WAITING        equ 4
+TASK_STATE_CANCEL_REQUEST equ 5
+TASK_STATE_COMPLETED      equ 6
+TASK_STATE_CANCELLED      equ 7
+TASK_STATE_FAILED         equ 8
+TASK_CAP_HIERARCHY        equ 0x00000001
+TASK_CAP_CANCEL           equ 0x00000002
+TASK_CAP_RESULT           equ 0x00000004
+TASK_ID                   equ 0
+TASK_OWNER                equ 4
+TASK_RECORD_SCOPE         equ 8
+TASK_STATE                equ 12
+TASK_PARENT               equ 16
+TASK_FLAGS                equ 20
+TASK_RESULT               equ 24
+TASK_CANCEL_REASON        equ 28
+
+task_manager_initialize:
+    mov edi, task_table
+    xor eax, eax
+    mov ecx, (TASK_CAPACITY * TASK_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [task_count], 0
+    mov dword [task_next_id], 1
+    mov dword [task_manager_ready], 1
+    clc
+    ret
+
+; EAX=Owner-PID, EDX=Scope-ID, EBX=Parent-Task oder 0, ECX=Flags.
+; Rueckgabe EAX=Task-ID.
+task_create:
+    pushfd
+    cli
+    mov [task_temp_owner], eax
+    mov [task_temp_scope], edx
+    mov [task_temp_parent], ebx
+    mov [task_temp_flags], ecx
+    call process_lookup
+    jc .invalid
+
+    mov eax, [task_temp_scope]
+    call task_scope_lookup
+    jc .invalid
+    cmp dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_OPEN
+    jne .invalid
+    mov edx, [task_temp_owner]
+    cmp [eax + TASK_SCOPE_OWNER], edx
+    jne .invalid
+
+    cmp dword [task_temp_parent], 0
+    je .find_slot
+    mov eax, [task_temp_parent]
+    call task_lookup
+    jc .invalid
+    mov edx, [task_temp_owner]
+    cmp [eax + TASK_OWNER], edx
+    jne .invalid
+    mov edx, [task_temp_scope]
+    cmp [eax + TASK_RECORD_SCOPE], edx
+    jne .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jae .invalid
+
+.find_slot:
+    xor ecx, ecx
+.scan:
+    cmp ecx, TASK_CAPACITY
+    jae .invalid
+    mov edi, ecx
+    shl edi, 5
+    add edi, task_table
+    cmp dword [edi + TASK_STATE], TASK_STATE_EMPTY
+    je .slot
+    cmp dword [edi + TASK_STATE], TASK_STATE_COMPLETED
+    jae .slot
+    inc ecx
+    jmp .scan
+.slot:
+    mov eax, [task_next_id]
+    mov [edi + TASK_ID], eax
+    mov edx, [task_temp_owner]
+    mov [edi + TASK_OWNER], edx
+    mov edx, [task_temp_scope]
+    mov [edi + TASK_RECORD_SCOPE], edx
+    mov dword [edi + TASK_STATE], TASK_STATE_READY
+    mov edx, [task_temp_parent]
+    mov [edi + TASK_PARENT], edx
+    mov edx, [task_temp_flags]
+    mov [edi + TASK_FLAGS], edx
+    mov dword [edi + TASK_RESULT], 0
+    mov dword [edi + TASK_CANCEL_REASON], 0
+
+    mov eax, [task_temp_scope]
+    call task_scope_lookup
+    jc .invalid
+    inc dword [eax + TASK_SCOPE_ACTIVE_TASKS]
+    inc dword [task_count]
+    inc dword [task_next_id]
+    mov eax, [edi + TASK_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Task-ID. EAX=Datensatz oder 0.
+task_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, TASK_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 5
+    add edx, task_table
+    cmp dword [edx + TASK_STATE], TASK_STATE_EMPTY
+    je .next
+    cmp [edx + TASK_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Task-Datensatz. Entfernt genau eine aktive Task aus ihrem Scope.
+task_release_scope:
+    push edi
+    mov edi, eax
+    mov eax, [edi + TASK_RECORD_SCOPE]
+    call task_scope_lookup
+    jc .invalid
+    cmp dword [eax + TASK_SCOPE_ACTIVE_TASKS], 0
+    je .invalid
+    dec dword [eax + TASK_SCOPE_ACTIVE_TASKS]
+    dec dword [task_count]
+    pop edi
+    clc
+    ret
+.invalid:
+    pop edi
+    stc
+    ret
+
+; EAX=Task-ID, EDX=Grund. Fordert kooperativen Abbruch an und propagiert
+; entlang der Task-Hierarchie, beendet aber keinen Task hart.
+task_request_cancel:
+    pushfd
+    cli
+    mov [task_temp_cancel_id], eax
+    mov [task_temp_cancel_reason], edx
+    call task_lookup
+    jc .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CREATED
+    jb .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    ja .invalid
+    mov dword [eax + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    mov edx, [task_temp_cancel_reason]
+    mov [eax + TASK_CANCEL_REASON], edx
+
+.propagate:
+    xor ebp, ebp
+    xor ecx, ecx
+.scan_children:
+    cmp ecx, TASK_CAPACITY
+    jae .propagated
+    mov edi, ecx
+    shl edi, 5
+    add edi, task_table
+    cmp dword [edi + TASK_STATE], TASK_STATE_CREATED
+    jb .next_child
+    cmp dword [edi + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jae .next_child
+    mov eax, [edi + TASK_PARENT]
+    test eax, eax
+    jz .next_child
+    push ecx
+    push edi
+    call task_lookup
+    pop edi
+    pop ecx
+    jc .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jne .next_child
+    mov dword [edi + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    mov eax, [eax + TASK_CANCEL_REASON]
+    mov [edi + TASK_CANCEL_REASON], eax
+    mov ebp, 1
+.next_child:
+    inc ecx
+    jmp .scan_children
+.propagated:
+    test ebp, ebp
+    jnz .propagate
+    popfd
+    clc
+    ret
+.invalid:
+    popfd
+    stc
+    ret
+
+; EDX=Grund. Wird nach einer Scope-Cancellation aufgerufen und markiert alle
+; aktiven Tasks in betroffenen Scopes zur kooperativen Beendigung.
+task_manager_cancel_scopes:
+    cmp dword [task_manager_ready], 1
+    jne .done
+    mov [task_temp_cancel_reason], edx
+    xor ecx, ecx
+.scan:
+    cmp ecx, TASK_CAPACITY
+    jae .done
+    mov edi, ecx
+    shl edi, 5
+    add edi, task_table
+    cmp dword [edi + TASK_STATE], TASK_STATE_CREATED
+    jb .next
+    cmp dword [edi + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jae .next
+    mov eax, [edi + TASK_RECORD_SCOPE]
+    push ecx
+    push edi
+    call task_scope_lookup
+    pop edi
+    pop ecx
+    jc .next
+    cmp dword [eax + TASK_SCOPE_STATE], TASK_SCOPE_STATE_CANCELLING
+    jne .next
+    mov dword [edi + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    mov eax, [task_temp_cancel_reason]
+    mov [edi + TASK_CANCEL_REASON], eax
+.next:
+    inc ecx
+    jmp .scan
+.done:
+    clc
+    ret
+
+; Kooperativer Cancellation Point. EAX=Task-ID, Rueckgabe EAX=1 bei Cancel.
+task_checkpoint:
+    pushfd
+    cli
+    call task_lookup
+    jc .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jne .active
+    mov dword [eax + TASK_STATE], TASK_STATE_CANCELLED
+    call task_release_scope
+    jc .invalid
+    mov eax, 1
+    popfd
+    clc
+    ret
+.active:
+    xor eax, eax
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Task-ID, EDX=Resultat. Nur aktive Tasks duerfen abschliessen.
+task_complete:
+    pushfd
+    cli
+    mov [task_temp_complete_id], eax
+    mov [task_temp_result], edx
+    call task_lookup
+    jc .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CREATED
+    jb .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_WAITING
+    ja .invalid
+    mov dword [eax + TASK_STATE], TASK_STATE_COMPLETED
+    mov edx, [task_temp_result]
+    mov [eax + TASK_RESULT], edx
+    call task_release_scope
+    jc .invalid
+    mov eax, [task_temp_complete_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+task_manager_self_test:
+    ; Hierarchische Cancellation bleibt bis zu expliziten Checkpoints pending.
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [task_test_scope], eax
+    mov eax, 1
+    mov edx, [task_test_scope]
+    xor ebx, ebx
+    mov ecx, 1
+    call task_create
+    jc .invalid
+    mov [task_test_parent], eax
+    mov eax, 1
+    mov edx, [task_test_scope]
+    mov ebx, [task_test_parent]
+    mov ecx, 2
+    call task_create
+    jc .invalid
+    mov [task_test_child], eax
+
+    mov eax, [task_test_scope]
+    call task_scope_close
+    jnc .invalid
+    mov eax, [task_test_parent]
+    mov edx, 0x43414E43
+    call task_request_cancel
+    jc .invalid
+    mov eax, [task_test_child]
+    call task_lookup
+    jc .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jne .invalid
+    cmp dword [eax + TASK_CANCEL_REASON], 0x43414E43
+    jne .invalid
+    mov eax, [task_test_child]
+    call task_checkpoint
+    jc .invalid
+    cmp eax, 1
+    jne .invalid
+    mov eax, [task_test_parent]
+    call task_checkpoint
+    jc .invalid
+    cmp eax, 1
+    jne .invalid
+    mov eax, [task_test_scope]
+    call task_scope_close
+    jc .invalid
+
+    ; Normaler Completion-Pfad bewahrt das Ergebnis und loest den Scopezaehler.
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [task_test_scope], eax
+    mov eax, 1
+    mov edx, [task_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [task_test_parent], eax
+    mov edx, 0x4F4B0001
+    call task_complete
+    jc .invalid
+    mov eax, [task_test_parent]
+    call task_lookup
+    jc .invalid
+    cmp dword [eax + TASK_STATE], TASK_STATE_COMPLETED
+    jne .invalid
+    cmp dword [eax + TASK_RESULT], 0x4F4B0001
+    jne .invalid
+    mov eax, [task_test_scope]
+    call task_scope_close
+    jc .invalid
+    cmp dword [task_count], 0
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+task_manager_api:
+    dd TASK_API_SIZE
+    dw 1, 0
+    dd TASK_CAPACITY
+    dd TASK_CAP_HIERARCHY | TASK_CAP_CANCEL | TASK_CAP_RESULT
+    dd task_create
+    dd task_request_cancel
+    dd task_checkpoint
+    dd task_complete
+
+task_manager_ready:       dd 0
+task_count:               dd 0
+task_next_id:             dd 0
+task_temp_owner:          dd 0
+task_temp_scope:          dd 0
+task_temp_parent:         dd 0
+task_temp_flags:          dd 0
+task_temp_cancel_id:      dd 0
+task_temp_cancel_reason:  dd 0
+task_temp_complete_id:    dd 0
+task_temp_result:         dd 0
+task_test_scope:          dd 0
+task_test_parent:         dd 0
+task_test_child:          dd 0
+align 4
+task_table:
+    times TASK_CAPACITY * TASK_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Initialer x86-32 Userspace-Prozess (Bootphase 10)
@@ -7803,14 +8575,20 @@ THREAD_SLOT     equ 12
 THREAD_HANDLE   equ 16
 THREAD_ENTRY    equ 20
 THREAD_CONTEXT  equ 24
+THREAD_SCOPE    equ 28
 
 thread_manager_initialize:
     mov edi, thread_table
     xor eax, eax
     mov ecx, (THREAD_CAPACITY * THREAD_RECORD_SIZE) / 4
     rep stosd
+    mov edi, thread_task_ids
+    xor eax, eax
+    mov ecx, THREAD_CAPACITY
+    rep stosd
     mov dword [thread_count], 0
     mov dword [thread_next_tid], 1
+    mov dword [thread_manager_ready], 0
     mov eax, kernel_main
     mov edx, 1
     xor ebx, ebx
@@ -7826,6 +8604,7 @@ thread_manager_initialize:
     mov ebx, 2
     call thread_register
     jc .invalid
+    mov dword [thread_manager_ready], 1
     clc
     ret
 .invalid:
@@ -7849,6 +8628,16 @@ thread_register:
     mov ecx, [thread_count]
     cmp ecx, THREAD_CAPACITY
     jae .invalid
+    cmp dword [thread_temp_pid], 1
+    jne .invalid
+    mov eax, [thread_temp_pid]
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [thread_temp_task], eax
+    mov ecx, [thread_count]
     mov edi, ecx
     shl edi, 5
     add edi, thread_table
@@ -7872,6 +8661,15 @@ thread_register:
     mov ecx, [thread_temp_slot]
     mov ecx, [scheduler_contexts + ecx * 4]
     mov [edi + THREAD_CONTEXT], ecx
+    mov dword [edi + THREAD_SCOPE], 0
+    cmp dword [thread_temp_pid], 1
+    jne .scope_ready
+    mov ecx, [task_scope_kernel_root_id]
+    mov [edi + THREAD_SCOPE], ecx
+.scope_ready:
+    mov ecx, [thread_temp_slot]
+    mov edx, [thread_temp_task]
+    mov [thread_task_ids + ecx * 4], edx
     inc dword [thread_count]
     inc dword [thread_next_tid]
     mov eax, edx
@@ -7916,6 +8714,21 @@ thread_manager_self_test:
     jne .invalid
     cmp dword [eax + THREAD_ENTRY], scheduler_thread1
     jne .invalid
+    mov edx, [task_scope_kernel_root_id]
+    cmp [eax + THREAD_SCOPE], edx
+    jne .invalid
+    mov eax, [thread_task_ids + 4]
+    test eax, eax
+    jz .invalid
+    call task_lookup
+    jc .invalid
+    cmp dword [eax + TASK_OWNER], 1
+    jne .invalid
+    mov edx, [task_scope_kernel_root_id]
+    cmp [eax + TASK_RECORD_SCOPE], edx
+    jne .invalid
+    cmp dword [task_count], THREAD_CAPACITY
+    jne .invalid
     cmp dword [thread_count], THREAD_CAPACITY
     jne .invalid
     clc
@@ -7941,9 +8754,13 @@ thread_temp_entry:  dd 0
 thread_temp_pid:    dd 0
 thread_temp_slot:   dd 0
 thread_temp_record: dd 0
+thread_temp_task:   dd 0
+thread_manager_ready: dd 0
 align 4
 thread_table:
     times THREAD_CAPACITY * THREAD_RECORD_SIZE db 0
+thread_task_ids:
+    times THREAD_CAPACITY dd 0
 
 scheduler_initialize:
     mov dword [scheduler_enabled], 0
@@ -8021,12 +8838,40 @@ scheduler_on_tick:
     jne .done
     mov edx, [scheduler_current]
     mov [scheduler_contexts + edx * 4], eax
+    mov [scheduler_previous_slot], edx
+
+    cmp dword [thread_manager_ready], 1
+    jne .select_next
+    mov eax, [thread_task_ids + edx * 4]
+    test eax, eax
+    jz .select_next
+    call task_lookup
+    jc .select_next
+    cmp dword [eax + TASK_STATE], TASK_STATE_RUNNING
+    jne .select_next
+    mov dword [eax + TASK_STATE], TASK_STATE_READY
+
+.select_next:
+    mov edx, [scheduler_previous_slot]
     inc edx
     cmp edx, SCHEDULER_THREAD_COUNT
     jb .selected
     xor edx, edx
 .selected:
     mov [scheduler_current], edx
+    mov [scheduler_selected_slot], edx
+    cmp dword [thread_manager_ready], 1
+    jne .load_frame
+    mov eax, [thread_task_ids + edx * 4]
+    test eax, eax
+    jz .load_frame
+    call task_lookup
+    jc .load_frame
+    cmp dword [eax + TASK_STATE], TASK_STATE_READY
+    jne .load_frame
+    mov dword [eax + TASK_STATE], TASK_STATE_RUNNING
+.load_frame:
+    mov edx, [scheduler_selected_slot]
     mov eax, [scheduler_contexts + edx * 4]
 .done:
     ret
@@ -8105,6 +8950,8 @@ scheduler_api:
 
 scheduler_enabled: dd 0
 scheduler_current: dd 0
+scheduler_previous_slot: dd 0
+scheduler_selected_slot: dd 0
 scheduler_contexts:
     times SCHEDULER_THREAD_COUNT dd 0
 scheduler_thread1_runs: dd 0
@@ -12787,6 +13634,14 @@ message_process_manager_ok:
     db "NOVA: Process Manager ABI 1.0 bereit", 13, 10, 0
 message_process_manager_error:
     db "NOVA PANIC: Kernel Process Manager nicht initialisierbar", 13, 10, 0
+message_task_scope_manager_ok:
+    db "NOVA: Task Scope ABI 1.0, Hierarchie und Cancellation aktiv", 13, 10, 0
+message_task_scope_manager_error:
+    db "NOVA PANIC: Task-Scope-Manager nicht initialisierbar", 13, 10, 0
+message_task_manager_ok:
+    db "NOVA: Task ABI 1.0, Lifecycle und kooperative Cancellation aktiv", 13, 10, 0
+message_task_manager_error:
+    db "NOVA PANIC: Task Manager nicht initialisierbar", 13, 10, 0
 message_security_ok:
     db "NOVA: Security ABI 1.0 Capabilities aktiv", 13, 10, 0
 message_security_error:

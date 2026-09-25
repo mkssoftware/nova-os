@@ -1571,3 +1571,67 @@ Codeseiten. Beide Seiten sind user-lesbar und ausführbar, aber nicht
 beschreibbar; die feste Obergrenze von 8 KiB wird beim Assemblieren geprüft.
 Der QEMU-Displaytest sendet zusätzlich eine reale Pfeil-rechts-Eingabe über QMP
 und verlangt sowohl die Zustellung als auch eine neue Scene-Presentation.
+
+## 65. Strukturierte Nebenläufigkeit im Kernel
+
+Der Kernel besitzt jetzt einen begrenzten Task-Scope-Manager nach den
+angenommenen Process- und Concurrency-NPSPECs. Ein Task Scope gruppiert
+zusammengehörige nebenläufige Arbeit unter einem expliziten Besitzer und einem
+optionalen Parent-Scope.
+
+Der initiale Kernelprozess erhält einen dauerhaften Root-Scope. Die vorhandenen
+Kernelthreads referenzieren diesen Scope in ihrem ABI-Datensatz. Child-Scopes
+erhöhen den Child-Zähler ihres Parents; ein Parent kann deshalb nicht beendet
+werden, solange noch ein Kind aktiv ist.
+
+Cancellation wird deterministisch durch die feste Scope-Tabelle an alle
+Nachfahren weitergegeben. Jeder betroffene Scope speichert den
+Cancellation-Grund. Ein Scope kann erst geschlossen werden, wenn seine Kinder
+aufgelöst wurden; beim Abschluss wird die Parent-Beziehung atomar aktualisiert.
+Die feste Kapazität verhindert unbegrenzte Kernelallokationen.
+
+`kernel/include/nova/task_scope.h` beschreibt das versionierte, 32 Byte große
+Record- und API-Layout. Der Kernel-Selbsttest prüft Hierarchie, verweigerten
+vorzeitigen Parent-Abschluss, Cancellation-Propagation und geordneten Abschluss.
+Der UEFI-Displaytest verlangt den Marker des erfolgreichen Selbsttests, bevor er
+die Ring-3-Oberfläche und den Shutdownpfad prüft.
+
+## 66. Verwaltete Kernel-Tasks
+
+Auf den Task Scopes baut nun ein eigenständiger Task Manager auf. Jeder Task
+besitzt eine stabile Task-ID, einen Prozess-Owner, genau einen owning Scope,
+optional einen Parent-Task sowie getrennte Felder für Zustand, Resultat und
+Cancellation-Grund.
+
+Der aktuelle Lifecycle unterscheidet `Created`, `Ready`, `Running`, `Waiting`,
+`CancellationRequested`, `Completed`, `Cancelled` und `Failed`. Abgeschlossene,
+abgebrochene und fehlgeschlagene Zustände sind terminal. Scheduling-Policy und
+Task-Modell bleiben getrennt.
+
+Cancellation beendet einen Task nicht hart. Eine Anforderung propagiert entlang
+der Task-Hierarchie und wird erst an einem expliziten Cancellation Point durch
+`task_checkpoint` in den terminalen Zustand überführt. Bis zu diesem Cleanup
+bleibt der Task im Active-Task-Zähler seines Scopes sichtbar und verhindert
+dessen vorzeitigen Abschluss.
+
+Der Selbsttest prüft Parent-/Child-Tasks, hierarchische Cancellation,
+kooperative Checkpoints, verweigerten Scope-Abschluss mit aktiver Arbeit sowie
+einen normalen Completion-Pfad mit erhaltenem Ergebnis. Das öffentliche
+32-Byte-ABI steht in `kernel/include/nova/task.h`.
+
+## 67. Task-/Thread-/Scheduler-Integration
+
+Die drei vorhandenen Kernelthreads werden beim Registrieren nun zusätzlich als
+verwaltete Tasks im dauerhaften Kernel-Root-Scope angelegt. Eine begrenzte
+Sidecar-Tabelle hält die Task-ID pro Scheduler-Slot, ohne das bestehende
+Thread-ABI inkompatibel zu vergrößern.
+
+Bei jedem Timer-Tick setzt der Round-Robin-Scheduler den zuvor laufenden Task
+zurück auf `Ready` und den ausgewählten Task auf `Running`. Terminale oder zur
+Cancellation vorgemerkte Zustände werden dabei nicht überschrieben. Taskmodell
+und Scheduling-Policy bleiben getrennt, sind aber über stabile IDs miteinander
+verbunden.
+
+Der Thread-Manager-Selbsttest validiert Owner, Root-Scope-Zuordnung und die
+vollständige Taskbelegung aller drei Scheduler-Slots. Der UEFI-End-to-End-Test
+verlangt nun auch den erfolgreichen Thread-Manager-Marker.

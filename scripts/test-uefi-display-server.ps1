@@ -71,6 +71,9 @@ try {
     foreach($marker in @(
         'UEFI:KERNEL-HANDOFF-READY',
         'UEFI:BOOTSPLASH-READY',
+        'NOVA: Task Scope ABI 1.0, Hierarchie und Cancellation aktiv',
+        'NOVA: Task ABI 1.0, Lifecycle und kooperative Cancellation aktiv',
+        'NOVA: Thread Manager ABI 1.0 bereit',
         'NOVA: Display Server ABI 1.0, Firmware-Framebuffer uebernommen',
         'NOVA: Userspace Display.QueryPrimary ohne MMIO-Adresse erfolgreich',
         'NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert',

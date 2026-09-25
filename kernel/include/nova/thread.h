@@ -16,7 +16,7 @@ typedef struct nova_thread_record {
     nova_handle_t ObjectHandle;
     uint32_t EntryAddress;
     uint32_t ContextAddress;
-    uint32_t Reserved;
+    uint32_t TaskScopeId;
 } nova_thread_record_t;
 typedef struct nova_thread_api {
     uint32_t StructSize;

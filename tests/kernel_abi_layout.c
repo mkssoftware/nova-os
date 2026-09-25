@@ -7,8 +7,10 @@
 #include "../kernel/include/nova/vfs.h"
 #include "../kernel/include/nova/syscall.h"
 #include "../kernel/include/nova/handle.h"
-#include "../kernel/include/nova/handle.h"
-#include "../kernel/include/nova/handle.h"
+#include "../kernel/include/nova/process.h"
+#include "../kernel/include/nova/thread.h"
+#include "../kernel/include/nova/task_scope.h"
+#include "../kernel/include/nova/task.h"
 
 _Static_assert(NOVA_BOOT_PHASE_COUNT==12,"Kernel boot phase count changed");
 _Static_assert(NOVA_BOOT_PHASE_OPERATIONAL==11,"Kernel operational phase changed");
@@ -31,7 +33,10 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(NovaIpcPacketV1)==48&&
            sizeof(NovaVfsLookupArgumentsV1)==32&&
            sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&
-           sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&
-           sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&
+           sizeof(nova_process_record_t)==32&&sizeof(nova_process_api_t)==32&&
+           sizeof(nova_thread_record_t)==32&&sizeof(nova_thread_api_t)==32&&
+           sizeof(nova_task_scope_record_t)==32&&
+           sizeof(nova_task_scope_api_t)==32&&
+           sizeof(nova_task_record_t)==32&&sizeof(nova_task_api_t)==32&&
            sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==32;
 }
