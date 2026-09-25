@@ -17,6 +17,7 @@
 #include "../kernel/include/nova/io_scheduler.h"
 #include "../kernel/include/nova/io_qos.h"
 #include "../kernel/include/nova/io_completion.h"
+#include "../kernel/include/nova/shared_buffer.h"
 
 _Static_assert(NOVA_BOOT_PHASE_COUNT==12,"Kernel boot phase count changed");
 _Static_assert(NOVA_BOOT_PHASE_OPERATIONAL==11,"Kernel operational phase changed");
@@ -55,5 +56,7 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(nova_io_qos_api_t)==32&&
            sizeof(nova_io_completion_record_t)==32&&
            sizeof(nova_io_completion_api_t)==32&&
+           sizeof(nova_shared_buffer_record_t)==64&&
+           sizeof(nova_shared_buffer_api_t)==32&&
            sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==32;
 }

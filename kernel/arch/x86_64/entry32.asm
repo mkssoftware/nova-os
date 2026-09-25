@@ -227,6 +227,13 @@ kernel_entry:
     mov esi, message_io_completion_ok
     call serial_write_string
 
+    call shared_buffer_initialize
+    jc panic_shared_buffer
+    call shared_buffer_self_test
+    jc panic_shared_buffer
+    mov esi, message_shared_buffer_ok
+    call serial_write_string
+
     call io_scheduler_initialize
     jc panic_io_scheduler
     call io_scheduler_self_test
@@ -418,6 +425,12 @@ panic_io_completion:
     mov eax, 0x0000201F
     mov edx, 31
     mov esi, message_io_completion_error
+    jmp kernel_panic
+
+panic_shared_buffer:
+    mov eax, 0x00002020
+    mov edx, 32
+    mov esi, message_shared_buffer_error
     jmp kernel_panic
 
 panic_io_scheduler:
@@ -5436,6 +5449,7 @@ io_request_submit:
     mov dword [io_request_dispatch_ticks + ecx * 4], 0
     mov dword [io_request_wait_rounds + ecx * 4], 0
     mov dword [io_request_qos_ids + ecx * 4], 0
+    mov dword [io_request_buffer_ids + ecx * 4], 0
     xor eax, eax
     mov ecx, IO_REQUEST_RECORD_SIZE / 4
     rep stosd
@@ -5561,6 +5575,9 @@ io_request_complete:
     push eax
     call io_qos_on_terminal
     pop eax
+    push eax
+    call shared_buffer_on_terminal
+    pop eax
     call io_completion_publish
     dec dword [io_request_outstanding]
     mov eax, [io_request_temp_id]
@@ -5592,6 +5609,9 @@ io_request_cancel:
     mov [eax + IO_REQUEST_ERROR], edx
     push eax
     call io_qos_on_terminal
+    pop eax
+    push eax
+    call shared_buffer_on_terminal
     pop eax
     call io_completion_publish
     dec dword [io_request_outstanding]
@@ -5673,6 +5693,9 @@ io_request_poll_deadlines:
     push ecx
     push eax
     call io_qos_on_terminal
+    pop eax
+    push eax
+    call shared_buffer_on_terminal
     pop eax
     call io_completion_publish
     pop ecx
@@ -5974,6 +5997,528 @@ io_completion_queue:
     times IO_COMPLETION_CAPACITY * IO_COMPLETION_RECORD_SIZE db 0
 io_completion_test_batch:
     times IO_COMPLETION_CAPACITY * IO_COMPLETION_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Shared Buffer mit stabiler Identitaet, exklusiver I/O-Lease und Copy-Fallback
+; NPSPEC-DATAMOVE-SHAREDBUFFER-0001 / NPSPEC-IO-ZEROCOPY-0001
+; ---------------------------------------------------------------------------
+
+SHARED_BUFFER_API_SIZE        equ 32
+SHARED_BUFFER_CAPACITY        equ 4
+SHARED_BUFFER_RECORD_SIZE     equ 64
+SHARED_BUFFER_STATE_EMPTY     equ 0
+SHARED_BUFFER_STATE_CPU       equ 1
+SHARED_BUFFER_STATE_PROVIDER  equ 2
+SHARED_BUFFER_STATE_RELEASED  equ 3
+SHARED_BUFFER_RIGHT_READ      equ 0x00000001
+SHARED_BUFFER_RIGHT_WRITE     equ 0x00000002
+SHARED_BUFFER_RIGHT_TRANSFER  equ 0x00000004
+SHARED_BUFFER_RIGHT_DMA       equ 0x00000008
+SHARED_BUFFER_RIGHT_RELEASE   equ 0x00000010
+SHARED_BUFFER_BACKING_POOL    equ 1
+SHARED_BUFFER_ID              equ 0
+SHARED_BUFFER_OWNER           equ 4
+SHARED_BUFFER_SIZE            equ 8
+SHARED_BUFFER_STATE           equ 12
+SHARED_BUFFER_REFERENCES      equ 16
+SHARED_BUFFER_ACTIVE_IO       equ 20
+SHARED_BUFFER_RIGHTS          equ 24
+SHARED_BUFFER_FLAGS           equ 28
+SHARED_BUFFER_MAPPINGS        equ 32
+SHARED_BUFFER_PINNED          equ 36
+SHARED_BUFFER_BACKING_KIND    equ 40
+SHARED_BUFFER_RESOURCE_BYTES  equ 44
+SHARED_BUFFER_COPY_FALLBACKS  equ 48
+SHARED_BUFFER_DIRECT_LEASES   equ 52
+SHARED_BUFFER_GENERATION      equ 56
+
+shared_buffer_initialize:
+    mov edi, shared_buffer_table
+    xor eax, eax
+    mov ecx, (SHARED_BUFFER_CAPACITY * SHARED_BUFFER_RECORD_SIZE) / 4
+    rep stosd
+    mov edi, shared_buffer_backing_pages
+    mov ecx, SHARED_BUFFER_CAPACITY
+    rep stosd
+    mov edi, io_request_buffer_ids
+    mov ecx, IO_REQUEST_CAPACITY
+    rep stosd
+    mov dword [shared_buffer_next_id], 1
+    mov dword [shared_buffer_live_count], 0
+    mov dword [shared_buffer_resource_bytes], 0
+    mov dword [shared_buffer_manager_ready], 1
+    clc
+    ret
+
+; EAX=Owner, EDX=Groesse (1..4096), EBX=explizite Rechte. EAX=Buffer-ID.
+shared_buffer_create:
+    pushfd
+    cli
+    mov [shared_buffer_temp_owner], eax
+    mov [shared_buffer_temp_size], edx
+    mov [shared_buffer_temp_rights], ebx
+    call process_lookup
+    jc .invalid
+    cmp dword [shared_buffer_temp_size], 0
+    je .invalid
+    cmp dword [shared_buffer_temp_size], PMM_PAGE_SIZE
+    ja .invalid
+    mov eax, [shared_buffer_temp_rights]
+    test eax, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE
+    jz .invalid
+    test eax, SHARED_BUFFER_RIGHT_RELEASE
+    jz .invalid
+    test eax, ~(SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE | SHARED_BUFFER_RIGHT_TRANSFER | SHARED_BUFFER_RIGHT_DMA | SHARED_BUFFER_RIGHT_RELEASE)
+    jnz .invalid
+    xor ecx, ecx
+.scan:
+    cmp ecx, SHARED_BUFFER_CAPACITY
+    jae .invalid
+    mov edi, ecx
+    shl edi, 6
+    add edi, shared_buffer_table
+    cmp dword [edi + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_EMPTY
+    je .slot
+    cmp dword [edi + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_RELEASED
+    je .slot
+    inc ecx
+    jmp .scan
+.slot:
+    mov [shared_buffer_temp_slot], ecx
+    mov [shared_buffer_temp_record], edi
+    mov eax, ecx
+    shl eax, 12
+    add eax, shared_buffer_backing_pool
+    mov [shared_buffer_temp_backing], eax
+    mov edi, eax
+    xor eax, eax
+    mov ecx, PMM_PAGE_SIZE / 4
+    rep stosd
+    mov edi, [shared_buffer_temp_record]
+    xor eax, eax
+    mov ecx, SHARED_BUFFER_RECORD_SIZE / 4
+    rep stosd
+    mov edi, [shared_buffer_temp_record]
+    mov eax, [shared_buffer_next_id]
+    mov [edi + SHARED_BUFFER_ID], eax
+    mov edx, [shared_buffer_temp_owner]
+    mov [edi + SHARED_BUFFER_OWNER], edx
+    mov edx, [shared_buffer_temp_size]
+    mov [edi + SHARED_BUFFER_SIZE], edx
+    mov dword [edi + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    mov dword [edi + SHARED_BUFFER_REFERENCES], 1
+    mov edx, [shared_buffer_temp_rights]
+    mov [edi + SHARED_BUFFER_RIGHTS], edx
+    mov dword [edi + SHARED_BUFFER_BACKING_KIND], SHARED_BUFFER_BACKING_POOL
+    mov edx, [shared_buffer_temp_size]
+    mov [edi + SHARED_BUFFER_RESOURCE_BYTES], edx
+    mov ecx, [shared_buffer_temp_slot]
+    mov edx, [shared_buffer_temp_backing]
+    mov [shared_buffer_backing_pages + ecx * 4], edx
+    mov edx, [shared_buffer_generations + ecx * 4]
+    inc edx
+    jnz .generation_ready
+    inc edx
+.generation_ready:
+    mov [shared_buffer_generations + ecx * 4], edx
+    mov [edi + SHARED_BUFFER_GENERATION], edx
+    inc dword [shared_buffer_next_id]
+    inc dword [shared_buffer_live_count]
+    mov edx, [shared_buffer_temp_size]
+    add [shared_buffer_resource_bytes], edx
+    mov eax, [edi + SHARED_BUFFER_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+shared_buffer_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, SHARED_BUFFER_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, shared_buffer_table
+    cmp dword [edx + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_EMPTY
+    je .next
+    cmp dword [edx + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_RELEASED
+    je .next
+    cmp [edx + SHARED_BUFFER_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Request-ID, EDX=Buffer-ID, EBX=benoetigte Rechte. Die Lease uebergibt
+; exklusives Ownership an den Provider und bleibt bis zur Completion aktiv.
+shared_buffer_bind_io:
+    pushfd
+    cli
+    mov [shared_buffer_temp_request], eax
+    mov [shared_buffer_temp_id], edx
+    mov [shared_buffer_temp_access], ebx
+    call io_request_lookup
+    jc .invalid
+    mov [shared_buffer_temp_request_record], eax
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    jne .invalid
+    mov edx, [shared_buffer_temp_id]
+    cmp [eax + IO_REQUEST_BUFFER], edx
+    jne .invalid
+    mov eax, [shared_buffer_temp_id]
+    call shared_buffer_lookup
+    jc .invalid
+    mov [shared_buffer_temp_record], eax
+    mov edx, [shared_buffer_temp_request_record]
+    mov ecx, [edx + IO_REQUEST_OWNER]
+    cmp [eax + SHARED_BUFFER_OWNER], ecx
+    jne .invalid
+    mov ecx, [shared_buffer_temp_access]
+    test ecx, ecx
+    jz .invalid
+    mov ebx, [eax + SHARED_BUFFER_RIGHTS]
+    and ebx, ecx
+    cmp ebx, ecx
+    jne .invalid
+    mov ecx, [edx + IO_REQUEST_LENGTH]
+    cmp ecx, [eax + SHARED_BUFFER_SIZE]
+    ja .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_ACTIVE_IO], 0
+    jne .invalid
+    mov ecx, edx
+    sub ecx, io_request_table
+    shr ecx, 6
+    cmp dword [io_request_buffer_ids + ecx * 4], 0
+    jne .invalid
+    mov edx, [shared_buffer_temp_id]
+    mov [io_request_buffer_ids + ecx * 4], edx
+    mov dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_PROVIDER
+    inc dword [eax + SHARED_BUFFER_ACTIVE_IO]
+    inc dword [eax + SHARED_BUFFER_REFERENCES]
+    inc dword [eax + SHARED_BUFFER_DIRECT_LEASES]
+    mov eax, [shared_buffer_temp_request]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=terminaler Request. Completion gibt Ownership atomar an die CPU zurueck.
+shared_buffer_on_terminal:
+    cmp dword [shared_buffer_manager_ready], 1
+    jne .done
+    mov ecx, eax
+    sub ecx, io_request_table
+    shr ecx, 6
+    mov eax, [io_request_buffer_ids + ecx * 4]
+    test eax, eax
+    jz .done
+    mov [shared_buffer_temp_slot], ecx
+    call shared_buffer_lookup
+    jc .done
+    cmp dword [eax + SHARED_BUFFER_ACTIVE_IO], 1
+    jne .done
+    cmp dword [eax + SHARED_BUFFER_REFERENCES], 2
+    jb .done
+    dec dword [eax + SHARED_BUFFER_ACTIVE_IO]
+    dec dword [eax + SHARED_BUFFER_REFERENCES]
+    mov dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    mov ecx, [shared_buffer_temp_slot]
+    mov dword [io_request_buffer_ids + ecx * 4], 0
+.done:
+    clc
+    ret
+
+; EAX=Quelle, EDX=Ziel, EBX=Laenge, ECX=Owner. Sicherer Copy-Fallback,
+; falls ein spaeterer Provider keine gemeinsame Buffer-Lease unterstuetzt.
+shared_buffer_copy_fallback:
+    pushfd
+    cli
+    mov [shared_buffer_temp_source], eax
+    mov [shared_buffer_temp_destination], edx
+    mov [shared_buffer_temp_length], ebx
+    mov [shared_buffer_temp_owner], ecx
+    test ebx, ebx
+    jz .invalid
+    cmp eax, edx
+    je .invalid
+    call shared_buffer_lookup
+    jc .invalid
+    mov [shared_buffer_temp_source_record], eax
+    mov eax, [shared_buffer_temp_destination]
+    call shared_buffer_lookup
+    jc .invalid
+    mov [shared_buffer_temp_destination_record], eax
+    mov edx, [shared_buffer_temp_owner]
+    mov esi, [shared_buffer_temp_source_record]
+    cmp [esi + SHARED_BUFFER_OWNER], edx
+    jne .invalid
+    cmp [eax + SHARED_BUFFER_OWNER], edx
+    jne .invalid
+    cmp dword [esi + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    jne .invalid
+    test dword [esi + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_READ
+    jz .invalid
+    test dword [eax + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_WRITE
+    jz .invalid
+    mov ebx, [shared_buffer_temp_length]
+    cmp ebx, [esi + SHARED_BUFFER_SIZE]
+    ja .invalid
+    cmp ebx, [eax + SHARED_BUFFER_SIZE]
+    ja .invalid
+    mov ecx, esi
+    sub ecx, shared_buffer_table
+    shr ecx, 6
+    mov esi, [shared_buffer_backing_pages + ecx * 4]
+    mov ecx, eax
+    sub ecx, shared_buffer_table
+    shr ecx, 6
+    mov edi, [shared_buffer_backing_pages + ecx * 4]
+    mov ecx, ebx
+    rep movsb
+    mov eax, [shared_buffer_temp_destination_record]
+    inc dword [eax + SHARED_BUFFER_COPY_FALLBACKS]
+    mov eax, [shared_buffer_temp_length]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Buffer-ID, EDX=Owner. Aktive Provider-Leases blockieren die Freigabe.
+shared_buffer_release:
+    pushfd
+    cli
+    mov [shared_buffer_temp_id], eax
+    mov [shared_buffer_temp_owner], edx
+    call shared_buffer_lookup
+    jc .invalid
+    mov [shared_buffer_temp_record], eax
+    mov edx, [shared_buffer_temp_owner]
+    cmp [eax + SHARED_BUFFER_OWNER], edx
+    jne .invalid
+    test dword [eax + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_RELEASE
+    jz .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_ACTIVE_IO], 0
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_REFERENCES], 1
+    jne .invalid
+    mov ecx, eax
+    sub ecx, shared_buffer_table
+    shr ecx, 6
+    mov [shared_buffer_temp_slot], ecx
+    mov edi, [shared_buffer_backing_pages + ecx * 4]
+    xor eax, eax
+    mov ecx, PMM_PAGE_SIZE / 4
+    rep stosd                         ; keine Datenreste zwischen Domains
+    mov eax, [shared_buffer_temp_record]
+    mov edx, [eax + SHARED_BUFFER_RESOURCE_BYTES]
+    sub [shared_buffer_resource_bytes], edx
+    mov dword [eax + SHARED_BUFFER_RESOURCE_BYTES], 0
+    mov dword [eax + SHARED_BUFFER_REFERENCES], 0
+    mov dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_RELEASED
+    mov ecx, [shared_buffer_temp_slot]
+    mov dword [shared_buffer_backing_pages + ecx * 4], 0
+    dec dword [shared_buffer_live_count]
+    mov eax, [shared_buffer_temp_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+shared_buffer_self_test:
+    mov eax, 1
+    mov edx, 256
+    mov ebx, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE | SHARED_BUFFER_RIGHT_TRANSFER | SHARED_BUFFER_RIGHT_RELEASE
+    call shared_buffer_create
+    jc .invalid
+    mov [shared_buffer_test_source], eax
+    mov eax, 1
+    mov edx, 256
+    mov ebx, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE | SHARED_BUFFER_RIGHT_TRANSFER | SHARED_BUFFER_RIGHT_RELEASE
+    call shared_buffer_create
+    jc .invalid
+    mov [shared_buffer_test_destination], eax
+
+    mov eax, [shared_buffer_test_source]
+    call shared_buffer_lookup
+    jc .invalid
+    mov ecx, eax
+    sub ecx, shared_buffer_table
+    shr ecx, 6
+    mov edi, [shared_buffer_backing_pages + ecx * 4]
+    mov dword [edi], 0x4E4F5641       ; "NOVA"
+    mov eax, [shared_buffer_test_source]
+    mov edx, [shared_buffer_test_destination]
+    mov ebx, 4
+    mov ecx, 1
+    call shared_buffer_copy_fallback
+    jc .invalid
+    cmp eax, 4
+    jne .invalid
+    mov eax, [shared_buffer_test_destination]
+    call shared_buffer_lookup
+    jc .invalid
+    cmp dword [eax + SHARED_BUFFER_COPY_FALLBACKS], 1
+    jne .invalid
+    mov ecx, eax
+    sub ecx, shared_buffer_table
+    shr ecx, 6
+    mov edi, [shared_buffer_backing_pages + ecx * 4]
+    cmp dword [edi], 0x4E4F5641
+    jne .invalid
+
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [shared_buffer_test_scope], eax
+    mov eax, 1
+    mov edx, [shared_buffer_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [shared_buffer_test_task], eax
+    mov eax, 1
+    mov edx, [shared_buffer_test_task]
+    mov ebx, 6
+    mov ecx, 0x900
+    mov esi, [shared_buffer_test_source]
+    mov edi, 4
+    xor ebp, ebp
+    call io_request_submit
+    jc .invalid
+    mov [shared_buffer_test_request], eax
+    mov edx, [shared_buffer_test_source]
+    mov ebx, SHARED_BUFFER_RIGHT_READ
+    call shared_buffer_bind_io
+    jc .invalid
+    mov eax, [shared_buffer_test_source]
+    call shared_buffer_lookup
+    jc .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_PROVIDER
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_REFERENCES], 2
+    jne .invalid
+    mov eax, [shared_buffer_test_source]
+    mov edx, 1
+    call shared_buffer_release
+    jnc .invalid
+    mov eax, [shared_buffer_test_request]
+    mov edx, 4
+    xor ebx, ebx
+    call io_request_complete
+    jc .invalid
+    mov eax, [shared_buffer_test_source]
+    call shared_buffer_lookup
+    jc .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_REFERENCES], 1
+    jne .invalid
+    mov eax, [shared_buffer_test_task]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [shared_buffer_test_scope]
+    call task_scope_close
+    jc .invalid
+    mov eax, [shared_buffer_test_source]
+    mov edx, 1
+    call shared_buffer_release
+    jc .invalid
+    mov eax, [shared_buffer_test_destination]
+    mov edx, 1
+    call shared_buffer_release
+    jc .invalid
+    cmp dword [shared_buffer_live_count], 0
+    jne .invalid
+    cmp dword [shared_buffer_resource_bytes], 0
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+shared_buffer_api:
+    dd SHARED_BUFFER_API_SIZE
+    dw 1, 0
+    dd SHARED_BUFFER_CAPACITY
+    dd shared_buffer_create
+    dd shared_buffer_bind_io
+    dd shared_buffer_copy_fallback
+    dd shared_buffer_release
+    dd shared_buffer_table
+
+shared_buffer_manager_ready:          dd 0
+shared_buffer_next_id:                dd 0
+shared_buffer_live_count:             dd 0
+shared_buffer_resource_bytes:         dd 0
+shared_buffer_temp_owner:             dd 0
+shared_buffer_temp_size:              dd 0
+shared_buffer_temp_rights:            dd 0
+shared_buffer_temp_slot:              dd 0
+shared_buffer_temp_record:            dd 0
+shared_buffer_temp_backing:           dd 0
+shared_buffer_temp_request:           dd 0
+shared_buffer_temp_request_record:    dd 0
+shared_buffer_temp_id:                dd 0
+shared_buffer_temp_access:            dd 0
+shared_buffer_temp_source:            dd 0
+shared_buffer_temp_destination:       dd 0
+shared_buffer_temp_source_record:     dd 0
+shared_buffer_temp_destination_record: dd 0
+shared_buffer_temp_length:            dd 0
+shared_buffer_test_source:            dd 0
+shared_buffer_test_destination:       dd 0
+shared_buffer_test_scope:             dd 0
+shared_buffer_test_task:              dd 0
+shared_buffer_test_request:           dd 0
+align 4
+shared_buffer_table:
+    times SHARED_BUFFER_CAPACITY * SHARED_BUFFER_RECORD_SIZE db 0
+shared_buffer_backing_pages:
+    times SHARED_BUFFER_CAPACITY dd 0
+shared_buffer_generations:
+    times SHARED_BUFFER_CAPACITY dd 0
+io_request_buffer_ids:
+    times IO_REQUEST_CAPACITY dd 0
+align 4096
+shared_buffer_backing_pool:
+    times SHARED_BUFFER_CAPACITY * PMM_PAGE_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
@@ -16025,6 +16570,10 @@ message_io_completion_ok:
     db "NOVA: IO Completion Queue ABI 1.0, FIFO und Batch aktiv", 13, 10, 0
 message_io_completion_error:
     db "NOVA PANIC: IO Completion Queue nicht initialisierbar", 13, 10, 0
+message_shared_buffer_ok:
+    db "NOVA: Shared Buffer ABI 1.0, IO-Lease und Copy-Fallback aktiv", 13, 10, 0
+message_shared_buffer_error:
+    db "NOVA PANIC: Shared Buffer Manager nicht initialisierbar", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:

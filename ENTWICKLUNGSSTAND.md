@@ -759,3 +759,13 @@ Bytes, Fehler, Zeitstempel und Latenz und kann mehrere Einträge als Batch
 ausgeben. Submission- und Completion-Reihenfolge sind dadurch nicht gekoppelt.
 Ein voller Ring wächst nicht unkontrolliert; Overflow wird gezählt, während das
 autoritative Ergebnis weiterhin im Request-Datensatz erhalten bleibt.
+
+Der Kernel besitzt jetzt außerdem Shared Buffers mit stabiler ID, explizitem
+Owner und Read-/Write-/Transfer-/DMA-/Release-Rechten. Ein begrenzter interner
+4×4-KiB-Pool hält den frühen Kernelpfad deterministisch; Backing-Adressen werden
+nicht Teil des öffentlichen ABI. Eine I/O-Lease übergibt das Ownership bis zur
+Completion exklusiv an den Provider und verhindert vorzeitige Freigabe. Danach
+kehrt der Buffer automatisch in den CPU-eigenen Zustand zurück. Für nicht
+Zero-Copy-fähige Pfade ist ein validierter und gezählter Copy-Fallback vorhanden.
+Echtes DMA-Mapping wird erst mit der dafür geforderten HAL-/IOMMU-Prüfung
+freigeschaltet.

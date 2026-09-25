@@ -1784,3 +1784,36 @@ der terminale Zustand weiterhin im Request-Datensatz erhalten bleibt.
 Der Selbsttest prüft Batch-Dequeue, vollständige und partielle Übertragung,
 Abschlussreihenfolge `B,A`, Ring-Wrap und sichtbaren Overflow beim siebzehnten
 ungelesenen Ergebnis. Das ABI steht in `kernel/include/nova/io_completion.h`.
+
+## 74. Shared Buffer und I/O-Ownership-Lease
+
+Auf Grundlage der neu eingelesenen NPSPECs besitzt der Kernel nun eine erste
+Shared-Buffer-Abstraktion mit stabiler, von virtuellen und physischen Adressen
+unabhängiger `BufferId`. Jeder 64-Byte-Datensatz enthält Owner, Größe, Zustand,
+Referenz- und aktive I/O-Zähler, explizite Rechte, Backing-Art,
+Ressourcenverbrauch sowie Copy- und direkte Lease-Zähler.
+
+Der Bootstrap verwendet einen festen Pool aus vier vollständig gemappten
+4-KiB-Bereichen. Dadurch sind Speicherverbrauch und Lifetime begrenzt und
+introspektierbar. Physische oder virtuelle Backing-Adressen werden nicht Teil
+des öffentlichen ABI. Freigegebene Bereiche werden vollständig genullt, bevor
+ein anderer Sicherheitskontext sie wiederverwenden kann.
+
+Ein I/O-Request kann seinen angegebenen Buffer über eine geprüfte Lease binden.
+Dabei werden Request-Owner, Buffer-Owner, Länge und benötigte Read-/Write-Rechte
+validiert. Das Ownership wechselt von `CPU owned` zu `Provider owned`; eine
+Freigabe ist währenddessen verboten. Erfolg, Partial, Fehler, Cancellation und
+Deadline Miss führen über denselben terminalen Pfad zurück zu `CPU owned` und
+lösen genau eine I/O-Referenz.
+
+Für Provider ohne Shared-/Zero-Copy-Fähigkeit existiert ein sicherer
+Copy-Fallback zwischen zwei CPU-eigenen Buffern. Er validiert beide Owner,
+Rechte und Grenzen und zählt die Kopie explizit. Der Selbsttest prüft reale
+Datenübertragung, verweigerte Freigabe während aktiver I/O, Rückgabe des
+Ownership bei Completion, Resource Accounting und sichere endgültige Freigabe.
+Das ABI steht in `kernel/include/nova/shared_buffer.h`.
+
+DMA wird in diesem Schritt ausdrücklich noch nicht behauptet: Die NPSPECs
+verbieten, normale virtuelle Adressen automatisch als Device-Adressen zu
+verwenden. IOMMU-/DMA-Mapping und Scatter/Gather bauen in späteren Schritten auf
+diesem kontrollierten Buffer-Lifecycle auf.

@@ -77,6 +77,7 @@ try {
         'NOVA: Task Group ABI 1.0, WaitAll, FailFast und Drain aktiv',
         'NOVA: Async IO ABI 1.0, Completion, Deadline und Backpressure aktiv',
         'NOVA: IO Completion Queue ABI 1.0, FIFO und Batch aktiv',
+        'NOVA: Shared Buffer ABI 1.0, IO-Lease und Copy-Fallback aktiv',
         'NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv',
         'NOVA: IO QoS ABI 1.0, Admission, Degradation und Accounting aktiv',
         'NOVA: Thread Manager ABI 1.0 bereit',
