@@ -1,6 +1,6 @@
 # NovaOS – technische Implementierungsdetails
 
-**Stand:** 21. September 2026
+**Stand:** 26. September 2026
 **Projekt:** `C:\recoverboot\nova-os`  
 **Ergänzt:** [ENTWICKLUNGSSTAND.md](ENTWICKLUNGSSTAND.md)
 
@@ -1817,3 +1817,102 @@ DMA wird in diesem Schritt ausdrücklich noch nicht behauptet: Die NPSPECs
 verbieten, normale virtuelle Adressen automatisch als Device-Adressen zu
 verwenden. IOMMU-/DMA-Mapping und Scatter/Gather bauen in späteren Schritten auf
 diesem kontrollierten Buffer-Lifecycle auf.
+
+## 75. DMA-Mapping-ABI 1.0
+
+`kernel/include/nova/dma_mapping.h` definiert einen 64 Byte großen
+`nova_dma_mapping_record_t` und ein 32 Byte großes, versioniertes API. Der
+Datensatz führt Mapping-, Prozess-, Device-, Buffer- und Request-ID als
+getrennte semantische Identitäten und hält Richtung, Permissions, Zustand,
+Länge, Device-Adresse, Domain, Flags, Pin-Anzahl, Generation und Fehlercode.
+
+Die Bootstrap-Implementierung in `kernel/arch/x86_64/entry32.asm` besitzt vier
+feste Mapping-Slots. `dma_mapping_map` validiert den aktiven I/O-Request und
+seine Shared-Buffer-Lease, leitet aus der Richtung minimale Device-Rechte ab
+und erhöht Mapping-, Pin- und Byte-Accounting. `dma_mapping_unmap` löst alle
+Ressourcen kontrolliert. `dma_mapping_on_terminal` hängt direkt im gemeinsamen
+terminalen I/O-Pfad und deckt dadurch Erfolg, Teilerfolg, Fehler, Cancellation
+und Deadline Miss ab.
+
+Die aktuelle Plattform meldet `IommuAvailable = 0`. Ihre Device-Adressen
+stammen aus einer separaten, reservierten Staging-Apertur und sind ausdrücklich
+als `BOUNCE | COHERENT | RESTRICTED` gekennzeichnet. Es handelt sich damit um
+einen sicheren Vertrag und Lebenszyklus für den späteren HAL-Provider, nicht um
+die Behauptung eines bereits programmierten DMA-Controllers. Ein künftiger
+IOMMU-Provider kann Domain und IOVA ersetzen, ohne das öffentliche Mapping-ABI
+oder den I/O-Request-Vertrag zu ändern.
+
+Der Kernel-Selbsttest beweist Rechteprüfung, genau ein Mapping pro Request,
+Pinning gegen vorzeitiges Release, automatische Freigabe bei Completion und
+vollständig ausgeglichenes Ressourcen-Accounting. Der UEFI-End-to-End-Test
+verlangt zusätzlich die Startmarkierung
+`NOVA: DMA Mapping ABI 1.0, Pinning und sicherer Fallback aktiv`.
+
+## 76. Scatter/Gather-ABI 1.0
+
+Das neue ABI in `kernel/include/nova/scatter_gather.h` trennt den 64 Byte
+großen Descriptor vom 32 Byte großen Segment. Ein Segment referenziert einen
+Shared Buffer über seine stabile ID und beschreibt Offset, Länge, minimale
+Permissions, logischen Stream-Offset, Flags und Generation. Es enthält bewusst
+weder eine virtuelle noch eine physische oder Device-Adresse.
+
+`scatter_gather_create` legt einen begrenzten Descriptor im Zustand `Building`
+an. `scatter_gather_append` prüft Owner, Richtung und minimale Rechte:
+`Gather` erfordert Read, `Scatter` Write und `Bidirectional` beide Rechte.
+Offset-, Längen- und Gesamtlängenaddition erkennen Integer-Überläufe. Direkt
+benachbarte Bereiche desselben Buffers mit identischen Rechten werden
+zusammengeführt; der logische Datenstrom bleibt unverändert.
+
+`scatter_gather_seal` führt eine vollständige zweite Validierung durch und
+erhöht anschließend die Referenzzahl jedes tatsächlich vorhandenen Segments.
+Dadurch bleibt jeder Buffer bis zum Descriptor-Abbau gültig. Ein Release ist
+bei aktiven Consumern verboten und gibt sämtliche gehaltenen Referenzen
+deterministisch zurück. Vier Descriptoren mit je vier Segmenten begrenzen den
+frühen Speicher- und Validierungsaufwand.
+
+Der Start-Selbsttest verwendet zwei Buffer, coalesziert zwei angrenzende
+Bereiche, verwirft einen Bereich außerhalb der Buffergrenze und weist nach,
+dass ein versuchtes Buffer-Release vor dem Descriptor-Abbau fehlschlägt. Der
+UEFI-Test verlangt die Markierung
+`NOVA: Scatter Gather ABI 1.0, Segmente und Lifetime aktiv`.
+
+Noch nicht Teil dieses Schritts ist die Übersetzung eines versiegelten
+Descriptors in mehrere IOVA-/Device-Segmente. Diese folgt als Erweiterung des
+DMA-Providers und muss dessen Segmentanzahl, maximale Segmentgröße, Alignment,
+Adressbreite und Boundary-Limits anwenden.
+
+## 77. DMA-Scatter/Gather-Provider ABI 1.0
+
+`kernel/include/nova/dma_scatter_gather.h` ergänzt einen 64 Byte großen
+Mapping-Datensatz und bis zu vier 32-Byte-Device-Segmente. Das Mapping bindet
+Request, SG-Descriptor, Prozess und Device zusammen und veröffentlicht die
+tatsächlich wirksamen Providerlimits. Die Device-Segmente enthalten
+Quellsegmentindex, Buffer-ID, Buffer-Offset, Länge, kontrollierte Device-Adresse,
+Permissions und Flags.
+
+Der Bootstrap-Provider akzeptiert höchstens zwei aktive SG-Mappings mit jeweils
+vier Device-Segmenten. Seine aktuellen Grenzen sind `MaximumSegmentSize = 64`,
+`Alignment = 4`, `AddressWidth = 32` und `Boundary = 4096`. Ein Segment mit
+96 Byte wird beispielsweise deterministisch in 64 und 32 Byte geteilt. Die
+Ausgabe bleibt in logischer Reihenfolge; ein Überschreiten der vier
+Device-Segmente führt zu einer sichtbaren Validierungsablehnung.
+
+Da der frühe Provider noch keine echte Hardware-Descriptorqueue und keine
+IOMMU besitzt, stammen seine Device-Adressen aus einer getrennten Staging-
+Apertur und tragen `BOUNCE | COHERENT | RESTRICTED`. CPU- oder physische
+Adressen werden nicht übernommen. Mehrfaches Auftreten desselben Buffers in
+verschiedenen Quellsegmenten ist als derzeitiges Providerlimit abgewiesen; die
+allgemeine SG-Schicht selbst erlaubt diese Darstellung weiterhin.
+
+Beim Map wechseln die beteiligten Buffer exklusiv zu `Provider owned`; aktive
+I/O-, Referenz-, Mapping- und Pin-Zähler werden gemeinsam erhöht. Der zentrale
+terminale Request-Pfad ruft `dma_scatter_gather_on_terminal` vor der normalen
+Buffer-Rückgabe auf und löst damit Erfolg, Teilerfolg, Fehler, Cancellation und
+Deadline Miss identisch auf. Danach sinkt der Consumer-Zähler des
+SG-Descriptors, sodass dieser sicher freigegeben werden kann.
+
+Der Selbsttest erzeugt aus zwei Quellsegmenten drei Device-Segmente, prüft
+64+32-Byte-Splitting, 4-KiB-Ausrichtung, blockiertes Descriptor-Release und
+vollständig ausgeglichenes Pin-/Byte-Accounting. Der UEFI-Test verlangt die
+Startmarkierung
+`NOVA: DMA Scatter Gather ABI 1.0, Split und Providerlimits aktiv`.

@@ -1,6 +1,6 @@
 # NovaOS – aktueller Entwicklungsstand
 
-**Stand:** 25. September 2026
+**Stand:** 26. September 2026
 **Projektpfad:** `C:\recoverboot\nova-os`  
 **Aktueller Schwerpunkt:** UEFI-Bootpfad und Kernel-Handoff
 
@@ -769,3 +769,92 @@ kehrt der Buffer automatisch in den CPU-eigenen Zustand zurück. Für nicht
 Zero-Copy-fähige Pfade ist ein validierter und gezählter Copy-Fallback vorhanden.
 Echtes DMA-Mapping wird erst mit der dafür geforderten HAL-/IOMMU-Prüfung
 freigeschaltet.
+
+### Kontrolliertes DMA-Mapping und Pinning
+
+Auf dem Shared-Buffer-Lifecycle baut jetzt die erste hardwareunabhängige
+DMA-Mapping-Schicht auf. Ein Mapping besitzt eine stabile ID und bindet genau
+einen I/O-Request, einen Shared Buffer, ein Gerät, eine explizite Richtung,
+minimale Read-/Write-Rechte, Länge, Device-Adresse, Domain, Generation und eine
+begrenzte Lebensdauer zusammen. Virtuelle CPU-Adressen werden dabei niemals
+automatisch als Device-Adressen behandelt.
+
+Vor dem Mapping prüft der Kernel Request-Owner, Device-ID, Buffer-ID, aktive
+Provider-Lease, Länge sowie `TRANSFER`- und `DMA`-Rechte. `ToDevice` benötigt
+Leserecht, `FromDevice` Schreibrecht und `Bidirectional` beide Rechte. Pro
+Request ist höchstens ein aktives Mapping zulässig. Ein aktives Mapping erhöht
+die sichtbaren Mapping- und Pin-Zähler des Buffers und verhindert dadurch eine
+vorzeitige Freigabe.
+
+Completion, Fehler, Cancellation und Deadline Miss führen über denselben
+terminalen Request-Pfad zuerst zum Unmapping und Unpinning und erst danach zur
+Rückgabe der Buffer-Lease an die CPU. Zusätzlich kann ein IOMMU-/DMA-Fehler dem
+verursachenden Gerät und Mapping zugeordnet werden; sein Fehlerzustand bleibt
+im Datensatz sichtbar, obwohl die Ressourcen kontrolliert freigegeben werden.
+
+Da der aktuelle Bootstrap noch keinen erkannten IOMMU- oder echten
+Geräteprovider besitzt, meldet die Schicht diesen Zustand ausdrücklich und
+verwendet eine begrenzte Restricted-/Bounce-Apertur. Sie behauptet weder echte
+Hardware-DMA-Übertragung noch IOMMU-Isolation. Das ABI in
+`kernel/include/nova/dma_mapping.h` schafft die geprüfte Grenze, an die ein
+späterer Plattformprovider angebunden wird.
+
+Der Start-Selbsttest prüft bidirektionale Rechte, die getrennte Device-Adresse,
+Mapping- und Pin-Accounting, die Ablehnung eines zweiten Mappings, blockierte
+Buffer-Freigabe sowie automatisches Unmapping bei I/O-Completion. ABI-Check,
+Kernel-Build und der vollständige UEFI-QEMU-Displaytest einschließlich Ring 3,
+Tastaturnavigation und geordnetem `PLATFORM_OFF` sind erfolgreich.
+
+### Scatter/Gather-Descriptoren
+
+Der Kernel kann nun mehrere unabhängige Shared-Buffer-Bereiche als einen
+geordneten logischen Datenstrom beschreiben. Jeder Segmentdatensatz verwendet
+ausschließlich `BufferId`, Offset, Länge, Rechte, logischen Offset, Flags und
+Generation. Physische Adressen oder ungeprüfte Kernelpointer sind kein Teil des
+allgemeinen Scatter/Gather-ABIs.
+
+Descriptoren entstehen zunächst im Zustand `Building`. Jeder neue Bereich wird
+auf Owner, Zustand, Rechte und überlaufsicheres `Offset + Length` geprüft.
+Benachbarte, kompatible Bereiche desselben Buffers werden ohne Änderung der
+logischen Reihenfolge zusammengeführt. `Seal` validiert alle Segmente erneut
+und hält je Segment eine Buffer-Referenz, sodass keiner der beteiligten Buffer
+vorzeitig freigegeben werden kann.
+
+Die Bootstrap-Grenzen sind vier Descriptoren mit jeweils höchstens vier
+Segmenten. Der aktuelle Schritt stellt die architekturunabhängige Darstellung,
+Lifetime und Introspection bereit. Die Übersetzung der Segmente in mehrere
+Device-Adressen folgt erst mit der SG-fähigen DMA-Provider-Anbindung; bis dahin
+bleibt ein Copy-/Bounce-Fallback explizit erlaubt.
+
+Der Selbsttest prüft zwei verschiedene Buffer, logische Reihenfolge,
+Coalescing, Bereichsüberschreitung, Retain/Release und blockierte vorzeitige
+Freigabe. Der vollständige UEFI-QEMU-Test bestätigt anschließend weiterhin
+Ring 3, Desktopdarstellung, Eingabe und `PLATFORM_OFF`.
+
+### Scatter/Gather-DMA-Providergrenze
+
+Versiegelte Scatter/Gather-Descriptoren können jetzt an einen kontrollierten
+DMA-SG-Provider gebunden werden. Dieser prüft I/O-Request, Prozess-Owner,
+Device-ID, Descriptor-ID, Gesamtlänge, Buffer-Lifetime sowie `TRANSFER`-,
+`DMA`- und richtungsabhängige Zugriffsrechte. Ein Request kann nicht
+gleichzeitig ein lineares und ein Scatter/Gather-DMA-Mapping besitzen.
+
+Der Bootstrap-Provider beschreibt seine Hardwaregrenzen explizit: maximal vier
+Device-Segmente, 64 Byte je Segment, 4-Byte-Alignment, 32-Bit-Adressbreite und
+eine 4-KiB-Boundary. Größere Quellsegmente werden unter Erhalt ihrer logischen
+Reihenfolge aufgeteilt. Übersteigt die Übersetzung die Segmentkapazität oder
+enthält sie eine für diesen Provider nicht unterstützte wiederholte
+Buffer-Referenz, wird sie kontrolliert abgewiesen und kann in einen späteren
+Copy-Fallback wechseln.
+
+Während des Mappings wechseln alle beteiligten Buffer in den
+Provider-Ownership-Zustand und werden gezählt gepinnt. Completion,
+Cancellation, Fehler und Deadline Miss entfernen sämtliche Device-Segmente,
+heben Pinning und Mapping auf und geben erst dann die Buffer an die CPU zurück.
+Der versiegelte SG-Descriptor bleibt bis zu seinem eigenen Release erhalten.
+
+Ohne IOMMU werden weiterhin ausschließlich Device-Adressen aus einer
+reservierten Restricted-/Bounce-Apertur ausgegeben. Der Selbsttest prüft reales
+Segment-Splitting, Alignment, Boundary, Consumer-Lifetime und automatischen
+Abbau. Der UEFI-QEMU-End-to-End-Test erreicht danach weiterhin Ring 3 und
+`PLATFORM_OFF`.

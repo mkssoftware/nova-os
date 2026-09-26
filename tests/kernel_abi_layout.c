@@ -18,6 +18,9 @@
 #include "../kernel/include/nova/io_qos.h"
 #include "../kernel/include/nova/io_completion.h"
 #include "../kernel/include/nova/shared_buffer.h"
+#include "../kernel/include/nova/dma_mapping.h"
+#include "../kernel/include/nova/scatter_gather.h"
+#include "../kernel/include/nova/dma_scatter_gather.h"
 
 _Static_assert(NOVA_BOOT_PHASE_COUNT==12,"Kernel boot phase count changed");
 _Static_assert(NOVA_BOOT_PHASE_OPERATIONAL==11,"Kernel operational phase changed");
@@ -58,5 +61,13 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(nova_io_completion_api_t)==32&&
            sizeof(nova_shared_buffer_record_t)==64&&
            sizeof(nova_shared_buffer_api_t)==32&&
+           sizeof(nova_dma_mapping_record_t)==64&&
+           sizeof(nova_dma_mapping_api_t)==32&&
+           sizeof(nova_scatter_gather_segment_t)==32&&
+           sizeof(nova_scatter_gather_record_t)==64&&
+           sizeof(nova_scatter_gather_api_t)==32&&
+           sizeof(nova_dma_sg_segment_t)==32&&
+           sizeof(nova_dma_sg_mapping_record_t)==64&&
+           sizeof(nova_dma_sg_api_t)==32&&
            sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==32;
 }

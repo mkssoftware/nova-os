@@ -234,6 +234,27 @@ kernel_entry:
     mov esi, message_shared_buffer_ok
     call serial_write_string
 
+    call dma_mapping_initialize
+    jc panic_dma_mapping
+    call dma_mapping_self_test
+    jc panic_dma_mapping
+    mov esi, message_dma_mapping_ok
+    call serial_write_string
+
+    call scatter_gather_initialize
+    jc panic_scatter_gather
+    call scatter_gather_self_test
+    jc panic_scatter_gather
+    mov esi, message_scatter_gather_ok
+    call serial_write_string
+
+    call dma_scatter_gather_initialize
+    jc panic_dma_scatter_gather
+    call dma_scatter_gather_self_test
+    jc panic_dma_scatter_gather
+    mov esi, message_dma_scatter_gather_ok
+    call serial_write_string
+
     call io_scheduler_initialize
     jc panic_io_scheduler
     call io_scheduler_self_test
@@ -431,6 +452,24 @@ panic_shared_buffer:
     mov eax, 0x00002020
     mov edx, 32
     mov esi, message_shared_buffer_error
+    jmp kernel_panic
+
+panic_dma_mapping:
+    mov eax, 0x00002021
+    mov edx, 33
+    mov esi, message_dma_mapping_error
+    jmp kernel_panic
+
+panic_scatter_gather:
+    mov eax, 0x00002022
+    mov edx, 34
+    mov esi, message_scatter_gather_error
+    jmp kernel_panic
+
+panic_dma_scatter_gather:
+    mov eax, 0x00002023
+    mov edx, 35
+    mov esi, message_dma_scatter_gather_error
     jmp kernel_panic
 
 panic_io_scheduler:
@@ -6225,6 +6264,12 @@ shared_buffer_bind_io:
 shared_buffer_on_terminal:
     cmp dword [shared_buffer_manager_ready], 1
     jne .done
+    push eax
+    call dma_scatter_gather_on_terminal
+    pop eax
+    push eax
+    call dma_mapping_on_terminal
+    pop eax
     mov ecx, eax
     sub ecx, io_request_table
     shr ecx, 6
@@ -6519,6 +6564,1836 @@ io_request_buffer_ids:
 align 4096
 shared_buffer_backing_pool:
     times SHARED_BUFFER_CAPACITY * PMM_PAGE_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Kontrollierte DMA-Mappings. CPU-Adressen werden nie direkt als
+; Device-Adressen veroeffentlicht. Ohne erkannten IOMMU-Provider bleibt der
+; Bootstrap explizit im eingeschraenkten Bounce-/Staging-Modus.
+; NPSPEC-HAL-DMA-0001 / NPSPEC-HAL-IOMMU-0001 /
+; NPSPEC-DATAMOVE-DMA-0001
+; ---------------------------------------------------------------------------
+
+DMA_MAPPING_API_SIZE          equ 32
+DMA_MAPPING_CAPACITY          equ 4
+DMA_MAPPING_RECORD_SIZE       equ 64
+DMA_MAPPING_STATE_EMPTY       equ 0
+DMA_MAPPING_STATE_ACTIVE      equ 1
+DMA_MAPPING_STATE_UNMAPPED    equ 2
+DMA_MAPPING_STATE_FAULTED     equ 3
+DMA_DIRECTION_TO_DEVICE       equ 1
+DMA_DIRECTION_FROM_DEVICE     equ 2
+DMA_DIRECTION_BIDIRECTIONAL   equ 3
+DMA_PERMISSION_READ           equ 0x00000001
+DMA_PERMISSION_WRITE          equ 0x00000002
+DMA_FLAG_IOMMU                equ 0x00000001
+DMA_FLAG_BOUNCE               equ 0x00000002
+DMA_FLAG_COHERENT             equ 0x00000004
+DMA_FLAG_RESTRICTED           equ 0x00000008
+DMA_RESTRICTED_APERTURE       equ 0xD0000000
+DMA_MAPPING_ID                equ 0
+DMA_MAPPING_OWNER             equ 4
+DMA_MAPPING_DEVICE            equ 8
+DMA_MAPPING_BUFFER            equ 12
+DMA_MAPPING_REQUEST           equ 16
+DMA_MAPPING_DIRECTION         equ 20
+DMA_MAPPING_PERMISSIONS       equ 24
+DMA_MAPPING_STATE             equ 28
+DMA_MAPPING_LENGTH            equ 32
+DMA_MAPPING_ADDRESS_LOW       equ 36
+DMA_MAPPING_ADDRESS_HIGH      equ 40
+DMA_MAPPING_DOMAIN            equ 44
+DMA_MAPPING_FLAGS             equ 48
+DMA_MAPPING_PINNED_PAGES      equ 52
+DMA_MAPPING_GENERATION        equ 56
+DMA_MAPPING_ERROR             equ 60
+
+dma_mapping_initialize:
+    mov edi, dma_mapping_table
+    xor eax, eax
+    mov ecx, (DMA_MAPPING_CAPACITY * DMA_MAPPING_RECORD_SIZE) / 4
+    rep stosd
+    mov edi, dma_request_mapping_ids
+    mov ecx, IO_REQUEST_CAPACITY
+    rep stosd
+    mov edi, dma_mapping_generations
+    mov ecx, DMA_MAPPING_CAPACITY
+    rep stosd
+    mov dword [dma_mapping_next_id], 1
+    mov dword [dma_mapping_active_count], 0
+    mov dword [dma_mapping_mapped_bytes], 0
+    mov dword [dma_mapping_pinned_pages], 0
+    mov dword [dma_mapping_fault_count], 0
+    mov dword [dma_mapping_bounce_count], 0
+    mov dword [dma_iommu_available], 0
+    mov dword [dma_mapping_manager_ready], 1
+    clc
+    ret
+
+; EAX=Mapping-ID. EAX=Datensatz oder 0. Nur aktive Mappings werden geliefert.
+dma_mapping_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, DMA_MAPPING_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, dma_mapping_table
+    cmp dword [edx + DMA_MAPPING_STATE], DMA_MAPPING_STATE_ACTIVE
+    jne .next
+    cmp [edx + DMA_MAPPING_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Request-ID, EDX=Device-ID, EBX=Richtung, ECX=Laenge, ESI=Owner.
+; Ergebnis EAX=stabile Mapping-ID. Das aktuelle Bootstrap-Backend weist eine
+; kontrollierte Device-Adresse aus einer reservierten Staging-Apertur zu.
+dma_mapping_map:
+    pushfd
+    cli
+    mov [dma_mapping_temp_request], eax
+    mov [dma_mapping_temp_device], edx
+    mov [dma_mapping_temp_direction], ebx
+    mov [dma_mapping_temp_length], ecx
+    mov [dma_mapping_temp_owner], esi
+    cmp dword [dma_mapping_manager_ready], 1
+    jne .invalid
+    test edx, edx
+    jz .invalid
+    test ecx, ecx
+    jz .invalid
+    cmp ebx, DMA_DIRECTION_TO_DEVICE
+    jb .invalid
+    cmp ebx, DMA_DIRECTION_BIDIRECTIONAL
+    ja .invalid
+    call io_request_lookup
+    jc .invalid
+    mov [dma_mapping_temp_request_record], eax
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    je .request_active
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_RUNNING
+    jne .invalid
+.request_active:
+    mov edx, [dma_mapping_temp_owner]
+    cmp [eax + IO_REQUEST_OWNER], edx
+    jne .invalid
+    mov ecx, [dma_mapping_temp_length]
+    cmp ecx, [eax + IO_REQUEST_LENGTH]
+    ja .invalid
+    mov ecx, eax
+    sub ecx, io_request_table
+    shr ecx, 6
+    cmp dword [dma_request_mapping_ids + ecx * 4], 0
+    jne .invalid
+    mov [dma_mapping_temp_request_slot], ecx
+    mov eax, [io_request_buffer_ids + ecx * 4]
+    test eax, eax
+    jz .invalid
+    mov [dma_mapping_temp_buffer], eax
+    call shared_buffer_lookup
+    jc .invalid
+    mov [dma_mapping_temp_buffer_record], eax
+    mov edx, [dma_mapping_temp_owner]
+    cmp [eax + SHARED_BUFFER_OWNER], edx
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_PROVIDER
+    jne .invalid
+    test dword [eax + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_DMA
+    jz .invalid
+    test dword [eax + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_TRANSFER
+    jz .invalid
+    mov ecx, [dma_mapping_temp_length]
+    cmp ecx, [eax + SHARED_BUFFER_SIZE]
+    ja .invalid
+    mov ebx, [dma_mapping_temp_direction]
+    cmp ebx, DMA_DIRECTION_TO_DEVICE
+    je .needs_read
+    cmp ebx, DMA_DIRECTION_FROM_DEVICE
+    je .needs_write
+    test dword [eax + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_READ
+    jz .invalid
+    test dword [eax + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_WRITE
+    jz .invalid
+    mov dword [dma_mapping_temp_permissions], DMA_PERMISSION_READ | DMA_PERMISSION_WRITE
+    jmp .find_slot
+.needs_read:
+    test dword [eax + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_READ
+    jz .invalid
+    mov dword [dma_mapping_temp_permissions], DMA_PERMISSION_READ
+    jmp .find_slot
+.needs_write:
+    test dword [eax + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_WRITE
+    jz .invalid
+    mov dword [dma_mapping_temp_permissions], DMA_PERMISSION_WRITE
+.find_slot:
+    xor ecx, ecx
+.scan_slot:
+    cmp ecx, DMA_MAPPING_CAPACITY
+    jae .invalid
+    mov edi, ecx
+    shl edi, 6
+    add edi, dma_mapping_table
+    cmp dword [edi + DMA_MAPPING_STATE], DMA_MAPPING_STATE_EMPTY
+    je .slot
+    cmp dword [edi + DMA_MAPPING_STATE], DMA_MAPPING_STATE_UNMAPPED
+    je .slot
+    cmp dword [edi + DMA_MAPPING_STATE], DMA_MAPPING_STATE_FAULTED
+    je .slot
+    inc ecx
+    jmp .scan_slot
+.slot:
+    mov [dma_mapping_temp_slot], ecx
+    mov [dma_mapping_temp_record], edi
+    xor eax, eax
+    mov ecx, DMA_MAPPING_RECORD_SIZE / 4
+    rep stosd
+    mov edi, [dma_mapping_temp_record]
+    mov eax, [dma_mapping_next_id]
+    mov [edi + DMA_MAPPING_ID], eax
+    mov edx, [dma_mapping_temp_owner]
+    mov [edi + DMA_MAPPING_OWNER], edx
+    mov edx, [dma_mapping_temp_device]
+    mov [edi + DMA_MAPPING_DEVICE], edx
+    mov edx, [dma_mapping_temp_buffer]
+    mov [edi + DMA_MAPPING_BUFFER], edx
+    mov edx, [dma_mapping_temp_request]
+    mov [edi + DMA_MAPPING_REQUEST], edx
+    mov edx, [dma_mapping_temp_direction]
+    mov [edi + DMA_MAPPING_DIRECTION], edx
+    mov edx, [dma_mapping_temp_permissions]
+    mov [edi + DMA_MAPPING_PERMISSIONS], edx
+    mov dword [edi + DMA_MAPPING_STATE], DMA_MAPPING_STATE_ACTIVE
+    mov edx, [dma_mapping_temp_length]
+    mov [edi + DMA_MAPPING_LENGTH], edx
+    mov eax, [dma_mapping_temp_slot]
+    shl eax, 12
+    add eax, DMA_RESTRICTED_APERTURE
+    mov [edi + DMA_MAPPING_ADDRESS_LOW], eax
+    mov dword [edi + DMA_MAPPING_ADDRESS_HIGH], 0
+    mov dword [edi + DMA_MAPPING_DOMAIN], 0
+    mov dword [edi + DMA_MAPPING_FLAGS], DMA_FLAG_BOUNCE | DMA_FLAG_COHERENT | DMA_FLAG_RESTRICTED
+    mov dword [edi + DMA_MAPPING_PINNED_PAGES], 1
+    mov ecx, [dma_mapping_temp_slot]
+    mov edx, [dma_mapping_generations + ecx * 4]
+    inc edx
+    jnz .generation_ready
+    inc edx
+.generation_ready:
+    mov [dma_mapping_generations + ecx * 4], edx
+    mov [edi + DMA_MAPPING_GENERATION], edx
+    mov eax, [edi + DMA_MAPPING_ID]
+    mov ecx, [dma_mapping_temp_request_slot]
+    mov [dma_request_mapping_ids + ecx * 4], eax
+    mov edx, [dma_mapping_temp_buffer_record]
+    inc dword [edx + SHARED_BUFFER_MAPPINGS]
+    inc dword [edx + SHARED_BUFFER_PINNED]
+    inc dword [dma_mapping_next_id]
+    inc dword [dma_mapping_active_count]
+    inc dword [dma_mapping_pinned_pages]
+    inc dword [dma_mapping_bounce_count]
+    mov edx, [dma_mapping_temp_length]
+    add [dma_mapping_mapped_bytes], edx
+    mov eax, [edi + DMA_MAPPING_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; Interner, bereits validierter Abbau. EAX=aktiver Mapping-Datensatz.
+dma_mapping_release_record:
+    mov [dma_mapping_temp_record], eax
+    mov edx, [eax + DMA_MAPPING_REQUEST]
+    mov [dma_mapping_temp_request], edx
+    mov eax, edx
+    call io_request_lookup
+    jc .skip_request_slot
+    mov ecx, eax
+    sub ecx, io_request_table
+    shr ecx, 6
+    mov edx, [dma_mapping_temp_record]
+    mov edx, [edx + DMA_MAPPING_ID]
+    cmp [dma_request_mapping_ids + ecx * 4], edx
+    jne .skip_request_slot
+    mov dword [dma_request_mapping_ids + ecx * 4], 0
+.skip_request_slot:
+    mov eax, [dma_mapping_temp_record]
+    mov eax, [eax + DMA_MAPPING_BUFFER]
+    call shared_buffer_lookup
+    jc .skip_buffer
+    cmp dword [eax + SHARED_BUFFER_MAPPINGS], 0
+    je .mapping_done
+    dec dword [eax + SHARED_BUFFER_MAPPINGS]
+.mapping_done:
+    cmp dword [eax + SHARED_BUFFER_PINNED], 0
+    je .skip_buffer
+    dec dword [eax + SHARED_BUFFER_PINNED]
+.skip_buffer:
+    mov eax, [dma_mapping_temp_record]
+    mov edx, [eax + DMA_MAPPING_LENGTH]
+    cmp [dma_mapping_mapped_bytes], edx
+    jb .zero_bytes
+    sub [dma_mapping_mapped_bytes], edx
+    jmp .bytes_done
+.zero_bytes:
+    mov dword [dma_mapping_mapped_bytes], 0
+.bytes_done:
+    cmp dword [dma_mapping_active_count], 0
+    je .active_done
+    dec dword [dma_mapping_active_count]
+.active_done:
+    cmp dword [dma_mapping_pinned_pages], 0
+    je .pinned_done
+    dec dword [dma_mapping_pinned_pages]
+.pinned_done:
+    cmp dword [eax + DMA_MAPPING_STATE], DMA_MAPPING_STATE_FAULTED
+    je .done
+    mov dword [eax + DMA_MAPPING_STATE], DMA_MAPPING_STATE_UNMAPPED
+.done:
+    clc
+    ret
+
+; EAX=Mapping-ID, EDX=Owner. Ein aktives Mapping wird kontrolliert entfernt.
+dma_mapping_unmap:
+    pushfd
+    cli
+    mov [dma_mapping_temp_id], eax
+    mov [dma_mapping_temp_owner], edx
+    call dma_mapping_lookup
+    jc .invalid
+    mov edx, [dma_mapping_temp_owner]
+    cmp [eax + DMA_MAPPING_OWNER], edx
+    jne .invalid
+    call dma_mapping_release_record
+    mov eax, [dma_mapping_temp_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Mapping-ID, EDX=Device-ID, EBX=Fehlercode. Der Fault bleibt im
+; Mapping-Datensatz sichtbar; Ressourcen und Pinning werden trotzdem geloest.
+dma_mapping_fault:
+    pushfd
+    cli
+    mov [dma_mapping_temp_id], eax
+    mov [dma_mapping_temp_device], edx
+    mov [dma_mapping_temp_error], ebx
+    call dma_mapping_lookup
+    jc .invalid
+    mov edx, [dma_mapping_temp_device]
+    cmp [eax + DMA_MAPPING_DEVICE], edx
+    jne .invalid
+    mov ebx, [dma_mapping_temp_error]
+    test ebx, ebx
+    jz .invalid
+    mov [eax + DMA_MAPPING_ERROR], ebx
+    mov dword [eax + DMA_MAPPING_STATE], DMA_MAPPING_STATE_FAULTED
+    inc dword [dma_mapping_fault_count]
+    call dma_mapping_release_record
+    mov eax, [dma_mapping_temp_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=terminaler IORequest-Datensatz. Jede Completion, Cancellation und jeder
+; Deadline-Miss loest das zugehoerige DMA-Mapping vor der Buffer-Lease.
+dma_mapping_on_terminal:
+    cmp dword [dma_mapping_manager_ready], 1
+    jne .done
+    mov ecx, eax
+    sub ecx, io_request_table
+    shr ecx, 6
+    mov eax, [dma_request_mapping_ids + ecx * 4]
+    test eax, eax
+    jz .done
+    call dma_mapping_lookup
+    jc .done
+    call dma_mapping_release_record
+.done:
+    clc
+    ret
+
+dma_mapping_self_test:
+    cmp dword [dma_iommu_available], 0
+    jne .invalid
+    mov eax, 1
+    mov edx, 128
+    mov ebx, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE | SHARED_BUFFER_RIGHT_TRANSFER | SHARED_BUFFER_RIGHT_DMA | SHARED_BUFFER_RIGHT_RELEASE
+    call shared_buffer_create
+    jc .invalid
+    mov [dma_mapping_test_buffer], eax
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [dma_mapping_test_scope], eax
+    mov eax, 1
+    mov edx, [dma_mapping_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [dma_mapping_test_task], eax
+    mov eax, 1
+    mov edx, [dma_mapping_test_task]
+    mov ebx, 6
+    mov ecx, 0xD001
+    mov esi, [dma_mapping_test_buffer]
+    mov edi, 128
+    xor ebp, ebp
+    call io_request_submit
+    jc .invalid
+    mov [dma_mapping_test_request], eax
+    mov edx, [dma_mapping_test_buffer]
+    mov ebx, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE
+    call shared_buffer_bind_io
+    jc .invalid
+    mov eax, [dma_mapping_test_request]
+    mov edx, 0xD001
+    mov ebx, DMA_DIRECTION_BIDIRECTIONAL
+    mov ecx, 128
+    mov esi, 1
+    call dma_mapping_map
+    jc .invalid
+    mov [dma_mapping_test_id], eax
+    call dma_mapping_lookup
+    jc .invalid
+    mov [dma_mapping_test_record], eax
+    cmp dword [eax + DMA_MAPPING_PERMISSIONS], DMA_PERMISSION_READ | DMA_PERMISSION_WRITE
+    jne .invalid
+    cmp dword [eax + DMA_MAPPING_FLAGS], DMA_FLAG_BOUNCE | DMA_FLAG_COHERENT | DMA_FLAG_RESTRICTED
+    jne .invalid
+    cmp dword [eax + DMA_MAPPING_ADDRESS_HIGH], 0
+    jne .invalid
+    mov edx, [eax + DMA_MAPPING_ADDRESS_LOW]
+    cmp edx, DMA_RESTRICTED_APERTURE
+    jb .invalid
+    mov eax, [dma_mapping_test_buffer]
+    call shared_buffer_lookup
+    jc .invalid
+    cmp dword [eax + SHARED_BUFFER_MAPPINGS], 1
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_PINNED], 1
+    jne .invalid
+    mov eax, [dma_mapping_test_request]
+    mov edx, 0xD001
+    mov ebx, DMA_DIRECTION_TO_DEVICE
+    mov ecx, 64
+    mov esi, 1
+    call dma_mapping_map
+    jnc .invalid                       ; genau ein Mapping je Request
+    mov eax, [dma_mapping_test_buffer]
+    mov edx, 1
+    call shared_buffer_release
+    jnc .invalid                       ; Pinning/Lease blockiert Release
+    mov eax, [dma_mapping_test_request]
+    mov edx, 128
+    xor ebx, ebx
+    call io_request_complete
+    jc .invalid
+    mov eax, [dma_mapping_test_record]
+    cmp dword [eax + DMA_MAPPING_STATE], DMA_MAPPING_STATE_UNMAPPED
+    jne .invalid
+    mov eax, [dma_mapping_test_buffer]
+    call shared_buffer_lookup
+    jc .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_MAPPINGS], 0
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_PINNED], 0
+    jne .invalid
+    cmp dword [dma_mapping_active_count], 0
+    jne .invalid
+    cmp dword [dma_mapping_pinned_pages], 0
+    jne .invalid
+    cmp dword [dma_mapping_mapped_bytes], 0
+    jne .invalid
+    cmp dword [dma_mapping_bounce_count], 1
+    jne .invalid
+    mov eax, [dma_mapping_test_task]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [dma_mapping_test_scope]
+    call task_scope_close
+    jc .invalid
+    mov eax, [dma_mapping_test_buffer]
+    mov edx, 1
+    call shared_buffer_release
+    jc .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+dma_mapping_api:
+    dd DMA_MAPPING_API_SIZE
+    dw 1, 0
+    dd DMA_MAPPING_CAPACITY
+    dd dma_mapping_map
+    dd dma_mapping_unmap
+    dd dma_mapping_fault
+    dd dma_mapping_table
+    dd dma_mapping_status
+
+dma_mapping_status:
+dma_mapping_manager_ready:       dd 0
+dma_iommu_available:             dd 0
+dma_mapping_active_count:        dd 0
+dma_mapping_mapped_bytes:        dd 0
+dma_mapping_pinned_pages:        dd 0
+dma_mapping_fault_count:         dd 0
+dma_mapping_bounce_count:        dd 0
+dma_mapping_next_id:             dd 0
+dma_mapping_temp_id:             dd 0
+dma_mapping_temp_owner:          dd 0
+dma_mapping_temp_device:         dd 0
+dma_mapping_temp_direction:      dd 0
+dma_mapping_temp_permissions:    dd 0
+dma_mapping_temp_length:         dd 0
+dma_mapping_temp_request:        dd 0
+dma_mapping_temp_request_slot:   dd 0
+dma_mapping_temp_request_record: dd 0
+dma_mapping_temp_buffer:         dd 0
+dma_mapping_temp_buffer_record:  dd 0
+dma_mapping_temp_slot:           dd 0
+dma_mapping_temp_record:         dd 0
+dma_mapping_temp_error:          dd 0
+dma_mapping_test_buffer:         dd 0
+dma_mapping_test_scope:          dd 0
+dma_mapping_test_task:           dd 0
+dma_mapping_test_request:        dd 0
+dma_mapping_test_id:             dd 0
+dma_mapping_test_record:         dd 0
+align 4
+dma_mapping_table:
+    times DMA_MAPPING_CAPACITY * DMA_MAPPING_RECORD_SIZE db 0
+dma_mapping_generations:
+    times DMA_MAPPING_CAPACITY dd 0
+dma_request_mapping_ids:
+    times IO_REQUEST_CAPACITY dd 0
+
+; ---------------------------------------------------------------------------
+; Scatter/Gather-Descriptoren bilden mehrere Bufferbereiche als geordneten
+; logischen Datenstrom ab. Das allgemeine ABI enthaelt keine physischen oder
+; Device-Adressen; diese entstehen erst in einem DMA-/IOMMU-Provider.
+; NPSPEC-DATAMOVE-SCATTERGATHER-0001
+; ---------------------------------------------------------------------------
+
+SG_API_SIZE                 equ 32
+SG_DESCRIPTOR_CAPACITY      equ 4
+SG_MAX_SEGMENTS             equ 4
+SG_DESCRIPTOR_SIZE          equ 64
+SG_SEGMENT_SIZE             equ 32
+SG_STATE_EMPTY              equ 0
+SG_STATE_BUILDING           equ 1
+SG_STATE_SEALED             equ 2
+SG_STATE_RELEASED           equ 3
+SG_DIRECTION_GATHER         equ 1
+SG_DIRECTION_SCATTER        equ 2
+SG_DIRECTION_BIDIRECTIONAL  equ 3
+SG_PERMISSION_READ          equ 0x00000001
+SG_PERMISSION_WRITE         equ 0x00000002
+SG_FLAG_COALESCED           equ 0x00000001
+SG_FLAG_DIRECT_ELIGIBLE     equ 0x00000002
+SG_FLAG_FALLBACK_ALLOWED    equ 0x00000004
+SG_DESCRIPTOR_ID            equ 0
+SG_DESCRIPTOR_OWNER         equ 4
+SG_DESCRIPTOR_DIRECTION     equ 8
+SG_DESCRIPTOR_STATE         equ 12
+SG_DESCRIPTOR_SEGMENTS      equ 16
+SG_DESCRIPTOR_TOTAL_LENGTH  equ 20
+SG_DESCRIPTOR_MAX_SEGMENTS  equ 24
+SG_DESCRIPTOR_FLAGS         equ 28
+SG_DESCRIPTOR_CONSUMERS     equ 32
+SG_DESCRIPTOR_REFERENCES    equ 36
+SG_DESCRIPTOR_COALESCED     equ 40
+SG_DESCRIPTOR_SPLIT         equ 44
+SG_DESCRIPTOR_FALLBACKS     equ 48
+SG_DESCRIPTOR_GENERATION    equ 52
+SG_DESCRIPTOR_FAILURES      equ 56
+SG_SEGMENT_BUFFER           equ 0
+SG_SEGMENT_OFFSET           equ 4
+SG_SEGMENT_LENGTH           equ 8
+SG_SEGMENT_PERMISSIONS      equ 12
+SG_SEGMENT_LOGICAL_OFFSET   equ 16
+SG_SEGMENT_FLAGS            equ 20
+SG_SEGMENT_GENERATION       equ 24
+
+scatter_gather_initialize:
+    mov edi, scatter_gather_table
+    xor eax, eax
+    mov ecx, (SG_DESCRIPTOR_CAPACITY * SG_DESCRIPTOR_SIZE) / 4
+    rep stosd
+    mov edi, scatter_gather_segments
+    mov ecx, (SG_DESCRIPTOR_CAPACITY * SG_MAX_SEGMENTS * SG_SEGMENT_SIZE) / 4
+    rep stosd
+    mov edi, scatter_gather_generations
+    mov ecx, SG_DESCRIPTOR_CAPACITY
+    rep stosd
+    mov dword [scatter_gather_next_id], 1
+    mov dword [scatter_gather_live_count], 0
+    mov dword [scatter_gather_sealed_count], 0
+    mov dword [scatter_gather_retained_references], 0
+    mov dword [scatter_gather_validation_failures], 0
+    mov dword [scatter_gather_coalesced_segments], 0
+    mov dword [scatter_gather_manager_ready], 1
+    clc
+    ret
+
+; EAX=Descriptor-ID. EAX=aktiver Datensatz oder 0.
+scatter_gather_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, SG_DESCRIPTOR_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, scatter_gather_table
+    cmp dword [edx + SG_DESCRIPTOR_STATE], SG_STATE_BUILDING
+    je .candidate
+    cmp dword [edx + SG_DESCRIPTOR_STATE], SG_STATE_SEALED
+    jne .next
+.candidate:
+    cmp [edx + SG_DESCRIPTOR_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Descriptor-Datensatz, ECX=Segmentindex. EAX=Segment-Datensatz.
+scatter_gather_segment_at:
+    mov edx, eax
+    sub edx, scatter_gather_table
+    shr edx, 6
+    shl edx, 7                      ; vier Segmente zu je 32 Byte
+    add edx, scatter_gather_segments
+    mov eax, ecx
+    shl eax, 5
+    add eax, edx
+    ret
+
+; EAX=Owner, EDX=Richtung. EAX=Descriptor-ID.
+scatter_gather_create:
+    pushfd
+    cli
+    mov [scatter_gather_temp_owner], eax
+    mov [scatter_gather_temp_direction], edx
+    cmp dword [scatter_gather_manager_ready], 1
+    jne .invalid
+    cmp edx, SG_DIRECTION_GATHER
+    jb .invalid
+    cmp edx, SG_DIRECTION_BIDIRECTIONAL
+    ja .invalid
+    call process_lookup
+    jc .invalid
+    xor ecx, ecx
+.scan:
+    cmp ecx, SG_DESCRIPTOR_CAPACITY
+    jae .invalid
+    mov edi, ecx
+    shl edi, 6
+    add edi, scatter_gather_table
+    cmp dword [edi + SG_DESCRIPTOR_STATE], SG_STATE_EMPTY
+    je .slot
+    cmp dword [edi + SG_DESCRIPTOR_STATE], SG_STATE_RELEASED
+    je .slot
+    inc ecx
+    jmp .scan
+.slot:
+    mov [scatter_gather_temp_slot], ecx
+    mov [scatter_gather_temp_record], edi
+    xor eax, eax
+    mov ecx, SG_DESCRIPTOR_SIZE / 4
+    rep stosd
+    mov eax, [scatter_gather_temp_slot]
+    shl eax, 7
+    add eax, scatter_gather_segments
+    mov edi, eax
+    xor eax, eax
+    mov ecx, (SG_MAX_SEGMENTS * SG_SEGMENT_SIZE) / 4
+    rep stosd
+    mov edi, [scatter_gather_temp_record]
+    mov eax, [scatter_gather_next_id]
+    mov [edi + SG_DESCRIPTOR_ID], eax
+    mov edx, [scatter_gather_temp_owner]
+    mov [edi + SG_DESCRIPTOR_OWNER], edx
+    mov edx, [scatter_gather_temp_direction]
+    mov [edi + SG_DESCRIPTOR_DIRECTION], edx
+    mov dword [edi + SG_DESCRIPTOR_STATE], SG_STATE_BUILDING
+    mov dword [edi + SG_DESCRIPTOR_MAX_SEGMENTS], SG_MAX_SEGMENTS
+    mov dword [edi + SG_DESCRIPTOR_FLAGS], SG_FLAG_FALLBACK_ALLOWED
+    mov ecx, [scatter_gather_temp_slot]
+    mov edx, [scatter_gather_generations + ecx * 4]
+    inc edx
+    jnz .generation_ready
+    inc edx
+.generation_ready:
+    mov [scatter_gather_generations + ecx * 4], edx
+    mov [edi + SG_DESCRIPTOR_GENERATION], edx
+    inc dword [scatter_gather_next_id]
+    inc dword [scatter_gather_live_count]
+    mov eax, [edi + SG_DESCRIPTOR_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Descriptor-ID, EDX=Buffer-ID, EBX=Offset, ECX=Laenge,
+; ESI=explizite Segmentrechte, EDI=Owner.
+scatter_gather_append:
+    pushfd
+    cli
+    mov dword [scatter_gather_temp_record], 0
+    mov [scatter_gather_temp_id], eax
+    mov [scatter_gather_temp_buffer], edx
+    mov [scatter_gather_temp_offset], ebx
+    mov [scatter_gather_temp_length], ecx
+    mov [scatter_gather_temp_permissions], esi
+    mov [scatter_gather_temp_owner], edi
+    test ecx, ecx
+    jz .invalid
+    test esi, esi
+    jz .invalid
+    test esi, ~(SG_PERMISSION_READ | SG_PERMISSION_WRITE)
+    jnz .invalid
+    call scatter_gather_lookup
+    jc .invalid
+    mov [scatter_gather_temp_record], eax
+    cmp dword [eax + SG_DESCRIPTOR_STATE], SG_STATE_BUILDING
+    jne .invalid
+    mov edx, [scatter_gather_temp_owner]
+    cmp [eax + SG_DESCRIPTOR_OWNER], edx
+    jne .invalid
+    mov edx, [eax + SG_DESCRIPTOR_DIRECTION]
+    cmp edx, SG_DIRECTION_GATHER
+    jne .not_gather
+    cmp dword [scatter_gather_temp_permissions], SG_PERMISSION_READ
+    jne .invalid
+    jmp .direction_valid
+.not_gather:
+    cmp edx, SG_DIRECTION_SCATTER
+    jne .bidirectional
+    cmp dword [scatter_gather_temp_permissions], SG_PERMISSION_WRITE
+    jne .invalid
+    jmp .direction_valid
+.bidirectional:
+    cmp dword [scatter_gather_temp_permissions], SG_PERMISSION_READ | SG_PERMISSION_WRITE
+    jne .invalid
+.direction_valid:
+    mov eax, [scatter_gather_temp_buffer]
+    call shared_buffer_lookup
+    jc .invalid
+    mov [scatter_gather_temp_buffer_record], eax
+    mov edx, [scatter_gather_temp_owner]
+    cmp [eax + SHARED_BUFFER_OWNER], edx
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    jne .invalid
+    mov edx, [scatter_gather_temp_permissions]
+    mov ebx, [eax + SHARED_BUFFER_RIGHTS]
+    and ebx, edx
+    cmp ebx, edx
+    jne .invalid
+    mov ebx, [scatter_gather_temp_offset]
+    mov ecx, [scatter_gather_temp_length]
+    mov edx, ebx
+    add edx, ecx
+    jc .invalid
+    cmp edx, [eax + SHARED_BUFFER_SIZE]
+    ja .invalid
+    mov eax, [scatter_gather_temp_record]
+    mov edx, [eax + SG_DESCRIPTOR_TOTAL_LENGTH]
+    add edx, ecx
+    jc .invalid
+    mov [scatter_gather_temp_total], edx
+    mov ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
+    test ecx, ecx
+    jz .new_segment
+    dec ecx
+    call scatter_gather_segment_at
+    mov [scatter_gather_temp_segment], eax
+    mov edx, [scatter_gather_temp_buffer]
+    cmp [eax + SG_SEGMENT_BUFFER], edx
+    jne .new_segment
+    mov edx, [scatter_gather_temp_permissions]
+    cmp [eax + SG_SEGMENT_PERMISSIONS], edx
+    jne .new_segment
+    mov edx, [eax + SG_SEGMENT_OFFSET]
+    add edx, [eax + SG_SEGMENT_LENGTH]
+    jc .invalid
+    cmp edx, [scatter_gather_temp_offset]
+    jne .new_segment
+    mov edx, [eax + SG_SEGMENT_LENGTH]
+    add edx, [scatter_gather_temp_length]
+    jc .invalid
+    mov [eax + SG_SEGMENT_LENGTH], edx
+    or dword [eax + SG_SEGMENT_FLAGS], SG_FLAG_COALESCED
+    mov eax, [scatter_gather_temp_record]
+    mov edx, [scatter_gather_temp_total]
+    mov [eax + SG_DESCRIPTOR_TOTAL_LENGTH], edx
+    or dword [eax + SG_DESCRIPTOR_FLAGS], SG_FLAG_COALESCED
+    inc dword [eax + SG_DESCRIPTOR_COALESCED]
+    inc dword [scatter_gather_coalesced_segments]
+    mov eax, [eax + SG_DESCRIPTOR_ID]
+    popfd
+    clc
+    ret
+.new_segment:
+    mov eax, [scatter_gather_temp_record]
+    mov ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
+    cmp ecx, SG_MAX_SEGMENTS
+    jae .invalid
+    call scatter_gather_segment_at
+    mov [scatter_gather_temp_segment], eax
+    mov edi, eax
+    xor eax, eax
+    mov ecx, SG_SEGMENT_SIZE / 4
+    rep stosd
+    mov edi, [scatter_gather_temp_segment]
+    mov edx, [scatter_gather_temp_buffer]
+    mov [edi + SG_SEGMENT_BUFFER], edx
+    mov edx, [scatter_gather_temp_offset]
+    mov [edi + SG_SEGMENT_OFFSET], edx
+    mov edx, [scatter_gather_temp_length]
+    mov [edi + SG_SEGMENT_LENGTH], edx
+    mov edx, [scatter_gather_temp_permissions]
+    mov [edi + SG_SEGMENT_PERMISSIONS], edx
+    mov eax, [scatter_gather_temp_record]
+    mov edx, [eax + SG_DESCRIPTOR_TOTAL_LENGTH]
+    mov [edi + SG_SEGMENT_LOGICAL_OFFSET], edx
+    mov edx, [eax + SG_DESCRIPTOR_GENERATION]
+    mov [edi + SG_SEGMENT_GENERATION], edx
+    inc dword [eax + SG_DESCRIPTOR_SEGMENTS]
+    mov edx, [scatter_gather_temp_total]
+    mov [eax + SG_DESCRIPTOR_TOTAL_LENGTH], edx
+    mov eax, [eax + SG_DESCRIPTOR_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    inc dword [scatter_gather_validation_failures]
+    mov eax, [scatter_gather_temp_record]
+    test eax, eax
+    jz .invalid_done
+    inc dword [eax + SG_DESCRIPTOR_FAILURES]
+.invalid_done:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Descriptor-ID, EDX=Owner. Erst der Seal-Schritt haelt alle Buffer fest.
+scatter_gather_seal:
+    pushfd
+    cli
+    mov [scatter_gather_temp_id], eax
+    mov [scatter_gather_temp_owner], edx
+    call scatter_gather_lookup
+    jc .invalid
+    mov [scatter_gather_temp_record], eax
+    cmp dword [eax + SG_DESCRIPTOR_STATE], SG_STATE_BUILDING
+    jne .invalid
+    mov edx, [scatter_gather_temp_owner]
+    cmp [eax + SG_DESCRIPTOR_OWNER], edx
+    jne .invalid
+    cmp dword [eax + SG_DESCRIPTOR_SEGMENTS], 0
+    je .invalid
+    mov dword [scatter_gather_temp_index], 0
+.validate:
+    mov eax, [scatter_gather_temp_record]
+    mov ecx, [scatter_gather_temp_index]
+    cmp ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
+    jae .retain
+    call scatter_gather_segment_at
+    mov [scatter_gather_temp_segment], eax
+    mov eax, [eax + SG_SEGMENT_BUFFER]
+    call shared_buffer_lookup
+    jc .invalid
+    mov edx, [scatter_gather_temp_owner]
+    cmp [eax + SHARED_BUFFER_OWNER], edx
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    jne .invalid
+    mov esi, [scatter_gather_temp_segment]
+    mov edx, [esi + SG_SEGMENT_PERMISSIONS]
+    mov ebx, [eax + SHARED_BUFFER_RIGHTS]
+    and ebx, edx
+    cmp ebx, edx
+    jne .invalid
+    mov ebx, [esi + SG_SEGMENT_OFFSET]
+    add ebx, [esi + SG_SEGMENT_LENGTH]
+    jc .invalid
+    cmp ebx, [eax + SHARED_BUFFER_SIZE]
+    ja .invalid
+    inc dword [scatter_gather_temp_index]
+    jmp .validate
+.retain:
+    mov dword [scatter_gather_temp_index], 0
+.retain_loop:
+    mov eax, [scatter_gather_temp_record]
+    mov ecx, [scatter_gather_temp_index]
+    cmp ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
+    jae .sealed
+    call scatter_gather_segment_at
+    mov eax, [eax + SG_SEGMENT_BUFFER]
+    call shared_buffer_lookup
+    jc .invalid
+    inc dword [eax + SHARED_BUFFER_REFERENCES]
+    inc dword [scatter_gather_retained_references]
+    inc dword [scatter_gather_temp_index]
+    jmp .retain_loop
+.sealed:
+    mov eax, [scatter_gather_temp_record]
+    mov ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
+    mov [eax + SG_DESCRIPTOR_REFERENCES], ecx
+    mov dword [eax + SG_DESCRIPTOR_STATE], SG_STATE_SEALED
+    or dword [eax + SG_DESCRIPTOR_FLAGS], SG_FLAG_DIRECT_ELIGIBLE
+    inc dword [scatter_gather_sealed_count]
+    mov eax, [eax + SG_DESCRIPTOR_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    inc dword [scatter_gather_validation_failures]
+    mov eax, [scatter_gather_temp_record]
+    test eax, eax
+    jz .invalid_done
+    inc dword [eax + SG_DESCRIPTOR_FAILURES]
+.invalid_done:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Descriptor-ID, EDX=Owner. Aktive Consumer verhindern den Abbau.
+scatter_gather_release:
+    pushfd
+    cli
+    mov [scatter_gather_temp_id], eax
+    mov [scatter_gather_temp_owner], edx
+    call scatter_gather_lookup
+    jc .invalid
+    mov [scatter_gather_temp_record], eax
+    mov edx, [scatter_gather_temp_owner]
+    cmp [eax + SG_DESCRIPTOR_OWNER], edx
+    jne .invalid
+    cmp dword [eax + SG_DESCRIPTOR_CONSUMERS], 0
+    jne .invalid
+    cmp dword [eax + SG_DESCRIPTOR_STATE], SG_STATE_SEALED
+    jne .mark_released
+    mov dword [scatter_gather_temp_index], 0
+.release_loop:
+    mov eax, [scatter_gather_temp_record]
+    mov ecx, [scatter_gather_temp_index]
+    cmp ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
+    jae .released_refs
+    call scatter_gather_segment_at
+    mov eax, [eax + SG_SEGMENT_BUFFER]
+    call shared_buffer_lookup
+    jc .invalid
+    cmp dword [eax + SHARED_BUFFER_REFERENCES], 1
+    jbe .invalid
+    dec dword [eax + SHARED_BUFFER_REFERENCES]
+    dec dword [scatter_gather_retained_references]
+    inc dword [scatter_gather_temp_index]
+    jmp .release_loop
+.released_refs:
+    mov eax, [scatter_gather_temp_record]
+    mov dword [eax + SG_DESCRIPTOR_REFERENCES], 0
+    dec dword [scatter_gather_sealed_count]
+.mark_released:
+    mov eax, [scatter_gather_temp_record]
+    mov dword [eax + SG_DESCRIPTOR_STATE], SG_STATE_RELEASED
+    dec dword [scatter_gather_live_count]
+    mov eax, [scatter_gather_temp_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+scatter_gather_self_test:
+    mov eax, 1
+    mov edx, 128
+    mov ebx, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE | SHARED_BUFFER_RIGHT_TRANSFER | SHARED_BUFFER_RIGHT_RELEASE
+    call shared_buffer_create
+    jc .invalid
+    mov [scatter_gather_test_buffer_a], eax
+    mov eax, 1
+    mov edx, 128
+    mov ebx, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE | SHARED_BUFFER_RIGHT_TRANSFER | SHARED_BUFFER_RIGHT_RELEASE
+    call shared_buffer_create
+    jc .invalid
+    mov [scatter_gather_test_buffer_b], eax
+    mov eax, 1
+    mov edx, SG_DIRECTION_GATHER
+    call scatter_gather_create
+    jc .invalid
+    mov [scatter_gather_test_id], eax
+    mov edx, [scatter_gather_test_buffer_a]
+    xor ebx, ebx
+    mov ecx, 32
+    mov esi, SG_PERMISSION_READ
+    mov edi, 1
+    call scatter_gather_append
+    jc .invalid
+    mov eax, [scatter_gather_test_id]
+    mov edx, [scatter_gather_test_buffer_a]
+    mov ebx, 32
+    mov ecx, 32
+    mov esi, SG_PERMISSION_READ
+    mov edi, 1
+    call scatter_gather_append
+    jc .invalid
+    mov eax, [scatter_gather_test_id]
+    mov edx, [scatter_gather_test_buffer_b]
+    mov ebx, 8
+    mov ecx, 64
+    mov esi, SG_PERMISSION_READ
+    mov edi, 1
+    call scatter_gather_append
+    jc .invalid
+    mov eax, [scatter_gather_test_id]
+    mov edx, [scatter_gather_test_buffer_b]
+    mov ebx, 100
+    mov ecx, 40
+    mov esi, SG_PERMISSION_READ
+    mov edi, 1
+    call scatter_gather_append
+    jnc .invalid                       ; Offset + Laenge ueberschreitet Buffer
+    mov eax, [scatter_gather_test_id]
+    call scatter_gather_lookup
+    jc .invalid
+    cmp dword [eax + SG_DESCRIPTOR_SEGMENTS], 2
+    jne .invalid
+    cmp dword [eax + SG_DESCRIPTOR_TOTAL_LENGTH], 128
+    jne .invalid
+    cmp dword [eax + SG_DESCRIPTOR_COALESCED], 1
+    jne .invalid
+    cmp dword [eax + SG_DESCRIPTOR_FAILURES], 1
+    jne .invalid
+    mov eax, [scatter_gather_test_id]
+    mov edx, 1
+    call scatter_gather_seal
+    jc .invalid
+    mov eax, [scatter_gather_test_buffer_a]
+    call shared_buffer_lookup
+    jc .invalid
+    cmp dword [eax + SHARED_BUFFER_REFERENCES], 2
+    jne .invalid
+    mov eax, [scatter_gather_test_buffer_b]
+    call shared_buffer_lookup
+    jc .invalid
+    cmp dword [eax + SHARED_BUFFER_REFERENCES], 2
+    jne .invalid
+    mov eax, [scatter_gather_test_buffer_a]
+    mov edx, 1
+    call shared_buffer_release
+    jnc .invalid                       ; Descriptor garantiert Lifetime
+    mov eax, [scatter_gather_test_id]
+    mov edx, 1
+    call scatter_gather_release
+    jc .invalid
+    cmp dword [scatter_gather_live_count], 0
+    jne .invalid
+    cmp dword [scatter_gather_sealed_count], 0
+    jne .invalid
+    cmp dword [scatter_gather_retained_references], 0
+    jne .invalid
+    cmp dword [scatter_gather_coalesced_segments], 1
+    jne .invalid
+    mov eax, [scatter_gather_test_buffer_a]
+    mov edx, 1
+    call shared_buffer_release
+    jc .invalid
+    mov eax, [scatter_gather_test_buffer_b]
+    mov edx, 1
+    call shared_buffer_release
+    jc .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+scatter_gather_api:
+    dd SG_API_SIZE
+    dw 1, 0
+    dd SG_DESCRIPTOR_CAPACITY
+    dd SG_MAX_SEGMENTS
+    dd scatter_gather_create
+    dd scatter_gather_append
+    dd scatter_gather_seal
+    dd scatter_gather_release
+
+scatter_gather_manager_ready:          dd 0
+scatter_gather_next_id:                dd 0
+scatter_gather_live_count:             dd 0
+scatter_gather_sealed_count:           dd 0
+scatter_gather_retained_references:    dd 0
+scatter_gather_validation_failures:    dd 0
+scatter_gather_coalesced_segments:     dd 0
+scatter_gather_temp_id:                dd 0
+scatter_gather_temp_owner:             dd 0
+scatter_gather_temp_direction:         dd 0
+scatter_gather_temp_buffer:            dd 0
+scatter_gather_temp_offset:            dd 0
+scatter_gather_temp_length:            dd 0
+scatter_gather_temp_permissions:       dd 0
+scatter_gather_temp_total:             dd 0
+scatter_gather_temp_slot:              dd 0
+scatter_gather_temp_index:             dd 0
+scatter_gather_temp_record:            dd 0
+scatter_gather_temp_segment:           dd 0
+scatter_gather_temp_buffer_record:     dd 0
+scatter_gather_test_id:                dd 0
+scatter_gather_test_buffer_a:          dd 0
+scatter_gather_test_buffer_b:          dd 0
+align 4
+scatter_gather_table:
+    times SG_DESCRIPTOR_CAPACITY * SG_DESCRIPTOR_SIZE db 0
+scatter_gather_segments:
+    times SG_DESCRIPTOR_CAPACITY * SG_MAX_SEGMENTS * SG_SEGMENT_SIZE db 0
+scatter_gather_generations:
+    times SG_DESCRIPTOR_CAPACITY dd 0
+
+; ---------------------------------------------------------------------------
+; SG-faehige DMA-Providergrenze. Ein versiegelter SG-Descriptor wird unter
+; festen Hardwarelimits in kontrollierte Device-Segmente uebersetzt. Der
+; aktuelle Bootstrap bleibt ohne IOMMU ein expliziter Restricted-Bounce-Pfad.
+; ---------------------------------------------------------------------------
+
+DMA_SG_API_SIZE              equ 32
+DMA_SG_CAPACITY              equ 2
+DMA_SG_MAX_SEGMENTS          equ 4
+DMA_SG_MAPPING_SIZE          equ 64
+DMA_SG_SEGMENT_SIZE          equ 32
+DMA_SG_STATE_EMPTY           equ 0
+DMA_SG_STATE_ACTIVE          equ 1
+DMA_SG_STATE_UNMAPPED        equ 2
+DMA_SG_STATE_FAULTED         equ 3
+DMA_SG_FLAG_BOUNCE           equ 0x00000001
+DMA_SG_FLAG_COHERENT         equ 0x00000002
+DMA_SG_FLAG_RESTRICTED       equ 0x00000004
+DMA_SG_FLAG_SPLIT            equ 0x00000008
+DMA_SG_MAX_SEGMENT_SIZE      equ 64
+DMA_SG_ALIGNMENT             equ 4
+DMA_SG_ADDRESS_WIDTH         equ 32
+DMA_SG_BOUNDARY              equ 4096
+DMA_SG_APERTURE              equ 0xD1000000
+DMA_SG_MAPPING_ID            equ 0
+DMA_SG_MAPPING_OWNER         equ 4
+DMA_SG_MAPPING_DEVICE        equ 8
+DMA_SG_MAPPING_REQUEST       equ 12
+DMA_SG_MAPPING_DESCRIPTOR    equ 16
+DMA_SG_MAPPING_DIRECTION     equ 20
+DMA_SG_MAPPING_STATE         equ 24
+DMA_SG_MAPPING_SEGMENTS      equ 28
+DMA_SG_MAPPING_TOTAL_LENGTH  equ 32
+DMA_SG_MAPPING_MAX_SIZE      equ 36
+DMA_SG_MAPPING_ALIGNMENT     equ 40
+DMA_SG_MAPPING_ADDRESS_WIDTH equ 44
+DMA_SG_MAPPING_BOUNDARY      equ 48
+DMA_SG_MAPPING_FLAGS         equ 52
+DMA_SG_MAPPING_GENERATION    equ 56
+DMA_SG_MAPPING_ERROR         equ 60
+DMA_SG_SEGMENT_SOURCE        equ 0
+DMA_SG_SEGMENT_BUFFER        equ 4
+DMA_SG_SEGMENT_OFFSET        equ 8
+DMA_SG_SEGMENT_LENGTH        equ 12
+DMA_SG_SEGMENT_ADDRESS_LOW   equ 16
+DMA_SG_SEGMENT_ADDRESS_HIGH  equ 20
+DMA_SG_SEGMENT_PERMISSIONS   equ 24
+DMA_SG_SEGMENT_FLAGS         equ 28
+
+dma_scatter_gather_initialize:
+    mov edi, dma_scatter_gather_table
+    xor eax, eax
+    mov ecx, (DMA_SG_CAPACITY * DMA_SG_MAPPING_SIZE) / 4
+    rep stosd
+    mov edi, dma_scatter_gather_segments
+    mov ecx, (DMA_SG_CAPACITY * DMA_SG_MAX_SEGMENTS * DMA_SG_SEGMENT_SIZE) / 4
+    rep stosd
+    mov edi, dma_scatter_gather_generations
+    mov ecx, DMA_SG_CAPACITY
+    rep stosd
+    mov edi, dma_request_sg_mapping_ids
+    mov ecx, IO_REQUEST_CAPACITY
+    rep stosd
+    mov dword [dma_scatter_gather_next_id], 1
+    mov dword [dma_scatter_gather_active_count], 0
+    mov dword [dma_scatter_gather_mapped_bytes], 0
+    mov dword [dma_scatter_gather_pinned_buffers], 0
+    mov dword [dma_scatter_gather_split_segments], 0
+    mov dword [dma_scatter_gather_validation_failures], 0
+    mov dword [dma_scatter_gather_manager_ready], 1
+    clc
+    ret
+
+dma_scatter_gather_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, DMA_SG_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, dma_scatter_gather_table
+    cmp dword [edx + DMA_SG_MAPPING_STATE], DMA_SG_STATE_ACTIVE
+    jne .next
+    cmp [edx + DMA_SG_MAPPING_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Mapping-Datensatz, ECX=Device-Segmentindex. EAX=Segment-Datensatz.
+dma_scatter_gather_segment_at:
+    mov edx, eax
+    sub edx, dma_scatter_gather_table
+    shr edx, 6
+    shl edx, 7
+    add edx, dma_scatter_gather_segments
+    mov eax, ecx
+    shl eax, 5
+    add eax, edx
+    ret
+
+; EAX=Request-ID, EDX=SG-Descriptor-ID, EBX=Device-ID, ECX=Owner.
+; Ergebnis EAX=DMA-SG-Mapping-ID.
+dma_scatter_gather_map:
+    pushfd
+    cli
+    mov dword [dma_scatter_gather_temp_record], 0
+    mov [dma_scatter_gather_temp_request], eax
+    mov [dma_scatter_gather_temp_descriptor], edx
+    mov [dma_scatter_gather_temp_device], ebx
+    mov [dma_scatter_gather_temp_owner], ecx
+    cmp dword [dma_scatter_gather_manager_ready], 1
+    jne .invalid
+    test ebx, ebx
+    jz .invalid
+    call io_request_lookup
+    jc .invalid
+    mov [dma_scatter_gather_temp_request_record], eax
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_PENDING
+    je .request_active
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_RUNNING
+    jne .invalid
+.request_active:
+    mov edx, [dma_scatter_gather_temp_owner]
+    cmp [eax + IO_REQUEST_OWNER], edx
+    jne .invalid
+    mov edx, [dma_scatter_gather_temp_descriptor]
+    cmp [eax + IO_REQUEST_BUFFER], edx
+    jne .invalid
+    mov ecx, eax
+    sub ecx, io_request_table
+    shr ecx, 6
+    mov [dma_scatter_gather_temp_request_slot], ecx
+    cmp dword [dma_request_mapping_ids + ecx * 4], 0
+    jne .invalid
+    cmp dword [dma_request_sg_mapping_ids + ecx * 4], 0
+    jne .invalid
+    mov eax, [dma_scatter_gather_temp_descriptor]
+    call scatter_gather_lookup
+    jc .invalid
+    mov [dma_scatter_gather_temp_descriptor_record], eax
+    cmp dword [eax + SG_DESCRIPTOR_STATE], SG_STATE_SEALED
+    jne .invalid
+    mov edx, [dma_scatter_gather_temp_owner]
+    cmp [eax + SG_DESCRIPTOR_OWNER], edx
+    jne .invalid
+    cmp dword [eax + SG_DESCRIPTOR_CONSUMERS], 0
+    jne .invalid
+    mov edx, [dma_scatter_gather_temp_request_record]
+    mov ecx, [eax + SG_DESCRIPTOR_TOTAL_LENGTH]
+    cmp [edx + IO_REQUEST_LENGTH], ecx
+    jne .invalid
+    mov dword [dma_scatter_gather_temp_required], 0
+    mov dword [dma_scatter_gather_temp_source_index], 0
+    mov edi, dma_scatter_gather_temp_buffer_ids
+    xor eax, eax
+    mov ecx, SG_MAX_SEGMENTS
+    rep stosd
+.validate_source:
+    mov eax, [dma_scatter_gather_temp_descriptor_record]
+    mov ecx, [dma_scatter_gather_temp_source_index]
+    cmp ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
+    jae .find_mapping_slot
+    call scatter_gather_segment_at
+    mov [dma_scatter_gather_temp_source_segment], eax
+    mov edx, [eax + SG_SEGMENT_OFFSET]
+    test edx, DMA_SG_ALIGNMENT - 1
+    jnz .invalid
+    mov ebx, [eax + SG_SEGMENT_LENGTH]
+    test ebx, ebx
+    jz .invalid
+    test ebx, DMA_SG_ALIGNMENT - 1
+    jnz .invalid
+    mov esi, [eax + SG_SEGMENT_BUFFER]
+    xor ecx, ecx
+.duplicate_scan:
+    cmp ecx, [dma_scatter_gather_temp_source_index]
+    jae .unique_buffer
+    cmp [dma_scatter_gather_temp_buffer_ids + ecx * 4], esi
+    je .invalid                         ; Providerlimit: ein Eintrag je Buffer
+    inc ecx
+    jmp .duplicate_scan
+.unique_buffer:
+    mov ecx, [dma_scatter_gather_temp_source_index]
+    mov [dma_scatter_gather_temp_buffer_ids + ecx * 4], esi
+    mov eax, esi
+    call shared_buffer_lookup
+    jc .invalid
+    mov edx, [dma_scatter_gather_temp_owner]
+    cmp [eax + SHARED_BUFFER_OWNER], edx
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_ACTIVE_IO], 0
+    jne .invalid
+    test dword [eax + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_TRANSFER
+    jz .invalid
+    test dword [eax + SHARED_BUFFER_RIGHTS], SHARED_BUFFER_RIGHT_DMA
+    jz .invalid
+    mov esi, [dma_scatter_gather_temp_source_segment]
+    mov edx, [esi + SG_SEGMENT_PERMISSIONS]
+    mov ecx, [eax + SHARED_BUFFER_RIGHTS]
+    and ecx, edx
+    cmp ecx, edx
+    jne .invalid
+    mov eax, ebx
+    add eax, DMA_SG_MAX_SEGMENT_SIZE - 1
+    jc .invalid
+    shr eax, 6
+    add [dma_scatter_gather_temp_required], eax
+    jc .invalid
+    cmp dword [dma_scatter_gather_temp_required], DMA_SG_MAX_SEGMENTS
+    ja .invalid
+    inc dword [dma_scatter_gather_temp_source_index]
+    jmp .validate_source
+
+.find_mapping_slot:
+    xor ecx, ecx
+.scan_mapping_slot:
+    cmp ecx, DMA_SG_CAPACITY
+    jae .invalid
+    mov edi, ecx
+    shl edi, 6
+    add edi, dma_scatter_gather_table
+    cmp dword [edi + DMA_SG_MAPPING_STATE], DMA_SG_STATE_EMPTY
+    je .mapping_slot
+    cmp dword [edi + DMA_SG_MAPPING_STATE], DMA_SG_STATE_UNMAPPED
+    je .mapping_slot
+    cmp dword [edi + DMA_SG_MAPPING_STATE], DMA_SG_STATE_FAULTED
+    je .mapping_slot
+    inc ecx
+    jmp .scan_mapping_slot
+.mapping_slot:
+    mov [dma_scatter_gather_temp_slot], ecx
+    mov [dma_scatter_gather_temp_record], edi
+    xor eax, eax
+    mov ecx, DMA_SG_MAPPING_SIZE / 4
+    rep stosd
+    mov eax, [dma_scatter_gather_temp_slot]
+    shl eax, 7
+    add eax, dma_scatter_gather_segments
+    mov edi, eax
+    xor eax, eax
+    mov ecx, (DMA_SG_MAX_SEGMENTS * DMA_SG_SEGMENT_SIZE) / 4
+    rep stosd
+    mov edi, [dma_scatter_gather_temp_record]
+    mov eax, [dma_scatter_gather_next_id]
+    mov [edi + DMA_SG_MAPPING_ID], eax
+    mov edx, [dma_scatter_gather_temp_owner]
+    mov [edi + DMA_SG_MAPPING_OWNER], edx
+    mov edx, [dma_scatter_gather_temp_device]
+    mov [edi + DMA_SG_MAPPING_DEVICE], edx
+    mov edx, [dma_scatter_gather_temp_request]
+    mov [edi + DMA_SG_MAPPING_REQUEST], edx
+    mov edx, [dma_scatter_gather_temp_descriptor]
+    mov [edi + DMA_SG_MAPPING_DESCRIPTOR], edx
+    mov edx, [dma_scatter_gather_temp_descriptor_record]
+    mov eax, [edx + SG_DESCRIPTOR_DIRECTION]
+    mov [edi + DMA_SG_MAPPING_DIRECTION], eax
+    mov dword [edi + DMA_SG_MAPPING_STATE], DMA_SG_STATE_ACTIVE
+    mov eax, [dma_scatter_gather_temp_required]
+    mov [edi + DMA_SG_MAPPING_SEGMENTS], eax
+    mov eax, [edx + SG_DESCRIPTOR_TOTAL_LENGTH]
+    mov [edi + DMA_SG_MAPPING_TOTAL_LENGTH], eax
+    mov dword [edi + DMA_SG_MAPPING_MAX_SIZE], DMA_SG_MAX_SEGMENT_SIZE
+    mov dword [edi + DMA_SG_MAPPING_ALIGNMENT], DMA_SG_ALIGNMENT
+    mov dword [edi + DMA_SG_MAPPING_ADDRESS_WIDTH], DMA_SG_ADDRESS_WIDTH
+    mov dword [edi + DMA_SG_MAPPING_BOUNDARY], DMA_SG_BOUNDARY
+    mov dword [edi + DMA_SG_MAPPING_FLAGS], DMA_SG_FLAG_BOUNCE | DMA_SG_FLAG_COHERENT | DMA_SG_FLAG_RESTRICTED
+    mov eax, [edx + SG_DESCRIPTOR_SEGMENTS]
+    cmp [dma_scatter_gather_temp_required], eax
+    jbe .flags_ready
+    or dword [edi + DMA_SG_MAPPING_FLAGS], DMA_SG_FLAG_SPLIT
+.flags_ready:
+    mov ecx, [dma_scatter_gather_temp_slot]
+    mov eax, [dma_scatter_gather_generations + ecx * 4]
+    inc eax
+    jnz .generation_ready
+    inc eax
+.generation_ready:
+    mov [dma_scatter_gather_generations + ecx * 4], eax
+    mov [edi + DMA_SG_MAPPING_GENERATION], eax
+    mov dword [dma_scatter_gather_temp_source_index], 0
+    mov dword [dma_scatter_gather_temp_output_index], 0
+
+.translate_source:
+    mov eax, [dma_scatter_gather_temp_descriptor_record]
+    mov ecx, [dma_scatter_gather_temp_source_index]
+    cmp ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
+    jae .acquire_buffers
+    call scatter_gather_segment_at
+    mov edx, [eax + SG_SEGMENT_BUFFER]
+    mov [dma_scatter_gather_temp_buffer], edx
+    mov edx, [eax + SG_SEGMENT_OFFSET]
+    mov [dma_scatter_gather_temp_offset], edx
+    mov edx, [eax + SG_SEGMENT_LENGTH]
+    mov [dma_scatter_gather_temp_remaining], edx
+    mov edx, [eax + SG_SEGMENT_PERMISSIONS]
+    mov [dma_scatter_gather_temp_permissions], edx
+.translate_chunk:
+    cmp dword [dma_scatter_gather_temp_remaining], 0
+    je .next_source
+    mov edx, [dma_scatter_gather_temp_remaining]
+    cmp edx, DMA_SG_MAX_SEGMENT_SIZE
+    jbe .chunk_ready
+    mov edx, DMA_SG_MAX_SEGMENT_SIZE
+.chunk_ready:
+    mov [dma_scatter_gather_temp_chunk], edx
+    mov eax, [dma_scatter_gather_temp_record]
+    mov ecx, [dma_scatter_gather_temp_output_index]
+    call dma_scatter_gather_segment_at
+    mov edi, eax
+    mov edx, [dma_scatter_gather_temp_source_index]
+    mov [edi + DMA_SG_SEGMENT_SOURCE], edx
+    mov edx, [dma_scatter_gather_temp_buffer]
+    mov [edi + DMA_SG_SEGMENT_BUFFER], edx
+    mov edx, [dma_scatter_gather_temp_offset]
+    mov [edi + DMA_SG_SEGMENT_OFFSET], edx
+    mov edx, [dma_scatter_gather_temp_chunk]
+    mov [edi + DMA_SG_SEGMENT_LENGTH], edx
+    mov eax, [dma_scatter_gather_temp_slot]
+    shl eax, 16
+    add eax, DMA_SG_APERTURE
+    mov ecx, [dma_scatter_gather_temp_output_index]
+    shl ecx, 12
+    add eax, ecx
+    mov [edi + DMA_SG_SEGMENT_ADDRESS_LOW], eax
+    mov dword [edi + DMA_SG_SEGMENT_ADDRESS_HIGH], 0
+    mov edx, [dma_scatter_gather_temp_permissions]
+    mov [edi + DMA_SG_SEGMENT_PERMISSIONS], edx
+    cmp dword [dma_scatter_gather_temp_remaining], DMA_SG_MAX_SEGMENT_SIZE
+    jbe .chunk_flags_ready
+    mov dword [edi + DMA_SG_SEGMENT_FLAGS], DMA_SG_FLAG_SPLIT
+    inc dword [dma_scatter_gather_split_segments]
+.chunk_flags_ready:
+    mov edx, [dma_scatter_gather_temp_chunk]
+    add [dma_scatter_gather_temp_offset], edx
+    sub [dma_scatter_gather_temp_remaining], edx
+    inc dword [dma_scatter_gather_temp_output_index]
+    jmp .translate_chunk
+.next_source:
+    inc dword [dma_scatter_gather_temp_source_index]
+    jmp .translate_source
+
+.acquire_buffers:
+    mov dword [dma_scatter_gather_temp_source_index], 0
+.acquire_loop:
+    mov eax, [dma_scatter_gather_temp_descriptor_record]
+    mov ecx, [dma_scatter_gather_temp_source_index]
+    cmp ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
+    jae .publish_mapping
+    call scatter_gather_segment_at
+    mov eax, [eax + SG_SEGMENT_BUFFER]
+    call shared_buffer_lookup
+    jc .invalid
+    mov dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_PROVIDER
+    inc dword [eax + SHARED_BUFFER_ACTIVE_IO]
+    inc dword [eax + SHARED_BUFFER_REFERENCES]
+    inc dword [eax + SHARED_BUFFER_MAPPINGS]
+    inc dword [eax + SHARED_BUFFER_PINNED]
+    inc dword [dma_scatter_gather_pinned_buffers]
+    inc dword [dma_scatter_gather_temp_source_index]
+    jmp .acquire_loop
+.publish_mapping:
+    mov eax, [dma_scatter_gather_temp_descriptor_record]
+    inc dword [eax + SG_DESCRIPTOR_CONSUMERS]
+    mov edi, [dma_scatter_gather_temp_record]
+    mov eax, [edi + DMA_SG_MAPPING_ID]
+    mov ecx, [dma_scatter_gather_temp_request_slot]
+    mov [dma_request_sg_mapping_ids + ecx * 4], eax
+    inc dword [dma_scatter_gather_next_id]
+    inc dword [dma_scatter_gather_active_count]
+    mov edx, [edi + DMA_SG_MAPPING_TOTAL_LENGTH]
+    add [dma_scatter_gather_mapped_bytes], edx
+    popfd
+    clc
+    ret
+.invalid:
+    inc dword [dma_scatter_gather_validation_failures]
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=aktiver DMA-SG-Mapping-Datensatz.
+dma_scatter_gather_release_record:
+    mov [dma_scatter_gather_temp_record], eax
+    mov eax, [eax + DMA_SG_MAPPING_REQUEST]
+    call io_request_lookup
+    jc .skip_request
+    mov ecx, eax
+    sub ecx, io_request_table
+    shr ecx, 6
+    mov edx, [dma_scatter_gather_temp_record]
+    mov edx, [edx + DMA_SG_MAPPING_ID]
+    cmp [dma_request_sg_mapping_ids + ecx * 4], edx
+    jne .skip_request
+    mov dword [dma_request_sg_mapping_ids + ecx * 4], 0
+.skip_request:
+    mov eax, [dma_scatter_gather_temp_record]
+    mov eax, [eax + DMA_SG_MAPPING_DESCRIPTOR]
+    call scatter_gather_lookup
+    jc .skip_descriptor
+    mov [dma_scatter_gather_temp_descriptor_record], eax
+    mov dword [dma_scatter_gather_temp_source_index], 0
+.release_buffers:
+    mov eax, [dma_scatter_gather_temp_descriptor_record]
+    mov ecx, [dma_scatter_gather_temp_source_index]
+    cmp ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
+    jae .release_descriptor
+    call scatter_gather_segment_at
+    mov eax, [eax + SG_SEGMENT_BUFFER]
+    call shared_buffer_lookup
+    jc .next_release_buffer
+    cmp dword [eax + SHARED_BUFFER_ACTIVE_IO], 0
+    je .active_released
+    dec dword [eax + SHARED_BUFFER_ACTIVE_IO]
+.active_released:
+    cmp dword [eax + SHARED_BUFFER_REFERENCES], 1
+    jbe .reference_released
+    dec dword [eax + SHARED_BUFFER_REFERENCES]
+.reference_released:
+    cmp dword [eax + SHARED_BUFFER_MAPPINGS], 0
+    je .mapping_released
+    dec dword [eax + SHARED_BUFFER_MAPPINGS]
+.mapping_released:
+    cmp dword [eax + SHARED_BUFFER_PINNED], 0
+    je .pin_released
+    dec dword [eax + SHARED_BUFFER_PINNED]
+.pin_released:
+    mov dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    cmp dword [dma_scatter_gather_pinned_buffers], 0
+    je .next_release_buffer
+    dec dword [dma_scatter_gather_pinned_buffers]
+.next_release_buffer:
+    inc dword [dma_scatter_gather_temp_source_index]
+    jmp .release_buffers
+.release_descriptor:
+    mov eax, [dma_scatter_gather_temp_descriptor_record]
+    cmp dword [eax + SG_DESCRIPTOR_CONSUMERS], 0
+    je .skip_descriptor
+    dec dword [eax + SG_DESCRIPTOR_CONSUMERS]
+.skip_descriptor:
+    mov eax, [dma_scatter_gather_temp_record]
+    mov edx, [eax + DMA_SG_MAPPING_TOTAL_LENGTH]
+    cmp [dma_scatter_gather_mapped_bytes], edx
+    jb .zero_bytes
+    sub [dma_scatter_gather_mapped_bytes], edx
+    jmp .bytes_done
+.zero_bytes:
+    mov dword [dma_scatter_gather_mapped_bytes], 0
+.bytes_done:
+    cmp dword [dma_scatter_gather_active_count], 0
+    je .state
+    dec dword [dma_scatter_gather_active_count]
+.state:
+    cmp dword [eax + DMA_SG_MAPPING_STATE], DMA_SG_STATE_FAULTED
+    je .done
+    mov dword [eax + DMA_SG_MAPPING_STATE], DMA_SG_STATE_UNMAPPED
+.done:
+    clc
+    ret
+
+; EAX=Mapping-ID, EDX=Owner.
+dma_scatter_gather_unmap:
+    pushfd
+    cli
+    mov [dma_scatter_gather_temp_id], eax
+    mov [dma_scatter_gather_temp_owner], edx
+    call dma_scatter_gather_lookup
+    jc .invalid
+    mov edx, [dma_scatter_gather_temp_owner]
+    cmp [eax + DMA_SG_MAPPING_OWNER], edx
+    jne .invalid
+    call dma_scatter_gather_release_record
+    mov eax, [dma_scatter_gather_temp_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=terminaler IORequest-Datensatz.
+dma_scatter_gather_on_terminal:
+    cmp dword [dma_scatter_gather_manager_ready], 1
+    jne .done
+    mov ecx, eax
+    sub ecx, io_request_table
+    shr ecx, 6
+    mov eax, [dma_request_sg_mapping_ids + ecx * 4]
+    test eax, eax
+    jz .done
+    call dma_scatter_gather_lookup
+    jc .done
+    call dma_scatter_gather_release_record
+.done:
+    clc
+    ret
+
+dma_scatter_gather_self_test:
+    mov eax, 1
+    mov edx, 128
+    mov ebx, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE | SHARED_BUFFER_RIGHT_TRANSFER | SHARED_BUFFER_RIGHT_DMA | SHARED_BUFFER_RIGHT_RELEASE
+    call shared_buffer_create
+    jc .invalid
+    mov [dma_scatter_gather_test_buffer_a], eax
+    mov eax, 1
+    mov edx, 128
+    mov ebx, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE | SHARED_BUFFER_RIGHT_TRANSFER | SHARED_BUFFER_RIGHT_DMA | SHARED_BUFFER_RIGHT_RELEASE
+    call shared_buffer_create
+    jc .invalid
+    mov [dma_scatter_gather_test_buffer_b], eax
+    mov eax, 1
+    mov edx, SG_DIRECTION_GATHER
+    call scatter_gather_create
+    jc .invalid
+    mov [dma_scatter_gather_test_descriptor], eax
+    mov edx, [dma_scatter_gather_test_buffer_a]
+    xor ebx, ebx
+    mov ecx, 96
+    mov esi, SG_PERMISSION_READ
+    mov edi, 1
+    call scatter_gather_append
+    jc .invalid
+    mov eax, [dma_scatter_gather_test_descriptor]
+    mov edx, [dma_scatter_gather_test_buffer_b]
+    xor ebx, ebx
+    mov ecx, 64
+    mov esi, SG_PERMISSION_READ
+    mov edi, 1
+    call scatter_gather_append
+    jc .invalid
+    mov eax, [dma_scatter_gather_test_descriptor]
+    mov edx, 1
+    call scatter_gather_seal
+    jc .invalid
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [dma_scatter_gather_test_scope], eax
+    mov eax, 1
+    mov edx, [dma_scatter_gather_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [dma_scatter_gather_test_task], eax
+    mov eax, 1
+    mov edx, [dma_scatter_gather_test_task]
+    mov ebx, 6
+    mov ecx, 0xD002
+    mov esi, [dma_scatter_gather_test_descriptor]
+    mov edi, 160
+    xor ebp, ebp
+    call io_request_submit
+    jc .invalid
+    mov [dma_scatter_gather_test_request], eax
+    mov edx, [dma_scatter_gather_test_descriptor]
+    mov ebx, 0xD002
+    mov ecx, 1
+    call dma_scatter_gather_map
+    jc .invalid
+    mov [dma_scatter_gather_test_mapping], eax
+    call dma_scatter_gather_lookup
+    jc .invalid
+    mov [dma_scatter_gather_test_record], eax
+    cmp dword [eax + DMA_SG_MAPPING_SEGMENTS], 3
+    jne .invalid
+    test dword [eax + DMA_SG_MAPPING_FLAGS], DMA_SG_FLAG_SPLIT
+    jz .invalid
+    mov ecx, 0
+    call dma_scatter_gather_segment_at
+    cmp dword [eax + DMA_SG_SEGMENT_LENGTH], 64
+    jne .invalid
+    test dword [eax + DMA_SG_SEGMENT_ADDRESS_LOW], DMA_SG_BOUNDARY - 1
+    jnz .invalid
+    mov eax, [dma_scatter_gather_test_descriptor]
+    mov edx, 1
+    call scatter_gather_release
+    jnc .invalid                       ; aktiver DMA-Consumer blockiert Release
+    mov eax, [dma_scatter_gather_test_request]
+    mov edx, 160
+    xor ebx, ebx
+    call io_request_complete
+    jc .invalid
+    mov eax, [dma_scatter_gather_test_record]
+    cmp dword [eax + DMA_SG_MAPPING_STATE], DMA_SG_STATE_UNMAPPED
+    jne .invalid
+    cmp dword [dma_scatter_gather_active_count], 0
+    jne .invalid
+    cmp dword [dma_scatter_gather_mapped_bytes], 0
+    jne .invalid
+    cmp dword [dma_scatter_gather_pinned_buffers], 0
+    jne .invalid
+    mov eax, [dma_scatter_gather_test_buffer_a]
+    call shared_buffer_lookup
+    jc .invalid
+    cmp dword [eax + SHARED_BUFFER_STATE], SHARED_BUFFER_STATE_CPU
+    jne .invalid
+    cmp dword [eax + SHARED_BUFFER_PINNED], 0
+    jne .invalid
+    mov eax, [dma_scatter_gather_test_task]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [dma_scatter_gather_test_scope]
+    call task_scope_close
+    jc .invalid
+    mov eax, [dma_scatter_gather_test_descriptor]
+    mov edx, 1
+    call scatter_gather_release
+    jc .invalid
+    mov eax, [dma_scatter_gather_test_buffer_a]
+    mov edx, 1
+    call shared_buffer_release
+    jc .invalid
+    mov eax, [dma_scatter_gather_test_buffer_b]
+    mov edx, 1
+    call shared_buffer_release
+    jc .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+dma_scatter_gather_api:
+    dd DMA_SG_API_SIZE
+    dw 1, 0
+    dd DMA_SG_CAPACITY
+    dd DMA_SG_MAX_SEGMENTS
+    dd dma_scatter_gather_map
+    dd dma_scatter_gather_unmap
+    dd dma_scatter_gather_table
+    dd dma_scatter_gather_segments
+
+dma_scatter_gather_manager_ready:        dd 0
+dma_scatter_gather_next_id:              dd 0
+dma_scatter_gather_active_count:         dd 0
+dma_scatter_gather_mapped_bytes:         dd 0
+dma_scatter_gather_pinned_buffers:       dd 0
+dma_scatter_gather_split_segments:       dd 0
+dma_scatter_gather_validation_failures:  dd 0
+dma_scatter_gather_temp_id:              dd 0
+dma_scatter_gather_temp_owner:           dd 0
+dma_scatter_gather_temp_device:          dd 0
+dma_scatter_gather_temp_request:         dd 0
+dma_scatter_gather_temp_request_slot:    dd 0
+dma_scatter_gather_temp_request_record:  dd 0
+dma_scatter_gather_temp_descriptor:      dd 0
+dma_scatter_gather_temp_descriptor_record: dd 0
+dma_scatter_gather_temp_record:          dd 0
+dma_scatter_gather_temp_slot:            dd 0
+dma_scatter_gather_temp_required:        dd 0
+dma_scatter_gather_temp_source_index:    dd 0
+dma_scatter_gather_temp_output_index:    dd 0
+dma_scatter_gather_temp_source_segment:  dd 0
+dma_scatter_gather_temp_buffer:          dd 0
+dma_scatter_gather_temp_offset:          dd 0
+dma_scatter_gather_temp_remaining:       dd 0
+dma_scatter_gather_temp_permissions:     dd 0
+dma_scatter_gather_temp_chunk:           dd 0
+dma_scatter_gather_temp_buffer_ids:      times SG_MAX_SEGMENTS dd 0
+dma_scatter_gather_test_buffer_a:        dd 0
+dma_scatter_gather_test_buffer_b:        dd 0
+dma_scatter_gather_test_descriptor:      dd 0
+dma_scatter_gather_test_scope:           dd 0
+dma_scatter_gather_test_task:            dd 0
+dma_scatter_gather_test_request:         dd 0
+dma_scatter_gather_test_mapping:         dd 0
+dma_scatter_gather_test_record:          dd 0
+align 4
+dma_scatter_gather_table:
+    times DMA_SG_CAPACITY * DMA_SG_MAPPING_SIZE db 0
+dma_scatter_gather_segments:
+    times DMA_SG_CAPACITY * DMA_SG_MAX_SEGMENTS * DMA_SG_SEGMENT_SIZE db 0
+dma_scatter_gather_generations:
+    times DMA_SG_CAPACITY dd 0
+dma_request_sg_mapping_ids:
+    times IO_REQUEST_CAPACITY dd 0
 
 ; ---------------------------------------------------------------------------
 ; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
@@ -16574,6 +18449,18 @@ message_shared_buffer_ok:
     db "NOVA: Shared Buffer ABI 1.0, IO-Lease und Copy-Fallback aktiv", 13, 10, 0
 message_shared_buffer_error:
     db "NOVA PANIC: Shared Buffer Manager nicht initialisierbar", 13, 10, 0
+message_dma_mapping_ok:
+    db "NOVA: DMA Mapping ABI 1.0, Pinning und sicherer Fallback aktiv", 13, 10, 0
+message_dma_mapping_error:
+    db "NOVA PANIC: DMA Mapping Manager nicht initialisierbar", 13, 10, 0
+message_scatter_gather_ok:
+    db "NOVA: Scatter Gather ABI 1.0, Segmente und Lifetime aktiv", 13, 10, 0
+message_scatter_gather_error:
+    db "NOVA PANIC: Scatter Gather Manager nicht initialisierbar", 13, 10, 0
+message_dma_scatter_gather_ok:
+    db "NOVA: DMA Scatter Gather ABI 1.0, Split und Providerlimits aktiv", 13, 10, 0
+message_dma_scatter_gather_error:
+    db "NOVA PANIC: DMA Scatter Gather Manager nicht initialisierbar", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:
