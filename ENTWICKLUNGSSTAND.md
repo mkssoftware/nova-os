@@ -858,3 +858,30 @@ reservierten Restricted-/Bounce-Apertur ausgegeben. Der Selbsttest prüft reales
 Segment-Splitting, Alignment, Boundary, Consumer-Lifetime und automatischen
 Abbau. Der UEFI-QEMU-End-to-End-Test erreicht danach weiterhin Ring 3 und
 `PLATFORM_OFF`.
+
+### IOMMU-Domains, Gruppen und Fault-Zuordnung
+
+Der Kernel besitzt jetzt eine eigenständige IOMMU-Abstraktion mit stabilen
+Domain-, Device- und Mapping-Identitäten. Eine Domain führt Owner, Zustand,
+Isolationsmodus, Geräte- und Gruppenzahl, aktive Autorisierungen, gemappte
+Bytes, Fault-Zähler, Adressbreite und ihren erlaubten IOVA-Bereich. Geräte
+werden immer zusammen mit ihrer hardwarebedingten IOMMU-Gruppe gebunden.
+
+Geräte derselben Gruppe dürfen nicht auf verschiedene Domains verteilt werden.
+Eine Mapping-Autorisierung prüft Domain-Owner, Device-Binding, IOVA-Ausrichtung,
+Bereich, Länge, minimale Read-/Write-Rechte und Überlappungen mit bestehenden
+Mappings. Aktive Autorisierungen blockieren den Domain-Abbau; `Revoke` entfernt
+sie kontrolliert und gleicht Mapping- sowie Byte-Accounting aus.
+
+IOMMU-Faults werden mit Sequenz, Domain, Device, externer Mapping-ID, IOVA,
+Zugriffsart und Fehlercode erfasst. Ein betroffenes Mapping wechselt sichtbar
+in `Faulted`, bleibt aber bis zum expliziten Revoke zurechenbar. Beim späteren
+Domain-Release werden alle Geräte der zugehörigen Gruppen gemeinsam gelöst.
+
+Der aktuelle QEMU-Start erkennt noch keinen programmierten virtuellen oder
+physischen IOMMU-Provider. Deshalb akzeptiert der Bootstrap nur
+`Restricted`-Domains; Anforderungen nach Hardware- oder virtueller Isolation
+werden abgewiesen, statt eine nicht vorhandene Garantie zu melden. Der
+Selbsttest prüft zwei Geräte in einer Gruppe, eine gültige Autorisierung,
+überlappende IOVAs, Fault-Zuordnung und vollständigen Ressourcenabbau. Der
+UEFI-End-to-End-Test bleibt erfolgreich.

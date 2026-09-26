@@ -234,6 +234,13 @@ kernel_entry:
     mov esi, message_shared_buffer_ok
     call serial_write_string
 
+    call iommu_initialize
+    jc panic_iommu
+    call iommu_self_test
+    jc panic_iommu
+    mov esi, message_iommu_ok
+    call serial_write_string
+
     call dma_mapping_initialize
     jc panic_dma_mapping
     call dma_mapping_self_test
@@ -452,6 +459,12 @@ panic_shared_buffer:
     mov eax, 0x00002020
     mov edx, 32
     mov esi, message_shared_buffer_error
+    jmp kernel_panic
+
+panic_iommu:
+    mov eax, 0x00002024
+    mov edx, 36
+    mov esi, message_iommu_error
     jmp kernel_panic
 
 panic_dma_mapping:
@@ -6564,6 +6577,851 @@ io_request_buffer_ids:
 align 4096
 shared_buffer_backing_pool:
     times SHARED_BUFFER_CAPACITY * PMM_PAGE_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; IOMMU-Domainabstraktion mit Gruppen, Device-Bindings, IOVA-Autorisierungen
+; und zuordenbaren Faults. Ohne Hardwareprovider bleibt Isolation explizit im
+; Restricted-Modus und wird nicht als Hardwaregarantie ausgegeben.
+; NPSPEC-HAL-IOMMU-0001
+; ---------------------------------------------------------------------------
+
+IOMMU_API_SIZE              equ 40
+IOMMU_DOMAIN_CAPACITY       equ 4
+IOMMU_DEVICE_CAPACITY       equ 8
+IOMMU_MAPPING_CAPACITY      equ 8
+IOMMU_DOMAIN_SIZE           equ 64
+IOMMU_DEVICE_SIZE           equ 32
+IOMMU_MAPPING_SIZE          equ 48
+IOMMU_FAULT_SIZE            equ 32
+IOMMU_MODE_UNAVAILABLE      equ 0
+IOMMU_MODE_RESTRICTED       equ 1
+IOMMU_MODE_HARDWARE         equ 2
+IOMMU_MODE_VIRTUAL          equ 3
+IOMMU_DOMAIN_EMPTY          equ 0
+IOMMU_DOMAIN_ACTIVE         equ 1
+IOMMU_DOMAIN_QUIESCING      equ 2
+IOMMU_DOMAIN_RELEASED       equ 3
+IOMMU_BINDING_EMPTY         equ 0
+IOMMU_BINDING_ACTIVE        equ 1
+IOMMU_BINDING_RELEASED      equ 2
+IOMMU_MAPPING_EMPTY         equ 0
+IOMMU_MAPPING_ACTIVE        equ 1
+IOMMU_MAPPING_REVOKED       equ 2
+IOMMU_MAPPING_FAULTED       equ 3
+IOMMU_PERMISSION_READ       equ 0x00000001
+IOMMU_PERMISSION_WRITE      equ 0x00000002
+IOMMU_DOMAIN_ID             equ 0
+IOMMU_DOMAIN_OWNER          equ 4
+IOMMU_DOMAIN_STATE          equ 8
+IOMMU_DOMAIN_MODE           equ 12
+IOMMU_DOMAIN_DEVICES        equ 16
+IOMMU_DOMAIN_GROUPS         equ 20
+IOMMU_DOMAIN_MAPPINGS       equ 24
+IOMMU_DOMAIN_FAULTS         equ 28
+IOMMU_DOMAIN_MAPPED_BYTES   equ 32
+IOMMU_DOMAIN_ADDRESS_WIDTH  equ 36
+IOMMU_DOMAIN_IOVA_BASE_LOW  equ 40
+IOMMU_DOMAIN_IOVA_BASE_HIGH equ 44
+IOMMU_DOMAIN_IOVA_LIMIT_LOW equ 48
+IOMMU_DOMAIN_IOVA_LIMIT_HIGH equ 52
+IOMMU_DOMAIN_GENERATION     equ 56
+IOMMU_DOMAIN_FLAGS          equ 60
+IOMMU_DEVICE_ID             equ 0
+IOMMU_DEVICE_DOMAIN         equ 4
+IOMMU_DEVICE_GROUP          equ 8
+IOMMU_DEVICE_OWNER          equ 12
+IOMMU_DEVICE_STATE          equ 16
+IOMMU_DEVICE_MODE           equ 20
+IOMMU_DEVICE_GENERATION     equ 24
+IOMMU_MAPPING_AUTH_ID       equ 0
+IOMMU_MAPPING_DOMAIN        equ 4
+IOMMU_MAPPING_DEVICE        equ 8
+IOMMU_MAPPING_EXTERNAL      equ 12
+IOMMU_MAPPING_IOVA_LOW      equ 16
+IOMMU_MAPPING_IOVA_HIGH     equ 20
+IOMMU_MAPPING_LENGTH        equ 24
+IOMMU_MAPPING_PERMISSIONS   equ 28
+IOMMU_MAPPING_STATE         equ 32
+IOMMU_MAPPING_GENERATION    equ 36
+IOMMU_MAPPING_ERROR         equ 40
+IOMMU_FAULT_SEQUENCE        equ 0
+IOMMU_FAULT_DOMAIN          equ 4
+IOMMU_FAULT_DEVICE          equ 8
+IOMMU_FAULT_EXTERNAL        equ 12
+IOMMU_FAULT_IOVA_LOW        equ 16
+IOMMU_FAULT_IOVA_HIGH       equ 20
+IOMMU_FAULT_ACCESS          equ 24
+IOMMU_FAULT_ERROR           equ 28
+
+iommu_initialize:
+    mov edi, iommu_domain_table
+    xor eax, eax
+    mov ecx, (IOMMU_DOMAIN_CAPACITY * IOMMU_DOMAIN_SIZE) / 4
+    rep stosd
+    mov edi, iommu_device_table
+    mov ecx, (IOMMU_DEVICE_CAPACITY * IOMMU_DEVICE_SIZE) / 4
+    rep stosd
+    mov edi, iommu_mapping_table
+    mov ecx, (IOMMU_MAPPING_CAPACITY * IOMMU_MAPPING_SIZE) / 4
+    rep stosd
+    mov edi, iommu_domain_generations
+    mov ecx, IOMMU_DOMAIN_CAPACITY
+    rep stosd
+    mov edi, iommu_device_generations
+    mov ecx, IOMMU_DEVICE_CAPACITY
+    rep stosd
+    mov edi, iommu_mapping_generations
+    mov ecx, IOMMU_MAPPING_CAPACITY
+    rep stosd
+    mov edi, iommu_last_fault
+    mov ecx, IOMMU_FAULT_SIZE / 4
+    rep stosd
+    mov dword [iommu_next_domain_id], 1
+    mov dword [iommu_next_authorization_id], 1
+    mov dword [iommu_domain_count], 0
+    mov dword [iommu_binding_count], 0
+    mov dword [iommu_mapping_count], 0
+    mov dword [iommu_mapped_bytes], 0
+    mov dword [iommu_fault_count], 0
+    mov dword [iommu_validation_failures], 0
+    mov dword [iommu_hardware_available], 0
+    mov dword [iommu_manager_ready], 1
+    clc
+    ret
+
+iommu_domain_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, IOMMU_DOMAIN_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, iommu_domain_table
+    cmp dword [edx + IOMMU_DOMAIN_STATE], IOMMU_DOMAIN_ACTIVE
+    jne .next
+    cmp [edx + IOMMU_DOMAIN_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+iommu_device_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, IOMMU_DEVICE_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 5
+    add edx, iommu_device_table
+    cmp dword [edx + IOMMU_DEVICE_STATE], IOMMU_BINDING_ACTIVE
+    jne .next
+    cmp [edx + IOMMU_DEVICE_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Device-ID. Ergebnis EAX=aktive Domain.
+iommu_domain_for_device:
+    call iommu_device_lookup
+    jc .invalid
+    mov eax, [eax + IOMMU_DEVICE_DOMAIN]
+    call iommu_domain_lookup
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+iommu_mapping_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, IOMMU_MAPPING_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    imul edx, IOMMU_MAPPING_SIZE
+    add edx, iommu_mapping_table
+    cmp dword [edx + IOMMU_MAPPING_STATE], IOMMU_MAPPING_ACTIVE
+    je .candidate
+    cmp dword [edx + IOMMU_MAPPING_STATE], IOMMU_MAPPING_FAULTED
+    jne .next
+.candidate:
+    cmp [edx + IOMMU_MAPPING_AUTH_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Owner, EBX=Mode, ECX=Adressbreite, ESI=IOVA-Basis, EDI=IOVA-Limit.
+iommu_domain_create:
+    pushfd
+    cli
+    mov [iommu_temp_owner], eax
+    mov [iommu_temp_mode], ebx
+    mov [iommu_temp_address_width], ecx
+    mov [iommu_temp_iova], esi
+    mov [iommu_temp_limit], edi
+    cmp dword [iommu_manager_ready], 1
+    jne .invalid
+    cmp ebx, IOMMU_MODE_RESTRICTED
+    jb .invalid
+    cmp ebx, IOMMU_MODE_VIRTUAL
+    ja .invalid
+    cmp ebx, IOMMU_MODE_RESTRICTED
+    je .mode_ready
+    cmp dword [iommu_hardware_available], 1
+    jne .invalid                         ; keine Isolation vortaeuschen
+.mode_ready:
+    cmp ecx, 32
+    jne .invalid
+    test esi, 0xFFF
+    jnz .invalid
+    cmp esi, edi
+    jae .invalid
+    call process_lookup
+    jc .invalid
+    xor ecx, ecx
+.scan:
+    cmp ecx, IOMMU_DOMAIN_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, iommu_domain_table
+    cmp dword [edx + IOMMU_DOMAIN_STATE], IOMMU_DOMAIN_EMPTY
+    je .slot
+    cmp dword [edx + IOMMU_DOMAIN_STATE], IOMMU_DOMAIN_RELEASED
+    je .slot
+    inc ecx
+    jmp .scan
+.slot:
+    mov [iommu_temp_slot], ecx
+    mov [iommu_temp_domain_record], edx
+    mov edi, edx
+    xor eax, eax
+    mov ecx, IOMMU_DOMAIN_SIZE / 4
+    rep stosd
+    mov edi, [iommu_temp_domain_record]
+    mov eax, [iommu_next_domain_id]
+    mov [edi + IOMMU_DOMAIN_ID], eax
+    mov edx, [iommu_temp_owner]
+    mov [edi + IOMMU_DOMAIN_OWNER], edx
+    mov dword [edi + IOMMU_DOMAIN_STATE], IOMMU_DOMAIN_ACTIVE
+    mov edx, [iommu_temp_mode]
+    mov [edi + IOMMU_DOMAIN_MODE], edx
+    mov edx, [iommu_temp_address_width]
+    mov [edi + IOMMU_DOMAIN_ADDRESS_WIDTH], edx
+    mov edx, [iommu_temp_iova]
+    mov [edi + IOMMU_DOMAIN_IOVA_BASE_LOW], edx
+    mov dword [edi + IOMMU_DOMAIN_IOVA_BASE_HIGH], 0
+    mov edx, [iommu_temp_limit]
+    mov [edi + IOMMU_DOMAIN_IOVA_LIMIT_LOW], edx
+    mov dword [edi + IOMMU_DOMAIN_IOVA_LIMIT_HIGH], 0
+    mov ecx, [iommu_temp_slot]
+    mov edx, [iommu_domain_generations + ecx * 4]
+    inc edx
+    jnz .generation_ready
+    inc edx
+.generation_ready:
+    mov [iommu_domain_generations + ecx * 4], edx
+    mov [edi + IOMMU_DOMAIN_GENERATION], edx
+    inc dword [iommu_next_domain_id]
+    inc dword [iommu_domain_count]
+    mov eax, [edi + IOMMU_DOMAIN_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    inc dword [iommu_validation_failures]
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Domain-ID, EDX=Device-ID, EBX=IOMMU-Gruppe, ECX=Owner.
+iommu_bind_device:
+    pushfd
+    cli
+    mov [iommu_temp_domain], eax
+    mov [iommu_temp_device], edx
+    mov [iommu_temp_group], ebx
+    mov [iommu_temp_owner], ecx
+    test edx, edx
+    jz .invalid
+    test ebx, ebx
+    jz .invalid
+    call iommu_domain_lookup
+    jc .invalid
+    mov [iommu_temp_domain_record], eax
+    mov edx, [iommu_temp_owner]
+    cmp [eax + IOMMU_DOMAIN_OWNER], edx
+    jne .invalid
+    mov eax, [iommu_temp_device]
+    call iommu_device_lookup
+    jnc .invalid
+    mov dword [iommu_temp_group_exists], 0
+    xor ecx, ecx
+.validate_group:
+    cmp ecx, IOMMU_DEVICE_CAPACITY
+    jae .find_slot
+    mov edx, ecx
+    shl edx, 5
+    add edx, iommu_device_table
+    cmp dword [edx + IOMMU_DEVICE_STATE], IOMMU_BINDING_ACTIVE
+    jne .next_group
+    mov eax, [iommu_temp_group]
+    cmp [edx + IOMMU_DEVICE_GROUP], eax
+    jne .next_group
+    mov eax, [iommu_temp_domain]
+    cmp [edx + IOMMU_DEVICE_DOMAIN], eax
+    jne .invalid                         ; eine Hardwaregruppe bleibt zusammen
+    mov dword [iommu_temp_group_exists], 1
+.next_group:
+    inc ecx
+    jmp .validate_group
+.find_slot:
+    xor ecx, ecx
+.scan_slot:
+    cmp ecx, IOMMU_DEVICE_CAPACITY
+    jae .invalid
+    mov edi, ecx
+    shl edi, 5
+    add edi, iommu_device_table
+    cmp dword [edi + IOMMU_DEVICE_STATE], IOMMU_BINDING_EMPTY
+    je .slot
+    cmp dword [edi + IOMMU_DEVICE_STATE], IOMMU_BINDING_RELEASED
+    je .slot
+    inc ecx
+    jmp .scan_slot
+.slot:
+    mov [iommu_temp_slot], ecx
+    xor eax, eax
+    mov ecx, IOMMU_DEVICE_SIZE / 4
+    rep stosd
+    mov edi, [iommu_temp_slot]
+    shl edi, 5
+    add edi, iommu_device_table
+    mov edx, [iommu_temp_device]
+    mov [edi + IOMMU_DEVICE_ID], edx
+    mov edx, [iommu_temp_domain]
+    mov [edi + IOMMU_DEVICE_DOMAIN], edx
+    mov edx, [iommu_temp_group]
+    mov [edi + IOMMU_DEVICE_GROUP], edx
+    mov edx, [iommu_temp_owner]
+    mov [edi + IOMMU_DEVICE_OWNER], edx
+    mov dword [edi + IOMMU_DEVICE_STATE], IOMMU_BINDING_ACTIVE
+    mov edx, [iommu_temp_domain_record]
+    mov eax, [edx + IOMMU_DOMAIN_MODE]
+    mov [edi + IOMMU_DEVICE_MODE], eax
+    mov ecx, [iommu_temp_slot]
+    mov eax, [iommu_device_generations + ecx * 4]
+    inc eax
+    jnz .binding_generation_ready
+    inc eax
+.binding_generation_ready:
+    mov [iommu_device_generations + ecx * 4], eax
+    mov [edi + IOMMU_DEVICE_GENERATION], eax
+    inc dword [edx + IOMMU_DOMAIN_DEVICES]
+    cmp dword [iommu_temp_group_exists], 0
+    jne .group_counted
+    inc dword [edx + IOMMU_DOMAIN_GROUPS]
+.group_counted:
+    inc dword [iommu_binding_count]
+    mov eax, [edi + IOMMU_DEVICE_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    inc dword [iommu_validation_failures]
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Domain, EDX=Device, EBX=externes Mapping, ECX=IOVA, ESI=Laenge,
+; EDI=Permissions, EBP=Owner. EAX=Authorization-ID.
+iommu_authorize_mapping:
+    pushfd
+    cli
+    mov dword [iommu_temp_mapping_record], 0
+    mov [iommu_temp_domain], eax
+    mov [iommu_temp_device], edx
+    mov [iommu_temp_external], ebx
+    mov [iommu_temp_iova], ecx
+    mov [iommu_temp_length], esi
+    mov [iommu_temp_permissions], edi
+    mov [iommu_temp_owner], ebp
+    test ebx, ebx
+    jz .invalid
+    test esi, esi
+    jz .invalid
+    test edi, edi
+    jz .invalid
+    test edi, ~(IOMMU_PERMISSION_READ | IOMMU_PERMISSION_WRITE)
+    jnz .invalid
+    test ecx, 0xFFF
+    jnz .invalid
+    test esi, 0xFFF
+    jnz .invalid
+    call iommu_domain_lookup
+    jc .invalid
+    mov [iommu_temp_domain_record], eax
+    mov edx, [iommu_temp_owner]
+    cmp [eax + IOMMU_DOMAIN_OWNER], edx
+    jne .invalid
+    mov edx, [iommu_temp_iova]
+    cmp edx, [eax + IOMMU_DOMAIN_IOVA_BASE_LOW]
+    jb .invalid
+    mov ecx, edx
+    add ecx, [iommu_temp_length]
+    jc .invalid
+    dec ecx
+    cmp ecx, [eax + IOMMU_DOMAIN_IOVA_LIMIT_LOW]
+    ja .invalid
+    mov eax, [iommu_temp_device]
+    call iommu_device_lookup
+    jc .invalid
+    mov edx, [iommu_temp_domain]
+    cmp [eax + IOMMU_DEVICE_DOMAIN], edx
+    jne .invalid
+    xor ecx, ecx
+.overlap_scan:
+    cmp ecx, IOMMU_MAPPING_CAPACITY
+    jae .find_slot
+    mov edx, ecx
+    imul edx, IOMMU_MAPPING_SIZE
+    add edx, iommu_mapping_table
+    cmp dword [edx + IOMMU_MAPPING_STATE], IOMMU_MAPPING_ACTIVE
+    je .overlap_candidate
+    cmp dword [edx + IOMMU_MAPPING_STATE], IOMMU_MAPPING_FAULTED
+    jne .next_overlap
+.overlap_candidate:
+    mov eax, [iommu_temp_domain]
+    cmp [edx + IOMMU_MAPPING_DOMAIN], eax
+    jne .next_overlap
+    mov eax, [edx + IOMMU_MAPPING_IOVA_LOW]
+    add eax, [edx + IOMMU_MAPPING_LENGTH]
+    mov ebx, [iommu_temp_iova]
+    cmp ebx, eax
+    jae .next_overlap
+    add ebx, [iommu_temp_length]
+    cmp [edx + IOMMU_MAPPING_IOVA_LOW], ebx
+    jb .invalid
+.next_overlap:
+    inc ecx
+    jmp .overlap_scan
+.find_slot:
+    xor ecx, ecx
+.scan_slot:
+    cmp ecx, IOMMU_MAPPING_CAPACITY
+    jae .invalid
+    mov edi, ecx
+    imul edi, IOMMU_MAPPING_SIZE
+    add edi, iommu_mapping_table
+    cmp dword [edi + IOMMU_MAPPING_STATE], IOMMU_MAPPING_EMPTY
+    je .slot
+    cmp dword [edi + IOMMU_MAPPING_STATE], IOMMU_MAPPING_REVOKED
+    je .slot
+    inc ecx
+    jmp .scan_slot
+.slot:
+    mov [iommu_temp_slot], ecx
+    mov [iommu_temp_mapping_record], edi
+    xor eax, eax
+    mov ecx, IOMMU_MAPPING_SIZE / 4
+    rep stosd
+    mov edi, [iommu_temp_mapping_record]
+    mov eax, [iommu_next_authorization_id]
+    mov [edi + IOMMU_MAPPING_AUTH_ID], eax
+    mov edx, [iommu_temp_domain]
+    mov [edi + IOMMU_MAPPING_DOMAIN], edx
+    mov edx, [iommu_temp_device]
+    mov [edi + IOMMU_MAPPING_DEVICE], edx
+    mov edx, [iommu_temp_external]
+    mov [edi + IOMMU_MAPPING_EXTERNAL], edx
+    mov edx, [iommu_temp_iova]
+    mov [edi + IOMMU_MAPPING_IOVA_LOW], edx
+    mov dword [edi + IOMMU_MAPPING_IOVA_HIGH], 0
+    mov edx, [iommu_temp_length]
+    mov [edi + IOMMU_MAPPING_LENGTH], edx
+    mov edx, [iommu_temp_permissions]
+    mov [edi + IOMMU_MAPPING_PERMISSIONS], edx
+    mov dword [edi + IOMMU_MAPPING_STATE], IOMMU_MAPPING_ACTIVE
+    mov ecx, [iommu_temp_slot]
+    mov edx, [iommu_mapping_generations + ecx * 4]
+    inc edx
+    jnz .mapping_generation_ready
+    inc edx
+.mapping_generation_ready:
+    mov [iommu_mapping_generations + ecx * 4], edx
+    mov [edi + IOMMU_MAPPING_GENERATION], edx
+    mov eax, [iommu_temp_domain_record]
+    inc dword [eax + IOMMU_DOMAIN_MAPPINGS]
+    mov edx, [iommu_temp_length]
+    add [eax + IOMMU_DOMAIN_MAPPED_BYTES], edx
+    inc dword [iommu_mapping_count]
+    add [iommu_mapped_bytes], edx
+    inc dword [iommu_next_authorization_id]
+    mov eax, [edi + IOMMU_MAPPING_AUTH_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    inc dword [iommu_validation_failures]
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Authorization-ID, EDX=Owner.
+iommu_revoke_mapping:
+    pushfd
+    cli
+    mov [iommu_temp_authorization], eax
+    mov [iommu_temp_owner], edx
+    call iommu_mapping_lookup
+    jc .invalid
+    mov [iommu_temp_mapping_record], eax
+    mov eax, [eax + IOMMU_MAPPING_DOMAIN]
+    call iommu_domain_lookup
+    jc .invalid
+    mov edx, [iommu_temp_owner]
+    cmp [eax + IOMMU_DOMAIN_OWNER], edx
+    jne .invalid
+    mov edi, [iommu_temp_mapping_record]
+    mov edx, [edi + IOMMU_MAPPING_LENGTH]
+    cmp [eax + IOMMU_DOMAIN_MAPPED_BYTES], edx
+    jb .zero_domain_bytes
+    sub [eax + IOMMU_DOMAIN_MAPPED_BYTES], edx
+    jmp .domain_bytes_done
+.zero_domain_bytes:
+    mov dword [eax + IOMMU_DOMAIN_MAPPED_BYTES], 0
+.domain_bytes_done:
+    cmp dword [eax + IOMMU_DOMAIN_MAPPINGS], 0
+    je .global_accounting
+    dec dword [eax + IOMMU_DOMAIN_MAPPINGS]
+.global_accounting:
+    cmp [iommu_mapped_bytes], edx
+    jb .zero_global_bytes
+    sub [iommu_mapped_bytes], edx
+    jmp .global_bytes_done
+.zero_global_bytes:
+    mov dword [iommu_mapped_bytes], 0
+.global_bytes_done:
+    cmp dword [iommu_mapping_count], 0
+    je .mark_revoked
+    dec dword [iommu_mapping_count]
+.mark_revoked:
+    mov dword [edi + IOMMU_MAPPING_STATE], IOMMU_MAPPING_REVOKED
+    mov eax, [iommu_temp_authorization]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Domain, EDX=Device, EBX=externes Mapping, ECX=IOVA,
+; ESI=Access, EDI=Fehlercode.
+iommu_report_fault:
+    pushfd
+    cli
+    mov [iommu_temp_domain], eax
+    mov [iommu_temp_device], edx
+    mov [iommu_temp_external], ebx
+    mov [iommu_temp_iova], ecx
+    mov [iommu_temp_permissions], esi
+    mov [iommu_temp_error], edi
+    test edi, edi
+    jz .invalid
+    call iommu_domain_lookup
+    jc .invalid
+    mov [iommu_temp_domain_record], eax
+    mov eax, [iommu_temp_device]
+    call iommu_device_lookup
+    jc .invalid
+    mov edx, [iommu_temp_domain]
+    cmp [eax + IOMMU_DEVICE_DOMAIN], edx
+    jne .invalid
+    mov dword [iommu_temp_mapping_record], 0
+    xor ecx, ecx
+.find_mapping:
+    cmp ecx, IOMMU_MAPPING_CAPACITY
+    jae .record_fault
+    mov edx, ecx
+    imul edx, IOMMU_MAPPING_SIZE
+    add edx, iommu_mapping_table
+    cmp dword [edx + IOMMU_MAPPING_STATE], IOMMU_MAPPING_ACTIVE
+    jne .next_mapping
+    mov eax, [iommu_temp_domain]
+    cmp [edx + IOMMU_MAPPING_DOMAIN], eax
+    jne .next_mapping
+    mov eax, [iommu_temp_device]
+    cmp [edx + IOMMU_MAPPING_DEVICE], eax
+    jne .next_mapping
+    mov eax, [iommu_temp_external]
+    cmp [edx + IOMMU_MAPPING_EXTERNAL], eax
+    jne .next_mapping
+    mov [iommu_temp_mapping_record], edx
+    mov eax, [iommu_temp_error]
+    mov [edx + IOMMU_MAPPING_ERROR], eax
+    mov dword [edx + IOMMU_MAPPING_STATE], IOMMU_MAPPING_FAULTED
+    jmp .record_fault
+.next_mapping:
+    inc ecx
+    jmp .find_mapping
+.record_fault:
+    inc dword [iommu_fault_count]
+    mov eax, [iommu_temp_domain_record]
+    inc dword [eax + IOMMU_DOMAIN_FAULTS]
+    mov edi, iommu_last_fault
+    mov eax, [iommu_fault_count]
+    mov [edi + IOMMU_FAULT_SEQUENCE], eax
+    mov eax, [iommu_temp_domain]
+    mov [edi + IOMMU_FAULT_DOMAIN], eax
+    mov eax, [iommu_temp_device]
+    mov [edi + IOMMU_FAULT_DEVICE], eax
+    mov eax, [iommu_temp_external]
+    mov [edi + IOMMU_FAULT_EXTERNAL], eax
+    mov eax, [iommu_temp_iova]
+    mov [edi + IOMMU_FAULT_IOVA_LOW], eax
+    mov dword [edi + IOMMU_FAULT_IOVA_HIGH], 0
+    mov eax, [iommu_temp_permissions]
+    mov [edi + IOMMU_FAULT_ACCESS], eax
+    mov eax, [iommu_temp_error]
+    mov [edi + IOMMU_FAULT_ERROR], eax
+    mov eax, [iommu_fault_count]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Domain-ID, EDX=Owner. Aktive Mappings blockieren den Abbau; gebundene
+; Devices derselben Domain werden gemeinsam quiesced und entfernt.
+iommu_domain_release:
+    pushfd
+    cli
+    mov [iommu_temp_domain], eax
+    mov [iommu_temp_owner], edx
+    call iommu_domain_lookup
+    jc .invalid
+    mov [iommu_temp_domain_record], eax
+    mov edx, [iommu_temp_owner]
+    cmp [eax + IOMMU_DOMAIN_OWNER], edx
+    jne .invalid
+    cmp dword [eax + IOMMU_DOMAIN_MAPPINGS], 0
+    jne .invalid
+    mov dword [eax + IOMMU_DOMAIN_STATE], IOMMU_DOMAIN_QUIESCING
+    xor ecx, ecx
+.unbind:
+    cmp ecx, IOMMU_DEVICE_CAPACITY
+    jae .released
+    mov edi, ecx
+    shl edi, 5
+    add edi, iommu_device_table
+    cmp dword [edi + IOMMU_DEVICE_STATE], IOMMU_BINDING_ACTIVE
+    jne .next_binding
+    mov edx, [iommu_temp_domain]
+    cmp [edi + IOMMU_DEVICE_DOMAIN], edx
+    jne .next_binding
+    mov dword [edi + IOMMU_DEVICE_STATE], IOMMU_BINDING_RELEASED
+    cmp dword [iommu_binding_count], 0
+    je .next_binding
+    dec dword [iommu_binding_count]
+.next_binding:
+    inc ecx
+    jmp .unbind
+.released:
+    mov eax, [iommu_temp_domain_record]
+    mov dword [eax + IOMMU_DOMAIN_DEVICES], 0
+    mov dword [eax + IOMMU_DOMAIN_GROUPS], 0
+    mov dword [eax + IOMMU_DOMAIN_STATE], IOMMU_DOMAIN_RELEASED
+    dec dword [iommu_domain_count]
+    mov eax, [iommu_temp_domain]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+iommu_self_test:
+    cmp dword [iommu_hardware_available], 0
+    jne .invalid
+    mov eax, 1
+    mov ebx, IOMMU_MODE_RESTRICTED
+    mov ecx, 32
+    mov esi, 0xD2000000
+    mov edi, 0xD20FFFFF
+    call iommu_domain_create
+    jc .invalid
+    mov [iommu_test_domain], eax
+    mov edx, 0xD003
+    mov ebx, 0x30
+    mov ecx, 1
+    call iommu_bind_device
+    jc .invalid
+    mov eax, [iommu_test_domain]
+    mov edx, 0xD004
+    mov ebx, 0x30
+    mov ecx, 1
+    call iommu_bind_device
+    jc .invalid
+    mov eax, [iommu_test_domain]
+    call iommu_domain_lookup
+    jc .invalid
+    cmp dword [eax + IOMMU_DOMAIN_DEVICES], 2
+    jne .invalid
+    cmp dword [eax + IOMMU_DOMAIN_GROUPS], 1
+    jne .invalid
+    mov eax, [iommu_test_domain]
+    mov edx, 0xD003
+    mov ebx, 77
+    mov ecx, 0xD2000000
+    mov esi, 4096
+    mov edi, IOMMU_PERMISSION_READ
+    mov ebp, 1
+    call iommu_authorize_mapping
+    jc .invalid
+    mov [iommu_test_authorization], eax
+    mov eax, [iommu_test_domain]
+    mov edx, 0xD003
+    mov ebx, 78
+    mov ecx, 0xD2000000
+    mov esi, 4096
+    mov edi, IOMMU_PERMISSION_READ
+    mov ebp, 1
+    call iommu_authorize_mapping
+    jnc .invalid                       ; IOVA-Ueberlappung verboten
+    mov eax, [iommu_test_domain]
+    mov edx, 0xD003
+    mov ebx, 77
+    mov ecx, 0xD2000010
+    mov esi, IOMMU_PERMISSION_WRITE
+    mov edi, 0xF001
+    call iommu_report_fault
+    jc .invalid
+    mov eax, [iommu_test_authorization]
+    call iommu_mapping_lookup
+    jc .invalid
+    cmp dword [eax + IOMMU_MAPPING_STATE], IOMMU_MAPPING_FAULTED
+    jne .invalid
+    cmp dword [iommu_last_fault + IOMMU_FAULT_DEVICE], 0xD003
+    jne .invalid
+    cmp dword [iommu_last_fault + IOMMU_FAULT_DOMAIN], 0
+    je .invalid
+    mov eax, [iommu_test_authorization]
+    mov edx, 1
+    call iommu_revoke_mapping
+    jc .invalid
+    mov eax, [iommu_test_domain]
+    mov edx, 1
+    call iommu_domain_release
+    jc .invalid
+    cmp dword [iommu_domain_count], 0
+    jne .invalid
+    cmp dword [iommu_binding_count], 0
+    jne .invalid
+    cmp dword [iommu_mapping_count], 0
+    jne .invalid
+    cmp dword [iommu_mapped_bytes], 0
+    jne .invalid
+    cmp dword [iommu_fault_count], 1
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+iommu_api:
+    dd IOMMU_API_SIZE
+    dw 1, 0
+    dd IOMMU_DOMAIN_CAPACITY
+    dd IOMMU_DEVICE_CAPACITY
+    dd IOMMU_MAPPING_CAPACITY
+    dd iommu_domain_create
+    dd iommu_bind_device
+    dd iommu_authorize_mapping
+    dd iommu_revoke_mapping
+    dd iommu_domain_release
+
+iommu_manager_ready:             dd 0
+iommu_hardware_available:        dd 0
+iommu_next_domain_id:            dd 0
+iommu_next_authorization_id:     dd 0
+iommu_domain_count:              dd 0
+iommu_binding_count:             dd 0
+iommu_mapping_count:             dd 0
+iommu_mapped_bytes:              dd 0
+iommu_fault_count:               dd 0
+iommu_validation_failures:       dd 0
+iommu_temp_owner:                dd 0
+iommu_temp_mode:                 dd 0
+iommu_temp_address_width:        dd 0
+iommu_temp_iova:                 dd 0
+iommu_temp_limit:                dd 0
+iommu_temp_length:               dd 0
+iommu_temp_permissions:          dd 0
+iommu_temp_domain:               dd 0
+iommu_temp_device:               dd 0
+iommu_temp_group:                dd 0
+iommu_temp_external:             dd 0
+iommu_temp_authorization:        dd 0
+iommu_temp_error:                dd 0
+iommu_temp_slot:                 dd 0
+iommu_temp_group_exists:         dd 0
+iommu_temp_domain_record:        dd 0
+iommu_temp_mapping_record:       dd 0
+iommu_test_domain:               dd 0
+iommu_test_authorization:        dd 0
+align 4
+iommu_domain_table:
+    times IOMMU_DOMAIN_CAPACITY * IOMMU_DOMAIN_SIZE db 0
+iommu_device_table:
+    times IOMMU_DEVICE_CAPACITY * IOMMU_DEVICE_SIZE db 0
+iommu_mapping_table:
+    times IOMMU_MAPPING_CAPACITY * IOMMU_MAPPING_SIZE db 0
+iommu_domain_generations:
+    times IOMMU_DOMAIN_CAPACITY dd 0
+iommu_device_generations:
+    times IOMMU_DEVICE_CAPACITY dd 0
+iommu_mapping_generations:
+    times IOMMU_MAPPING_CAPACITY dd 0
+iommu_last_fault:
+    times IOMMU_FAULT_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Kontrollierte DMA-Mappings. CPU-Adressen werden nie direkt als
@@ -18449,6 +19307,10 @@ message_shared_buffer_ok:
     db "NOVA: Shared Buffer ABI 1.0, IO-Lease und Copy-Fallback aktiv", 13, 10, 0
 message_shared_buffer_error:
     db "NOVA PANIC: Shared Buffer Manager nicht initialisierbar", 13, 10, 0
+message_iommu_ok:
+    db "NOVA: IOMMU ABI 1.0, Domains, Gruppen und Fault-Zuordnung aktiv", 13, 10, 0
+message_iommu_error:
+    db "NOVA PANIC: IOMMU Domain Manager nicht initialisierbar", 13, 10, 0
 message_dma_mapping_ok:
     db "NOVA: DMA Mapping ABI 1.0, Pinning und sicherer Fallback aktiv", 13, 10, 0
 message_dma_mapping_error:

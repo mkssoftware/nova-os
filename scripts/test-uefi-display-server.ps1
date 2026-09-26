@@ -78,6 +78,7 @@ try {
         'NOVA: Async IO ABI 1.0, Completion, Deadline und Backpressure aktiv',
         'NOVA: IO Completion Queue ABI 1.0, FIFO und Batch aktiv',
         'NOVA: Shared Buffer ABI 1.0, IO-Lease und Copy-Fallback aktiv',
+        'NOVA: IOMMU ABI 1.0, Domains, Gruppen und Fault-Zuordnung aktiv',
         'NOVA: DMA Mapping ABI 1.0, Pinning und sicherer Fallback aktiv',
         'NOVA: Scatter Gather ABI 1.0, Segmente und Lifetime aktiv',
         'NOVA: DMA Scatter Gather ABI 1.0, Split und Providerlimits aktiv',

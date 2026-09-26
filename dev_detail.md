@@ -1916,3 +1916,45 @@ Der Selbsttest erzeugt aus zwei Quellsegmenten drei Device-Segmente, prüft
 vollständig ausgeglichenes Pin-/Byte-Accounting. Der UEFI-Test verlangt die
 Startmarkierung
 `NOVA: DMA Scatter Gather ABI 1.0, Split und Providerlimits aktiv`.
+
+## 78. IOMMU-Domain-ABI 1.0
+
+`kernel/include/nova/iommu.h` definiert getrennte Datensätze für Domain,
+Device-Binding, Mapping-Autorisierung und Fault. Die Größen sind 64, 32, 48
+und 32 Byte; das zugehörige API ist 40 Byte groß. Domain-, Device-, Gruppen-,
+Authorization- und externe Mapping-IDs bleiben semantisch getrennt.
+
+`iommu_domain_create` legt einen begrenzten IOVA-Adressraum mit explizitem
+Isolationsmodus und 32-Bit-Adressbreite an. Die frühe Implementierung besitzt
+vier Domains, acht Device-Bindings und acht Mapping-Autorisierungen. Solange
+`iommu_hardware_available = 0` gilt, ist ausschließlich der Modus `Restricted`
+zulässig. `Hardware` und `Virtual` werden kontrolliert abgewiesen.
+
+`iommu_bind_device` bindet ein Device mitsamt seiner IOMMU-Gruppe. Existiert
+die Gruppe bereits in einer anderen Domain, schlägt die Operation fehl. Damit
+behauptet NovaOS keine feinere Isolation, als eine spätere Plattformtopologie
+tatsächlich bereitstellt. Mehrere Geräte derselben Gruppe können gemeinsam an
+dieselbe Domain gebunden werden.
+
+`iommu_authorize_mapping` prüft Owner, Device-Zuordnung, 4-KiB-Ausrichtung,
+IOVA-Grenzen, Überlauf, Rechte und Überschneidung. Autorisierung und externes
+DMA-Mapping bleiben getrennte Identitäten. `iommu_revoke_mapping` entfernt
+aktive oder gefaultete Autorisierungen und korrigiert Domain- und globale
+Zähler.
+
+`iommu_report_fault` ordnet einen unzulässigen Zugriff einer Domain, einem
+Device und – sofern vorhanden – einem externen Mapping zu. Der letzte Fault
+enthält Sequenz, IOVA, Access und Fehlercode. Ein zugehöriger
+Autorisierungsdatensatz bleibt als `Faulted` erhalten, bis er explizit revoked
+wird. Dadurch geht die forensische Zuordnung beim Aufräumen nicht verloren.
+
+Der Selbsttest erzeugt eine Restricted-Domain, bindet zwei Devices derselben
+Gruppe, autorisiert eine IOVA-Seite, lehnt eine Überlappung ab, erfasst einen
+Fault und baut Mapping, Bindings und Domain vollständig ab. Der UEFI-Test
+verlangt die Markierung
+`NOVA: IOMMU ABI 1.0, Domains, Gruppen und Fault-Zuordnung aktiv`.
+
+Noch ausstehend ist ein konkreter VT-d-/AMD-Vi-/virtueller IOMMU-Provider, der
+die abstrakten Autorisierungen in reale Seitentabellen programmiert. Bis dahin
+bleiben die vorhandenen DMA-Pfade korrekt als Restricted-/Bounce-Pfade
+gekennzeichnet.
