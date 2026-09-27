@@ -1,6 +1,6 @@
 # NovaOS – technische Implementierungsdetails
 
-**Stand:** 26. September 2026
+**Stand:** 27. September 2026
 **Projekt:** `C:\recoverboot\nova-os`  
 **Ergänzt:** [ENTWICKLUNGSSTAND.md](ENTWICKLUNGSSTAND.md)
 
@@ -1958,3 +1958,166 @@ Noch ausstehend ist ein konkreter VT-d-/AMD-Vi-/virtueller IOMMU-Provider, der
 die abstrakten Autorisierungen in reale Seitentabellen programmiert. Bis dahin
 bleiben die vorhandenen DMA-Pfade korrekt als Restricted-/Bounce-Pfade
 gekennzeichnet.
+
+## 79. Automatische IOMMU-Autorisierung für DMA
+
+`dma_mapping_map` fragt jetzt über `iommu_domain_for_device` die aktive Domain
+des Zielgeräts ab. Existiert eine Bindung, wird die kontrollierte Device-Seite
+über `iommu_authorize_mapping` autorisiert und ihre Authorization-ID in einem
+Mapping-Sidecar gespeichert. `DMA_MAPPING_DOMAIN` enthält die zugehörige
+Domain-ID. Ohne Device-Binding bleibt der bestehende Restricted-Fallback
+erhalten.
+
+Der Scatter/Gather-Pfad wiederholt diese Operation für jedes tatsächlich
+erzeugte Device-Segment. Ein 96-Byte-Quellsegment und ein weiteres
+64-Byte-Segment ergeben im Selbsttest drei getrennte, jeweils 4 KiB große
+IOVA-Autorisierungen. Der öffentliche SG-DMA-Datensatz führt nun ebenfalls die
+Domain-ID; Authorization-IDs bleiben als Kernel-Sidecar verborgen.
+
+Die Autorisierung erfolgt vollständig vor dem Ownership-Wechsel der Buffer.
+Scheitert Segment zwei oder drei, läuft ein begrenzter Rollback über alle zuvor
+erzeugten Authorization-IDs, setzt den unfertigen Mapping-Slot zurück und
+liefert einen Fehler. Erst nach vollständigem Erfolg werden Buffer gepinnt und
+der Descriptor als aktiver Consumer markiert.
+
+`dma_mapping_release_record` und `dma_scatter_gather_release_record` widerrufen
+ihre Autorisierungen vor dem Unpinning. Da alle terminalen I/O-Ausgänge über
+diese Funktionen laufen, gilt dieselbe Reihenfolge für Success, Partial,
+Failure, Cancellation und Deadline Miss. Die Selbsttests verlangen nach der
+jeweiligen Completion `iommu_mapping_count == 0`, bevor die Restricted-Domain
+gelöst wird.
+
+Der UEFI-End-to-End-Test verlangt zusätzlich die Markierung
+`NOVA: DMA IOMMU Lifecycle fuer linear und Scatter Gather aktiv`.
+
+## 80. IOMMU-Fault-Propagation in den I/O-Request
+
+Externe IOMMU-Mapping-IDs besitzen jetzt einen Typpräfix. `0x1.......` steht
+für ein lineares DMA-Mapping und `0x2.......` für ein SG-DMA-Mapping; die
+unteren 28 Bit enthalten die jeweilige stabile Mapping-ID. Damit kann
+`iommu_report_fault` nach der forensischen Erfassung kontrolliert an den
+zuständigen DMA-Manager weiterleiten.
+
+`dma_mapping_fault` setzt den linearen Datensatz auf `Faulted`, speichert den
+Fehlercode und löst zuerst IOMMU-Autorisierung, Mapping und Pinning. Danach ruft
+es `io_request_complete` mit null übertragenen Bytes und dem Gerätefehler auf.
+Der Request endet dadurch in `IO_REQUEST_STATE_FAILED` mit
+`IO_COMPLETION_FAILED`.
+
+`dma_scatter_gather_fault` führt dieselbe Sequenz für einen vollständigen
+SG-Transfer aus. Auch wenn nur ein Device-Segment den Fault ausgelöst hat,
+werden sämtliche Autorisierungen der Operation revoked. Alle beteiligten
+Buffer kehren aus `Provider owned` nach `CPU owned` zurück, der Consumer-Zähler
+des SG-Descriptors wird reduziert und erst danach entsteht die Fehler-
+Completion.
+
+Die Reihenfolge lautet damit für beide Pfade:
+
+```text
+IOMMU Fault
+  → Mapping als Faulted markieren
+  → alle IOVA-Autorisierungen widerrufen
+  → DMA-Mapping entfernen und Buffer entpinnen
+  → Ownership an CPU zurückgeben
+  → IORequest als Failed abschließen
+  → Fehler-Completion veröffentlichen
+```
+
+Die Selbsttests prüfen explizit `IO_REQUEST_STATE_FAILED`,
+`IO_COMPLETION_FAILED`, den unveränderten Fehlercode und vollständig geleerte
+IOMMU-/DMA-Zähler. Der UEFI-Test verlangt die Markierung
+`NOVA: IOMMU Fault beendet DMA und IO Request kontrolliert`.
+
+## 81. Normalisierte HAL-Hardwaretopologie
+
+`kernel/include/nova/topology.h` definiert die HAL-Topologie-ABI 1.0. Ein
+Topologiedatensatz ist 64 Byte groß und trennt `TopologyId`, Objekttyp,
+Parent-ID, Zustand, Hardware-ID, NUMA-Knoten, IOMMU-Gruppe, Child-Zähler,
+Eigenschaften, Flags, Generation und Änderungssequenz. Die zugehörige API ist
+40 Byte groß. IDs für Topologie, Hardware, NUMA und IOMMU-Gruppen sind im
+C-Header als getrennte semantische Typen benannt.
+
+Der frühe Kernel baut daraus einen begrenzten, normalisierten Graphen:
+
+```text
+System
+├── NUMA Node 0 (UMA-Fallback)
+│   ├── CPU Package 0
+│   │   └── Core 0
+│   │       └── Hardware Thread 0
+│   └── Memory Region
+├── Interrupt Controller
+└── Bootstrap Bus
+    ├── IOMMU Group 0x10 ── Device 0xD001
+    ├── IOMMU Group 0x20 ── Device 0xD002
+    └── IOMMU Group 0x30 ── Device 0xD003 / 0xD004
+```
+
+Dieses Modell ist ausdrücklich als `BOOTSTRAP` gekennzeichnet. Die Geräte
+`0xD001` bis `0xD004` sind Endpunkte der vorhandenen DMA-/IOMMU-Selbsttests
+und keine behauptete PCI-Erkennung. Noch fehlende Firmware- und Busprovider
+können später validierte ACPI-, CPU- und PCI-Daten über dieselbe ABI eintragen.
+Für Systeme ohne bestätigte NUMA-Informationen stellt Knoten 0 das geforderte
+einheitliche UMA-Modell bereit; unbekannte Device-Lokalität bleibt mit
+`0xFFFFFFFF` ausdrücklich unbekannt.
+
+`topology_register` akzeptiert nur bekannte Typen, einen bereits vorhandenen
+Parent und eine innerhalb des Typs eindeutige Hardware-ID. Ein neuer Knoten
+wird erst nach vollständiger Validierung `Online`, erhöht den Child-Zähler des
+Parents und erhält eine monotone Änderungssequenz. Weil nur bestehende Knoten
+Parents neuer Knoten sein können, kann beim Aufbau kein Zyklus entstehen.
+
+`topology_transition` implementiert den kontrollierten Hotplug-Mechanismus
+`Online → Quiescing → Offline`. Von `Offline` ist eine Reaktivierung nach
+`Online` möglich; ein Blatt kann alternativ nach `Removed` wechseln. Während
+`Quiescing` oder `Offline` liefert die Device-Abfrage keine nutzbare
+IOMMU-Gruppe. Der Selbsttest führt diesen Ablauf mit Device `0xD004` aus und
+prüft außerdem die gemeinsame Gruppe von `0xD003` und `0xD004`.
+
+`iommu_bind_device` übernimmt Gruppen-IDs nicht länger ungeprüft vom Aufrufer.
+Es fragt das Device im normalisierten Topologiegraphen ab und weist unbekannte
+Devices sowie abweichende Gruppennummern zurück. Damit kann ein Aufrufer die
+hardwarebedingte Isolationsgrenze nicht durch eine frei gewählte Zahl
+verkleinern. Die HAL stellt dabei nur Topologie und Lifecycle-Mechanismen
+bereit; Scheduling-, NUMA- und Ressourcenpolitik bleiben in höheren Schichten.
+
+ABI-Layout und Assemblerbau sind automatisiert geprüft. Der UEFI-QEMU-Test
+verlangt zusätzlich
+`NOVA: HAL Topology ABI 1.0, Busse, Devices und IOMMU-Gruppen aktiv` und läuft
+danach weiterhin bis Ring 3, interaktiver Desktop-Szene und geordnetem
+`PLATFORM_OFF`.
+
+## 82. Validierte MADT-CPUs in der HAL-Topologie
+
+Die zuvor bereits vorhandene ACPI-Frühphase validiert RSDP, XSDT oder RSDT
+und MADT, bevor Daten verwendet werden. Dabei werden Signatur, Tabellenlänge,
+Prüfsumme, vollständige Lage in einem freigegebenen Firmware-Speicherbereich,
+Entry-Längen und Tabellenbeziehungen geprüft. Aus MADT-Einträgen vom Typ Local
+APIC und x2APIC werden nur aktivierte, eindeutige Hardware-IDs übernommen. Die
+Liste bleibt auf `CPU_CAPACITY = 8` begrenzt.
+
+`topology_initialize` übernimmt nun diese normalisierte Plattformliste statt
+eines fest eingetragenen einzelnen Threads. Für jeden Eintrag entsteht ein
+`CPU_THREAD`-Knoten mit APIC-ID als Hardware-ID, stabilem logischem Index und
+dem Flag `FIRMWARE_VALIDATED`. Im QEMU-Lauf mit `-smp 4` enthält der Graph
+dadurch vier Hardware-Threads und meldet:
+
+`NOVA: HAL Topology, normalisierte CPU-Threads (hex): 0x00000004`
+
+Die MADT beschreibt keine Package-/Core-Zuordnung. Solche Beziehungen werden
+deshalb nicht aus logischen CPU-Nummern erfunden. Die ABI-Typen für Package,
+Core, Thread und Cache bleiben vorhanden; eine spätere per-CPU-CPUID-
+Normalisierung kann die fehlenden Ebenen ergänzen. Ebenso bleibt die NUMA-
+Lokalität ohne validierte SRAT unbekannt und trägt kein
+`LOCALITY_KNOWN`-Flag.
+
+Fehlt eine gültige MADT, bleibt genau der BSP als kontrollierter Fallback im
+Graphen. Seine APIC-Hardware-ID wird auch ohne RSDP direkt über CPUID Blatt 1
+ermittelt. Der Knoten trägt `FALLBACK` statt `FIRMWARE_VALIDATED`; fehlende
+Firmwaredaten erscheinen somit nicht als erfolgreich validierte Topologie.
+
+Der Selbsttest gleicht für jeden Hardware-Thread APIC-ID, logischen Index und
+Quellenstatus mit der normalisierten Plattformliste ab. Der automatisierte
+UEFI-Test verlangt bei vier emulierten CPUs exakt vier Topologieknoten und
+erreicht danach weiterhin Desktop, Eingabeverarbeitung und den geordneten
+Shutdown.

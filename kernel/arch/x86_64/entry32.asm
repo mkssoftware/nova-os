@@ -234,6 +234,19 @@ kernel_entry:
     mov esi, message_shared_buffer_ok
     call serial_write_string
 
+    call topology_initialize
+    jc panic_topology
+    call topology_self_test
+    jc panic_topology
+    mov esi, message_topology_ok
+    call serial_write_string
+    mov esi, message_topology_cpu_count
+    call serial_write_string
+    mov eax, [topology_cpu_nodes]
+    call serial_write_hex32
+    mov esi, message_line_end
+    call serial_write_string
+
     call iommu_initialize
     jc panic_iommu
     call iommu_self_test
@@ -260,6 +273,10 @@ kernel_entry:
     call dma_scatter_gather_self_test
     jc panic_dma_scatter_gather
     mov esi, message_dma_scatter_gather_ok
+    call serial_write_string
+    mov esi, message_dma_iommu_lifecycle_ok
+    call serial_write_string
+    mov esi, message_iommu_fault_propagation_ok
     call serial_write_string
 
     call io_scheduler_initialize
@@ -459,6 +476,12 @@ panic_shared_buffer:
     mov eax, 0x00002020
     mov edx, 32
     mov esi, message_shared_buffer_error
+    jmp kernel_panic
+
+panic_topology:
+    mov eax, 0x00002025
+    mov edx, 37
+    mov esi, message_topology_error
     jmp kernel_panic
 
 panic_iommu:
@@ -929,6 +952,15 @@ create_kernel_context:
 ; ACPI-Root-Pointer vor der Paging-Aktivierung prüfen. Ein fehlender oder
 ; beschädigter RSDP verhindert den UP-Boot nicht und aktiviert keinen AP.
 acpi_rsdp_initialize:
+    ; Der BSP ist auch ohne Firmwaretabellen als kontrollierter Fallback
+    ; bekannt. Die APIC-ID stammt aus CPUID und bleibt damit Hardware-ID statt
+    ; frei erfundener logischer Nummer.
+    mov dword [acpi_cpu_count], 1
+    mov dword [acpi_madt_valid], 0
+    mov eax, 1
+    cpuid
+    shr ebx, 24
+    mov [acpi_apic_ids], ebx
     mov esi, [kernel_context + CONTEXT_ACPI_ADDRESS]
     test esi, esi
     jz .bios_scan
@@ -6579,6 +6611,578 @@ shared_buffer_backing_pool:
     times SHARED_BUFFER_CAPACITY * PMM_PAGE_SIZE db 0
 
 ; ---------------------------------------------------------------------------
+; Normalisierter HAL-Topologiegraph. Die Bootstrap-Knoten bilden ein UMA-
+; System und die derzeitigen Testprovider ab; sie sind ausdrücklich keine
+; vorgetäuschte PCI-Erkennung. Neue Plattformprovider können dieselbe ABI mit
+; validierten ACPI-, CPU- und Busdaten befüllen.
+; NPSPEC-HAL-TOPOLOGY-0001, NPSPEC-HAL-NUMA-0001,
+; NPSPEC-HAL-HOTPLUG-0001
+; ---------------------------------------------------------------------------
+
+TOPOLOGY_API_SIZE                 equ 40
+TOPOLOGY_CAPACITY                 equ 32
+TOPOLOGY_RECORD_SIZE              equ 64
+TOPOLOGY_TYPE_SYSTEM              equ 1
+TOPOLOGY_TYPE_NUMA_NODE           equ 2
+TOPOLOGY_TYPE_CPU_PACKAGE         equ 3
+TOPOLOGY_TYPE_CPU_CORE            equ 4
+TOPOLOGY_TYPE_CPU_THREAD          equ 5
+TOPOLOGY_TYPE_MEMORY_REGION       equ 6
+TOPOLOGY_TYPE_CACHE               equ 7
+TOPOLOGY_TYPE_INTERRUPT_CONTROLLER equ 8
+TOPOLOGY_TYPE_BUS                 equ 9
+TOPOLOGY_TYPE_IOMMU_GROUP         equ 10
+TOPOLOGY_TYPE_DEVICE              equ 11
+TOPOLOGY_STATE_EMPTY              equ 0
+TOPOLOGY_STATE_ONLINE             equ 1
+TOPOLOGY_STATE_QUIESCING          equ 2
+TOPOLOGY_STATE_OFFLINE            equ 3
+TOPOLOGY_STATE_REMOVED            equ 4
+TOPOLOGY_FLAG_BOOTSTRAP           equ 0x00000001
+TOPOLOGY_FLAG_HOTPLUGGABLE        equ 0x00000002
+TOPOLOGY_FLAG_DMA_CAPABLE         equ 0x00000004
+TOPOLOGY_FLAG_LOCALITY_KNOWN      equ 0x00000008
+TOPOLOGY_FLAG_FIRMWARE_VALIDATED  equ 0x00000010
+TOPOLOGY_FLAG_FALLBACK            equ 0x00000020
+TOPOLOGY_ID                       equ 0
+TOPOLOGY_TYPE                     equ 4
+TOPOLOGY_PARENT                   equ 8
+TOPOLOGY_STATE                    equ 12
+TOPOLOGY_HARDWARE_ID              equ 16
+TOPOLOGY_NUMA_NODE                equ 20
+TOPOLOGY_IOMMU_GROUP              equ 24
+TOPOLOGY_CHILD_COUNT              equ 28
+TOPOLOGY_FLAGS                    equ 32
+TOPOLOGY_PROPERTY0                equ 36
+TOPOLOGY_PROPERTY1                equ 40
+TOPOLOGY_PROPERTY2                equ 44
+TOPOLOGY_GENERATION               equ 48
+TOPOLOGY_CHANGE_SEQUENCE          equ 52
+
+topology_initialize:
+    mov edi, topology_records
+    xor eax, eax
+    mov ecx, (TOPOLOGY_CAPACITY * TOPOLOGY_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [topology_count], 0
+    mov dword [topology_cpu_nodes], 0
+    mov dword [topology_next_id], 1
+    mov dword [topology_change_sequence], 0
+    mov dword [topology_validation_failures], 0
+    mov dword [topology_manager_ready], 1
+
+    ; Root des normalisierten Graphen.
+    mov eax, TOPOLOGY_TYPE_SYSTEM
+    xor edx, edx
+    mov ebx, 1
+    mov ecx, 0xFFFFFFFF
+    xor esi, esi
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP
+    call topology_register
+    jc .invalid
+    mov [topology_root_id], eax
+
+    ; Knoten 0 hält CPUs und Speicher zusammen. Ohne SRAT bleibt die genaue
+    ; Lokalität ausdrücklich unbekannt; höhere Schichten dürfen daraus keine
+    ; optimale Nähe ableiten.
+    mov eax, TOPOLOGY_TYPE_NUMA_NODE
+    mov edx, [topology_root_id]
+    xor ebx, ebx
+    xor ecx, ecx
+    xor esi, esi
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP | TOPOLOGY_FLAG_FALLBACK
+    call topology_register
+    jc .invalid
+    mov [topology_numa0_id], eax
+
+    ; Die geprüfte MADT-Liste ist die Plattformquelle für aktive Hardware-
+    ; Threads. Package/Core-Zuordnungen werden ohne per-CPU-CPUID nicht
+    ; erfunden; die ABI kann diese Ebenen später ergänzen.
+    mov dword [topology_cpu_index], 0
+.cpu_next:
+    mov eax, [topology_cpu_index]
+    cmp eax, [acpi_cpu_count]
+    jae .cpus_complete
+    mov ebx, [acpi_apic_ids + eax * 4]
+    mov eax, TOPOLOGY_TYPE_CPU_THREAD
+    mov edx, [topology_numa0_id]
+    xor ecx, ecx
+    xor esi, esi
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP | TOPOLOGY_FLAG_FALLBACK
+    cmp dword [acpi_madt_valid], 1
+    jne .cpu_register
+    and edi, ~TOPOLOGY_FLAG_FALLBACK
+    or edi, TOPOLOGY_FLAG_FIRMWARE_VALIDATED
+.cpu_register:
+    call topology_register
+    jc .invalid
+    call topology_lookup
+    jc .invalid
+    mov edx, [topology_cpu_index]
+    mov [eax + TOPOLOGY_PROPERTY0], edx ; normalisierter logischer CPU-Index
+    mov edx, [acpi_madt_valid]
+    mov [eax + TOPOLOGY_PROPERTY1], edx ; 1 = validierte MADT-Quelle
+    inc dword [topology_cpu_nodes]
+    inc dword [topology_cpu_index]
+    jmp .cpu_next
+.cpus_complete:
+
+    mov eax, TOPOLOGY_TYPE_MEMORY_REGION
+    mov edx, [topology_numa0_id]
+    mov ebx, 1
+    xor ecx, ecx
+    xor esi, esi
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP | TOPOLOGY_FLAG_FALLBACK
+    call topology_register
+    jc .invalid
+
+    mov eax, TOPOLOGY_TYPE_INTERRUPT_CONTROLLER
+    mov edx, [topology_root_id]
+    mov ebx, 1
+    mov ecx, 0xFFFFFFFF
+    xor esi, esi
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP
+    call topology_register
+    jc .invalid
+
+    mov eax, TOPOLOGY_TYPE_BUS
+    mov edx, [topology_root_id]
+    mov ebx, 1
+    mov ecx, 0xFFFFFFFF
+    xor esi, esi
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP
+    call topology_register
+    jc .invalid
+    mov [topology_boot_bus_id], eax
+
+    mov ebx, 0x10
+    call topology_register_boot_group
+    jc .invalid
+    mov [topology_group10_id], eax
+    mov ebx, 0x20
+    call topology_register_boot_group
+    jc .invalid
+    mov [topology_group20_id], eax
+    mov ebx, 0x30
+    call topology_register_boot_group
+    jc .invalid
+    mov [topology_group30_id], eax
+
+    mov ebx, 0xD001
+    mov esi, 0x10
+    mov edx, [topology_group10_id]
+    call topology_register_boot_device
+    jc .invalid
+    mov ebx, 0xD002
+    mov esi, 0x20
+    mov edx, [topology_group20_id]
+    call topology_register_boot_device
+    jc .invalid
+    mov ebx, 0xD003
+    mov esi, 0x30
+    mov edx, [topology_group30_id]
+    call topology_register_boot_device
+    jc .invalid
+    mov ebx, 0xD004
+    mov esi, 0x30
+    mov edx, [topology_group30_id]
+    call topology_register_boot_device
+    jc .invalid
+    mov [topology_hotplug_test_id], eax
+    clc
+    ret
+.invalid:
+    mov dword [topology_manager_ready], 0
+    stc
+    ret
+
+; EBX=Gruppen-ID; EAX=Topology-ID.
+topology_register_boot_group:
+    mov eax, TOPOLOGY_TYPE_IOMMU_GROUP
+    mov edx, [topology_boot_bus_id]
+    mov ecx, 0xFFFFFFFF
+    mov esi, ebx
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP
+    call topology_register
+    ret
+
+; EBX=Device-ID, ESI=Gruppe, EDX=Parent-Gruppe; EAX=Topology-ID.
+topology_register_boot_device:
+    mov eax, TOPOLOGY_TYPE_DEVICE
+    mov ecx, 0xFFFFFFFF
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP | TOPOLOGY_FLAG_HOTPLUGGABLE | TOPOLOGY_FLAG_DMA_CAPABLE
+    call topology_register
+    ret
+
+; EAX=Typ, EDX=Parent-ID, EBX=Hardware-ID, ECX=NUMA-ID,
+; ESI=IOMMU-Gruppen-ID, EDI=Flags. Ergebnis EAX=Topology-ID.
+topology_register:
+    pushfd
+    cli
+    mov [topology_temp_type], eax
+    mov [topology_temp_parent], edx
+    mov [topology_temp_hardware], ebx
+    mov [topology_temp_numa], ecx
+    mov [topology_temp_group], esi
+    mov [topology_temp_flags], edi
+    cmp dword [topology_manager_ready], 1
+    jne .invalid
+    cmp eax, TOPOLOGY_TYPE_SYSTEM
+    jb .invalid
+    cmp eax, TOPOLOGY_TYPE_DEVICE
+    ja .invalid
+    cmp eax, TOPOLOGY_TYPE_SYSTEM
+    jne .non_root
+    test edx, edx
+    jnz .invalid
+    cmp dword [topology_count], 0
+    jne .invalid
+    jmp .validate_identity
+.non_root:
+    test edx, edx
+    jz .invalid
+    mov eax, edx
+    call topology_lookup
+    jc .invalid
+    mov [topology_temp_parent_record], eax
+.validate_identity:
+    cmp dword [topology_temp_type], TOPOLOGY_TYPE_DEVICE
+    jne .identity_scan
+    cmp dword [topology_temp_hardware], 0
+    je .invalid
+    cmp dword [topology_temp_group], 0
+    je .invalid
+.identity_scan:
+    xor ecx, ecx
+.identity_next:
+    cmp ecx, TOPOLOGY_CAPACITY
+    jae .find_slot
+    mov edx, ecx
+    shl edx, 6
+    add edx, topology_records
+    cmp dword [edx + TOPOLOGY_STATE], TOPOLOGY_STATE_EMPTY
+    je .identity_continue
+    cmp dword [edx + TOPOLOGY_STATE], TOPOLOGY_STATE_REMOVED
+    je .identity_continue
+    mov eax, [topology_temp_type]
+    cmp [edx + TOPOLOGY_TYPE], eax
+    jne .identity_continue
+    mov eax, [topology_temp_hardware]
+    cmp [edx + TOPOLOGY_HARDWARE_ID], eax
+    je .invalid
+.identity_continue:
+    inc ecx
+    jmp .identity_next
+.find_slot:
+    xor ecx, ecx
+.slot_scan:
+    cmp ecx, TOPOLOGY_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, topology_records
+    cmp dword [edx + TOPOLOGY_STATE], TOPOLOGY_STATE_EMPTY
+    je .slot
+    cmp dword [edx + TOPOLOGY_STATE], TOPOLOGY_STATE_REMOVED
+    je .slot
+    inc ecx
+    jmp .slot_scan
+.slot:
+    mov [topology_temp_record], edx
+    mov edi, edx
+    xor eax, eax
+    mov ecx, TOPOLOGY_RECORD_SIZE / 4
+    rep stosd
+    mov edi, [topology_temp_record]
+    mov eax, [topology_next_id]
+    mov [edi + TOPOLOGY_ID], eax
+    inc dword [topology_next_id]
+    mov edx, [topology_temp_type]
+    mov [edi + TOPOLOGY_TYPE], edx
+    mov edx, [topology_temp_parent]
+    mov [edi + TOPOLOGY_PARENT], edx
+    mov dword [edi + TOPOLOGY_STATE], TOPOLOGY_STATE_ONLINE
+    mov edx, [topology_temp_hardware]
+    mov [edi + TOPOLOGY_HARDWARE_ID], edx
+    mov edx, [topology_temp_numa]
+    mov [edi + TOPOLOGY_NUMA_NODE], edx
+    mov edx, [topology_temp_group]
+    mov [edi + TOPOLOGY_IOMMU_GROUP], edx
+    mov edx, [topology_temp_flags]
+    mov [edi + TOPOLOGY_FLAGS], edx
+    inc dword [topology_change_sequence]
+    mov edx, [topology_change_sequence]
+    mov [edi + TOPOLOGY_CHANGE_SEQUENCE], edx
+    mov dword [edi + TOPOLOGY_GENERATION], 1
+    inc dword [topology_count]
+    cmp dword [topology_temp_type], TOPOLOGY_TYPE_SYSTEM
+    je .registered
+    mov edx, [topology_temp_parent_record]
+    inc dword [edx + TOPOLOGY_CHILD_COUNT]
+.registered:
+    mov eax, [edi + TOPOLOGY_ID]
+    popfd
+    clc
+    ret
+.invalid:
+    inc dword [topology_validation_failures]
+    xor eax, eax
+    popfd
+    stc
+    ret
+
+; EAX=Topology-ID; EAX=Datensatz.
+topology_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, TOPOLOGY_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, topology_records
+    cmp dword [edx + TOPOLOGY_STATE], TOPOLOGY_STATE_EMPTY
+    je .next
+    cmp dword [edx + TOPOLOGY_STATE], TOPOLOGY_STATE_REMOVED
+    je .next
+    cmp [edx + TOPOLOGY_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Hardware-Device-ID; EAX=IOMMU-Gruppe.
+topology_device_group:
+    xor ecx, ecx
+.scan:
+    cmp ecx, TOPOLOGY_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, topology_records
+    cmp dword [edx + TOPOLOGY_STATE], TOPOLOGY_STATE_ONLINE
+    jne .next
+    cmp dword [edx + TOPOLOGY_TYPE], TOPOLOGY_TYPE_DEVICE
+    jne .next
+    cmp [edx + TOPOLOGY_HARDWARE_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, [edx + TOPOLOGY_IOMMU_GROUP]
+    test eax, eax
+    jz .invalid
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=APIC-Hardware-ID; EAX=Online-Hardware-Thread-Datensatz.
+topology_cpu_lookup:
+    xor ecx, ecx
+.scan:
+    cmp ecx, TOPOLOGY_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, topology_records
+    cmp dword [edx + TOPOLOGY_STATE], TOPOLOGY_STATE_ONLINE
+    jne .next
+    cmp dword [edx + TOPOLOGY_TYPE], TOPOLOGY_TYPE_CPU_THREAD
+    jne .next
+    cmp [edx + TOPOLOGY_HARDWARE_ID], eax
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
+; EAX=Topology-ID, EDX=neuer Zustand. Erlaubt kontrolliertes
+; Online -> Quiescing -> Offline -> Online sowie Offline -> Removed.
+topology_transition:
+    pushfd
+    cli
+    mov [topology_temp_id], eax
+    mov [topology_temp_state], edx
+    call topology_lookup
+    jc .invalid
+    mov [topology_temp_record], eax
+    mov edx, [topology_temp_state]
+    cmp dword [eax + TOPOLOGY_TYPE], TOPOLOGY_TYPE_SYSTEM
+    je .invalid
+    mov ecx, [eax + TOPOLOGY_STATE]
+    cmp ecx, TOPOLOGY_STATE_ONLINE
+    jne .from_quiescing
+    cmp edx, TOPOLOGY_STATE_QUIESCING
+    jne .invalid
+    jmp .commit
+.from_quiescing:
+    cmp ecx, TOPOLOGY_STATE_QUIESCING
+    jne .from_offline
+    cmp edx, TOPOLOGY_STATE_OFFLINE
+    jne .invalid
+    jmp .commit
+.from_offline:
+    cmp ecx, TOPOLOGY_STATE_OFFLINE
+    jne .invalid
+    cmp edx, TOPOLOGY_STATE_ONLINE
+    je .commit
+    cmp edx, TOPOLOGY_STATE_REMOVED
+    jne .invalid
+    cmp dword [eax + TOPOLOGY_CHILD_COUNT], 0
+    jne .invalid
+.commit:
+    mov [eax + TOPOLOGY_STATE], edx
+    inc dword [eax + TOPOLOGY_GENERATION]
+    inc dword [topology_change_sequence]
+    mov ecx, [topology_change_sequence]
+    mov [eax + TOPOLOGY_CHANGE_SEQUENCE], ecx
+    cmp edx, TOPOLOGY_STATE_REMOVED
+    jne .complete
+    mov eax, [eax + TOPOLOGY_PARENT]
+    call topology_lookup
+    jc .invalid
+    cmp dword [eax + TOPOLOGY_CHILD_COUNT], 0
+    je .invalid
+    dec dword [eax + TOPOLOGY_CHILD_COUNT]
+    dec dword [topology_count]
+.complete:
+    popfd
+    clc
+    ret
+.invalid:
+    inc dword [topology_validation_failures]
+    popfd
+    stc
+    ret
+
+topology_self_test:
+    mov eax, [acpi_cpu_count]
+    add eax, 12
+    cmp [topology_count], eax
+    jne .invalid
+    mov eax, [topology_cpu_nodes]
+    cmp eax, [acpi_cpu_count]
+    jne .invalid
+    mov dword [topology_cpu_index], 0
+.cpu_next:
+    mov ecx, [topology_cpu_index]
+    cmp ecx, [acpi_cpu_count]
+    jae .cpus_valid
+    mov eax, [acpi_apic_ids + ecx * 4]
+    call topology_cpu_lookup
+    jc .invalid
+    mov ecx, [topology_cpu_index]
+    cmp [eax + TOPOLOGY_PROPERTY0], ecx
+    jne .invalid
+    mov edx, [acpi_madt_valid]
+    cmp [eax + TOPOLOGY_PROPERTY1], edx
+    jne .invalid
+    inc dword [topology_cpu_index]
+    jmp .cpu_next
+.cpus_valid:
+    mov eax, [topology_change_sequence]
+    mov [topology_selftest_initial_sequence], eax
+    mov eax, 0xD003
+    call topology_device_group
+    jc .invalid
+    cmp eax, 0x30
+    jne .invalid
+    mov eax, 0xD004
+    call topology_device_group
+    jc .invalid
+    cmp eax, 0x30
+    jne .invalid
+    mov eax, [topology_hotplug_test_id]
+    mov edx, TOPOLOGY_STATE_QUIESCING
+    call topology_transition
+    jc .invalid
+    mov eax, 0xD004
+    call topology_device_group
+    jnc .invalid                         ; quieszierende Geräte sind nicht nutzbar
+    mov eax, [topology_hotplug_test_id]
+    mov edx, TOPOLOGY_STATE_OFFLINE
+    call topology_transition
+    jc .invalid
+    mov eax, [topology_hotplug_test_id]
+    mov edx, TOPOLOGY_STATE_ONLINE
+    call topology_transition
+    jc .invalid
+    mov eax, 0xD004
+    call topology_device_group
+    jc .invalid
+    cmp eax, 0x30
+    jne .invalid
+    mov eax, [topology_selftest_initial_sequence]
+    add eax, 3
+    cmp eax, [topology_change_sequence]
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+align 4
+topology_api:
+    dd TOPOLOGY_API_SIZE
+    dw 1, 0
+    dd TOPOLOGY_CAPACITY
+    dd topology_register
+    dd topology_transition
+    dd topology_lookup
+    dd topology_device_group
+    dd topology_records
+    dd topology_change_sequence
+    dd 0
+
+topology_manager_ready:       dd 0
+topology_count:               dd 0
+topology_cpu_nodes:           dd 0
+topology_next_id:             dd 0
+topology_change_sequence:     dd 0
+topology_validation_failures: dd 0
+topology_root_id:             dd 0
+topology_numa0_id:            dd 0
+topology_boot_bus_id:         dd 0
+topology_group10_id:          dd 0
+topology_group20_id:          dd 0
+topology_group30_id:          dd 0
+topology_hotplug_test_id:     dd 0
+topology_cpu_index:           dd 0
+topology_selftest_initial_sequence: dd 0
+topology_temp_id:             dd 0
+topology_temp_type:           dd 0
+topology_temp_parent:         dd 0
+topology_temp_hardware:       dd 0
+topology_temp_numa:           dd 0
+topology_temp_group:          dd 0
+topology_temp_flags:          dd 0
+topology_temp_state:          dd 0
+topology_temp_record:         dd 0
+topology_temp_parent_record:  dd 0
+align 16
+topology_records:
+    times TOPOLOGY_CAPACITY * TOPOLOGY_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
 ; IOMMU-Domainabstraktion mit Gruppen, Device-Bindings, IOVA-Autorisierungen
 ; und zuordenbaren Faults. Ohne Hardwareprovider bleibt Isolation explizit im
 ; Restricted-Modus und wird nicht als Hardwaregarantie ausgegeben.
@@ -6610,6 +7214,10 @@ IOMMU_MAPPING_REVOKED       equ 2
 IOMMU_MAPPING_FAULTED       equ 3
 IOMMU_PERMISSION_READ       equ 0x00000001
 IOMMU_PERMISSION_WRITE      equ 0x00000002
+IOMMU_EXTERNAL_KIND_MASK    equ 0xF0000000
+IOMMU_EXTERNAL_ID_MASK      equ 0x0FFFFFFF
+IOMMU_EXTERNAL_DMA          equ 0x10000000
+IOMMU_EXTERNAL_DMA_SG       equ 0x20000000
 IOMMU_DOMAIN_ID             equ 0
 IOMMU_DOMAIN_OWNER          equ 4
 IOMMU_DOMAIN_STATE          equ 8
@@ -6873,6 +7481,12 @@ iommu_bind_device:
     jz .invalid
     test ebx, ebx
     jz .invalid
+    mov eax, edx
+    call topology_device_group
+    jc .invalid
+    cmp eax, [iommu_temp_group]
+    jne .invalid                         ; Gruppe stammt aus normalisierter Topologie
+    mov eax, [iommu_temp_domain]
     call iommu_domain_lookup
     jc .invalid
     mov [iommu_temp_domain_record], eax
@@ -7215,6 +7829,27 @@ iommu_report_fault:
     mov [edi + IOMMU_FAULT_ACCESS], eax
     mov eax, [iommu_temp_error]
     mov [edi + IOMMU_FAULT_ERROR], eax
+    mov eax, [iommu_temp_external]
+    mov edx, eax
+    and edx, IOMMU_EXTERNAL_KIND_MASK
+    and eax, IOMMU_EXTERNAL_ID_MASK
+    cmp edx, IOMMU_EXTERNAL_DMA
+    je .route_dma
+    cmp edx, IOMMU_EXTERNAL_DMA_SG
+    je .route_dma_sg
+    jmp .route_done
+.route_dma:
+    mov edx, [iommu_temp_device]
+    mov ebx, [iommu_temp_error]
+    call dma_mapping_fault
+    jc .invalid
+    jmp .route_done
+.route_dma_sg:
+    mov edx, [iommu_temp_device]
+    mov ebx, [iommu_temp_error]
+    call dma_scatter_gather_fault
+    jc .invalid
+.route_done:
     mov eax, [iommu_fault_count]
     popfd
     clc
@@ -7476,6 +8111,9 @@ dma_mapping_initialize:
     mov edi, dma_mapping_generations
     mov ecx, DMA_MAPPING_CAPACITY
     rep stosd
+    mov edi, dma_mapping_iommu_authorization_ids
+    mov ecx, DMA_MAPPING_CAPACITY
+    rep stosd
     mov dword [dma_mapping_next_id], 1
     mov dword [dma_mapping_active_count], 0
     mov dword [dma_mapping_mapped_bytes], 0
@@ -7648,6 +8286,34 @@ dma_mapping_map:
 .generation_ready:
     mov [dma_mapping_generations + ecx * 4], edx
     mov [edi + DMA_MAPPING_GENERATION], edx
+    mov dword [dma_mapping_iommu_authorization_ids + ecx * 4], 0
+    mov eax, [dma_mapping_temp_device]
+    call iommu_domain_for_device
+    jc .publish
+    mov [dma_mapping_temp_domain_record], eax
+    mov edx, [eax + IOMMU_DOMAIN_ID]
+    mov edi, [dma_mapping_temp_record]
+    mov [edi + DMA_MAPPING_DOMAIN], edx
+    mov eax, edx
+    mov edx, [dma_mapping_temp_device]
+    mov ebx, [edi + DMA_MAPPING_ID]
+    or ebx, IOMMU_EXTERNAL_DMA
+    mov ecx, [edi + DMA_MAPPING_ADDRESS_LOW]
+    mov esi, 4096
+    mov edi, [dma_mapping_temp_permissions]
+    mov ebp, [dma_mapping_temp_owner]
+    call iommu_authorize_mapping
+    jc .authorization_invalid
+    mov ecx, [dma_mapping_temp_slot]
+    mov [dma_mapping_iommu_authorization_ids + ecx * 4], eax
+    mov eax, [dma_mapping_temp_domain_record]
+    cmp dword [eax + IOMMU_DOMAIN_MODE], IOMMU_MODE_RESTRICTED
+    je .publish
+    mov edi, [dma_mapping_temp_record]
+    and dword [edi + DMA_MAPPING_FLAGS], ~(DMA_FLAG_BOUNCE | DMA_FLAG_RESTRICTED)
+    or dword [edi + DMA_MAPPING_FLAGS], DMA_FLAG_IOMMU
+.publish:
+    mov edi, [dma_mapping_temp_record]
     mov eax, [edi + DMA_MAPPING_ID]
     mov ecx, [dma_mapping_temp_request_slot]
     mov [dma_request_mapping_ids + ecx * 4], eax
@@ -7664,6 +8330,10 @@ dma_mapping_map:
     popfd
     clc
     ret
+.authorization_invalid:
+    mov edi, [dma_mapping_temp_record]
+    mov dword [edi + DMA_MAPPING_STATE], DMA_MAPPING_STATE_EMPTY
+    jmp .invalid
 .invalid:
     xor eax, eax
     popfd
@@ -7673,6 +8343,21 @@ dma_mapping_map:
 ; Interner, bereits validierter Abbau. EAX=aktiver Mapping-Datensatz.
 dma_mapping_release_record:
     mov [dma_mapping_temp_record], eax
+    mov ecx, eax
+    sub ecx, dma_mapping_table
+    shr ecx, 6
+    mov eax, [dma_mapping_iommu_authorization_ids + ecx * 4]
+    test eax, eax
+    jz .iommu_released
+    mov edx, [dma_mapping_temp_record]
+    mov edx, [edx + DMA_MAPPING_OWNER]
+    call iommu_revoke_mapping
+    mov ecx, [dma_mapping_temp_record]
+    sub ecx, dma_mapping_table
+    shr ecx, 6
+    mov dword [dma_mapping_iommu_authorization_ids + ecx * 4], 0
+.iommu_released:
+    mov eax, [dma_mapping_temp_record]
     mov edx, [eax + DMA_MAPPING_REQUEST]
     mov [dma_mapping_temp_request], edx
     mov eax, edx
@@ -7764,7 +8449,14 @@ dma_mapping_fault:
     mov [eax + DMA_MAPPING_ERROR], ebx
     mov dword [eax + DMA_MAPPING_STATE], DMA_MAPPING_STATE_FAULTED
     inc dword [dma_mapping_fault_count]
+    mov edx, [eax + DMA_MAPPING_REQUEST]
+    mov [dma_mapping_temp_request], edx
     call dma_mapping_release_record
+    mov eax, [dma_mapping_temp_request]
+    xor edx, edx
+    mov ebx, [dma_mapping_temp_error]
+    call io_request_complete
+    jc .invalid
     mov eax, [dma_mapping_temp_id]
     popfd
     clc
@@ -7796,6 +8488,19 @@ dma_mapping_on_terminal:
 dma_mapping_self_test:
     cmp dword [dma_iommu_available], 0
     jne .invalid
+    mov eax, 1
+    mov ebx, IOMMU_MODE_RESTRICTED
+    mov ecx, 32
+    mov esi, DMA_RESTRICTED_APERTURE
+    mov edi, DMA_RESTRICTED_APERTURE + 0x000FFFFF
+    call iommu_domain_create
+    jc .invalid
+    mov [dma_mapping_test_domain], eax
+    mov edx, 0xD001
+    mov ebx, 0x10
+    mov ecx, 1
+    call iommu_bind_device
+    jc .invalid
     mov eax, 1
     mov edx, 128
     mov ebx, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE | SHARED_BUFFER_RIGHT_TRANSFER | SHARED_BUFFER_RIGHT_DMA | SHARED_BUFFER_RIGHT_RELEASE
@@ -7846,6 +8551,10 @@ dma_mapping_self_test:
     jne .invalid
     cmp dword [eax + DMA_MAPPING_ADDRESS_HIGH], 0
     jne .invalid
+    cmp dword [eax + DMA_MAPPING_DOMAIN], 0
+    je .invalid
+    cmp dword [iommu_mapping_count], 1
+    jne .invalid
     mov edx, [eax + DMA_MAPPING_ADDRESS_LOW]
     cmp edx, DMA_RESTRICTED_APERTURE
     jb .invalid
@@ -7867,13 +8576,28 @@ dma_mapping_self_test:
     mov edx, 1
     call shared_buffer_release
     jnc .invalid                       ; Pinning/Lease blockiert Release
-    mov eax, [dma_mapping_test_request]
-    mov edx, 128
-    xor ebx, ebx
-    call io_request_complete
+    mov eax, [dma_mapping_test_domain]
+    mov edx, 0xD001
+    mov ebx, [dma_mapping_test_id]
+    or ebx, IOMMU_EXTERNAL_DMA
+    mov ecx, DMA_RESTRICTED_APERTURE
+    mov esi, IOMMU_PERMISSION_WRITE
+    mov edi, 0xD101
+    call iommu_report_fault
     jc .invalid
     mov eax, [dma_mapping_test_record]
-    cmp dword [eax + DMA_MAPPING_STATE], DMA_MAPPING_STATE_UNMAPPED
+    cmp dword [eax + DMA_MAPPING_STATE], DMA_MAPPING_STATE_FAULTED
+    jne .invalid
+    cmp dword [dma_mapping_fault_count], 1
+    jne .invalid
+    mov eax, [dma_mapping_test_request]
+    call io_request_lookup
+    jc .invalid
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_FAILED
+    jne .invalid
+    cmp dword [eax + IO_REQUEST_COMPLETION], IO_COMPLETION_FAILED
+    jne .invalid
+    cmp dword [eax + IO_REQUEST_ERROR], 0xD101
     jne .invalid
     mov eax, [dma_mapping_test_buffer]
     call shared_buffer_lookup
@@ -7892,6 +8616,8 @@ dma_mapping_self_test:
     jne .invalid
     cmp dword [dma_mapping_bounce_count], 1
     jne .invalid
+    cmp dword [iommu_mapping_count], 0
+    jne .invalid
     mov eax, [dma_mapping_test_task]
     xor edx, edx
     call task_complete
@@ -7902,6 +8628,10 @@ dma_mapping_self_test:
     mov eax, [dma_mapping_test_buffer]
     mov edx, 1
     call shared_buffer_release
+    jc .invalid
+    mov eax, [dma_mapping_test_domain]
+    mov edx, 1
+    call iommu_domain_release
     jc .invalid
     clc
     ret
@@ -7940,6 +8670,7 @@ dma_mapping_temp_request_slot:   dd 0
 dma_mapping_temp_request_record: dd 0
 dma_mapping_temp_buffer:         dd 0
 dma_mapping_temp_buffer_record:  dd 0
+dma_mapping_temp_domain_record:  dd 0
 dma_mapping_temp_slot:           dd 0
 dma_mapping_temp_record:         dd 0
 dma_mapping_temp_error:          dd 0
@@ -7949,10 +8680,13 @@ dma_mapping_test_task:           dd 0
 dma_mapping_test_request:        dd 0
 dma_mapping_test_id:             dd 0
 dma_mapping_test_record:         dd 0
+dma_mapping_test_domain:         dd 0
 align 4
 dma_mapping_table:
     times DMA_MAPPING_CAPACITY * DMA_MAPPING_RECORD_SIZE db 0
 dma_mapping_generations:
+    times DMA_MAPPING_CAPACITY dd 0
+dma_mapping_iommu_authorization_ids:
     times DMA_MAPPING_CAPACITY dd 0
 dma_request_mapping_ids:
     times IO_REQUEST_CAPACITY dd 0
@@ -8577,6 +9311,7 @@ DMA_SG_FLAG_BOUNCE           equ 0x00000001
 DMA_SG_FLAG_COHERENT         equ 0x00000002
 DMA_SG_FLAG_RESTRICTED       equ 0x00000004
 DMA_SG_FLAG_SPLIT            equ 0x00000008
+DMA_SG_FLAG_IOMMU            equ 0x00000010
 DMA_SG_MAX_SEGMENT_SIZE      equ 64
 DMA_SG_ALIGNMENT             equ 4
 DMA_SG_ADDRESS_WIDTH         equ 32
@@ -8597,7 +9332,7 @@ DMA_SG_MAPPING_ADDRESS_WIDTH equ 44
 DMA_SG_MAPPING_BOUNDARY      equ 48
 DMA_SG_MAPPING_FLAGS         equ 52
 DMA_SG_MAPPING_GENERATION    equ 56
-DMA_SG_MAPPING_ERROR         equ 60
+DMA_SG_MAPPING_DOMAIN        equ 60
 DMA_SG_SEGMENT_SOURCE        equ 0
 DMA_SG_SEGMENT_BUFFER        equ 4
 DMA_SG_SEGMENT_OFFSET        equ 8
@@ -8621,12 +9356,19 @@ dma_scatter_gather_initialize:
     mov edi, dma_request_sg_mapping_ids
     mov ecx, IO_REQUEST_CAPACITY
     rep stosd
+    mov edi, dma_scatter_gather_iommu_authorization_ids
+    mov ecx, DMA_SG_CAPACITY * DMA_SG_MAX_SEGMENTS
+    rep stosd
+    mov edi, dma_scatter_gather_error_codes
+    mov ecx, DMA_SG_CAPACITY
+    rep stosd
     mov dword [dma_scatter_gather_next_id], 1
     mov dword [dma_scatter_gather_active_count], 0
     mov dword [dma_scatter_gather_mapped_bytes], 0
     mov dword [dma_scatter_gather_pinned_buffers], 0
     mov dword [dma_scatter_gather_split_segments], 0
     mov dword [dma_scatter_gather_validation_failures], 0
+    mov dword [dma_scatter_gather_fault_count], 0
     mov dword [dma_scatter_gather_manager_ready], 1
     clc
     ret
@@ -8848,6 +9590,14 @@ dma_scatter_gather_map:
 .generation_ready:
     mov [dma_scatter_gather_generations + ecx * 4], eax
     mov [edi + DMA_SG_MAPPING_GENERATION], eax
+    mov dword [edi + DMA_SG_MAPPING_DOMAIN], 0
+    mov eax, [dma_scatter_gather_temp_slot]
+    shl eax, 4
+    add eax, dma_scatter_gather_iommu_authorization_ids
+    mov edi, eax
+    xor eax, eax
+    mov ecx, DMA_SG_MAX_SEGMENTS
+    rep stosd
     mov dword [dma_scatter_gather_temp_source_index], 0
     mov dword [dma_scatter_gather_temp_output_index], 0
 
@@ -8855,7 +9605,7 @@ dma_scatter_gather_map:
     mov eax, [dma_scatter_gather_temp_descriptor_record]
     mov ecx, [dma_scatter_gather_temp_source_index]
     cmp ecx, [eax + SG_DESCRIPTOR_SEGMENTS]
-    jae .acquire_buffers
+    jae .authorize_iommu
     call scatter_gather_segment_at
     mov edx, [eax + SG_SEGMENT_BUFFER]
     mov [dma_scatter_gather_temp_buffer], edx
@@ -8910,6 +9660,69 @@ dma_scatter_gather_map:
     inc dword [dma_scatter_gather_temp_source_index]
     jmp .translate_source
 
+.authorize_iommu:
+    mov eax, [dma_scatter_gather_temp_device]
+    call iommu_domain_for_device
+    jc .acquire_buffers
+    mov [dma_scatter_gather_temp_iommu_domain], eax
+    mov edx, [eax + IOMMU_DOMAIN_ID]
+    mov edi, [dma_scatter_gather_temp_record]
+    mov [edi + DMA_SG_MAPPING_DOMAIN], edx
+    mov dword [dma_scatter_gather_temp_authorized_count], 0
+.authorize_segment:
+    mov ecx, [dma_scatter_gather_temp_authorized_count]
+    mov edi, [dma_scatter_gather_temp_record]
+    cmp ecx, [edi + DMA_SG_MAPPING_SEGMENTS]
+    jae .authorization_ready
+    mov eax, edi
+    call dma_scatter_gather_segment_at
+    mov [dma_scatter_gather_temp_device_segment], eax
+    mov edi, eax
+    mov eax, [dma_scatter_gather_temp_iommu_domain]
+    mov eax, [eax + IOMMU_DOMAIN_ID]
+    mov edx, [dma_scatter_gather_temp_device]
+    mov ebx, [dma_scatter_gather_temp_record]
+    mov ebx, [ebx + DMA_SG_MAPPING_ID]
+    or ebx, IOMMU_EXTERNAL_DMA_SG
+    mov ecx, [edi + DMA_SG_SEGMENT_ADDRESS_LOW]
+    mov esi, 4096
+    mov edi, [edi + DMA_SG_SEGMENT_PERMISSIONS]
+    mov ebp, [dma_scatter_gather_temp_owner]
+    call iommu_authorize_mapping
+    jc .authorization_invalid
+    mov edx, [dma_scatter_gather_temp_slot]
+    shl edx, 2
+    add edx, [dma_scatter_gather_temp_authorized_count]
+    mov [dma_scatter_gather_iommu_authorization_ids + edx * 4], eax
+    inc dword [dma_scatter_gather_temp_authorized_count]
+    jmp .authorize_segment
+.authorization_ready:
+    mov eax, [dma_scatter_gather_temp_iommu_domain]
+    cmp dword [eax + IOMMU_DOMAIN_MODE], IOMMU_MODE_RESTRICTED
+    je .acquire_buffers
+    mov edi, [dma_scatter_gather_temp_record]
+    and dword [edi + DMA_SG_MAPPING_FLAGS], ~(DMA_SG_FLAG_BOUNCE | DMA_SG_FLAG_RESTRICTED)
+    or dword [edi + DMA_SG_MAPPING_FLAGS], DMA_SG_FLAG_IOMMU
+    jmp .acquire_buffers
+.authorization_invalid:
+    mov dword [dma_scatter_gather_temp_rollback_index], 0
+.authorization_rollback:
+    mov ecx, [dma_scatter_gather_temp_rollback_index]
+    cmp ecx, [dma_scatter_gather_temp_authorized_count]
+    jae .authorization_rollback_done
+    mov edx, [dma_scatter_gather_temp_slot]
+    shl edx, 2
+    add edx, ecx
+    mov eax, [dma_scatter_gather_iommu_authorization_ids + edx * 4]
+    mov edx, [dma_scatter_gather_temp_owner]
+    call iommu_revoke_mapping
+    inc dword [dma_scatter_gather_temp_rollback_index]
+    jmp .authorization_rollback
+.authorization_rollback_done:
+    mov edi, [dma_scatter_gather_temp_record]
+    mov dword [edi + DMA_SG_MAPPING_STATE], DMA_SG_STATE_EMPTY
+    jmp .invalid
+
 .acquire_buffers:
     mov dword [dma_scatter_gather_temp_source_index], 0
 .acquire_loop:
@@ -8953,6 +9766,33 @@ dma_scatter_gather_map:
 ; EAX=aktiver DMA-SG-Mapping-Datensatz.
 dma_scatter_gather_release_record:
     mov [dma_scatter_gather_temp_record], eax
+    mov eax, [dma_scatter_gather_temp_record]
+    sub eax, dma_scatter_gather_table
+    shr eax, 6
+    mov [dma_scatter_gather_temp_slot], eax
+    mov dword [dma_scatter_gather_temp_rollback_index], 0
+.revoke_iommu:
+    mov ecx, [dma_scatter_gather_temp_rollback_index]
+    cmp ecx, DMA_SG_MAX_SEGMENTS
+    jae .iommu_revoked
+    mov edx, [dma_scatter_gather_temp_slot]
+    shl edx, 2
+    add edx, ecx
+    mov eax, [dma_scatter_gather_iommu_authorization_ids + edx * 4]
+    test eax, eax
+    jz .next_iommu_revoke
+    mov edx, [dma_scatter_gather_temp_record]
+    mov edx, [edx + DMA_SG_MAPPING_OWNER]
+    call iommu_revoke_mapping
+    mov edx, [dma_scatter_gather_temp_slot]
+    shl edx, 2
+    add edx, [dma_scatter_gather_temp_rollback_index]
+    mov dword [dma_scatter_gather_iommu_authorization_ids + edx * 4], 0
+.next_iommu_revoke:
+    inc dword [dma_scatter_gather_temp_rollback_index]
+    jmp .revoke_iommu
+.iommu_revoked:
+    mov eax, [dma_scatter_gather_temp_record]
     mov eax, [eax + DMA_SG_MAPPING_REQUEST]
     call io_request_lookup
     jc .skip_request
@@ -9051,6 +9891,46 @@ dma_scatter_gather_unmap:
     stc
     ret
 
+; EAX=Mapping-ID, EDX=Device-ID, EBX=Fehlercode. Ein SG-DMA-Fault beendet
+; den zugehoerigen I/O-Request erst nach Revoke, Unpin und Ownership-Rueckgabe.
+dma_scatter_gather_fault:
+    pushfd
+    cli
+    mov [dma_scatter_gather_temp_id], eax
+    mov [dma_scatter_gather_temp_device], edx
+    mov [dma_scatter_gather_temp_error], ebx
+    test ebx, ebx
+    jz .invalid
+    call dma_scatter_gather_lookup
+    jc .invalid
+    mov edx, [dma_scatter_gather_temp_device]
+    cmp [eax + DMA_SG_MAPPING_DEVICE], edx
+    jne .invalid
+    mov dword [eax + DMA_SG_MAPPING_STATE], DMA_SG_STATE_FAULTED
+    mov ecx, eax
+    sub ecx, dma_scatter_gather_table
+    shr ecx, 6
+    mov ebx, [dma_scatter_gather_temp_error]
+    mov [dma_scatter_gather_error_codes + ecx * 4], ebx
+    mov edx, [eax + DMA_SG_MAPPING_REQUEST]
+    mov [dma_scatter_gather_temp_request], edx
+    inc dword [dma_scatter_gather_fault_count]
+    call dma_scatter_gather_release_record
+    mov eax, [dma_scatter_gather_temp_request]
+    xor edx, edx
+    mov ebx, [dma_scatter_gather_temp_error]
+    call io_request_complete
+    jc .invalid
+    mov eax, [dma_scatter_gather_temp_id]
+    popfd
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
 ; EAX=terminaler IORequest-Datensatz.
 dma_scatter_gather_on_terminal:
     cmp dword [dma_scatter_gather_manager_ready], 1
@@ -9069,6 +9949,19 @@ dma_scatter_gather_on_terminal:
     ret
 
 dma_scatter_gather_self_test:
+    mov eax, 1
+    mov ebx, IOMMU_MODE_RESTRICTED
+    mov ecx, 32
+    mov esi, DMA_SG_APERTURE
+    mov edi, DMA_SG_APERTURE + 0x001FFFFF
+    call iommu_domain_create
+    jc .invalid
+    mov [dma_scatter_gather_test_domain], eax
+    mov edx, 0xD002
+    mov ebx, 0x20
+    mov ecx, 1
+    call iommu_bind_device
+    jc .invalid
     mov eax, 1
     mov edx, 128
     mov ebx, SHARED_BUFFER_RIGHT_READ | SHARED_BUFFER_RIGHT_WRITE | SHARED_BUFFER_RIGHT_TRANSFER | SHARED_BUFFER_RIGHT_DMA | SHARED_BUFFER_RIGHT_RELEASE
@@ -9141,6 +10034,10 @@ dma_scatter_gather_self_test:
     jne .invalid
     test dword [eax + DMA_SG_MAPPING_FLAGS], DMA_SG_FLAG_SPLIT
     jz .invalid
+    cmp dword [eax + DMA_SG_MAPPING_DOMAIN], 0
+    je .invalid
+    cmp dword [iommu_mapping_count], 3
+    jne .invalid
     mov ecx, 0
     call dma_scatter_gather_segment_at
     cmp dword [eax + DMA_SG_SEGMENT_LENGTH], 64
@@ -9151,19 +10048,36 @@ dma_scatter_gather_self_test:
     mov edx, 1
     call scatter_gather_release
     jnc .invalid                       ; aktiver DMA-Consumer blockiert Release
-    mov eax, [dma_scatter_gather_test_request]
-    mov edx, 160
-    xor ebx, ebx
-    call io_request_complete
+    mov eax, [dma_scatter_gather_test_domain]
+    mov edx, 0xD002
+    mov ebx, [dma_scatter_gather_test_mapping]
+    or ebx, IOMMU_EXTERNAL_DMA_SG
+    mov ecx, DMA_SG_APERTURE + 0x1000
+    mov esi, IOMMU_PERMISSION_READ
+    mov edi, 0xD201
+    call iommu_report_fault
     jc .invalid
     mov eax, [dma_scatter_gather_test_record]
-    cmp dword [eax + DMA_SG_MAPPING_STATE], DMA_SG_STATE_UNMAPPED
+    cmp dword [eax + DMA_SG_MAPPING_STATE], DMA_SG_STATE_FAULTED
+    jne .invalid
+    cmp dword [dma_scatter_gather_fault_count], 1
+    jne .invalid
+    mov eax, [dma_scatter_gather_test_request]
+    call io_request_lookup
+    jc .invalid
+    cmp dword [eax + IO_REQUEST_STATE], IO_REQUEST_STATE_FAILED
+    jne .invalid
+    cmp dword [eax + IO_REQUEST_COMPLETION], IO_COMPLETION_FAILED
+    jne .invalid
+    cmp dword [eax + IO_REQUEST_ERROR], 0xD201
     jne .invalid
     cmp dword [dma_scatter_gather_active_count], 0
     jne .invalid
     cmp dword [dma_scatter_gather_mapped_bytes], 0
     jne .invalid
     cmp dword [dma_scatter_gather_pinned_buffers], 0
+    jne .invalid
+    cmp dword [iommu_mapping_count], 0
     jne .invalid
     mov eax, [dma_scatter_gather_test_buffer_a]
     call shared_buffer_lookup
@@ -9191,6 +10105,10 @@ dma_scatter_gather_self_test:
     mov edx, 1
     call shared_buffer_release
     jc .invalid
+    mov eax, [dma_scatter_gather_test_domain]
+    mov edx, 1
+    call iommu_domain_release
+    jc .invalid
     clc
     ret
 .invalid:
@@ -9215,6 +10133,7 @@ dma_scatter_gather_mapped_bytes:         dd 0
 dma_scatter_gather_pinned_buffers:       dd 0
 dma_scatter_gather_split_segments:       dd 0
 dma_scatter_gather_validation_failures:  dd 0
+dma_scatter_gather_fault_count:          dd 0
 dma_scatter_gather_temp_id:              dd 0
 dma_scatter_gather_temp_owner:           dd 0
 dma_scatter_gather_temp_device:          dd 0
@@ -9234,6 +10153,11 @@ dma_scatter_gather_temp_offset:          dd 0
 dma_scatter_gather_temp_remaining:       dd 0
 dma_scatter_gather_temp_permissions:     dd 0
 dma_scatter_gather_temp_chunk:           dd 0
+dma_scatter_gather_temp_error:           dd 0
+dma_scatter_gather_temp_iommu_domain:    dd 0
+dma_scatter_gather_temp_device_segment:  dd 0
+dma_scatter_gather_temp_authorized_count: dd 0
+dma_scatter_gather_temp_rollback_index:  dd 0
 dma_scatter_gather_temp_buffer_ids:      times SG_MAX_SEGMENTS dd 0
 dma_scatter_gather_test_buffer_a:        dd 0
 dma_scatter_gather_test_buffer_b:        dd 0
@@ -9243,6 +10167,7 @@ dma_scatter_gather_test_task:            dd 0
 dma_scatter_gather_test_request:         dd 0
 dma_scatter_gather_test_mapping:         dd 0
 dma_scatter_gather_test_record:          dd 0
+dma_scatter_gather_test_domain:          dd 0
 align 4
 dma_scatter_gather_table:
     times DMA_SG_CAPACITY * DMA_SG_MAPPING_SIZE db 0
@@ -9252,6 +10177,10 @@ dma_scatter_gather_generations:
     times DMA_SG_CAPACITY dd 0
 dma_request_sg_mapping_ids:
     times IO_REQUEST_CAPACITY dd 0
+dma_scatter_gather_iommu_authorization_ids:
+    times DMA_SG_CAPACITY * DMA_SG_MAX_SEGMENTS dd 0
+dma_scatter_gather_error_codes:
+    times DMA_SG_CAPACITY dd 0
 
 ; ---------------------------------------------------------------------------
 ; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
@@ -19307,6 +20236,12 @@ message_shared_buffer_ok:
     db "NOVA: Shared Buffer ABI 1.0, IO-Lease und Copy-Fallback aktiv", 13, 10, 0
 message_shared_buffer_error:
     db "NOVA PANIC: Shared Buffer Manager nicht initialisierbar", 13, 10, 0
+message_topology_ok:
+    db "NOVA: HAL Topology ABI 1.0, Busse, Devices und IOMMU-Gruppen aktiv", 13, 10, 0
+message_topology_cpu_count:
+    db "NOVA: HAL Topology, normalisierte CPU-Threads (hex): 0x", 0
+message_topology_error:
+    db "NOVA PANIC: HAL Topology Manager nicht initialisierbar", 13, 10, 0
 message_iommu_ok:
     db "NOVA: IOMMU ABI 1.0, Domains, Gruppen und Fault-Zuordnung aktiv", 13, 10, 0
 message_iommu_error:
@@ -19323,6 +20258,10 @@ message_dma_scatter_gather_ok:
     db "NOVA: DMA Scatter Gather ABI 1.0, Split und Providerlimits aktiv", 13, 10, 0
 message_dma_scatter_gather_error:
     db "NOVA PANIC: DMA Scatter Gather Manager nicht initialisierbar", 13, 10, 0
+message_dma_iommu_lifecycle_ok:
+    db "NOVA: DMA IOMMU Lifecycle fuer linear und Scatter Gather aktiv", 13, 10, 0
+message_iommu_fault_propagation_ok:
+    db "NOVA: IOMMU Fault beendet DMA und IO Request kontrolliert", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:

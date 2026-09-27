@@ -1,6 +1,6 @@
 # NovaOS – aktueller Entwicklungsstand
 
-**Stand:** 26. September 2026
+**Stand:** 27. September 2026
 **Projektpfad:** `C:\recoverboot\nova-os`  
 **Aktueller Schwerpunkt:** UEFI-Bootpfad und Kernel-Handoff
 
@@ -885,3 +885,84 @@ werden abgewiesen, statt eine nicht vorhandene Garantie zu melden. Der
 Selbsttest prüft zwei Geräte in einer Gruppe, eine gültige Autorisierung,
 überlappende IOVAs, Fault-Zuordnung und vollständigen Ressourcenabbau. Der
 UEFI-End-to-End-Test bleibt erfolgreich.
+
+### Automatischer DMA-/IOMMU-Lifecycle
+
+Die linearen und Scatter/Gather-DMA-Pfade sind jetzt direkt mit der
+IOMMU-Domainverwaltung verbunden. Ist ein Device an eine Domain gebunden,
+erzeugt das DMA-Mapping automatisch die notwendigen IOVA-Autorisierungen. Die
+Domain-ID wird im linearen und im SG-DMA-Mapping sichtbar gespeichert.
+
+Ein lineares Mapping erhält genau eine Autorisierung für seine kontrollierte
+Device-Seite. Beim Scatter/Gather-Pfad wird jedes erzeugte Device-Segment
+einzeln autorisiert. Schlägt eine Autorisierung in der Mitte fehl, widerruft
+der Kernel alle zuvor angelegten Einträge, bevor Buffer oder Descriptoren in
+den Providerzustand wechseln. Dadurch existieren keine halbfertigen Mappings.
+
+Der gemeinsame terminale I/O-Pfad widerruft sämtliche IOMMU-Autorisierungen,
+bevor Pinning, Provider-Ownership und Buffer-Referenzen zurückgegeben werden.
+Das gilt identisch für Erfolg, Teilerfolg, Fehler, Cancellation und Deadline
+Miss. Erst wenn das IOMMU-Accounting wieder null meldet, dürfen Test-Domain und
+Device-Bindings freigegeben werden.
+
+Die erweiterten Selbsttests prüfen eine lineare Autorisierung sowie drei
+separate Autorisierungen für ein gesplittetes SG-Mapping. Nach Completion
+müssen jeweils keine aktiven IOMMU-Mappings mehr vorhanden sein. Der reale
+UEFI-QEMU-Test bestätigt den gemeinsamen Lifecycle-Marker und erreicht danach
+weiterhin Ring 3, Desktop und `PLATFORM_OFF`.
+
+### IOMMU-Fault-Propagation bis zur I/O-Completion
+
+IOMMU-Faults bleiben nicht länger reine Diagnosedatensätze. Externe
+Mapping-Identitäten enthalten jetzt einen getrennten Typanteil für lineares DMA
+und Scatter/Gather-DMA. Dadurch kann der Fault-Handler das betroffene
+Kernelmapping eindeutig finden, ohne IDs verschiedener Domänen zu vermischen.
+
+Ein Fault markiert zunächst Autorisierung und DMA-Mapping als `Faulted`. Danach
+werden alle IOVA-Autorisierungen widerrufen, die Device-Mappings entfernt,
+Buffer entpinnt und das Ownership an die CPU zurückgegeben. Erst nach diesem
+sicheren Abbau wird der zugehörige I/O-Request mit `Failed`, einer
+`IO_COMPLETION_FAILED`-Completion und dem ursprünglichen Gerätefehler beendet.
+
+Der SG-Pfad behandelt einen Fault auf einem einzelnen Device-Segment als Fehler
+der gesamten Operation. Alle übrigen Segmente werden ebenfalls revoked, bevor
+der Request abgeschlossen wird. Dadurch bleibt kein Teilmapping aktiv und ein
+unbekannter Transferzustand kann nicht als Erfolg erscheinen.
+
+Die linearen und SG-Selbsttests lösen nun absichtlich IOMMU-Faults aus. Sie
+prüfen Mappingzustand, Requestzustand, Completionstatus, Fehlercode,
+IOMMU-Accounting, Pinning und Ownership. Der UEFI-End-to-End-Test bestätigt die
+neue Fault-Markierung und erreicht anschließend weiterhin Desktop und
+`PLATFORM_OFF`.
+
+### Normalisierte HAL-Hardwaretopologie
+
+Der Kernel besitzt jetzt einen versionierten Topologiegraphen für System,
+UMA-/NUMA-Knoten, CPU-Package, Core, Hardware-Thread, Speicher, Interrupt-
+Controller, Busse, IOMMU-Gruppen und Devices. Parent-/Child-Beziehungen,
+eindeutige Topologie-IDs, Generationen und monotone Änderungssequenzen machen
+die Struktur kontrolliert auswertbar.
+
+Der aktuelle Graph ist ein ausdrücklich markiertes Bootstrap-/UMA-Modell. Er
+stellt die vorhandenen DMA-/IOMMU-Testprovider dar, behauptet aber noch keine
+reale PCI-Erkennung. Kontrollierte Zustandswechsel decken bereits
+`Online → Quiescing → Offline → Online` ab; nicht online befindliche Geräte
+werden nicht als nutzbar geliefert.
+
+Die IOMMU-Bindung vertraut einer vom Aufrufer übergebenen Gruppennummer nicht
+mehr allein. Device und Gruppe müssen im normalisierten HAL-Modell
+übereinstimmen. ABI-Prüfung, Kernelbau und der vollständige UEFI-QEMU-Test bis
+Desktop und geordnetem Shutdown sind erfolgreich.
+
+### CPU-Erkennung aus ACPI/MADT normalisiert
+
+Der HAL-Graph verwendet jetzt die bereits validierte ACPI-MADT-Liste statt
+eines fest eingetragenen CPU-Threads. Aktivierte Local-APIC- und x2APIC-
+Einträge werden dedupliziert und mit ihrer echten APIC-Hardware-ID als
+`CPU_THREAD` übernommen. Der automatisierte UEFI-Test startet QEMU mit vier
+CPUs und verlangt entsprechend vier normalisierte Threads.
+
+Package- und Core-Beziehungen sowie NUMA-Lokalität werden noch nicht
+behauptet, weil die MADT diese Informationen nicht liefert. Dafür sind später
+per-CPU-CPUID und ACPI SRAT notwendig. Ohne gültige MADT bleibt ein klar
+gekennzeichneter BSP-Fallback mit der über CPUID ermittelten APIC-ID erhalten.

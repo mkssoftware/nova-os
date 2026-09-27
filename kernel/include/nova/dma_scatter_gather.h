@@ -12,6 +12,7 @@
 #define NOVA_DMA_SG_FLAG_COHERENT   (1u << 1)
 #define NOVA_DMA_SG_FLAG_RESTRICTED (1u << 2)
 #define NOVA_DMA_SG_FLAG_SPLIT      (1u << 3)
+#define NOVA_DMA_SG_FLAG_IOMMU      (1u << 4)
 
 typedef enum nova_dma_sg_state {
     NOVA_DMA_SG_EMPTY = 0,
@@ -47,7 +48,7 @@ typedef struct nova_dma_sg_mapping_record {
     uint32_t Boundary;
     uint32_t Flags;
     uint32_t Generation;
-    uint32_t ErrorCode;
+    uint32_t DomainId;
 } nova_dma_sg_mapping_record_t;
 
 typedef struct nova_dma_sg_api {
