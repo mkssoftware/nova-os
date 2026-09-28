@@ -917,7 +917,7 @@ test: ui-architecture-runtime-check image
 		test "$$status" -eq 0 -o "$$status" -eq 124
 	grep -F "NOVA: NBHP/BIB v1 validiert" $(SERIAL_LOG)
 	grep -F "NOVA: Panic Reporter ABI 1.0 bereit" $(SERIAL_LOG)
-	grep -F "NOVA: PMM ABI 1.0 und Seitentest bereit" $(SERIAL_LOG)
+	grep -F "NOVA: PMM NUMA ABI 1.1, Preferred und Strict Allocation aktiv" $(SERIAL_LOG)
 	grep -F "NOVA: Heap ABI 1.0 und Schreibtest bereit" $(SERIAL_LOG)
 	grep -F "NOVA: Object Manager ABI 1.0 bereit" $(SERIAL_LOG)
 	grep -F "NOVA: Component Manager ABI 1.0 bereit" $(SERIAL_LOG)

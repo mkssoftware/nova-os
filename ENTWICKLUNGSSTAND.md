@@ -994,3 +994,34 @@ im CPU-Datensatz erhalten, sodass spätere Änderungen nachvollziehbar sind.
 Unbekannte Die-, Cluster-, Cache- und NUMA-Zuordnungen bleiben ausdrücklich
 `0xFFFFFFFF`. ABI-Prüfung, Kernel-Selbsttest und der vollständige UEFI-QEMU-
 Test bis Desktop und geordnetem Shutdown sind erfolgreich.
+
+### ACPI SRAT und echte NUMA-Affinitäten
+
+NovaOS validiert und parst jetzt ACPI SRAT für Local-APIC-, x2APIC- und
+Speicher-Affinitäten. CPU-Einträge werden gegen die MADT abgeglichen;
+widersprüchliche Domains, überlappende Speicherbereiche und Überläufe werden
+fail-closed abgewiesen.
+
+Validierte Proximity-Domains erscheinen als stabile NUMA-Knoten im
+Hardwaregraphen. Hardware-Threads und Speicherregionen erhalten nur bei
+bestätigter SRAT-Zuordnung `LOCALITY_KNOWN`. Der CPU Manager übernimmt die
+NUMA-ID direkt aus diesem Graphen. Ohne SRAT bleibt die Lokalität ausdrücklich
+unbekannt.
+
+Ein neuer UEFI-QEMU-Test startet zwei NUMA-Knoten mit vier CPUs und getrennten
+Speicher-Backends. Er bestätigt vier CPU- und drei Memory-Affinitäten sowie den
+vollständigen Kernelstart. Der normale UEFI-Desktoptest bleibt ebenfalls
+erfolgreich.
+
+### NUMA-bewusste PMM-Allokation
+
+Der physische Bootstrap-Speichermanager taggt nun jeden verwalteten Frame mit
+seiner validierten SRAT-Proximity-Domain oder mit einem expliziten Unknown-
+Wert. Seine abwärtskompatibel erweiterte ABI 1.1 unterstützt eine bevorzugte
+Allokation mit Fallback, eine strikte node-lokale Allokation und die Abfrage
+der Lokalität einer physischen Seite.
+
+Der Kernel-Selbsttest prüft lokale Entnahme, fehlende Domains, Fallback und die
+vollständige Wiederherstellung des Frame-Zählers. ABI-Check, normaler UEFI-
+Desktoppfad und Zwei-Knoten-NUMA-Test sind erfolgreich. Eine systemweite
+Placement-/Migrationspolitik und SLIT-Distanzen bleiben spätere Schritte.

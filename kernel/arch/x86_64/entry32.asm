@@ -1688,6 +1688,54 @@ acpi_srat_cpu_domain_lookup:
     stc
     ret
 
+; EAX=physische 4-KiB-Seite; EAX=validierte Proximity-Domain.
+; Die normalisierte SRAT-Tabelle ist der frühe Firmware-Provider für den PMM;
+; der Hardware-Graph übernimmt anschließend dieselben Datensätze normativ.
+acpi_srat_memory_domain_lookup:
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+    mov esi, eax
+    cmp dword [acpi_srat_valid], 1
+    jne .invalid
+    xor ecx, ecx
+.scan:
+    cmp ecx, [acpi_srat_memory_count]
+    jae .invalid
+    mov edi, ecx
+    imul edi, ACPI_SRAT_MEMORY_RECORD_SIZE
+    add edi, acpi_srat_memory_records
+    mov ebx, [edi + 4]
+    cmp esi, ebx
+    jb .next
+    mov edx, ebx
+    add edx, [edi + 12]
+    jc .invalid
+    mov eax, esi
+    add eax, 4096
+    jc .invalid
+    cmp eax, edx
+    jbe .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, [edi]
+    clc
+    jmp .done
+.invalid:
+    mov eax, 0xFFFFFFFF
+    stc
+.done:
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    ret
+
 align 4
 acpi_cpu_count:          dd 1
 acpi_madt_valid:         dd 0
@@ -1737,11 +1785,15 @@ early_security_entropy_initialize:
 
 PMM_PAGE_SIZE        equ 4096
 PMM_MAX_FRAMES       equ 1024
-PMM_API_SIZE         equ 32
+PMM_API_SIZE         equ 48
 PMM_API_ABI_MAJOR    equ 1
-PMM_API_ABI_MINOR    equ 0
+PMM_API_ABI_MINOR    equ 1
 PMM_CAP_E820         equ 0x00000001
 PMM_CAP_LIFO_FRAMES  equ 0x00000002
+PMM_CAP_NUMA_TAGGED  equ 0x00000004
+PMM_CAP_NUMA_PREFERRED equ 0x00000008
+PMM_CAP_NUMA_STRICT  equ 0x00000010
+PMM_NUMA_UNKNOWN     equ 0xFFFFFFFF
 
 PMM_API_STRUCT_SIZE  equ 0
 PMM_API_ABI          equ 4
@@ -1751,6 +1803,10 @@ PMM_API_ALLOC        equ 16
 PMM_API_FREE         equ 20
 PMM_API_TOTAL        equ 24
 PMM_API_AVAILABLE    equ 28
+PMM_API_ALLOC_PREFERRED equ 32
+PMM_API_ALLOC_STRICT equ 36
+PMM_API_NODE_FOR_PAGE equ 40
+PMM_API_NUMA_UNKNOWN equ 44
 
 pmm_initialize:
     mov dword [pmm_frame_count], 0
@@ -1798,6 +1854,10 @@ pmm_initialize:
     jae .complete
     mov edi, [pmm_frame_count]
     mov [pmm_frames + edi * 4], eax
+    push eax
+    call acpi_srat_memory_domain_lookup
+    mov [pmm_frame_numa_nodes + edi * 4], eax
+    pop eax
     inc dword [pmm_frame_count]
     add eax, PMM_PAGE_SIZE
     jc .next_entry
@@ -1820,7 +1880,8 @@ pmm_initialize:
     stc
     ret
 
-; EAX = physische 4-KiB-Seite, EAX=0 bei Erschöpfung.
+; EAX = physische 4-KiB-Seite, EDX = NUMA-Node oder PMM_NUMA_UNKNOWN.
+; EAX=0 meldet Erschöpfung.
 pmm_alloc_page:
     mov ecx, [pmm_frame_count]
     test ecx, ecx
@@ -1828,10 +1889,54 @@ pmm_alloc_page:
     dec ecx
     mov [pmm_frame_count], ecx
     mov eax, [pmm_frames + ecx * 4]
+    mov edx, [pmm_frame_numa_nodes + ecx * 4]
     mov [pmm_api + PMM_API_AVAILABLE], ecx
     ret
 .empty:
     xor eax, eax
+    mov edx, PMM_NUMA_UNKNOWN
+    ret
+
+; EAX = gewünschter NUMA-Node. Bevorzugte Allokation fällt kontrolliert auf
+; eine beliebige Seite zurück; EDX liefert immer die tatsächliche Lokalität.
+pmm_alloc_page_preferred:
+    push eax
+    call pmm_alloc_page_strict
+    test eax, eax
+    jnz .found
+    pop eax
+    jmp pmm_alloc_page
+.found:
+    add esp, 4
+    ret
+
+; EAX = gewünschter NUMA-Node. Strikte Allokation liefert ausschließlich eine
+; lokal getaggte Seite. Die Arrays bleiben durch Swap-with-last kompakt.
+pmm_alloc_page_strict:
+    mov edx, eax
+    mov ecx, [pmm_frame_count]
+.scan:
+    test ecx, ecx
+    jz .empty
+    dec ecx
+    cmp [pmm_frame_numa_nodes + ecx * 4], edx
+    jne .scan
+    mov eax, [pmm_frames + ecx * 4]
+    mov ebx, [pmm_frame_count]
+    dec ebx
+    cmp ecx, ebx
+    je .remove
+    mov esi, [pmm_frames + ebx * 4]
+    mov [pmm_frames + ecx * 4], esi
+    mov esi, [pmm_frame_numa_nodes + ebx * 4]
+    mov [pmm_frame_numa_nodes + ecx * 4], esi
+.remove:
+    mov [pmm_frame_count], ebx
+    mov [pmm_api + PMM_API_AVAILABLE], ebx
+    ret
+.empty:
+    xor eax, eax
+    mov edx, PMM_NUMA_UNKNOWN
     ret
 
 ; EAX = freizugebende Seite. CF meldet ungültige oder volle Übergabe.
@@ -1844,6 +1949,10 @@ pmm_free_page:
     cmp ecx, PMM_MAX_FRAMES
     jae .invalid
     mov [pmm_frames + ecx * 4], eax
+    push eax
+    call acpi_srat_memory_domain_lookup
+    mov [pmm_frame_numa_nodes + ecx * 4], eax
+    pop eax
     inc ecx
     mov [pmm_frame_count], ecx
     mov [pmm_api + PMM_API_AVAILABLE], ecx
@@ -1875,7 +1984,49 @@ pmm_self_test:
     jc .invalid
     cmp [pmm_frame_count], ebp
     jne .invalid
+    ; Ist eine bekannte Lokalität vorhanden, müssen Strict, Preferred-Fallback
+    ; und die Rückgabe des tatsächlichen Nodes deterministisch funktionieren.
+    xor ecx, ecx
+.numa_scan:
+    cmp ecx, [pmm_frame_count]
+    jae .complete
+    mov eax, [pmm_frame_numa_nodes + ecx * 4]
+    cmp eax, PMM_NUMA_UNKNOWN
+    jne .numa_known
+    inc ecx
+    jmp .numa_scan
+.numa_known:
+    mov esi, eax
+    call pmm_alloc_page_strict
+    test eax, eax
+    jz .invalid
+    mov edi, eax
+    cmp edx, esi
+    jne .restore_numa_invalid
+    mov eax, 0xFFFFFFFE
+    call pmm_alloc_page_strict
+    test eax, eax
+    jnz .restore_numa_invalid
+    mov eax, 0xFFFFFFFE
+    call pmm_alloc_page_preferred
+    test eax, eax
+    jz .restore_numa_invalid
+    mov ebx, eax
+    mov eax, ebx
+    call pmm_free_page
+    jc .restore_numa_invalid
+    mov eax, edi
+    call pmm_free_page
+    jc .invalid
+    cmp [pmm_frame_count], ebp
+    jne .invalid
+.complete:
     clc
+    ret
+.restore_numa_invalid:
+    mov eax, edi
+    call pmm_free_page
+    stc
     ret
 .restore_both:
     call pmm_free_page
@@ -1893,17 +2044,23 @@ pmm_api:
     dd PMM_API_SIZE
     dw PMM_API_ABI_MAJOR, PMM_API_ABI_MINOR
     dd PMM_PAGE_SIZE
-    dd PMM_CAP_E820 | PMM_CAP_LIFO_FRAMES
+    dd PMM_CAP_E820 | PMM_CAP_LIFO_FRAMES | PMM_CAP_NUMA_TAGGED | PMM_CAP_NUMA_PREFERRED | PMM_CAP_NUMA_STRICT
     dd pmm_alloc_page
     dd pmm_free_page
     dd 0
     dd 0
+    dd pmm_alloc_page_preferred
+    dd pmm_alloc_page_strict
+    dd acpi_srat_memory_domain_lookup
+    dd PMM_NUMA_UNKNOWN
 
 pmm_reserved_end: dd 0
 pmm_frame_count:  dd 0
 align 16
 pmm_frames:
     times PMM_MAX_FRAMES dd 0
+pmm_frame_numa_nodes:
+    times PMM_MAX_FRAMES dd PMM_NUMA_UNKNOWN
 
 ; ---------------------------------------------------------------------------
 ; Bootstrap-Kernel-Heap (ADR-2003)
@@ -21026,7 +21183,7 @@ message_line_end:
 message_kernel_identity_ok:
     db "NOVA: Kernel Build-ID aus NBHP/BIB importiert", 13, 10, 0
 message_pmm_ok:
-    db "NOVA: PMM ABI 1.0 und Seitentest bereit", 13, 10, 0
+    db "NOVA: PMM NUMA ABI 1.1, Preferred und Strict Allocation aktiv", 13, 10, 0
 message_pmm_error:
     db "NOVA PANIC: physischer Speichermanager nicht initialisierbar", 13, 10, 0
 message_heap_ok:

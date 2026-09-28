@@ -48,6 +48,10 @@ try {
     if($content-notlike"*$marker*"){
         throw "Erwartete NUMA-Markierung fehlt: $marker"
     }
+    $pmmMarker='NOVA: PMM NUMA ABI 1.1, Preferred und Strict Allocation aktiv'
+    if($content-notlike"*$pmmMarker*"){
+        throw "Erwartete NUMA-PMM-Markierung fehlt: $pmmMarker"
+    }
     if($content-notlike'*NOVA: CPU Manager bezieht Package, Core und Thread aus HAL Topology*'){
         throw 'CPU Manager erreichte den HAL-Topologieimport nicht'
     }

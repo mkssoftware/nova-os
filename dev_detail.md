@@ -2205,3 +2205,92 @@ bekannte oder unbekannte Package-/Core-Felder. Der UEFI-Test verlangt
 zusätzlich die Markierung
 `NOVA: CPU Manager bezieht Package, Core und Thread aus HAL Topology` und
 läuft danach weiterhin bis Desktop und geordnetem Shutdown.
+
+## 85. ACPI-SRAT und NUMA-Knoten im Hardwaregraphen
+
+Die frühe ACPI-Phase sucht nun zusätzlich nach der System Resource Affinity
+Table (SRAT). Wie bei der MADT werden Root-Pointer, RSDT/XSDT, Signatur,
+Tabellenlänge, vollständige Lage im Firmware-Speicherbereich und Prüfsumme vor
+dem Parsen validiert. SRAT-Einträge besitzen zusätzlich eine strikt begrenzte
+Längen- und Endprüfung.
+
+Unterstützt werden derzeit:
+
+- Processor Local APIC/SAPIC Affinity, Typ 0,
+- Memory Affinity, Typ 1,
+- Processor Local x2APIC Affinity, Typ 2.
+
+Nur aktivierte Einträge werden übernommen. Jede SRAT-CPU muss bereits in der
+validierten MADT-Liste vorhanden sein. Eine doppelte CPU-Zuordnung zu
+verschiedenen Proximity-Domains, überlappende Speicherbereiche, Null-Längen,
+Adressüberläufe oder überschrittene Kapazitäten machen die Tabelle ungültig.
+Identische doppelte CPU-Zuordnungen werden deterministisch zusammengeführt.
+
+Die Bootstrapdarstellung ist auf acht CPU- und acht Speicher-Affinitäten
+begrenzt. Der aktuelle 32-Bit-Kernel übernimmt nur Speicherbereiche, deren
+Basis und Länge vollständig in 32 Bit darstellbar sind. Höhere Bereiche werden
+gezählt und kontrolliert übersprungen; sie werden weder abgeschnitten noch als
+lokaler Speicher ausgegeben.
+
+Aus jeder verwendeten Proximity-Domain erzeugt die HAL genau einen stabilen
+`NUMA_NODE`. CPU-Threads erhalten Domain und `LOCALITY_KNOWN` nur, wenn eine
+validierte SRAT-Zuordnung existiert. Speicher-Affinitäten werden als getrennte
+`MEMORY_REGION`-Knoten mit physischer Basis, Länge und SRAT-Flags unter ihrem
+NUMA-Knoten eingetragen. Fehlt die SRAT, bleibt ein expliziter unbekannter
+Fallback-Knoten erhalten.
+
+Package-Knoten hängen am System-Root und nicht an einem einzelnen NUMA-Knoten.
+Das verhindert die falsche Annahme `Package == NUMA Domain`, insbesondere bei
+Sub-NUMA-Clustering. Die Thread-Datensätze tragen ihre Lokalität unabhängig
+von der Package-/Core-Hierarchie. Der CPU Manager übernimmt diese bestätigte
+Domain über sein `NumaNodeId`-Feld; ohne `LOCALITY_KNOWN` bleibt es
+`0xFFFFFFFF`.
+
+`scripts/test-uefi-numa.ps1` startet QEMU mit zwei Sockets, zwei NUMA-Knoten,
+vier CPUs und zwei getrennten 128-MiB-Memory-Backends. OVMF beschreibt dabei
+vier CPU- und drei Memory-Affinitäten, weil der niedrige Speicherbereich
+separat modelliert wird. Der Test verlangt exakt
+`0x00000004/0x00000003`, den CPU-Manager-Import und `NOVA_KERNEL_READY`.
+Zusätzlich bleibt der normale UEFI-Test ohne erzwungene NUMA-Konfiguration bis
+Desktop, Eingabe und Shutdown erfolgreich.
+
+Noch nicht umgesetzt sind ACPI SLIT für relative Distanzen, 64-Bit-
+Speicherregionen und eine systemweite NUMA-Placement-Policy. Die SRAT-Daten
+sind jetzt jedoch validiert und als gemeinsame Topologiequelle verfügbar.
+
+## 86. NUMA-bewusster physischer Bootstrap-Speichermanager
+
+Die PMM-ABI wurde kompatibel von 1.0 auf 1.1 erweitert. Ihr bisheriger
+32-Byte-Präfix besitzt unveränderte Offsets; vier angehängte Felder vergrößern
+die Struktur auf 48 Byte. Neue Capability-Bits kennzeichnen getaggte Frames,
+bevorzugte und strikte NUMA-Allokation.
+
+Jede beim Start übernommene physische 4-KiB-Seite erhält in einem parallelen
+Metadatenfeld ihre validierte SRAT-Proximity-Domain. Deckt keine bestätigte
+Speicher-Affinität die vollständige Seite ab, wird ausdrücklich
+`NOVA_PMM_NUMA_UNKNOWN` (`0xFFFFFFFF`) gespeichert. Auch freigegebene Seiten
+werden über den normalisierten frühen SRAT-Provider erneut korrekt getaggt.
+Der PMM interpretiert dabei keine rohen ACPI-Strukturen; der spätere
+Hardwaregraph wird aus derselben bereits validierten Quelle erzeugt.
+
+Die ABI 1.1 stellt drei zusätzliche Operationen bereit:
+
+- `AllocPreferredEntry` versucht zunächst den verlangten Node und fällt bei
+  fehlendem lokalen Speicher kontrolliert auf eine beliebige Seite zurück.
+- `AllocStrictEntry` liefert nur eine Seite des verlangten Nodes und andernfalls
+  null.
+- `NodeForPageEntry` ermittelt die validierte Lokalität einer physischen Seite.
+
+Jede erfolgreiche Allokation liefert in `EDX` die tatsächliche Domain. Die
+strikte Suche entfernt einen Treffer per Swap-with-last, sodass Frame- und
+Node-Array kompakt und synchron bleiben. Der Startselbsttest prüft reguläre
+Entnahme/Rückgabe, strikte lokale Auswahl, Ablehnung einer nicht vorhandenen
+Domain, Preferred-Fallback und die vollständige Wiederherstellung des freien
+Seitenzählers.
+
+Der PMM bleibt bewusst ein 32-Bit-Bootstrap-Allocator mit maximal 1024
+verwalteten Frames. Er bietet nun den Mechanismus für lokale Anforderungen,
+legt aber noch keine globale Placement-, Migration- oder Distanzpolitik fest.
+ABI-Prüfung, normaler UEFI-Desktoptest und der Zwei-Knoten-NUMA-Test laufen mit
+dem Marker `NOVA: PMM NUMA ABI 1.1, Preferred und Strict Allocation aktiv`
+erfolgreich durch.
