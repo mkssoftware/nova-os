@@ -1,6 +1,6 @@
 # NovaOS – technische Implementierungsdetails
 
-**Stand:** 27. September 2026
+**Stand:** 28. September 2026
 **Projekt:** `C:\recoverboot\nova-os`  
 **Ergänzt:** [ENTWICKLUNGSSTAND.md](ENTWICKLUNGSSTAND.md)
 
@@ -2104,12 +2104,11 @@ dadurch vier Hardware-Threads und meldet:
 
 `NOVA: HAL Topology, normalisierte CPU-Threads (hex): 0x00000004`
 
-Die MADT beschreibt keine Package-/Core-Zuordnung. Solche Beziehungen werden
-deshalb nicht aus logischen CPU-Nummern erfunden. Die ABI-Typen für Package,
-Core, Thread und Cache bleiben vorhanden; eine spätere per-CPU-CPUID-
-Normalisierung kann die fehlenden Ebenen ergänzen. Ebenso bleibt die NUMA-
-Lokalität ohne validierte SRAT unbekannt und trägt kein
-`LOCALITY_KNOWN`-Flag.
+Die MADT beschreibt keine Package-/Core-Zuordnung. Dieser Abschnitt übernimmt
+daher ausschließlich Thread-Identitäten; die nachfolgende CPUID-
+Normalisierung ergänzt Package und Core aus einer dafür vorgesehenen
+Architekturquelle. Die NUMA-Lokalität bleibt ohne validierte SRAT unbekannt
+und trägt kein `LOCALITY_KNOWN`-Flag.
 
 Fehlt eine gültige MADT, bleibt genau der BSP als kontrollierter Fallback im
 Graphen. Seine APIC-Hardware-ID wird auch ohne RSDP direkt über CPUID Blatt 1
@@ -2121,3 +2120,88 @@ Quellenstatus mit der normalisierten Plattformliste ab. Der automatisierte
 UEFI-Test verlangt bei vier emulierten CPUs exakt vier Topologieknoten und
 erreicht danach weiterhin Desktop, Eingabeverarbeitung und den geordneten
 Shutdown.
+
+## 83. CPUID-Package-/Core-/SMT-Hierarchie
+
+Der x86-Topologieprovider bevorzugt CPUID-Blatt `0x1F` und verwendet
+`0x0B` als standardisierten Fallback. Er läuft die Subleaves begrenzt ab,
+übernimmt nur bekannte Leveltypen und validiert alle Shiftwerte. Eine
+Core-Ebene muss vorhanden sein und ihr Shift darf nicht kleiner als der
+SMT-Shift sein. Unvollständige oder widersprüchliche Angaben aktivieren keine
+scheinbar genaue Hierarchie.
+
+Aus der validierten Bitaufteilung werden für jede MADT-APIC-ID drei Werte
+gebildet:
+
+```text
+PackageKey = ApicId >> CoreShift
+CoreKey    = ApicId >> ThreadShift
+ThreadId   = ApicId & ((1 << ThreadShift) - 1)
+```
+
+Package- und Core-Keys sind innerhalb des laufenden Systems eindeutig.
+Existierende Package-/Core-Knoten werden wiederverwendet, sodass SMT-Threads
+desselben Kerns denselben Parent besitzen. Neue Knoten tragen
+`ARCH_VALIDATED`; ein Thread trägt dieses Flag zusätzlich zu seinem getrennten
+MADT-Quellenstatus. Der Graph bildet damit
+`NUMA → Package → Core → HardwareThread` ab, ohne aus einer logischen
+CPU-Nummer eine Hardwarebeziehung abzuleiten.
+
+Der Selbsttest prüft die vollständige Parent-Kette jedes Threads, die Anzahl
+aller Knoten und das getrennte Package-/Core-/Thread-Accounting. Ist weder
+CPUID `0x1F` noch `0x0B` verwendbar, bleiben die Threads direkt unter dem
+unbekannten NUMA-Fallback; dieser Zustand wird nicht als validierte
+Package-Hierarchie ausgegeben.
+
+Die Topologiekapazität wurde von 32 auf 48 Knoten erweitert. Damit passen zum
+aktuellen CPU-Limit von acht Hardware-Threads auch im ungünstigsten Fall je
+acht Package- und Core-Knoten neben die vorhandenen Plattform- und
+I/O-Knoten. Der UEFI-Test verlangt den zusätzlichen Laufzeitmarker
+`NOVA: HAL CPUID Hierarchy, Packages/Core/Threads (hex): 0x` und erreicht
+weiterhin Ring 3 und `PLATFORM_OFF`.
+
+## 84. CPU Manager als HAL-Topologie-Consumer
+
+`kernel/include/nova/cpu.h` definiert nun die CPU-ABI 1.0. Der öffentliche
+Datensatz ist 112 Byte groß und besitzt getrennte semantische Felder für
+CPU-ID, Hardware-ID, Package, Die, Cluster, Core, Hardware-Thread und
+NUMA-Knoten. Hinzu kommen Zustand, Kapazität, Features, LLC-ID,
+Topologieknoten-ID und Topologiegeneration. Das zugehörige API bleibt 48 Byte
+groß und ist durch statische ABI-Prüfungen abgesichert.
+
+Damit wurde ein Fehler des bisherigen internen 96-Byte-Layouts beseitigt:
+Package, Die, Cluster, Core, Thread und NUMA benötigen sechs getrennte Felder;
+zuvor waren dafür nur fünf Slots vorhanden. Der neue Datensatz enthält ein
+eigenes `CoreId` und kann die in `NPSPEC-KERNEL-0026` definierte Topologie ohne
+Zusammenlegen semantisch verschiedener IDs darstellen.
+
+`cpu_import_hal_topology` ist jetzt die einzige Topologiequelle des CPU
+Managers. Für BSP und alle firmwareerkannten APs sucht der Manager den
+normalisierten Hardware-Thread über dessen APIC-Hardware-ID. Anschließend
+übernimmt er:
+
+```text
+HardwareThread.TopologyId  → CPU.TopologyNodeId
+HardwareThread.Generation  → CPU.TopologyGeneration
+HardwareThread.ThreadId    → CPU.ThreadId
+HardwareThread.Parent      → Core.HardwareId → CPU.CoreId
+Core.Parent                → Package.HardwareId → CPU.PackageId
+```
+
+Der CPU Manager interpretiert dabei weder ACPI-Einträge noch CPUID-
+Topologieblätter erneut. Firmware- und Architekturdetails bleiben hinter dem
+HAL-Graphen gekapselt. Die CPU Manager API liefert dadurch dieselbe
+normalisierte Sicht wie IOMMU und spätere Scheduler-Consumer.
+
+Nicht vorhandene Informationen werden mit `0xFFFFFFFF` ausgegeben. Das gilt
+derzeit für Die, Cluster, LLC und – bis zur SRAT-Implementierung – NUMA. Ein
+NUMA-Wert wird nur übernommen, wenn der Topologieknoten ausdrücklich
+`LOCALITY_KNOWN` trägt. Der UMA-Fallback wird somit nicht fälschlich als
+bestätigte lokale Speicherbeziehung dargestellt.
+
+Der CPU-Selbsttest gleicht jeden Datensatz mit der MADT-Hardware-ID und dem
+zugehörigen HAL-Knoten ab. Er prüft Topology-ID, Generation, Thread-ID sowie
+bekannte oder unbekannte Package-/Core-Felder. Der UEFI-Test verlangt
+zusätzlich die Markierung
+`NOVA: CPU Manager bezieht Package, Core und Thread aus HAL Topology` und
+läuft danach weiterhin bis Desktop und geordnetem Shutdown.

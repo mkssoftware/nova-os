@@ -246,6 +246,23 @@ kernel_entry:
     call serial_write_hex32
     mov esi, message_line_end
     call serial_write_string
+    cmp dword [topology_cpu_hierarchy_valid], 1
+    jne .topology_hierarchy_reported
+    mov esi, message_topology_hierarchy_count
+    call serial_write_string
+    mov eax, [topology_package_nodes]
+    call serial_write_hex32
+    mov esi, message_topology_count_separator
+    call serial_write_string
+    mov eax, [topology_core_nodes]
+    call serial_write_hex32
+    mov esi, message_topology_count_separator
+    call serial_write_string
+    mov eax, [topology_cpu_nodes]
+    call serial_write_hex32
+    mov esi, message_line_end
+    call serial_write_string
+.topology_hierarchy_reported:
 
     call iommu_initialize
     jc panic_iommu
@@ -305,6 +322,8 @@ kernel_entry:
     call cpu_manager_self_test
     jc panic_cpu_manager
     mov esi, message_cpu_manager_ok
+    call serial_write_string
+    mov esi, message_cpu_topology_import_ok
     call serial_write_string
 
     call module_loader_initialize
@@ -949,6 +968,11 @@ create_kernel_context:
     stc
     ret
 
+ACPI_SRAT_CPU_CAPACITY         equ 8
+ACPI_SRAT_MEMORY_CAPACITY      equ 8
+ACPI_SRAT_CPU_RECORD_SIZE      equ 8
+ACPI_SRAT_MEMORY_RECORD_SIZE   equ 24
+
 ; ACPI-Root-Pointer vor der Paging-Aktivierung prüfen. Ein fehlender oder
 ; beschädigter RSDP verhindert den UP-Boot nicht und aktiviert keinen AP.
 acpi_rsdp_initialize:
@@ -957,6 +981,9 @@ acpi_rsdp_initialize:
     ; frei erfundener logischer Nummer.
     mov dword [acpi_cpu_count], 1
     mov dword [acpi_madt_valid], 0
+    mov dword [acpi_srat_valid], 0
+    mov dword [acpi_srat_cpu_count], 0
+    mov dword [acpi_srat_memory_count], 0
     mov eax, 1
     cpuid
     shr ebx, 24
@@ -988,6 +1015,7 @@ acpi_rsdp_initialize:
     mov [kernel_context + CONTEXT_ACPI_ADDRESS], esi
 .ready:
     call acpi_madt_discover
+    call acpi_srat_discover
     mov esi, message_acpi_rsdp_ok
     call serial_write_string
     cmp dword [acpi_madt_valid], 1
@@ -999,6 +1027,25 @@ acpi_rsdp_initialize:
     mov esi, message_line_end
     call serial_write_string
 .ready_done:
+    cmp dword [acpi_srat_valid], 1
+    jne .srat_unavailable
+    call acpi_srat_self_test
+    jc .srat_unavailable
+    mov esi, message_acpi_srat_ok
+    call serial_write_string
+    mov eax, [acpi_srat_cpu_count]
+    call serial_write_hex32
+    mov esi, message_topology_count_separator
+    call serial_write_string
+    mov eax, [acpi_srat_memory_count]
+    call serial_write_hex32
+    mov esi, message_line_end
+    call serial_write_string
+    ret
+.srat_unavailable:
+    mov dword [acpi_srat_valid], 0
+    mov esi, message_acpi_srat_unavailable
+    call serial_write_string
     ret
 .unavailable:
     mov esi, message_acpi_rsdp_missing
@@ -1315,6 +1362,332 @@ acpi_madt_add_id:
     pop ecx
     ret
 
+; Sucht und validiert die ACPI System Resource Affinity Table getrennt von der
+; MADT. Die Root-Tabelle wird erneut geprüft, damit kein impliziter Cursor-
+; Zustand zwischen Firmwareprovidern geteilt wird.
+acpi_srat_discover:
+    mov dword [acpi_srat_valid], 0
+    mov dword [acpi_srat_cpu_count], 0
+    mov dword [acpi_srat_memory_count], 0
+    mov dword [acpi_srat_conflicts], 0
+    mov dword [acpi_srat_unsupported_memory], 0
+    mov edi, acpi_srat_cpu_records
+    xor eax, eax
+    mov ecx, (ACPI_SRAT_CPU_CAPACITY * ACPI_SRAT_CPU_RECORD_SIZE) / 4
+    rep stosd
+    mov edi, acpi_srat_memory_records
+    mov ecx, (ACPI_SRAT_MEMORY_CAPACITY * ACPI_SRAT_MEMORY_RECORD_SIZE) / 4
+    rep stosd
+    mov ebp, [kernel_context + CONTEXT_ACPI_ADDRESS]
+    test ebp, ebp
+    jz .missing
+    cmp byte [ebp + 15], 2
+    jb .rsdt
+    cmp dword [ebp + 28], 0
+    jne .rsdt
+    mov esi, [ebp + 24]
+    mov eax, 0x54445358             ; XSDT
+    call acpi_table_validate
+    jc .rsdt
+    mov dword [acpi_srat_root_entry_size], 8
+    jmp .root_ready
+.rsdt:
+    mov esi, [ebp + 16]
+    mov eax, 0x54445352             ; RSDT
+    call acpi_table_validate
+    jc .missing
+    mov dword [acpi_srat_root_entry_size], 4
+.root_ready:
+    mov eax, ecx
+    sub eax, 36
+    xor edx, edx
+    div dword [acpi_srat_root_entry_size]
+    test edx, edx
+    jnz .missing
+    mov [acpi_srat_root_entries_left], eax
+    lea eax, [esi + 36]
+    mov [acpi_srat_root_cursor], eax
+.root_next:
+    cmp dword [acpi_srat_root_entries_left], 0
+    je .missing
+    mov ebx, [acpi_srat_root_cursor]
+    mov esi, [ebx]
+    cmp dword [acpi_srat_root_entry_size], 8
+    jne .candidate
+    cmp dword [ebx + 4], 0
+    jne .advance
+.candidate:
+    mov eax, 0x54415253             ; SRAT
+    call acpi_table_validate
+    jc .advance
+    call acpi_srat_parse
+    jc .invalid
+    mov dword [acpi_srat_valid], 1
+    ret
+.advance:
+    mov eax, [acpi_srat_root_entry_size]
+    add [acpi_srat_root_cursor], eax
+    dec dword [acpi_srat_root_entries_left]
+    jmp .root_next
+.invalid:
+    mov dword [acpi_srat_conflicts], 1
+.missing:
+    ret
+
+; ESI=validierte SRAT, ECX=Gesamtlänge.
+acpi_srat_parse:
+    cmp ecx, 48
+    jb .invalid
+    mov edi, esi
+    add edi, 48
+    mov ebp, esi
+    add ebp, ecx
+.entry:
+    cmp edi, ebp
+    je .complete
+    lea eax, [edi + 2]
+    cmp eax, ebp
+    ja .invalid
+    movzx ebx, byte [edi + 1]
+    cmp ebx, 2
+    jb .invalid
+    mov [acpi_srat_entry_length], ebx
+    mov eax, edi
+    add eax, ebx
+    jc .invalid
+    cmp eax, ebp
+    ja .invalid
+    cmp byte [edi], 0
+    je .lapic
+    cmp byte [edi], 1
+    je .memory
+    cmp byte [edi], 2
+    je .x2apic
+    jmp .next
+.lapic:
+    cmp ebx, 16
+    jb .invalid
+    test dword [edi + 4], 1
+    jz .next
+    movzx eax, byte [edi + 3]
+    movzx edx, byte [edi + 2]
+    movzx ecx, byte [edi + 9]
+    shl ecx, 8
+    or edx, ecx
+    movzx ecx, byte [edi + 10]
+    shl ecx, 16
+    or edx, ecx
+    movzx ecx, byte [edi + 11]
+    shl ecx, 24
+    or edx, ecx
+    call acpi_srat_add_cpu
+    jc .invalid
+    jmp .next
+.x2apic:
+    cmp ebx, 24
+    jb .invalid
+    test dword [edi + 12], 1
+    jz .next
+    mov eax, [edi + 8]
+    mov edx, [edi + 4]
+    call acpi_srat_add_cpu
+    jc .invalid
+    jmp .next
+.memory:
+    cmp ebx, 40
+    jb .invalid
+    test dword [edi + 28], 1
+    jz .next
+    mov eax, edi
+    call acpi_srat_add_memory
+    jc .invalid
+.next:
+    mov ebx, [acpi_srat_entry_length]
+    add edi, ebx
+    jmp .entry
+.complete:
+    cmp dword [acpi_srat_cpu_count], 0
+    jne .valid
+    cmp dword [acpi_srat_memory_count], 0
+    je .invalid
+.valid:
+    clc
+    ret
+.invalid:
+    mov dword [acpi_srat_cpu_count], 0
+    mov dword [acpi_srat_memory_count], 0
+    stc
+    ret
+
+; EAX=APIC-ID, EDX=Proximity-Domain. Nur MADT-bekannte CPUs werden akzeptiert.
+acpi_srat_add_cpu:
+    push edi
+    mov [acpi_srat_temp_apic], eax
+    mov [acpi_srat_temp_domain], edx
+    xor ecx, ecx
+.madt_scan:
+    cmp ecx, [acpi_cpu_count]
+    jae .conflict
+    cmp eax, [acpi_apic_ids + ecx * 4]
+    je .madt_known
+    inc ecx
+    jmp .madt_scan
+.madt_known:
+    xor ecx, ecx
+.existing:
+    cmp ecx, [acpi_srat_cpu_count]
+    jae .insert
+    mov edi, ecx
+    shl edi, 3
+    add edi, acpi_srat_cpu_records
+    cmp [edi], eax
+    jne .existing_next
+    cmp [edi + 4], edx
+    jne .conflict
+    pop edi
+    clc
+    ret
+.existing_next:
+    inc ecx
+    jmp .existing
+.insert:
+    cmp ecx, ACPI_SRAT_CPU_CAPACITY
+    jae .conflict
+    mov edi, ecx
+    shl edi, 3
+    add edi, acpi_srat_cpu_records
+    mov [edi], eax
+    mov [edi + 4], edx
+    inc dword [acpi_srat_cpu_count]
+    pop edi
+    clc
+    ret
+.conflict:
+    inc dword [acpi_srat_conflicts]
+    pop edi
+    stc
+    ret
+
+; EAX=Zeiger auf einen validierten SRAT-Memory-Affinity-Eintrag.
+acpi_srat_add_memory:
+    push edi
+    mov esi, eax
+    cmp dword [esi + 12], 0         ; aktuell nur 32-Bit-adressierbare Bereiche
+    jne .unsupported
+    cmp dword [esi + 20], 0
+    jne .unsupported
+    mov eax, [esi + 16]
+    test eax, eax
+    jz .conflict
+    mov edx, [esi + 8]
+    mov ecx, edx
+    add ecx, eax
+    jc .conflict
+    mov [acpi_srat_temp_base], edx
+    mov [acpi_srat_temp_end], ecx
+    xor ebx, ebx
+.overlap_scan:
+    cmp ebx, [acpi_srat_memory_count]
+    jae .insert
+    mov edi, ebx
+    imul edi, ACPI_SRAT_MEMORY_RECORD_SIZE
+    add edi, acpi_srat_memory_records
+    mov eax, [edi + 4]
+    mov ecx, eax
+    add ecx, [edi + 12]
+    mov edx, [acpi_srat_temp_base]
+    cmp edx, ecx
+    jae .overlap_next
+    mov edx, [acpi_srat_temp_end]
+    cmp eax, edx
+    jb .conflict
+.overlap_next:
+    inc ebx
+    jmp .overlap_scan
+.insert:
+    cmp ebx, ACPI_SRAT_MEMORY_CAPACITY
+    jae .conflict
+    mov edi, ebx
+    imul edi, ACPI_SRAT_MEMORY_RECORD_SIZE
+    add edi, acpi_srat_memory_records
+    mov eax, [esi + 4]
+    mov [edi], eax                  ; Proximity Domain
+    mov eax, [esi + 8]
+    mov [edi + 4], eax              ; Base low
+    mov dword [edi + 8], 0
+    mov eax, [esi + 16]
+    mov [edi + 12], eax             ; Length low
+    mov dword [edi + 16], 0
+    mov eax, [esi + 28]
+    mov [edi + 20], eax             ; Enabled/Hotplug/Nonvolatile
+    inc dword [acpi_srat_memory_count]
+    pop edi
+    clc
+    ret
+.unsupported:
+    inc dword [acpi_srat_unsupported_memory]
+    pop edi
+    clc
+    ret
+.conflict:
+    inc dword [acpi_srat_conflicts]
+    pop edi
+    stc
+    ret
+
+acpi_srat_self_test:
+    cmp dword [acpi_srat_valid], 1
+    jne .invalid
+    cmp dword [acpi_srat_conflicts], 0
+    jne .invalid
+    xor ecx, ecx
+.cpu_next:
+    cmp ecx, [acpi_srat_cpu_count]
+    jae .complete
+    mov edx, ecx
+    shl edx, 3
+    mov eax, [acpi_srat_cpu_records + edx]
+    xor ebx, ebx
+.madt_next:
+    cmp ebx, [acpi_cpu_count]
+    jae .invalid
+    cmp eax, [acpi_apic_ids + ebx * 4]
+    je .cpu_known
+    inc ebx
+    jmp .madt_next
+.cpu_known:
+    inc ecx
+    jmp .cpu_next
+.complete:
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; EAX=APIC-ID; EAX=validierte Proximity-Domain.
+acpi_srat_cpu_domain_lookup:
+    cmp dword [acpi_srat_valid], 1
+    jne .invalid
+    xor ecx, ecx
+.scan:
+    cmp ecx, [acpi_srat_cpu_count]
+    jae .invalid
+    mov edx, ecx
+    shl edx, 3
+    cmp eax, [acpi_srat_cpu_records + edx]
+    je .found
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, [acpi_srat_cpu_records + edx + 4]
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
 align 4
 acpi_cpu_count:          dd 1
 acpi_madt_valid:         dd 0
@@ -1323,6 +1696,24 @@ acpi_root_entry_size:    dd 0
 acpi_root_entries_left:  dd 0
 acpi_root_cursor:        dd 0
 acpi_apic_ids:           times 8 dd 0
+acpi_srat_valid:         dd 0
+acpi_srat_cpu_count:     dd 0
+acpi_srat_memory_count:  dd 0
+acpi_srat_conflicts:     dd 0
+acpi_srat_unsupported_memory: dd 0
+acpi_srat_root_entry_size: dd 0
+acpi_srat_root_entries_left: dd 0
+acpi_srat_root_cursor:   dd 0
+acpi_srat_entry_length:  dd 0
+acpi_srat_temp_apic:     dd 0
+acpi_srat_temp_domain:   dd 0
+acpi_srat_temp_base:     dd 0
+acpi_srat_temp_end:      dd 0
+align 4
+acpi_srat_cpu_records:
+    times ACPI_SRAT_CPU_CAPACITY * ACPI_SRAT_CPU_RECORD_SIZE db 0
+acpi_srat_memory_records:
+    times ACPI_SRAT_MEMORY_CAPACITY * ACPI_SRAT_MEMORY_RECORD_SIZE db 0
 
 early_security_entropy_initialize:
     mov eax, [kernel_context + CONTEXT_ENTROPY_SEED + 0]
@@ -6620,7 +7011,7 @@ shared_buffer_backing_pool:
 ; ---------------------------------------------------------------------------
 
 TOPOLOGY_API_SIZE                 equ 40
-TOPOLOGY_CAPACITY                 equ 32
+TOPOLOGY_CAPACITY                 equ 48
 TOPOLOGY_RECORD_SIZE              equ 64
 TOPOLOGY_TYPE_SYSTEM              equ 1
 TOPOLOGY_TYPE_NUMA_NODE           equ 2
@@ -6644,6 +7035,7 @@ TOPOLOGY_FLAG_DMA_CAPABLE         equ 0x00000004
 TOPOLOGY_FLAG_LOCALITY_KNOWN      equ 0x00000008
 TOPOLOGY_FLAG_FIRMWARE_VALIDATED  equ 0x00000010
 TOPOLOGY_FLAG_FALLBACK            equ 0x00000020
+TOPOLOGY_FLAG_ARCH_VALIDATED      equ 0x00000040
 TOPOLOGY_ID                       equ 0
 TOPOLOGY_TYPE                     equ 4
 TOPOLOGY_PARENT                   equ 8
@@ -6666,10 +7058,16 @@ topology_initialize:
     rep stosd
     mov dword [topology_count], 0
     mov dword [topology_cpu_nodes], 0
+    mov dword [topology_package_nodes], 0
+    mov dword [topology_core_nodes], 0
+    mov dword [topology_numa_nodes], 0
+    mov dword [topology_memory_nodes], 0
+    mov dword [topology_numa0_id], 0
     mov dword [topology_next_id], 1
     mov dword [topology_change_sequence], 0
     mov dword [topology_validation_failures], 0
     mov dword [topology_manager_ready], 1
+    call topology_cpu_hierarchy_discover
 
     ; Root des normalisierten Graphen.
     mov eax, TOPOLOGY_TYPE_SYSTEM
@@ -6682,38 +7080,101 @@ topology_initialize:
     jc .invalid
     mov [topology_root_id], eax
 
-    ; Knoten 0 hält CPUs und Speicher zusammen. Ohne SRAT bleibt die genaue
-    ; Lokalität ausdrücklich unbekannt; höhere Schichten dürfen daraus keine
-    ; optimale Nähe ableiten.
-    mov eax, TOPOLOGY_TYPE_NUMA_NODE
-    mov edx, [topology_root_id]
-    xor ebx, ebx
-    xor ecx, ecx
-    xor esi, esi
-    mov edi, TOPOLOGY_FLAG_BOOTSTRAP | TOPOLOGY_FLAG_FALLBACK
-    call topology_register
-    jc .invalid
-    mov [topology_numa0_id], eax
-
-    ; Die geprüfte MADT-Liste ist die Plattformquelle für aktive Hardware-
-    ; Threads. Package/Core-Zuordnungen werden ohne per-CPU-CPUID nicht
-    ; erfunden; die ABI kann diese Ebenen später ergänzen.
+    ; Die geprüfte MADT-Liste liefert aktive Hardware-Threads. CPUID 1F/0B
+    ; liefert, sofern vollständig validierbar, die systemweit anwendbaren
+    ; Package/Core-Bitgrenzen für die APIC-IDs.
     mov dword [topology_cpu_index], 0
 .cpu_next:
     mov eax, [topology_cpu_index]
     cmp eax, [acpi_cpu_count]
     jae .cpus_complete
     mov ebx, [acpi_apic_ids + eax * 4]
-    mov eax, TOPOLOGY_TYPE_CPU_THREAD
-    mov edx, [topology_numa0_id]
+    mov [topology_cpu_apic_id], ebx
+    mov dword [topology_cpu_numa_domain], 0xFFFFFFFF
+    mov eax, ebx
+    call acpi_srat_cpu_domain_lookup
+    jc .cpu_numa_unknown
+    mov [topology_cpu_numa_domain], eax
+    call topology_get_or_create_numa
+    jc .invalid
+    mov [topology_cpu_parent_id], eax
+    jmp .cpu_numa_ready
+.cpu_numa_unknown:
+    mov eax, 0xFFFFFFFF
+    call topology_get_or_create_numa
+    jc .invalid
+    mov [topology_cpu_parent_id], eax
+.cpu_numa_ready:
+    cmp dword [topology_cpu_hierarchy_valid], 1
+    jne .thread_parent_ready
+
+    ; Package-Key = APIC-ID oberhalb der Core-Ebene.
+    mov eax, ebx
+    mov ecx, [topology_cpu_core_shift]
+    shr eax, cl
+    mov [topology_cpu_package_key], eax
+    mov ebx, eax
+    mov eax, TOPOLOGY_TYPE_CPU_PACKAGE
+    call topology_find_type_hardware
+    jnc .package_found
+    mov eax, TOPOLOGY_TYPE_CPU_PACKAGE
+    mov edx, [topology_root_id]
+    mov ebx, [topology_cpu_package_key]
     xor ecx, ecx
+    xor esi, esi
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP | TOPOLOGY_FLAG_ARCH_VALIDATED
+    call topology_register
+    jc .invalid
+    inc dword [topology_package_nodes]
+    jmp .package_id_ready
+.package_found:
+    mov eax, [eax + TOPOLOGY_ID]
+.package_id_ready:
+    mov [topology_cpu_package_parent_id], eax
+
+    ; Core-Key = APIC-ID oberhalb der SMT-Ebene und ist systemweit eindeutig.
+    mov eax, [topology_cpu_apic_id]
+    mov ecx, [topology_cpu_thread_shift]
+    shr eax, cl
+    mov [topology_cpu_core_key], eax
+    mov ebx, eax
+    mov eax, TOPOLOGY_TYPE_CPU_CORE
+    call topology_find_type_hardware
+    jnc .core_found
+    mov eax, TOPOLOGY_TYPE_CPU_CORE
+    mov edx, [topology_cpu_package_parent_id]
+    mov ebx, [topology_cpu_core_key]
+    xor ecx, ecx
+    xor esi, esi
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP | TOPOLOGY_FLAG_ARCH_VALIDATED
+    call topology_register
+    jc .invalid
+    inc dword [topology_core_nodes]
+    jmp .core_id_ready
+.core_found:
+    mov eax, [eax + TOPOLOGY_ID]
+.core_id_ready:
+    mov [topology_cpu_parent_id], eax
+.thread_parent_ready:
+    mov ebx, [topology_cpu_apic_id]
+    mov eax, TOPOLOGY_TYPE_CPU_THREAD
+    mov edx, [topology_cpu_parent_id]
+    mov ecx, [topology_cpu_numa_domain]
     xor esi, esi
     mov edi, TOPOLOGY_FLAG_BOOTSTRAP | TOPOLOGY_FLAG_FALLBACK
     cmp dword [acpi_madt_valid], 1
-    jne .cpu_register
+    jne .cpu_arch_flag
     and edi, ~TOPOLOGY_FLAG_FALLBACK
     or edi, TOPOLOGY_FLAG_FIRMWARE_VALIDATED
+.cpu_arch_flag:
+    cmp dword [topology_cpu_hierarchy_valid], 1
+    jne .cpu_register
+    or edi, TOPOLOGY_FLAG_ARCH_VALIDATED
 .cpu_register:
+    cmp dword [topology_cpu_numa_domain], 0xFFFFFFFF
+    je .cpu_register_ready
+    or edi, TOPOLOGY_FLAG_LOCALITY_KNOWN
+.cpu_register_ready:
     call topology_register
     jc .invalid
     call topology_lookup
@@ -6722,19 +7183,71 @@ topology_initialize:
     mov [eax + TOPOLOGY_PROPERTY0], edx ; normalisierter logischer CPU-Index
     mov edx, [acpi_madt_valid]
     mov [eax + TOPOLOGY_PROPERTY1], edx ; 1 = validierte MADT-Quelle
+    xor edx, edx
+    cmp dword [topology_cpu_hierarchy_valid], 1
+    jne .thread_property_ready
+    mov edx, 1
+    mov ecx, [topology_cpu_thread_shift]
+    shl edx, cl
+    dec edx
+    and edx, [topology_cpu_apic_id]
+.thread_property_ready:
+    mov [eax + TOPOLOGY_PROPERTY2], edx ; SMT-Thread-ID innerhalb des Core
     inc dword [topology_cpu_nodes]
     inc dword [topology_cpu_index]
     jmp .cpu_next
 .cpus_complete:
-
+    cmp dword [acpi_srat_valid], 1
+    jne .fallback_memory
+    cmp dword [acpi_srat_memory_count], 0
+    je .fallback_memory
+    mov dword [topology_memory_index], 0
+.memory_next:
+    mov eax, [topology_memory_index]
+    cmp eax, [acpi_srat_memory_count]
+    jae .memory_complete
+    imul edx, eax, ACPI_SRAT_MEMORY_RECORD_SIZE
+    add edx, acpi_srat_memory_records
+    mov [topology_memory_source], edx
+    mov eax, [edx]
+    call topology_get_or_create_numa
+    jc .invalid
+    mov edx, eax
     mov eax, TOPOLOGY_TYPE_MEMORY_REGION
-    mov edx, [topology_numa0_id]
+    mov ebx, [topology_memory_index]
+    inc ebx
+    mov ecx, [topology_memory_source]
+    mov ecx, [ecx]
+    xor esi, esi
+    mov edi, TOPOLOGY_FLAG_FIRMWARE_VALIDATED | TOPOLOGY_FLAG_LOCALITY_KNOWN
+    call topology_register
+    jc .invalid
+    call topology_lookup
+    jc .invalid
+    mov edx, [topology_memory_source]
+    mov ecx, [edx + 4]
+    mov [eax + TOPOLOGY_PROPERTY0], ecx ; physische Basis, low
+    mov ecx, [edx + 12]
+    mov [eax + TOPOLOGY_PROPERTY1], ecx ; Länge, low
+    mov ecx, [edx + 20]
+    mov [eax + TOPOLOGY_PROPERTY2], ecx ; SRAT-Flags
+    inc dword [topology_memory_nodes]
+    inc dword [topology_memory_index]
+    jmp .memory_next
+.fallback_memory:
+    mov eax, 0xFFFFFFFF
+    call topology_get_or_create_numa
+    jc .invalid
+    mov edx, eax
+    mov eax, TOPOLOGY_TYPE_MEMORY_REGION
     mov ebx, 1
-    xor ecx, ecx
+    mov ecx, 0xFFFFFFFF
     xor esi, esi
     mov edi, TOPOLOGY_FLAG_BOOTSTRAP | TOPOLOGY_FLAG_FALLBACK
     call topology_register
     jc .invalid
+    inc dword [topology_memory_nodes]
+.memory_complete:
 
     mov eax, TOPOLOGY_TYPE_INTERRUPT_CONTROLLER
     mov edx, [topology_root_id]
@@ -6793,6 +7306,116 @@ topology_initialize:
     ret
 .invalid:
     mov dword [topology_manager_ready], 0
+    stc
+    ret
+
+; Ermittelt ausschließlich die Bitgrenzen der x86-Topologie. Bevorzugt wird
+; CPUID 1F, danach 0B. Eine Core-Ebene ist Pflicht; unvollständige Angaben
+; werden als unbekannt behandelt.
+topology_cpu_hierarchy_discover:
+    mov dword [topology_cpu_hierarchy_valid], 0
+    mov dword [topology_cpu_thread_shift], 0
+    mov dword [topology_cpu_core_shift], 0
+    mov dword [topology_cpu_leaf], 0
+    xor eax, eax
+    cpuid
+    cmp eax, 0x1F
+    jb .try_leaf_b
+    mov eax, 0x1F
+    call topology_cpu_hierarchy_scan_leaf
+    jnc .complete
+.try_leaf_b:
+    xor eax, eax
+    cpuid
+    cmp eax, 0x0B
+    jb .unavailable
+    mov eax, 0x0B
+    call topology_cpu_hierarchy_scan_leaf
+    jc .unavailable
+.complete:
+    mov dword [topology_cpu_hierarchy_valid], 1
+.unavailable:
+    ret
+
+; EAX=CPUID-Leaf. CF=0 bei validierter SMT/Core-Bitgrenze.
+topology_cpu_hierarchy_scan_leaf:
+    mov [topology_cpu_leaf], eax
+    mov dword [topology_cpu_thread_shift], 0
+    mov dword [topology_cpu_core_shift], 0
+    mov dword [topology_cpu_core_level_seen], 0
+    mov dword [topology_cpu_subleaf], 0
+.next:
+    mov eax, [topology_cpu_leaf]
+    mov ecx, [topology_cpu_subleaf]
+    cpuid
+    test ebx, ebx
+    jz .validate
+    mov esi, eax
+    and esi, 0x1F
+    cmp esi, 31
+    ja .invalid
+    mov edx, ecx
+    shr edx, 8
+    and edx, 0xFF
+    cmp edx, 1
+    je .smt
+    cmp edx, 2
+    je .core
+    jmp .advance
+.smt:
+    mov [topology_cpu_thread_shift], esi
+    jmp .advance
+.core:
+    mov [topology_cpu_core_shift], esi
+    mov dword [topology_cpu_core_level_seen], 1
+.advance:
+    inc dword [topology_cpu_subleaf]
+    cmp dword [topology_cpu_subleaf], 8
+    jb .next
+.validate:
+    cmp dword [topology_cpu_core_level_seen], 1
+    jne .invalid
+    mov eax, [topology_cpu_core_shift]
+    cmp eax, [topology_cpu_thread_shift]
+    jb .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; EAX=Proximity-Domain oder 0xFFFFFFFF für unbekannte Lokalität.
+; Ergebnis EAX=Topology-ID des stabilen NUMA-Knotens.
+topology_get_or_create_numa:
+    mov [topology_temp_numa_domain], eax
+    mov ebx, eax
+    mov eax, TOPOLOGY_TYPE_NUMA_NODE
+    call topology_find_type_hardware
+    jc .create
+    mov eax, [eax + TOPOLOGY_ID]
+    clc
+    ret
+.create:
+    mov eax, TOPOLOGY_TYPE_NUMA_NODE
+    mov edx, [topology_root_id]
+    mov ebx, [topology_temp_numa_domain]
+    mov ecx, ebx
+    xor esi, esi
+    mov edi, TOPOLOGY_FLAG_FIRMWARE_VALIDATED | TOPOLOGY_FLAG_LOCALITY_KNOWN
+    cmp ebx, 0xFFFFFFFF
+    jne .register
+    mov edi, TOPOLOGY_FLAG_BOOTSTRAP | TOPOLOGY_FLAG_FALLBACK
+.register:
+    call topology_register
+    jc .invalid
+    inc dword [topology_numa_nodes]
+    cmp dword [topology_temp_numa_domain], 0
+    jne .complete
+    mov [topology_numa0_id], eax
+.complete:
+    clc
+    ret
+.invalid:
     stc
     ret
 
@@ -6958,6 +7581,33 @@ topology_lookup:
     stc
     ret
 
+; EAX=Typ, EBX=Hardware-Key; EAX=Online-Datensatz.
+topology_find_type_hardware:
+    xor ecx, ecx
+.scan:
+    cmp ecx, TOPOLOGY_CAPACITY
+    jae .invalid
+    mov edx, ecx
+    shl edx, 6
+    add edx, topology_records
+    cmp dword [edx + TOPOLOGY_STATE], TOPOLOGY_STATE_ONLINE
+    jne .next
+    cmp [edx + TOPOLOGY_TYPE], eax
+    jne .next
+    cmp [edx + TOPOLOGY_HARDWARE_ID], ebx
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov eax, edx
+    clc
+    ret
+.invalid:
+    xor eax, eax
+    stc
+    ret
+
 ; EAX=Hardware-Device-ID; EAX=IOMMU-Gruppe.
 topology_device_group:
     xor ecx, ecx
@@ -7074,8 +7724,12 @@ topology_transition:
     ret
 
 topology_self_test:
-    mov eax, [acpi_cpu_count]
-    add eax, 12
+    mov eax, 10
+    add eax, [topology_cpu_nodes]
+    add eax, [topology_package_nodes]
+    add eax, [topology_core_nodes]
+    add eax, [topology_numa_nodes]
+    add eax, [topology_memory_nodes]
     cmp [topology_count], eax
     jne .invalid
     mov eax, [topology_cpu_nodes]
@@ -7089,12 +7743,57 @@ topology_self_test:
     mov eax, [acpi_apic_ids + ecx * 4]
     call topology_cpu_lookup
     jc .invalid
+    mov [topology_selftest_record], eax
     mov ecx, [topology_cpu_index]
     cmp [eax + TOPOLOGY_PROPERTY0], ecx
     jne .invalid
     mov edx, [acpi_madt_valid]
     cmp [eax + TOPOLOGY_PROPERTY1], edx
     jne .invalid
+    mov ecx, [topology_cpu_index]
+    mov eax, [acpi_apic_ids + ecx * 4]
+    call acpi_srat_cpu_domain_lookup
+    jc .locality_unknown
+    mov edx, [topology_selftest_record]
+    cmp [edx + TOPOLOGY_NUMA_NODE], eax
+    jne .invalid
+    test dword [edx + TOPOLOGY_FLAGS], TOPOLOGY_FLAG_LOCALITY_KNOWN
+    jz .invalid
+    jmp .locality_valid
+.locality_unknown:
+    mov edx, [topology_selftest_record]
+    cmp dword [edx + TOPOLOGY_NUMA_NODE], 0xFFFFFFFF
+    jne .invalid
+    test dword [edx + TOPOLOGY_FLAGS], TOPOLOGY_FLAG_LOCALITY_KNOWN
+    jnz .invalid
+.locality_valid:
+    mov eax, [topology_selftest_record]
+    cmp dword [topology_cpu_hierarchy_valid], 1
+    jne .fallback_parent
+    test dword [eax + TOPOLOGY_FLAGS], TOPOLOGY_FLAG_ARCH_VALIDATED
+    jz .invalid
+    mov eax, [eax + TOPOLOGY_PARENT]
+    call topology_lookup
+    jc .invalid
+    cmp dword [eax + TOPOLOGY_TYPE], TOPOLOGY_TYPE_CPU_CORE
+    jne .invalid
+    mov eax, [eax + TOPOLOGY_PARENT]
+    call topology_lookup
+    jc .invalid
+    cmp dword [eax + TOPOLOGY_TYPE], TOPOLOGY_TYPE_CPU_PACKAGE
+    jne .invalid
+    mov eax, [eax + TOPOLOGY_PARENT]
+    cmp eax, [topology_root_id]
+    jne .invalid
+    jmp .cpu_valid
+.fallback_parent:
+    mov eax, [topology_selftest_record]
+    mov eax, [eax + TOPOLOGY_PARENT]
+    call topology_lookup
+    jc .invalid
+    cmp dword [eax + TOPOLOGY_TYPE], TOPOLOGY_TYPE_NUMA_NODE
+    jne .invalid
+.cpu_valid:
     inc dword [topology_cpu_index]
     jmp .cpu_next
 .cpus_valid:
@@ -7156,6 +7855,10 @@ topology_api:
 topology_manager_ready:       dd 0
 topology_count:               dd 0
 topology_cpu_nodes:           dd 0
+topology_package_nodes:       dd 0
+topology_core_nodes:          dd 0
+topology_numa_nodes:          dd 0
+topology_memory_nodes:        dd 0
 topology_next_id:             dd 0
 topology_change_sequence:     dd 0
 topology_validation_failures: dd 0
@@ -7168,6 +7871,22 @@ topology_group30_id:          dd 0
 topology_hotplug_test_id:     dd 0
 topology_cpu_index:           dd 0
 topology_selftest_initial_sequence: dd 0
+topology_selftest_record:     dd 0
+topology_cpu_hierarchy_valid: dd 0
+topology_cpu_thread_shift:    dd 0
+topology_cpu_core_shift:      dd 0
+topology_cpu_core_level_seen: dd 0
+topology_cpu_leaf:            dd 0
+topology_cpu_subleaf:         dd 0
+topology_cpu_apic_id:         dd 0
+topology_cpu_parent_id:       dd 0
+topology_cpu_package_parent_id: dd 0
+topology_cpu_package_key:     dd 0
+topology_cpu_core_key:        dd 0
+topology_cpu_numa_domain:     dd 0
+topology_memory_index:        dd 0
+topology_memory_source:       dd 0
+topology_temp_numa_domain:    dd 0
 topology_temp_id:             dd 0
 topology_temp_type:           dd 0
 topology_temp_parent:         dd 0
@@ -14422,7 +15141,7 @@ security_table:
 ; CPU Manager / BSP- und Topologieerkennung (NPSPEC-KERNEL-0026)
 ; ---------------------------------------------------------------------------
 CPU_API_SIZE          equ 48
-CPU_RECORD_SIZE       equ 96
+CPU_RECORD_SIZE       equ 112
 CPU_CAPACITY          equ 8
 CPU_LOCAL_SLOT_SIZE   equ 64
 CPU_STATE_DISCOVERED  equ 0
@@ -14439,6 +15158,31 @@ CPU_FEATURE_NX        equ 0x00000004
 CPU_FEATURE_LOCAL_APIC equ 0x00000008
 CPU_FEATURE_HW_RANDOM equ 0x00000010
 CPU_FEATURE_VIRTUALIZED equ 0x00000020
+CPU_TOPOLOGY_UNKNOWN  equ 0xFFFFFFFF
+CPU_ID                equ 0
+CPU_HARDWARE_LOW      equ 4
+CPU_HARDWARE_HIGH     equ 8
+CPU_STATE             equ 12
+CPU_PACKAGE_ID        equ 16
+CPU_DIE_ID            equ 20
+CPU_CLUSTER_ID        equ 24
+CPU_CORE_ID           equ 28
+CPU_THREAD_ID         equ 32
+CPU_NUMA_NODE_ID      equ 36
+CPU_PACKAGE_THREADS   equ 40
+CPU_CAPACITY_VALUE    equ 44
+CPU_LOCAL_DATA        equ 48
+CPU_FLAGS             equ 52
+CPU_VENDOR0           equ 56
+CPU_VENDOR1           equ 60
+CPU_VENDOR2           equ 64
+CPU_SIGNATURE         equ 68
+CPU_RAW_FEATURE_EDX   equ 72
+CPU_RAW_FEATURE_ECX   equ 76
+CPU_FEATURES          equ 80
+CPU_LLC_ID            equ 84
+CPU_TOPOLOGY_NODE     equ 88
+CPU_TOPOLOGY_GENERATION equ 92
 
 cpu_manager_initialize:
     push ebp
@@ -14461,27 +15205,27 @@ cpu_manager_initialize:
     mov dword [cpu_startup_attempts], 1
 
     mov edi, cpu_records
-    mov dword [edi + 0], 0          ; bootlokale CPU ID
-    mov dword [edi + 12], CPU_STATE_DISCOVERED
-    mov dword [edi + 40], CPU_CAPACITY_SCALE
-    mov dword [edi + 44], cpu_local_data
-    mov dword [edi + 48], 1         ; BSP
+    mov dword [edi + CPU_ID], 0     ; bootlokale CPU ID
+    mov dword [edi + CPU_STATE], CPU_STATE_DISCOVERED
+    mov dword [edi + CPU_CAPACITY_VALUE], CPU_CAPACITY_SCALE
+    mov dword [edi + CPU_LOCAL_DATA], cpu_local_data
+    mov dword [edi + CPU_FLAGS], 1  ; BSP
 
     xor eax, eax
     cpuid
-    mov [edi + 52], ebx             ; Herstellerkennung, 12 Byte
-    mov [edi + 56], edx
-    mov [edi + 60], ecx
+    mov [edi + CPU_VENDOR0], ebx    ; Herstellerkennung, 12 Byte
+    mov [edi + CPU_VENDOR1], edx
+    mov [edi + CPU_VENDOR2], ecx
     mov [cpu_max_basic_leaf], eax
     mov eax, 1
     cpuid
-    mov [edi + 64], eax             ; Family/Model/Stepping
-    mov [edi + 68], edx             ; rohe CPUID-Featurebits
-    mov [edi + 72], ecx
+    mov [edi + CPU_SIGNATURE], eax  ; Family/Model/Stepping
+    mov [edi + CPU_RAW_FEATURE_EDX], edx
+    mov [edi + CPU_RAW_FEATURE_ECX], ecx
     mov eax, ebx
     shr eax, 24
-    mov [edi + 4], eax              ; APIC Hardware ID, low dword
-    mov dword [edi + 8], 0
+    mov [edi + CPU_HARDWARE_LOW], eax
+    mov dword [edi + CPU_HARDWARE_HIGH], 0
     mov eax, ebx
     shr eax, 16
     and eax, 0xFF
@@ -14489,7 +15233,7 @@ cpu_manager_initialize:
     jnz .logical_known
     mov eax, 1
 .logical_known:
-    mov [edi + 36], eax             ; gemeldete logische Package-Threads
+    mov [edi + CPU_PACKAGE_THREADS], eax
 
     xor ebp, ebp
     test edx, 1 << 0
@@ -14522,16 +15266,13 @@ cpu_manager_initialize:
     jz .no_extended
     or ebp, CPU_FEATURE_NX
 .no_extended:
-    mov [edi + 76], ebp
+    mov [edi + CPU_FEATURES], ebp
     mov [cpu_system_features], ebp  ; Schnittmenge der aktiven CPUs
 
-    ; Topologie des BSP: Package/Die/Cluster/Thread/NUMA beginnen definiert.
-    mov dword [edi + 16], 0
-    mov dword [edi + 20], 0
-    mov dword [edi + 24], 0
-    mov dword [edi + 28], 0
-    mov dword [edi + 32], 0
-    mov dword [edi + 80], 0xFFFFFFFF ; unbekannte LLC-ID
+    mov dword [edi + CPU_LLC_ID], CPU_TOPOLOGY_UNKNOWN
+    mov eax, [edi + CPU_HARDWARE_LOW]
+    call cpu_import_hal_topology
+    jc .invalid_topology
 
     ; Per-CPU-Basis muss vor ONLINE vollständig sein.
     mov dword [cpu_local_data + 0], cpu_records
@@ -14546,10 +15287,10 @@ cpu_manager_initialize:
     mov dword [cpu_local_data + 32], 1 ; lokaler Timer vorbereitet
     mov dword [cpu_local_data + 36], 1 ; Interruptcontroller vorbereitet
     mov dword [cpu_local_data + 40], 0x43505530 ; Canary/Owner-Marker
-    mov dword [edi + 12], CPU_STATE_ONLINE
+    mov dword [edi + CPU_STATE], CPU_STATE_ONLINE
     mov dword [cpu_online_set], 1
     mov dword [cpu_online_count], 1
-    mov dword [edi + 12], CPU_STATE_ACTIVE
+    mov dword [edi + CPU_STATE], CPU_STATE_ACTIVE
     mov dword [cpu_active_set], 1
     ; Firmwareerkannte APs erhalten kompakte CPU IDs, aber weder Stack noch
     ; Runqueue noch ONLINE/ACTIVE-Bit. Der UP-Kernel kann sicher weiterbooten.
@@ -14565,16 +15306,22 @@ cpu_manager_initialize:
     mov [cpu_present_set], eax
     mov ebx, 1
 .register_ap:
-    cmp ebx, ecx
+    cmp ebx, [acpi_cpu_count]
     jae .topology_done
     imul edx, ebx, CPU_RECORD_SIZE
     add edx, cpu_records
-    mov [edx], ebx
+    mov [edx + CPU_ID], ebx
     mov eax, [acpi_apic_ids + ebx * 4]
-    mov [edx + 4], eax
-    mov dword [edx + 12], CPU_STATE_OFFLINE
-    mov dword [edx + 40], CPU_CAPACITY_SCALE
-    mov dword [edx + 80], 0xFFFFFFFF
+    mov [edx + CPU_HARDWARE_LOW], eax
+    mov dword [edx + CPU_HARDWARE_HIGH], 0
+    mov dword [edx + CPU_STATE], CPU_STATE_OFFLINE
+    mov dword [edx + CPU_CAPACITY_VALUE], CPU_CAPACITY_SCALE
+    mov dword [edx + CPU_LLC_ID], CPU_TOPOLOGY_UNKNOWN
+    push ebx
+    mov edi, edx
+    call cpu_import_hal_topology
+    pop ebx
+    jc .invalid_topology
     inc ebx
     jmp .register_ap
 .invalid_topology:
@@ -14586,13 +15333,65 @@ cpu_manager_initialize:
     clc
     ret
 
+; EDI=CPU-Datensatz, EAX=APIC-Hardware-ID. Importiert ausschließlich die
+; normalisierte HAL-Sicht; der CPU Manager parst weder MADT noch CPUID erneut.
+cpu_import_hal_topology:
+    mov [cpu_temp_record], edi
+    mov dword [edi + CPU_PACKAGE_ID], CPU_TOPOLOGY_UNKNOWN
+    mov dword [edi + CPU_DIE_ID], CPU_TOPOLOGY_UNKNOWN
+    mov dword [edi + CPU_CLUSTER_ID], CPU_TOPOLOGY_UNKNOWN
+    mov dword [edi + CPU_CORE_ID], CPU_TOPOLOGY_UNKNOWN
+    mov dword [edi + CPU_THREAD_ID], CPU_TOPOLOGY_UNKNOWN
+    mov dword [edi + CPU_NUMA_NODE_ID], CPU_TOPOLOGY_UNKNOWN
+    mov dword [edi + CPU_TOPOLOGY_NODE], 0
+    mov dword [edi + CPU_TOPOLOGY_GENERATION], 0
+    call topology_cpu_lookup
+    jc .invalid
+    mov esi, eax
+    mov edi, [cpu_temp_record]
+    mov edx, [esi + TOPOLOGY_ID]
+    mov [edi + CPU_TOPOLOGY_NODE], edx
+    mov edx, [esi + TOPOLOGY_GENERATION]
+    mov [edi + CPU_TOPOLOGY_GENERATION], edx
+    mov edx, [esi + TOPOLOGY_PROPERTY2]
+    mov [edi + CPU_THREAD_ID], edx
+    test dword [esi + TOPOLOGY_FLAGS], TOPOLOGY_FLAG_LOCALITY_KNOWN
+    jz .locality_ready
+    mov edx, [esi + TOPOLOGY_NUMA_NODE]
+    mov [edi + CPU_NUMA_NODE_ID], edx
+.locality_ready:
+    test dword [esi + TOPOLOGY_FLAGS], TOPOLOGY_FLAG_ARCH_VALIDATED
+    jz .complete
+    mov eax, [esi + TOPOLOGY_PARENT]
+    call topology_lookup
+    jc .invalid
+    cmp dword [eax + TOPOLOGY_TYPE], TOPOLOGY_TYPE_CPU_CORE
+    jne .invalid
+    mov edi, [cpu_temp_record]
+    mov edx, [eax + TOPOLOGY_HARDWARE_ID]
+    mov [edi + CPU_CORE_ID], edx
+    mov eax, [eax + TOPOLOGY_PARENT]
+    call topology_lookup
+    jc .invalid
+    cmp dword [eax + TOPOLOGY_TYPE], TOPOLOGY_TYPE_CPU_PACKAGE
+    jne .invalid
+    mov edi, [cpu_temp_record]
+    mov edx, [eax + TOPOLOGY_HARDWARE_ID]
+    mov [edi + CPU_PACKAGE_ID], edx
+.complete:
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
 ; EAX=CPU ID, EDX=Zeiger auf internen Record bei Erfolg.
 cpu_query:
     cmp eax, [cpu_discovered_count]
     jae .invalid
     imul edx, eax, CPU_RECORD_SIZE
     add edx, cpu_records
-    cmp dword [edx + 12], CPU_STATE_FAILED
+    cmp dword [edx + CPU_STATE], CPU_STATE_FAILED
     je .invalid
     clc
     ret
@@ -14606,9 +15405,9 @@ cpu_offline:
     jc .invalid
     cmp dword [cpu_active_set], 1
     je .invalid
-    cmp dword [edx + 12], CPU_STATE_ACTIVE
+    cmp dword [edx + CPU_STATE], CPU_STATE_ACTIVE
     jne .invalid
-    mov dword [edx + 12], CPU_STATE_OFFLINE
+    mov dword [edx + CPU_STATE], CPU_STATE_OFFLINE
     btr dword [cpu_online_set], eax
     btr dword [cpu_active_set], eax
     dec dword [cpu_online_count]
@@ -14627,6 +15426,60 @@ cpu_manager_self_test:
     jne .invalid
     cmp dword [cpu_active_set], 1
     jne .invalid
+    mov dword [cpu_test_index], 0
+.topology_next:
+    mov eax, [cpu_test_index]
+    cmp eax, [cpu_discovered_count]
+    jae .topology_complete
+    call cpu_query
+    jc .invalid
+    mov [cpu_temp_record], edx
+    mov ecx, [cpu_test_index]
+    mov eax, [acpi_apic_ids + ecx * 4]
+    cmp [edx + CPU_HARDWARE_LOW], eax
+    jne .invalid
+    mov eax, [edx + CPU_TOPOLOGY_NODE]
+    test eax, eax
+    jz .invalid
+    call topology_lookup
+    jc .invalid
+    mov edx, [cpu_temp_record]
+    mov ecx, [eax + TOPOLOGY_GENERATION]
+    cmp [edx + CPU_TOPOLOGY_GENERATION], ecx
+    jne .invalid
+    mov ecx, [eax + TOPOLOGY_PROPERTY2]
+    cmp [edx + CPU_THREAD_ID], ecx
+    jne .invalid
+    test dword [eax + TOPOLOGY_FLAGS], TOPOLOGY_FLAG_ARCH_VALIDATED
+    jz .topology_fallback
+    cmp dword [edx + CPU_PACKAGE_ID], CPU_TOPOLOGY_UNKNOWN
+    je .invalid
+    cmp dword [edx + CPU_CORE_ID], CPU_TOPOLOGY_UNKNOWN
+    je .invalid
+    jmp .topology_entry_valid
+.topology_fallback:
+    cmp dword [edx + CPU_PACKAGE_ID], CPU_TOPOLOGY_UNKNOWN
+    jne .invalid
+    cmp dword [edx + CPU_CORE_ID], CPU_TOPOLOGY_UNKNOWN
+    jne .invalid
+.topology_entry_valid:
+    cmp dword [edx + CPU_DIE_ID], CPU_TOPOLOGY_UNKNOWN
+    jne .invalid
+    cmp dword [edx + CPU_CLUSTER_ID], CPU_TOPOLOGY_UNKNOWN
+    jne .invalid
+    test dword [eax + TOPOLOGY_FLAGS], TOPOLOGY_FLAG_LOCALITY_KNOWN
+    jz .cpu_numa_unknown
+    mov ecx, [eax + TOPOLOGY_NUMA_NODE]
+    cmp [edx + CPU_NUMA_NODE_ID], ecx
+    jne .invalid
+    jmp .cpu_numa_valid
+.cpu_numa_unknown:
+    cmp dword [edx + CPU_NUMA_NODE_ID], CPU_TOPOLOGY_UNKNOWN
+    jne .invalid
+.cpu_numa_valid:
+    inc dword [cpu_test_index]
+    jmp .topology_next
+.topology_complete:
     mov eax, [kernel_boot_stack_top]
     cmp dword [cpu_local_data + 28], eax
     jne .invalid
@@ -14637,16 +15490,16 @@ cpu_manager_self_test:
     xor eax, eax
     call cpu_query
     jc .invalid
-    cmp dword [edx + 12], CPU_STATE_ACTIVE
+    cmp dword [edx + CPU_STATE], CPU_STATE_ACTIVE
     jne .invalid
     cmp dword [cpu_discovered_count], 1
     jbe .no_ap
     mov eax, 1
     call cpu_query
     jc .invalid
-    cmp dword [edx + 12], CPU_STATE_OFFLINE
+    cmp dword [edx + CPU_STATE], CPU_STATE_OFFLINE
     jne .invalid
-    cmp dword [cpu_records + CPU_RECORD_SIZE + 44], 0
+    cmp dword [cpu_records + CPU_RECORD_SIZE + CPU_LOCAL_DATA], 0
     jne .invalid
 .no_ap:
     mov eax, CPU_CAPACITY
@@ -14656,8 +15509,8 @@ cpu_manager_self_test:
     call cpu_offline               ; letzte aktive CPU muss abgelehnt werden
     jnc .invalid
     ; Kontrollierter ACTIVE-IDLE-ACTIVE-Übergang des BSP.
-    mov dword [cpu_records + 12], CPU_STATE_IDLE
-    mov dword [cpu_records + 12], CPU_STATE_ACTIVE
+    mov dword [cpu_records + CPU_STATE], CPU_STATE_IDLE
+    mov dword [cpu_records + CPU_STATE], CPU_STATE_ACTIVE
     clc
     ret
 .invalid:
@@ -14691,6 +15544,8 @@ cpu_discovered_count:    dd 0
 cpu_online_count:        dd 0
 cpu_startup_attempts:    dd 0
 cpu_offline_operations:  dd 0
+cpu_temp_record:         dd 0
+cpu_test_index:          dd 0
 align 64
 cpu_local_data:          times CPU_CAPACITY * CPU_LOCAL_SLOT_SIZE db 0
 cpu_records:             times CPU_CAPACITY * CPU_RECORD_SIZE db 0
@@ -20044,6 +20899,8 @@ message_module_loader_error:
     db "NOVA PANIC: Module Loader Selbsttest fehlgeschlagen", 13, 10, 0
 message_cpu_manager_ok:
     db "NOVA: CPU Manager ABI 1.0, BSP-Topologie und per-CPU-Daten aktiv", 13, 10, 0
+message_cpu_topology_import_ok:
+    db "NOVA: CPU Manager bezieht Package, Core und Thread aus HAL Topology", 13, 10, 0
 message_cpu_manager_error:
     db "NOVA PANIC: CPU Manager Selbsttest fehlgeschlagen", 13, 10, 0
 message_smp_ok:
@@ -20160,6 +21017,10 @@ message_acpi_rsdp_missing:
     db "NOVA: ACPI RSDP nicht verfuegbar, BSP-only", 13, 10, 0
 message_acpi_cpu_count:
     db "NOVA: ACPI MADT, erkannte CPUs (hex): 0x", 0
+message_acpi_srat_ok:
+    db "NOVA: ACPI SRAT validiert, CPU/Memory-Affinitaeten (hex): 0x", 0
+message_acpi_srat_unavailable:
+    db "NOVA: ACPI SRAT nicht validiert oder nicht verfuegbar, NUMA unbekannt", 13, 10, 0
 message_line_end:
     db 13, 10, 0
 message_kernel_identity_ok:
@@ -20240,6 +21101,10 @@ message_topology_ok:
     db "NOVA: HAL Topology ABI 1.0, Busse, Devices und IOMMU-Gruppen aktiv", 13, 10, 0
 message_topology_cpu_count:
     db "NOVA: HAL Topology, normalisierte CPU-Threads (hex): 0x", 0
+message_topology_hierarchy_count:
+    db "NOVA: HAL CPUID Hierarchy, Packages/Core/Threads (hex): 0x", 0
+message_topology_count_separator:
+    db "/0x", 0
 message_topology_error:
     db "NOVA PANIC: HAL Topology Manager nicht initialisierbar", 13, 10, 0
 message_iommu_ok:

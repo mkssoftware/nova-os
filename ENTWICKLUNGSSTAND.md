@@ -1,6 +1,6 @@
 # NovaOS – aktueller Entwicklungsstand
 
-**Stand:** 27. September 2026
+**Stand:** 28. September 2026
 **Projektpfad:** `C:\recoverboot\nova-os`  
 **Aktueller Schwerpunkt:** UEFI-Bootpfad und Kernel-Handoff
 
@@ -962,7 +962,35 @@ Einträge werden dedupliziert und mit ihrer echten APIC-Hardware-ID als
 `CPU_THREAD` übernommen. Der automatisierte UEFI-Test startet QEMU mit vier
 CPUs und verlangt entsprechend vier normalisierte Threads.
 
-Package- und Core-Beziehungen sowie NUMA-Lokalität werden noch nicht
-behauptet, weil die MADT diese Informationen nicht liefert. Dafür sind später
-per-CPU-CPUID und ACPI SRAT notwendig. Ohne gültige MADT bleibt ein klar
-gekennzeichneter BSP-Fallback mit der über CPUID ermittelten APIC-ID erhalten.
+Package- und Core-Beziehungen stammen nicht aus der MADT. Sie werden jetzt
+getrennt über die standardisierten x86-CPUID-Topologieblätter normalisiert.
+Die NUMA-Lokalität benötigt weiterhin ACPI SRAT. Ohne gültige MADT bleibt ein
+klar gekennzeichneter BSP-Fallback mit der über CPUID ermittelten APIC-ID
+erhalten.
+
+### Package-, Core- und SMT-Hierarchie
+
+Der HAL-Provider wertet bevorzugt CPUID `0x1F` und ersatzweise `0x0B` aus.
+Nach validierten SMT- und Core-Bitgrenzen werden die MADT-APIC-IDs stabil zu
+Package, Core und Hardware-Thread gruppiert. SMT-Threads desselben Kerns teilen
+sich dadurch tatsächlich denselben Core-Knoten.
+
+Fehlen vollständige CPUID-Level, wird keine genaue CPU-Hierarchie behauptet.
+Der Selbsttest prüft jede Parent-Kette bis zum NUMA-Fallback. ABI-Prüfung,
+Kernelbau und der vollständige UEFI-QEMU-Test bis Desktop und Shutdown bleiben
+erfolgreich.
+
+### CPU Manager an den HAL-Graphen angebunden
+
+Der CPU Manager besitzt nun eine versionierte 112-Byte-CPU-ABI mit getrennten
+Feldern für Package, Die, Cluster, Core, Hardware-Thread und NUMA. Das behebt
+den alten internen Datensatz, in dem ein eigenes Core-Feld fehlte.
+
+BSP und erkannte APs beziehen Package-, Core- und Thread-Identitäten jetzt
+direkt aus dem normalisierten HAL-Graphen. Der CPU Manager wertet dafür weder
+MADT noch CPUID-Topologie erneut aus. Topologieknoten-ID und Generation bleiben
+im CPU-Datensatz erhalten, sodass spätere Änderungen nachvollziehbar sind.
+
+Unbekannte Die-, Cluster-, Cache- und NUMA-Zuordnungen bleiben ausdrücklich
+`0xFFFFFFFF`. ABI-Prüfung, Kernel-Selbsttest und der vollständige UEFI-QEMU-
+Test bis Desktop und geordnetem Shutdown sind erfolgreich.

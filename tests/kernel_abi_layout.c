@@ -23,6 +23,7 @@
 #include "../kernel/include/nova/dma_scatter_gather.h"
 #include "../kernel/include/nova/iommu.h"
 #include "../kernel/include/nova/topology.h"
+#include "../kernel/include/nova/cpu.h"
 
 _Static_assert(NOVA_BOOT_PHASE_COUNT==12,"Kernel boot phase count changed");
 _Static_assert(NOVA_BOOT_PHASE_OPERATIONAL==11,"Kernel operational phase changed");
@@ -78,5 +79,6 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(nova_iommu_api_t)==40&&
            sizeof(nova_topology_record_t)==64&&
            sizeof(nova_topology_api_t)==40&&
+           sizeof(nova_cpu_record_t)==112&&sizeof(nova_cpu_api_t)==48&&
            sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==32;
 }

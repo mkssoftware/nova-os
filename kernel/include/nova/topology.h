@@ -5,7 +5,7 @@
 
 #define NOVA_TOPOLOGY_ABI_MAJOR 1u
 #define NOVA_TOPOLOGY_ABI_MINOR 0u
-#define NOVA_TOPOLOGY_CAPACITY  32u
+#define NOVA_TOPOLOGY_CAPACITY  48u
 
 typedef uint32_t nova_topology_id_t;
 typedef uint32_t nova_topology_type_t;
@@ -42,7 +42,8 @@ enum {
     NOVA_TOPOLOGY_FLAG_DMA_CAPABLE = 1u << 2,
     NOVA_TOPOLOGY_FLAG_LOCALITY_KNOWN = 1u << 3,
     NOVA_TOPOLOGY_FLAG_FIRMWARE_VALIDATED = 1u << 4,
-    NOVA_TOPOLOGY_FLAG_FALLBACK = 1u << 5
+    NOVA_TOPOLOGY_FLAG_FALLBACK = 1u << 5,
+    NOVA_TOPOLOGY_FLAG_ARCH_VALIDATED = 1u << 6
 };
 
 typedef struct nova_topology_record {
