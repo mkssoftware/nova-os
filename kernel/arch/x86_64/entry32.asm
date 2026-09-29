@@ -317,6 +317,15 @@ kernel_entry:
     mov esi, message_security_ok
     call serial_write_string
 
+    call boot_health_initialize
+    jc panic_boot_health
+    call boot_health_self_test
+    jc panic_boot_health
+    call boot_health_publish_core_services
+    jc panic_boot_health
+    mov esi, message_boot_health_authority_ok
+    call serial_write_string
+
     call cpu_manager_initialize
     jc panic_cpu_manager
     mov esi, message_cpu_manager_initialized
@@ -367,6 +376,10 @@ kernel_entry:
     jc panic_device_manager
     mov esi, message_device_manager_ok
     call serial_write_string
+    call boot_health_mark_kernel_initialized
+    jc panic_boot_health
+    mov esi, message_boot_health_kernel_initialized
+    call serial_write_string
 
     mov dword [boot_phase_last_success], BOOT_PHASE_DEVICE_DISCOVERY
     mov dword [boot_phase_current], BOOT_PHASE_ROOT_FILESYSTEM
@@ -376,6 +389,8 @@ kernel_entry:
     call vfs_self_test
     jc panic_vfs
     mov esi, message_vfs_ok
+    call serial_write_string
+    mov esi, message_boot_health_root_pending
     call serial_write_string
 
     call network_manager_initialize
@@ -545,6 +560,12 @@ panic_security:
     mov eax, 0x00002013
     mov edx, 13
     mov esi, message_security_error
+    jmp kernel_panic
+
+panic_boot_health:
+    mov eax, 0x00002026
+    mov edx, 0x4845414C             ; "HEAL"
+    mov esi, message_boot_health_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -951,6 +972,8 @@ create_kernel_context:
     or dword [kernel_context + CONTEXT_SEEN], CONTEXT_HAS_SYSTEM
     mov eax, [edx + 0]
     mov [kernel_context + CONTEXT_SYSTEM_GENERATION], eax
+    mov eax, [edx + 4]
+    mov [kernel_context + CONTEXT_SYSTEM_GENERATION_HI], eax
     mov eax, [edx + 8]
     mov [kernel_context + CONTEXT_BOOT_ATTEMPT], eax
     jmp .advance
@@ -15159,7 +15182,9 @@ SECURITY_CAP_NET_CONNECT equ 0x00000800
 SECURITY_CAP_NET_LISTEN equ 0x00001000
 SECURITY_CAP_LOG_READ   equ 0x00002000
 SECURITY_CAP_DISPLAY_SYSTEM_UI equ 0x00004000
-SECURITY_KERNEL_CAPS    equ 0x00007FFF
+SECURITY_CAP_BOOT_HEALTH_REPORT equ 0x00008000
+SECURITY_CAP_BOOT_HEALTH_COMMIT equ 0x00010000
+SECURITY_KERNEL_CAPS    equ 0x0001FFFF
 
 security_initialize:
     mov edi, security_table
@@ -15295,6 +15320,449 @@ security_temp_caps: dd 0
 align 4
 security_table:
     times SECURITY_CAPACITY * SECURITY_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Boot Health Authority ABI 1.0
+; Capability-geschuetzte, generationsgebundene Provider-Aggregation.
+; ---------------------------------------------------------------------------
+BOOT_HEALTH_REPORT_SIZE       equ 32
+BOOT_HEALTH_RECORD_SIZE       equ 64
+BOOT_HEALTH_EVIDENCE_SIZE     equ 32
+BOOT_HEALTH_API_SIZE          equ 40
+
+BOOT_HEALTH_STATUS_PENDING    equ 1
+BOOT_HEALTH_STATUS_HEALTHY    equ 2
+BOOT_HEALTH_STATUS_DEGRADED   equ 3
+BOOT_HEALTH_STATUS_FAILED     equ 4
+BOOT_HEALTH_STATUS_TIMED_OUT  equ 5
+
+BOOT_HEALTH_MILESTONE_BOOT_STARTED       equ 1
+BOOT_HEALTH_MILESTONE_KERNEL_ENTERED     equ 2
+BOOT_HEALTH_MILESTONE_KERNEL_INITIALIZED equ 3
+BOOT_HEALTH_MILESTONE_SYSTEM_ROOT_READY  equ 4
+BOOT_HEALTH_MILESTONE_CRITICAL_SERVICES  equ 5
+BOOT_HEALTH_MILESTONE_OPERATIONAL        equ 6
+BOOT_HEALTH_MILESTONE_CONFIRMED          equ 7
+
+BOOT_HEALTH_PROVIDER_KERNEL_CORE equ 0x00000001
+BOOT_HEALTH_PROVIDER_MEMORY      equ 0x00000002
+BOOT_HEALTH_PROVIDER_SYSTEM_ROOT equ 0x00000004
+BOOT_HEALTH_PROVIDER_TRUST       equ 0x00000008
+BOOT_HEALTH_PROVIDER_CAPABILITY  equ 0x00000010
+BOOT_HEALTH_PROVIDER_IPC         equ 0x00000020
+BOOT_HEALTH_PROVIDER_SESSION     equ 0x00000040
+
+BOOT_HEALTH_PROVIDER_READY       equ 1
+BOOT_HEALTH_PROVIDER_DEGRADED    equ 2
+BOOT_HEALTH_PROVIDER_FAILED      equ 3
+
+BOOT_HEALTH_REQUIRED_MILESTONES  equ 0x00000078
+BOOT_HEALTH_INITIAL_MILESTONES   equ 0x00000006
+BOOT_HEALTH_FLAG_IDENTITY_VALID  equ 0x00000001
+BOOT_HEALTH_FLAG_TRUST_VERIFIED  equ 0x00000002
+BOOT_HEALTH_FLAG_DEGRADED_SEEN   equ 0x00000004
+BOOT_HEALTH_FLAG_EVIDENCE_READY  equ 0x00000008
+
+; Record offsets are shared with nova/boot_health.h.
+BH_RECORD_GENERATION_LO equ 8
+BH_RECORD_GENERATION_HI equ 12
+BH_RECORD_BOOT_ATTEMPT  equ 16
+BH_RECORD_STATUS        equ 20
+BH_RECORD_REACHED       equ 24
+BH_RECORD_REQUIRED      equ 28
+BH_RECORD_LAST          equ 32
+BH_RECORD_FAILED        equ 36
+BH_RECORD_SEQUENCE      equ 40
+BH_RECORD_AUTHORIZED    equ 44
+BH_RECORD_REJECTED      equ 48
+BH_RECORD_FLAGS         equ 52
+
+boot_health_initialize:
+    cld
+    mov edi, boot_health_record
+    xor eax, eax
+    mov ecx, BOOT_HEALTH_RECORD_SIZE / 4
+    rep stosd
+    mov edi, boot_health_provider_ready
+    mov ecx, 8
+    rep stosd
+
+    mov dword [boot_health_record], BOOT_HEALTH_RECORD_SIZE
+    mov word [boot_health_record + 4], 1
+    mov word [boot_health_record + 6], 0
+    mov eax, [kernel_context + CONTEXT_SYSTEM_GENERATION]
+    mov [boot_health_record + BH_RECORD_GENERATION_LO], eax
+    mov eax, [kernel_context + CONTEXT_SYSTEM_GENERATION_HI]
+    mov [boot_health_record + BH_RECORD_GENERATION_HI], eax
+    mov eax, [kernel_context + CONTEXT_BOOT_ATTEMPT]
+    mov [boot_health_record + BH_RECORD_BOOT_ATTEMPT], eax
+    mov dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_PENDING
+    mov dword [boot_health_record + BH_RECORD_REACHED], BOOT_HEALTH_INITIAL_MILESTONES
+    mov dword [boot_health_record + BH_RECORD_REQUIRED], BOOT_HEALTH_REQUIRED_MILESTONES
+    mov dword [boot_health_record + BH_RECORD_LAST], BOOT_HEALTH_MILESTONE_KERNEL_ENTERED
+    mov dword [boot_health_record + BH_RECORD_SEQUENCE], 1
+    mov dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_IDENTITY_VALID
+    cmp dword [kernel_context + CONTEXT_SECURITY_STATE], NOVA_BOOT_VERIFICATION_SIGNATURE_VERIFIED
+    jb .identity_ready
+    or dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_TRUST_VERIFIED
+.identity_ready:
+    mov dword [boot_health_ready], 1
+    clc
+    ret
+
+; EDX=Milestone, ECX=Provider, EBX=Providerstatus.
+boot_health_prepare_report:
+    mov dword [boot_health_temp_report], BOOT_HEALTH_REPORT_SIZE
+    mov word [boot_health_temp_report + 4], 1
+    mov word [boot_health_temp_report + 6], 0
+    mov eax, [boot_health_record + BH_RECORD_GENERATION_LO]
+    mov [boot_health_temp_report + 8], eax
+    mov eax, [boot_health_record + BH_RECORD_GENERATION_HI]
+    mov [boot_health_temp_report + 12], eax
+    mov eax, [boot_health_record + BH_RECORD_BOOT_ATTEMPT]
+    mov [boot_health_temp_report + 16], eax
+    mov [boot_health_temp_report + 20], edx
+    mov [boot_health_temp_report + 24], ecx
+    mov [boot_health_temp_report + 28], ebx
+    ret
+
+; EAX=aufrufende PID, ESI=Report. Nur das Kernelobjekt behaelt Zustand.
+boot_health_submit_report:
+    pushfd
+    cli
+    pushad
+    cmp dword [boot_health_ready], 1
+    jne .reject
+    test esi, 3
+    jnz .reject
+    cmp dword [esi], BOOT_HEALTH_REPORT_SIZE
+    jne .reject
+    cmp word [esi + 4], 1
+    jne .reject
+    cmp word [esi + 6], 0
+    jne .reject
+    mov [boot_health_temp_pid], eax
+    mov edi, boot_health_temp_report
+    mov ecx, BOOT_HEALTH_REPORT_SIZE / 4
+    cld
+    rep movsd
+
+    mov eax, [boot_health_temp_pid]
+    mov edx, SECURITY_CAP_BOOT_HEALTH_REPORT
+    call security_check
+    jc .reject
+    mov eax, [boot_health_temp_report + 8]
+    cmp eax, [boot_health_record + BH_RECORD_GENERATION_LO]
+    jne .reject
+    mov eax, [boot_health_temp_report + 12]
+    cmp eax, [boot_health_record + BH_RECORD_GENERATION_HI]
+    jne .reject
+    mov eax, [boot_health_temp_report + 16]
+    cmp eax, [boot_health_record + BH_RECORD_BOOT_ATTEMPT]
+    jne .reject
+    cmp dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_FAILED
+    je .reject
+    cmp dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_TIMED_OUT
+    je .reject
+
+    mov ecx, [boot_health_temp_report + 20]
+    cmp ecx, BOOT_HEALTH_MILESTONE_KERNEL_INITIALIZED
+    jb .reject
+    cmp ecx, BOOT_HEALTH_MILESTONE_OPERATIONAL
+    ja .reject
+    mov eax, [boot_health_temp_report + 24]
+    test eax, eax
+    jz .reject
+    mov edx, eax
+    dec edx
+    test eax, edx
+    jnz .reject
+    mov edx, [boot_health_provider_allowed + ecx * 4]
+    test eax, edx
+    jz .reject
+    mov ebx, [boot_health_temp_report + 28]
+    cmp ebx, BOOT_HEALTH_PROVIDER_READY
+    jb .reject
+    cmp ebx, BOOT_HEALTH_PROVIDER_FAILED
+    ja .reject
+
+    inc dword [boot_health_record + BH_RECORD_AUTHORIZED]
+    inc dword [boot_health_record + BH_RECORD_SEQUENCE]
+    cmp ebx, BOOT_HEALTH_PROVIDER_FAILED
+    je .provider_failed
+    cmp ebx, BOOT_HEALTH_PROVIDER_DEGRADED
+    je .provider_degraded
+    or [boot_health_provider_ready + ecx * 4], eax
+    call boot_health_advance
+    popad
+    popfd
+    clc
+    ret
+.provider_degraded:
+    or dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_DEGRADED_SEEN
+    mov dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_DEGRADED
+    popad
+    popfd
+    clc
+    ret
+.provider_failed:
+    mov dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_FAILED
+    mov [boot_health_record + BH_RECORD_FAILED], ecx
+    popad
+    popfd
+    clc
+    ret
+.reject:
+    inc dword [boot_health_record + BH_RECORD_REJECTED]
+    popad
+    popfd
+    stc
+    ret
+
+boot_health_advance:
+    mov ecx, [boot_health_record + BH_RECORD_LAST]
+.next:
+    inc ecx
+    cmp ecx, BOOT_HEALTH_MILESTONE_OPERATIONAL
+    ja .done
+    mov eax, [boot_health_provider_required + ecx * 4]
+    mov edx, [boot_health_provider_ready + ecx * 4]
+    and edx, eax
+    cmp edx, eax
+    jne .done
+    bts dword [boot_health_record + BH_RECORD_REACHED], ecx
+    mov [boot_health_record + BH_RECORD_LAST], ecx
+    jmp .next
+.done:
+    cmp dword [boot_health_record + BH_RECORD_LAST], BOOT_HEALTH_MILESTONE_OPERATIONAL
+    jne .return
+    mov dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_HEALTHY
+    bts dword [boot_health_record + BH_RECORD_REACHED], BOOT_HEALTH_MILESTONE_CONFIRMED
+    mov dword [boot_health_record + BH_RECORD_LAST], BOOT_HEALTH_MILESTONE_CONFIRMED
+    or dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_EVIDENCE_READY
+.return:
+    ret
+
+; EAX=aufrufende PID, EDI=32-Byte-Ausgabepuffer.
+boot_health_export_evidence:
+    pushfd
+    cli
+    pushad
+    test edi, 3
+    jnz .denied
+    mov [boot_health_temp_pid], eax
+    mov eax, [boot_health_temp_pid]
+    mov edx, SECURITY_CAP_BOOT_HEALTH_COMMIT
+    call security_check
+    jc .denied
+    test dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_EVIDENCE_READY
+    jz .denied
+    mov dword [edi], BOOT_HEALTH_EVIDENCE_SIZE
+    mov word [edi + 4], 1
+    mov word [edi + 6], 0
+    mov eax, [boot_health_record + BH_RECORD_GENERATION_LO]
+    mov [edi + 8], eax
+    mov eax, [boot_health_record + BH_RECORD_GENERATION_HI]
+    mov [edi + 12], eax
+    mov eax, [boot_health_record + BH_RECORD_BOOT_ATTEMPT]
+    mov [edi + 16], eax
+    mov eax, [boot_health_record + BH_RECORD_REACHED]
+    mov [edi + 20], eax
+    mov eax, [boot_health_record + BH_RECORD_STATUS]
+    mov [edi + 24], eax
+    xor eax, eax
+    test dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_TRUST_VERIFIED
+    jz .store_trust
+    inc eax
+.store_trust:
+    mov [edi + 28], eax
+    popad
+    popfd
+    clc
+    ret
+.denied:
+    popad
+    popfd
+    stc
+    ret
+
+boot_health_publish_core_services:
+    mov edx, BOOT_HEALTH_MILESTONE_CRITICAL_SERVICES
+    mov ecx, BOOT_HEALTH_PROVIDER_CAPABILITY
+    mov ebx, BOOT_HEALTH_PROVIDER_READY
+    call boot_health_prepare_report
+    mov eax, 1
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report
+    jc .invalid
+    mov edx, BOOT_HEALTH_MILESTONE_CRITICAL_SERVICES
+    mov ecx, BOOT_HEALTH_PROVIDER_IPC
+    mov ebx, BOOT_HEALTH_PROVIDER_READY
+    call boot_health_prepare_report
+    mov eax, 1
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report
+    ret
+.invalid:
+    stc
+    ret
+
+boot_health_mark_kernel_initialized:
+    mov edx, BOOT_HEALTH_MILESTONE_KERNEL_INITIALIZED
+    mov ecx, BOOT_HEALTH_PROVIDER_KERNEL_CORE
+    mov ebx, BOOT_HEALTH_PROVIDER_READY
+    call boot_health_prepare_report
+    mov eax, 1
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report
+    jc .invalid
+    mov edx, BOOT_HEALTH_MILESTONE_KERNEL_INITIALIZED
+    mov ecx, BOOT_HEALTH_PROVIDER_MEMORY
+    mov ebx, BOOT_HEALTH_PROVIDER_READY
+    call boot_health_prepare_report
+    mov eax, 1
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report
+    jc .invalid
+    cmp dword [boot_health_record + BH_RECORD_LAST], BOOT_HEALTH_MILESTONE_KERNEL_INITIALIZED
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; Der Selbsttest arbeitet auf einem Snapshot und stellt den Live-Zustand wieder her.
+boot_health_self_test:
+    cld
+    mov esi, boot_health_record
+    mov edi, boot_health_saved_record
+    mov ecx, BOOT_HEALTH_RECORD_SIZE / 4
+    rep movsd
+    mov esi, boot_health_provider_ready
+    mov edi, boot_health_saved_providers
+    mov ecx, 8
+    rep movsd
+    mov dword [boot_health_selftest_result], 1
+
+    mov edx, BOOT_HEALTH_MILESTONE_KERNEL_INITIALIZED
+    mov ecx, BOOT_HEALTH_PROVIDER_KERNEL_CORE
+    mov ebx, BOOT_HEALTH_PROVIDER_READY
+    call boot_health_prepare_report
+    mov eax, 0xFFFFFFFF
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report
+    jnc .restore
+    mov eax, 1
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report
+    jc .restore
+    cmp dword [boot_health_record + BH_RECORD_LAST], BOOT_HEALTH_MILESTONE_KERNEL_ENTERED
+    jne .restore
+
+    mov edx, BOOT_HEALTH_MILESTONE_KERNEL_INITIALIZED
+    mov ecx, BOOT_HEALTH_PROVIDER_MEMORY
+    call boot_health_selftest_ready
+    jc .restore
+    mov edx, BOOT_HEALTH_MILESTONE_SYSTEM_ROOT_READY
+    mov ecx, BOOT_HEALTH_PROVIDER_SYSTEM_ROOT
+    call boot_health_selftest_ready
+    jc .restore
+    mov edx, BOOT_HEALTH_MILESTONE_CRITICAL_SERVICES
+    mov ecx, BOOT_HEALTH_PROVIDER_TRUST
+    call boot_health_selftest_ready
+    jc .restore
+    mov edx, BOOT_HEALTH_MILESTONE_CRITICAL_SERVICES
+    mov ecx, BOOT_HEALTH_PROVIDER_CAPABILITY
+    call boot_health_selftest_ready
+    jc .restore
+    mov edx, BOOT_HEALTH_MILESTONE_CRITICAL_SERVICES
+    mov ecx, BOOT_HEALTH_PROVIDER_IPC
+    call boot_health_selftest_ready
+    jc .restore
+    mov edx, BOOT_HEALTH_MILESTONE_OPERATIONAL
+    mov ecx, BOOT_HEALTH_PROVIDER_SESSION
+    call boot_health_selftest_ready
+    jc .restore
+    cmp dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_HEALTHY
+    jne .restore
+    cmp dword [boot_health_record + BH_RECORD_LAST], BOOT_HEALTH_MILESTONE_CONFIRMED
+    jne .restore
+    mov eax, 1
+    mov edi, boot_health_test_evidence
+    call boot_health_export_evidence
+    jc .restore
+    mov eax, [boot_health_test_evidence + 8]
+    cmp eax, [boot_health_record + BH_RECORD_GENERATION_LO]
+    jne .restore
+    mov eax, [boot_health_test_evidence + 16]
+    cmp eax, [boot_health_record + BH_RECORD_BOOT_ATTEMPT]
+    jne .restore
+    mov dword [boot_health_selftest_result], 0
+.restore:
+    cld
+    mov esi, boot_health_saved_record
+    mov edi, boot_health_record
+    mov ecx, BOOT_HEALTH_RECORD_SIZE / 4
+    rep movsd
+    mov esi, boot_health_saved_providers
+    mov edi, boot_health_provider_ready
+    mov ecx, 8
+    rep movsd
+    cmp dword [boot_health_selftest_result], 0
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+boot_health_selftest_ready:
+    mov ebx, BOOT_HEALTH_PROVIDER_READY
+    call boot_health_prepare_report
+    mov eax, 1
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report
+    ret
+
+align 4
+boot_health_api:
+    dd BOOT_HEALTH_API_SIZE
+    dw 1, 0
+    dd 0x00000007                 ; report, aggregate, evidence-export
+    dd boot_health_submit_report
+    dd boot_health_export_evidence
+    dd boot_health_record
+    dd boot_health_provider_ready
+    dd BOOT_HEALTH_REPORT_SIZE
+    dd BOOT_HEALTH_EVIDENCE_SIZE
+    dd 0
+
+boot_health_provider_required:
+    dd 0, 0, 0
+    dd BOOT_HEALTH_PROVIDER_KERNEL_CORE | BOOT_HEALTH_PROVIDER_MEMORY
+    dd BOOT_HEALTH_PROVIDER_SYSTEM_ROOT
+    dd BOOT_HEALTH_PROVIDER_TRUST | BOOT_HEALTH_PROVIDER_CAPABILITY | BOOT_HEALTH_PROVIDER_IPC
+    dd BOOT_HEALTH_PROVIDER_SESSION
+    dd 0
+boot_health_provider_allowed:
+    dd 0, 0, 0
+    dd BOOT_HEALTH_PROVIDER_KERNEL_CORE | BOOT_HEALTH_PROVIDER_MEMORY
+    dd BOOT_HEALTH_PROVIDER_SYSTEM_ROOT
+    dd BOOT_HEALTH_PROVIDER_TRUST | BOOT_HEALTH_PROVIDER_CAPABILITY | BOOT_HEALTH_PROVIDER_IPC
+    dd BOOT_HEALTH_PROVIDER_SESSION
+    dd 0
+
+align 4
+boot_health_ready:           dd 0
+boot_health_temp_pid:        dd 0
+boot_health_selftest_result: dd 0
+boot_health_provider_ready:  times 8 dd 0
+boot_health_saved_providers: times 8 dd 0
+boot_health_temp_report:     times BOOT_HEALTH_REPORT_SIZE db 0
+boot_health_record:          times BOOT_HEALTH_RECORD_SIZE db 0
+boot_health_saved_record:    times BOOT_HEALTH_RECORD_SIZE db 0
+boot_health_test_evidence:   times BOOT_HEALTH_EVIDENCE_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; CPU Manager / BSP- und Topologieerkennung (NPSPEC-KERNEL-0026)
@@ -20609,7 +21077,8 @@ CONTEXT_BOOT_MODE         equ 140
 CONTEXT_BOOT_FLAGS        equ 144
 CONTEXT_BOOT_GENERATION   equ 148
 CONTEXT_FALLBACK_LEVEL    equ 152
-CONTEXT_SIZE              equ 156
+CONTEXT_SYSTEM_GENERATION_HI equ 156
+CONTEXT_SIZE              equ 160
 
 CONTEXT_HAS_FIRMWARE      equ 0x01
 CONTEXT_HAS_MEMORY        equ 0x02
@@ -21336,6 +21805,14 @@ message_security_ok:
     db "NOVA: Security ABI 1.0 Capabilities aktiv", 13, 10, 0
 message_security_error:
     db "NOVA PANIC: Kernel Security nicht initialisierbar", 13, 10, 0
+message_boot_health_authority_ok:
+    db "NOVA: Boot Health Authority ABI 1.0 capabilitygeschuetzt bereit", 13, 10, 0
+message_boot_health_kernel_initialized:
+    db "NOVA: Boot Health Milestone KernelInitialized aggregiert", 13, 10, 0
+message_boot_health_root_pending:
+    db "NOVA: Boot Health wartet auf persistentes SystemRoot und Trust", 13, 10, 0
+message_boot_health_error:
+    db "NOVA PANIC: Boot Health Authority nicht initialisierbar", 13, 10, 0
 message_thread_manager_ok:
     db "NOVA: Thread Manager ABI 1.0 bereit", 13, 10, 0
 message_thread_manager_error:

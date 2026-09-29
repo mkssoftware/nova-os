@@ -13,6 +13,7 @@ static EFI_GUID nova_boot_control_guid={0x4e4f5641u,0x4243u,0x4f4eu,
     {0x54u,0x52u,0x4fu,0x4cu,0x56u,0x31u,0x00u,0x01u}};
 static CHAR16 state0_name[]={'N','o','v','a','B','o','o','t','S','t','a','t','e','0',0};
 static CHAR16 state1_name[]={'N','o','v','a','B','o','o','t','S','t','a','t','e','1',0};
+static CHAR16 health_evidence_name[]={'N','o','v','a','B','o','o','t','H','e','a','l','t','h',0};
 
 static void bytes_zero(void *target,UINTN length)
 {uint8_t *p=(uint8_t *)target;while(length--)*p++=0;}
@@ -22,6 +23,17 @@ static uint32_t record_crc(const nova_boot_control_record_t *record)
     const uint8_t *bytes=(const uint8_t *)record;uint32_t crc=0xffffffffu;
     UINTN zero_offset=(UINTN)((const uint8_t *)&record->checksum-bytes);
     for(UINTN i=0;i<sizeof(*record);++i){
+        uint8_t value=(i>=zero_offset&&i<zero_offset+4u)?0u:bytes[i];crc^=value;
+        for(uint32_t bit=0;bit<8u;++bit)crc=(crc>>1)^((crc&1u)?0xedb88320u:0u);
+    }
+    return ~crc;
+}
+
+static uint32_t wire_crc(const nova_boot_health_wire_t *wire)
+{
+    const uint8_t *bytes=(const uint8_t *)wire;uint32_t crc=0xffffffffu;
+    UINTN zero_offset=(UINTN)((const uint8_t *)&wire->checksum-bytes);
+    for(UINTN i=0;i<sizeof(*wire);++i){
         uint8_t value=(i>=zero_offset&&i<zero_offset+4u)?0u:bytes[i];crc^=value;
         for(uint32_t bit=0;bit<8u;++bit)crc=(crc>>1)^((crc&1u)?0xedb88320u:0u);
     }
@@ -204,6 +216,37 @@ bool nova_boot_control_apply_health(nova_boot_control_record_t *record,
     seal(record);return true;
 }
 
+bool nova_boot_health_wire_validate(const nova_boot_health_wire_t *wire)
+{
+    static const uint8_t magic[8]={'N','O','V','A','B','H','E','V'};
+    if(!wire)return false;
+    for(UINTN i=0;i<8u;++i)if(wire->magic[i]!=magic[i])return false;
+    return wire->version==NOVA_BOOT_HEALTH_WIRE_VERSION&&wire->size==sizeof(*wire)&&
+        wire->slot<=1u&&wire->generation<=UINT32_MAX&&wire->boot_attempt!=0u&&
+        wire->failed_milestone<=NOVA_BOOT_MILESTONE_HEALTH_CONFIRMED&&
+        wire->status>=NOVA_BOOT_HEALTH_PENDING&&wire->status<=NOVA_BOOT_HEALTH_TIMED_OUT&&
+        wire->trust_verified<=1u&&wire->sequence!=0u&&wire->flags==0u&&wire->reserved==0u&&
+        wire_crc(wire)==wire->checksum;
+}
+
+bool nova_boot_control_apply_wire(nova_boot_control_record_t *record,
+                                  const nova_boot_health_policy_t *policy,
+                                  const nova_boot_health_wire_t *wire,
+                                  bool capability_authorized)
+{
+    if(!nova_boot_health_wire_validate(wire))return false;
+    nova_boot_health_evidence_t evidence={
+        .slot=wire->slot,
+        .generation=(uint32_t)wire->generation,
+        .boot_attempt=wire->boot_attempt,
+        .reached_milestones=wire->reached_milestones,
+        .failed_milestone=(nova_boot_milestone_t)wire->failed_milestone,
+        .status=(nova_boot_health_status_t)wire->status,
+        .trust_verified=wire->trust_verified!=0u
+    };
+    return nova_boot_control_apply_health(record,policy,&evidence,capability_authorized);
+}
+
 static bool read_copy(CHAR16 *name,nova_boot_control_record_t *out)
 {
     if(!runtime||!runtime->GetVariable)return false;
@@ -224,6 +267,51 @@ static bool write_current(void)
     nova_boot_control_record_t check;
     return read_copy(name,&check)&&nova_boot_control_validate(&check)&&
            check.sequence==current.sequence&&check.checksum==current.checksum;
+}
+
+static bool read_health_evidence(nova_boot_health_wire_t *out,bool *present)
+{
+    *present=false;
+    if(!runtime||!runtime->GetVariable)return false;
+    UINTN size=sizeof(*out);uint32_t attributes=0;
+    EFI_STATUS status=runtime->GetVariable(health_evidence_name,&nova_boot_control_guid,
+                                           &attributes,&size,out);
+    if(status==EFI_BUFFER_TOO_SMALL){*present=true;return false;}
+    if(EFI_ERROR(status))return false;
+    *present=true;
+    return attributes==(EFI_VARIABLE_NON_VOLATILE|EFI_VARIABLE_BOOTSERVICE_ACCESS|
+                        EFI_VARIABLE_RUNTIME_ACCESS)&&size==sizeof(*out);
+}
+
+static bool delete_health_evidence(void)
+{
+    return runtime&&runtime->SetVariable&&
+        !EFI_ERROR(runtime->SetVariable(health_evidence_name,&nova_boot_control_guid,0,0,0));
+}
+
+static void consume_health_evidence(void)
+{
+    nova_boot_health_wire_t wire;bool present=false;
+    bool readable=read_health_evidence(&wire,&present);
+    if(!present)return;
+    nova_boot_control_record_t before=current;
+    nova_boot_health_policy_t policy={NOVA_BOOT_HEALTH_REQUIRED_DESKTOP,false};
+    if(!readable||!nova_boot_control_apply_wire(&current,&policy,&wire,true)){
+        (void)delete_health_evidence();
+        nova_debug_string("UEFI:BOOT-HEALTH-EVIDENCE-REJECTED\n");
+        return;
+    }
+    uint32_t result=current.last_result;
+    if(!write_current()){
+        current=before;persistent=false;
+        nova_debug_string("UEFI:BOOT-HEALTH-EVIDENCE-PERSIST-FAILED\n");
+        return;
+    }
+    persistent=true;
+    if(!delete_health_evidence())
+        nova_debug_string("UEFI:BOOT-HEALTH-EVIDENCE-STALE-RETAINED\n");
+    nova_debug_string(result==NOVA_BOOT_RESULT_HEALTH_CONFIRMED?
+        "UEFI:BOOT-HEALTH-EVIDENCE-COMMITTED\n":"UEFI:BOOT-HEALTH-EVIDENCE-UPDATED\n");
 }
 
 bool uefi_boot_control_initialize(EFI_SYSTEM_TABLE *system_table)
@@ -250,6 +338,7 @@ bool uefi_boot_control_initialize(EFI_SYSTEM_TABLE *system_table)
         bool first_copy=write_current();bool second_copy=first_copy&&write_current();
         persistent=first_copy&&second_copy;
         nova_debug_string(persistent?"UEFI:BOOT-CONTROL-INITIALIZED\n":"UEFI:BOOT-CONTROL-VOLATILE\n");}
+    consume_health_evidence();
     bool changed=false;(void)nova_boot_control_select(&current,&changed);
     if(changed){persistent=write_current();nova_debug_string("UEFI:BOOT-CONTROL-ATTEMPT-LIMIT-ROLLBACK\n");}
     nova_debug_string("UEFI:BOOT-HEALTH-STATE-MACHINE-READY\n");

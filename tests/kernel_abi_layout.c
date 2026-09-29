@@ -4,6 +4,7 @@
 #include "../kernel/include/nova/device.h"
 #include "../kernel/include/nova/panic.h"
 #include "../kernel/include/nova/pmm.h"
+#include "../kernel/include/nova/boot_health.h"
 #include "../kernel/include/nova/vfs.h"
 #include "../kernel/include/nova/syscall.h"
 #include "../kernel/include/nova/handle.h"
@@ -80,5 +81,9 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(nova_topology_record_t)==64&&
            sizeof(nova_topology_api_t)==40&&
            sizeof(nova_cpu_record_t)==112&&sizeof(nova_cpu_api_t)==48&&
-           sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==48;
+           sizeof(nova_panic_report_t)==48&&sizeof(NovaPmmApiV1)==48&&
+           sizeof(nova_boot_health_report_t)==32&&
+           sizeof(nova_boot_health_record_t)==64&&
+           sizeof(nova_boot_health_evidence_t)==32&&
+           sizeof(nova_boot_health_api_t)==40;
 }

@@ -13,6 +13,22 @@ static uint32_t test_crc(const nova_boot_control_record_t *record)
     return ~crc;
 }
 
+static uint32_t test_wire_crc(const nova_boot_health_wire_t *wire)
+{
+    const uint8_t *bytes=(const uint8_t *)wire;uint32_t crc=0xffffffffu;
+    size_t zero_offset=(size_t)((const uint8_t *)&wire->checksum-bytes);
+    for(size_t i=0;i<sizeof(*wire);++i){
+        uint8_t value=(i>=zero_offset&&i<zero_offset+4u)?0u:bytes[i];crc^=value;
+        for(uint32_t bit=0;bit<8u;++bit)crc=(crc>>1)^((crc&1u)?0xedb88320u:0u);
+    }
+    return ~crc;
+}
+
+static void seal_wire(nova_boot_health_wire_t *wire)
+{
+    wire->checksum=0;wire->checksum=test_wire_crc(wire);
+}
+
 static void set_sequence(nova_boot_control_record_t *record,uint64_t sequence)
 {
     record->sequence=sequence;record->checksum=0;record->checksum=test_crc(record);
@@ -142,6 +158,50 @@ static int check_health_cycle(void)
     return 0;
 }
 
+static int check_health_wire_cycle(void)
+{
+    static const uint8_t magic[8]={'N','O','V','A','B','H','E','V'};
+    nova_boot_control_record_t state,before;nova_boot_control_default(&state);
+    nova_boot_health_policy_t policy={NOVA_BOOT_HEALTH_REQUIRED_DESKTOP,false};
+    if(check(nova_boot_control_prepare_candidate(&state,1,2),"Wire-Candidate fehlt")||
+       check(nova_boot_control_begin_attempt(&state,1),"Wire-Attempt fehlt"))return 1;
+    nova_boot_health_wire_t wire={0};memcpy(wire.magic,magic,sizeof(magic));
+    wire.version=NOVA_BOOT_HEALTH_WIRE_VERSION;wire.size=sizeof(wire);wire.slot=1;
+    wire.generation=state.slot_generation[1];wire.boot_attempt=state.attempt_count;
+    wire.reached_milestones=NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_BOOTLOADER_STARTED)|
+        NOVA_BOOT_HEALTH_REQUIRED_DESKTOP;
+    wire.failed_milestone=NOVA_BOOT_MILESTONE_NONE;
+    wire.status=NOVA_BOOT_HEALTH_HEALTHY;wire.trust_verified=1;wire.sequence=7;seal_wire(&wire);
+    if(check(nova_boot_health_wire_validate(&wire),"gueltige Wire-Evidence abgelehnt"))return 1;
+    before=state;
+    if(check(!nova_boot_control_apply_wire(&state,&policy,&wire,false),
+             "Wire-Evidence ohne Capability akzeptiert")||
+       check(memcmp(&state,&before,sizeof(state))==0,
+             "Capability-Ablehnung mutiert Boot-Control"))return 1;
+    wire.generation++ ;seal_wire(&wire);
+    if(check(!nova_boot_control_apply_wire(&state,&policy,&wire,true),
+             "Wire-Evidence fremder Generation akzeptiert")||
+       check(memcmp(&state,&before,sizeof(state))==0,
+             "Generations-Ablehnung mutiert Boot-Control"))return 1;
+    wire.generation--;wire.checksum^=0x01020304u;
+    if(check(!nova_boot_health_wire_validate(&wire),"Wire-CRC erkennt Korruption nicht"))return 1;
+    seal_wire(&wire);
+    if(check(nova_boot_control_apply_wire(&state,&policy,&wire,true),
+             "gueltige Wire-Evidence nicht committed")||
+       check(state.known_good_slot==1&&state.candidate_slot==NOVA_BOOT_CONTROL_NO_SLOT&&
+             state.last_result==NOVA_BOOT_RESULT_HEALTH_CONFIRMED,
+             "Wire-Commit erzeugt keinen Known-Good-Zustand"))return 1;
+    before=state;
+    if(check(!nova_boot_control_apply_wire(&state,&policy,&wire,true),
+             "bereits verbrauchte Evidence wurde wiederverwendet")||
+       check(memcmp(&state,&before,sizeof(state))==0,
+             "Replay-Ablehnung mutiert Boot-Control"))return 1;
+    wire.generation=UINT64_C(0x100000000);seal_wire(&wire);
+    if(check(!nova_boot_health_wire_validate(&wire),
+             "nicht darstellbare 64-Bit-Generation akzeptiert"))return 1;
+    return 0;
+}
+
 int main(void)
 {
     nova_boot_control_record_t state,copy_a,copy_b,selected;bool changed=false;
@@ -162,7 +222,7 @@ int main(void)
     for(uint32_t max_attempts=1;max_attempts<=16u;++max_attempts){
         if(check_candidate_cycle(0,1,max_attempts)||check_candidate_cycle(1,0,max_attempts))return 1;
     }
-    if(check_health_cycle())return 1;
+    if(check_health_cycle()||check_health_wire_cycle())return 1;
     nova_boot_control_default(&state);copy_a=state;
     if(check(!nova_boot_control_prepare_candidate(&state,0,2),
              "Known-Good wurde unzulaessig als Candidate akzeptiert")||

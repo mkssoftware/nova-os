@@ -1028,3 +1028,28 @@ Der Kernel-Selbsttest prüft lokale Entnahme, fehlende Domains, Fallback und die
 vollständige Wiederherstellung des Frame-Zählers. ABI-Check, normaler UEFI-
 Desktoppfad und Zwei-Knoten-NUMA-Test sind erfolgreich. Eine systemweite
 Placement-/Migrationspolitik und SLIT-Distanzen bleiben spätere Schritte.
+
+### Kernel-seitige Boot-Health-Autorität
+
+Der Kernel besitzt jetzt eine versionierte Boot-Health-ABI 1.0. Reports sind
+an die vom NBHP/BIB übernommene Systemgeneration und den aktuellen Bootversuch
+gebunden und werden ausschließlich nach einer Capability-Prüfung angenommen.
+Getrennte Rechte schützen das Melden von Providerzuständen und den Export einer
+persistierbaren Health Evidence.
+
+Die Autorität aggregiert Kernel, Speicher, SystemRoot, Trust, Capability, IPC
+und Session zu lückenlosen Milestones. Fehlerhafte, veraltete, fremde oder
+unautorisierte Meldungen werden gezählt und verändern den erreichten Zustand
+nicht. Ein Kernel-Selbsttest prüft diese Regeln auf einem Snapshot, sodass der
+reale Bootzustand unverändert bleibt.
+
+Im echten UEFI-Boot werden `KernelInitialized` sowie die vorhandenen
+Capability- und IPC-Provider bestätigt. Das derzeitige Bootstrap-RAMFS und der
+nur integritätsgeprüfte NKI-Pfad werden bewusst nicht als persistentes
+`SystemRootReady` beziehungsweise als Trust-Nachweis ausgegeben. Deshalb bleibt
+der reale Health-Zustand korrekt auf `Pending`, bis diese Dienste existieren.
+
+ABI-Prüfung, UEFI-Desktop einschließlich Eingabe und Shutdown, persistentes
+Boot-Control/Rollback sowie der Zwei-Knoten-NUMA-Test sind erfolgreich. Noch
+offen ist der Laufzeittransport der fertigen Evidence zurück in die
+redundanten UEFI-Boot-Control-Variablen.

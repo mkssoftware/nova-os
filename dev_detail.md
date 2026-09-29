@@ -2348,3 +2348,58 @@ Kernel und kritische Userspace-Dienste Health Evidence an die persistente
 Boot-Control-Autorität liefern. Der Zustandsautomat nimmt dafür bewusst nur
 bereits autorisierte Evidence entgegen; er erfindet keine Transport- oder
 Credential-Semantik außerhalb der vorhandenen Spezifikationen.
+
+## 88. Kernel-seitige Boot-Health-Autorität
+
+Mit `kernel/include/nova/boot_health.h` steht nun eine explizite ABI 1.0 für
+Provider-Reports, den internen Health-Datensatz, exportierbare Evidence und die
+zugehörige API-Tabelle bereit. Statische Assertions sichern die Größen 32, 64,
+32 und 40 Byte. Reservierte Felder halten die Strukturen erweiterbar, ohne die
+bestehenden Offsets zu verschieben.
+
+Zwei neue Security-Capabilities trennen die Rollen:
+
+- `NOVA_CAP_BOOT_HEALTH_REPORT` erlaubt das Einreichen eines Reports,
+- `NOVA_CAP_BOOT_HEALTH_COMMIT` erlaubt den Export der aggregierten Evidence.
+
+Nur PID 1 besitzt diese Rechte. Die bestehende Ring-3-System-UI erhält sie
+nicht. Jeder Report muss ABI-Größe und -Version, exakt die 64-Bit-
+Systemgeneration, den Bootversuch, einen einzelnen bekannten Provider und eine
+für das jeweilige Milestone erlaubte Providerrolle enthalten. Terminale
+Fehlerzustände nehmen keine weiteren Reports an. Abgewiesene und autorisierte
+Meldungen werden getrennt gezählt.
+
+Der Aggregator verlangt folgende Provider:
+
+- `KernelInitialized`: Kernel Core und Memory,
+- `SystemRootReady`: persistentes SystemRoot,
+- `CriticalServicesReady`: Trust, Capability und IPC,
+- `Operational`: Session.
+
+Milestones schreiten ausschließlich lückenlos fort. Erst nach allen Required-
+Providern entstehen `Healthy`, `HealthConfirmed` und eine exportierbare
+Evidence. `Degraded` erfüllt in der aktuellen strikten Policy keinen Required-
+Provider; `Failed` hält zusätzlich das fehlgeschlagene Milestone fest. Der
+Trust-Wert wird getrennt aus dem verifizierten Bootkontext übernommen und kann
+nicht durch einen gewöhnlichen Providerreport erfunden werden.
+
+Der Selbsttest kopiert Record und Provider-Masken, prüft eine unautorisierte
+PID, unvollständige Aggregation, die vollständige Milestone-Kette und den
+capabilitygeschützten Evidence-Export. Danach stellt er den Live-Zustand exakt
+wieder her. Im realen Boot meldet der Kernel seine Core-/Memory-Bereitschaft
+sowie Capability und IPC. Das Bootstrap-RAMFS gilt absichtlich nicht als
+persistentes SystemRoot; ein Trust-Provider wird ebenfalls noch nicht
+behauptet. Die serielle Diagnose zeigt diesen wartenden Zustand ausdrücklich.
+
+`scripts/test-uefi-display-server.ps1` verlangt die neuen Health-Marker und
+prüft anschließend weiterhin Desktop, Eingabe und `PLATFORM_OFF`. Zusätzlich
+erfolgreich sind ABI-Check, der dreistufige persistente Boot-Control-Test und
+der Zwei-Knoten-NUMA-Test. Die verbleibende Arbeit ist ein spezifizierter
+Laufzeittransport, der finale Evidence crash-konsistent an die redundante
+UEFI-Boot-Control-Autorität übergibt.
+
+Beim Abgleich der Identitätsbindung wurde außerdem korrigiert, dass der interne
+Kernel-Kontext zuvor nur die unteren 32 Bit der als `uint64_t` spezifizierten
+BIB-Systemgeneration kopierte. Ein zusätzliches internes High-Dword bewahrt
+die vorhandenen Kontextoffsets und bindet Reports sowie Evidence nun an alle
+64 Bit der Generation.

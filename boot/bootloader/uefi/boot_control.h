@@ -65,6 +65,30 @@ typedef struct nova_boot_health_evidence {
     bool trust_verified;
 } nova_boot_health_evidence_t;
 
+#define NOVA_BOOT_HEALTH_WIRE_VERSION 1u
+
+#pragma pack(push, 1)
+typedef struct nova_boot_health_wire {
+    uint8_t magic[8];
+    uint16_t version;
+    uint16_t size;
+    uint32_t slot;
+    uint64_t generation;
+    uint32_t boot_attempt;
+    uint32_t reached_milestones;
+    uint32_t failed_milestone;
+    uint32_t status;
+    uint32_t trust_verified;
+    uint64_t sequence;
+    uint32_t flags;
+    uint32_t reserved;
+    uint32_t checksum;
+} nova_boot_health_wire_t;
+#pragma pack(pop)
+
+_Static_assert(sizeof(nova_boot_health_wire_t) == 64,
+               "Boot-Health-Wire-Datensatz muss 64 Byte gross sein");
+
 #pragma pack(push, 1)
 typedef struct nova_boot_control_record {
     uint8_t magic[8];
@@ -101,6 +125,11 @@ bool nova_boot_control_apply_health(nova_boot_control_record_t *record,
                                     const nova_boot_health_policy_t *policy,
                                     const nova_boot_health_evidence_t *evidence,
                                     bool capability_authorized);
+bool nova_boot_health_wire_validate(const nova_boot_health_wire_t *wire);
+bool nova_boot_control_apply_wire(nova_boot_control_record_t *record,
+                                  const nova_boot_health_policy_t *policy,
+                                  const nova_boot_health_wire_t *wire,
+                                  bool capability_authorized);
 
 bool uefi_boot_control_initialize(EFI_SYSTEM_TABLE *system_table);
 const nova_boot_control_record_t *uefi_boot_control_state(void);
