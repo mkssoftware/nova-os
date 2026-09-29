@@ -71,7 +71,8 @@ typedef enum nova_bib_tlv_type {
     NOVA_BIB_TLV_TIMING      = 11,
     NOVA_BIB_TLV_ENTROPY     = 12,
     NOVA_BIB_TLV_SYSTEM      = 13,
-    NOVA_BIB_TLV_KERNEL_IDENTITY = 14
+    NOVA_BIB_TLV_KERNEL_IDENTITY = 14,
+    NOVA_BIB_TLV_FIRMWARE_RUNTIME = 15
 } nova_bib_tlv_type_t;
 
 enum { NOVA_BIB_TLV_FLAG_REQUIRED = 0x0001u };
@@ -222,6 +223,20 @@ typedef struct nova_bib_kernel_identity {
     uint32_t reserved;
 } nova_bib_kernel_identity_t;
 
+enum {
+    NOVA_FIRMWARE_RUNTIME_PROVIDER_UEFI_X64 = 1,
+    NOVA_FIRMWARE_RUNTIME_PERSIST_BOOT_HEALTH = 0x00000001u
+};
+
+typedef struct nova_bib_firmware_runtime {
+    uint32_t provider;
+    uint32_t capabilities;
+    uint64_t context_address;
+    uint64_t persist_boot_health_entry;
+    uint32_t maximum_payload_size;
+    uint32_t flags;
+} nova_bib_firmware_runtime_t;
+
 #pragma pack(pop)
 
 _Static_assert(sizeof(nova_nki_header_t) == 64, "NKI-Header muss 64 Byte groß sein");
@@ -242,5 +257,7 @@ _Static_assert(sizeof(nova_bib_entropy_t) == 32, "Entropy-TLV muss 32 Byte groß
 _Static_assert(sizeof(nova_bib_system_t) == 16, "System-TLV muss 16 Byte groß sein");
 
 _Static_assert(sizeof(nova_bib_kernel_identity_t) == 32, "Kernel-Identity-TLV must be 32 bytes");
+_Static_assert(sizeof(nova_bib_firmware_runtime_t) == 32,
+               "Firmware-Runtime-TLV muss 32 Byte gross sein");
 
 #endif

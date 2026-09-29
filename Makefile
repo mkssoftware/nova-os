@@ -205,7 +205,7 @@ $(KERNEL): $(KERNEL_SOURCES)
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c boot/bootloader/uefi/kernel_loader.h boot/bootloader/uefi/kernel_transition.S boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/pointer.h boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c boot/bootloader/uefi/boot_control.c boot/bootloader/uefi/boot_control.h \
+$(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c boot/bootloader/uefi/kernel_loader.h boot/bootloader/uefi/kernel_transition.S boot/bootloader/uefi/runtime_bridge.c boot/bootloader/uefi/runtime_bridge.h boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/pointer.h boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c boot/bootloader/uefi/boot_control.c boot/bootloader/uefi/boot_control.h \
 		boot/bootloader/uefi/uefi_min.h boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/ui.h \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/motion.h \
@@ -264,7 +264,7 @@ $(UEFI_APP): boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c bo
 		-fno-stack-protector -fno-asynchronous-unwind-tables -mno-red-zone \
 		$(UEFI_EXTRA_CFLAGS) \
 		-nostdlib -Iboot/bootloader/uefi -Iboot/include -I$(BUILD_DIR)/generated \
-		boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c boot/bootloader/uefi/kernel_transition.S \
+		boot/bootloader/uefi/main.c boot/bootloader/uefi/kernel_loader.c boot/bootloader/uefi/kernel_transition.S boot/bootloader/uefi/runtime_bridge.c \
 		boot/bootloader/uefi/graphics.c boot/bootloader/uefi/pointer.c boot/bootloader/uefi/power.c boot/bootloader/uefi/firmware.c boot/bootloader/uefi/boot_control.c boot/bootloader/bootmenu/ui.c \
 		boot/bootloader/bootmenu/motion.c boot/bootloader/bootmenu/compositor.c \
 		boot/bootloader/bootmenu/graphics.c \

@@ -84,8 +84,62 @@ function Corrupt-BootState([bool]$allCopies) {
     [IO.File]::WriteAllBytes($firmwareCopy,$bytes)
 }
 
+function Get-Crc32([byte[]]$bytes,[int]$offset,[int]$length) {
+    [uint64]$crc=4294967295
+    for($i=0;$i-lt$length;$i++){
+        $value=if($i-ge52-and$i-lt56){0}else{$bytes[$offset+$i]}
+        $crc=$crc-bxor$value
+        for($bit=0;$bit-lt8;$bit++){
+            if($crc-band1){$crc=(($crc-shr1)-bxor3988292384)-band4294967295}
+            else{$crc=$crc-shr1}
+        }
+    }
+    return [uint32](($crc-bxor4294967295)-band4294967295)
+}
+
+function Stage-BootCandidate {
+    $bytes=[IO.File]::ReadAllBytes($firmwareCopy)
+    $magic=[Text.Encoding]::ASCII.GetBytes('NOVABCTL')
+    $records=@()
+    for($offset=0;$offset-le$bytes.Length-64;$offset++){
+        $matches=$true
+        for($index=0;$index-lt8;$index++){
+            if($bytes[$offset+$index]-ne$magic[$index]){$matches=$false;break}
+        }
+        if($matches-and[BitConverter]::ToUInt16($bytes,$offset+8)-eq1-and
+           [BitConverter]::ToUInt16($bytes,$offset+10)-eq64){
+            $records+=,[pscustomobject]@{Offset=$offset;Sequence=[BitConverter]::ToUInt64($bytes,$offset+12)}
+        }
+    }
+    if($records.Count-lt2){throw 'Candidate-Staging fand keine redundanten Boot-Control-Datensätze.'}
+    $newest=$records|Sort-Object Sequence -Descending|Select-Object -First 1
+    $target=$records|Sort-Object Sequence | Select-Object -First 1
+    [Array]::Copy($bytes,$newest.Offset,$bytes,$target.Offset,64)
+    [BitConverter]::GetBytes([uint64]($newest.Sequence+1)).CopyTo($bytes,$target.Offset+12)
+    [BitConverter]::GetBytes([uint32]1).CopyTo($bytes,$target.Offset+24)
+    [BitConverter]::GetBytes([uint32]0).CopyTo($bytes,$target.Offset+32)
+    [BitConverter]::GetBytes([uint32]2).CopyTo($bytes,$target.Offset+36)
+    [BitConverter]::GetBytes([uint32]0).CopyTo($bytes,$target.Offset+40)
+    [BitConverter]::GetBytes([uint32]0).CopyTo($bytes,$target.Offset+44)
+    [BitConverter]::GetBytes([uint32]0).CopyTo($bytes,$target.Offset+48)
+    [BitConverter]::GetBytes([uint32]2).CopyTo($bytes,$target.Offset+60)
+    [BitConverter]::GetBytes([uint32]0).CopyTo($bytes,$target.Offset+52)
+    $crc=Get-Crc32 $bytes $target.Offset 64
+    [BitConverter]::GetBytes($crc).CopyTo($bytes,$target.Offset+52)
+    [IO.File]::WriteAllBytes($firmwareCopy,$bytes)
+}
+
 try {
     Invoke-BootControlBoot 'initial' 'UEFI:BOOT-CONTROL-INITIALIZED'
+    Stage-BootCandidate
+    Invoke-BootControlBoot 'bridge-candidate' 'UEFI:BOOT-CONTROL-CANDIDATE-ATTEMPT'
+    $candidateSerial=[string](Get-Content -LiteralPath ([IO.Path]::Combine($tempDir,'bridge-candidate.serial.log')) -Raw)
+    if($candidateSerial-notlike'*NOVA: Boot Health Candidate-Checkpoint ueber Firmware Provider persistiert*'){
+        throw 'Der Kernel hat den Candidate-Checkpoint nicht über den Firmware-Provider persistiert.'
+    }
+    Invoke-BootControlBoot 'bridge-consume' 'UEFI:BOOT-HEALTH-EVIDENCE-UPDATED'
+    [IO.File]::Copy([IO.Path]::GetFullPath($Firmware),$firmwareCopy,$true)
+    Invoke-BootControlBoot 'redundancy-initial' 'UEFI:BOOT-CONTROL-INITIALIZED'
     Corrupt-BootState $false
     Invoke-BootControlBoot 'restored' 'UEFI:BOOT-CONTROL-INVALID-COPY-IGNORED'
     $restored=[string](Get-Content -LiteralPath ([IO.Path]::Combine($tempDir,'restored.debug.log')) -Raw)
@@ -99,7 +153,7 @@ try {
     if($recoverySerial-notlike'*NOVA: Recovery-Modus aus NBHP/BIB aktiv*'){
         throw 'Der durch beschädigte Boot-Metadaten ausgelöste Recovery-Modus fehlt im NBHP/BIB.'
     }
-    Write-Host 'UEFI Boot-Control verwarf eine beschädigte Kopie und wechselte bei zwei beschädigten Kopien sicher zu RECOVERY.NKI'
+    Write-Host 'UEFI Boot-Control: Redundanz, Recovery und Kernel-Runtime-Evidence bis zur persistenten Inbox erfolgreich'
     $completed=$true
 } finally {
     $resolved=[IO.Path]::GetFullPath($tempDir)

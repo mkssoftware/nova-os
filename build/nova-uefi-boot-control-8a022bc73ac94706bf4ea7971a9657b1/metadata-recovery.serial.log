@@ -1,0 +1,81 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+NOVA: Kernel Entry
+NOVA: Logging ABI 1.0, strukturierter Ring- und Reservepuffer bereit
+NOVA: BOOT phase=0x00000000 last_phase=0xFFFFFFFF
+NOVA: Panic Reporter ABI 1.1 bereit
+NOVA: Crash Dump ABI 1.0, reservierter Minimal-Dump-Pfad bereit
+NOVA: BOOT phase=0x00000001 last_phase=0x00000000
+NOVA: ACPI RSDP mit Pruefsumme validiert
+NOVA: ACPI MADT, erkannte CPUs (hex): 0x00000001
+NOVA: ACPI SRAT nicht validiert oder nicht verfuegbar, NUMA unbekannt
+NOVA: BOOT phase=0x00000002 last_phase=0x00000001
+NOVA: NBHP/BIB v1 validiert
+NOVA: Recovery-Modus aus NBHP/BIB aktiv
+NOVA: Kernel Build-ID aus NBHP/BIB importiert
+NOVA: BOOT phase=0x00000003 last_phase=0x00000002
+NOVA: PMM NUMA ABI 1.1, Preferred und Strict Allocation aktiv
+NOVA: BOOT phase=0x00000004 last_phase=0x00000003
+NOVA: BOOT phase=0x00000005 last_phase=0x00000004
+NOVA: Heap ABI 1.0 und Schreibtest bereit
+NOVA: Object Manager ABI 1.0 bereit
+NOVA: Component Manager ABI 1.0 bereit
+NOVA: Paging ABI 1.0 und Speichertest bereit
+NOVA: BOOT phase=0x00000006 last_phase=0x00000005
+NOVA: IDT, PIC und PIT 100 Hz aktiv
+NOVA: Semantic Types v1, Registry, Kompatibilitaet und Typed Contracts bereit
+NOVA: IPC ABI 1.0 FIFO bereit
+NOVA: Service Manager ABI 1.0 bereit
+NOVA: Process Manager ABI 1.0 bereit
+NOVA: Task Scope ABI 1.0, Hierarchie und Cancellation aktiv
+NOVA: Task ABI 1.0, Lifecycle und kooperative Cancellation aktiv
+NOVA: Task Deadline ABI 1.0, Parent-Clamp und Miss-Policy aktiv
+NOVA: Task Group ABI 1.0, WaitAll, FailFast und Drain aktiv
+NOVA: Async IO ABI 1.0, Completion, Deadline und Backpressure aktiv
+NOVA: IO Completion Queue ABI 1.0, FIFO und Batch aktiv
+NOVA: Shared Buffer ABI 1.0, IO-Lease und Copy-Fallback aktiv
+NOVA: HAL Topology ABI 1.0, Busse, Devices und IOMMU-Gruppen aktiv
+NOVA: HAL Topology, normalisierte CPU-Threads (hex): 0x00000001
+NOVA: HAL CPUID Hierarchy, Packages/Core/Threads (hex): 0x00000001/0x00000001/0x00000001
+NOVA: IOMMU ABI 1.0, Domains, Gruppen und Fault-Zuordnung aktiv
+NOVA: DMA Mapping ABI 1.0, Pinning und sicherer Fallback aktiv
+NOVA: Scatter Gather ABI 1.0, Segmente und Lifetime aktiv
+NOVA: DMA Scatter Gather ABI 1.0, Split und Providerlimits aktiv
+NOVA: DMA IOMMU Lifecycle fuer linear und Scatter Gather aktiv
+NOVA: IOMMU Fault beendet DMA und IO Request kontrolliert
+NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv
+NOVA: IO QoS ABI 1.0, Admission, Degradation und Accounting aktiv
+NOVA: Security ABI 1.0 Capabilities aktiv
+NOVA: Boot Health Authority ABI 1.0 capabilitygeschuetzt bereit
+NOVA: CPU Manager Initialisierung abgeschlossen
+NOVA: CPU Manager ABI 1.0, BSP-Topologie und per-CPU-Daten aktiv
+NOVA: CPU Manager bezieht Package, Core und Thread aus HAL Topology
+NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit
+NOVA: BOOT phase=0x00000007 last_phase=0x00000006
+NOVA: Thread Manager ABI 1.0 bereit
+NOVA: Scheduler ABI 1.0 und zwei Threads aktiv
+NOVA: SMP-Grundlage ABI 1.0, BSP-Barriere und lokaler TLB-Pfad bereit
+NOVA: BOOT phase=0x00000008 last_phase=0x00000007
+NOVA: Device Manager ABI 1.0 und Bootgeraete aktiv
+NOVA: Boot Health Milestone KernelInitialized aggregiert
+NOVA: BOOT phase=0x00000009 last_phase=0x00000008
+NOVA: VFS ABI 1.0, Mount-Namespace und Bootstrap-Root bereit
+NOVA: Boot Health wartet auf persistentes SystemRoot und Trust
+NOVA: Network ABI 1.0, IPv4/IPv6 UDP, ICMP und TCP bereit
+NOVA: Power Manager ABI 1.0 und Shutdown-Pfad bereit
+NOVA: Display Server ABI 1.0, Firmware-Framebuffer uebernommen
+NOVA: BOOT phase=0x0000000A last_phase=0x00000009
+NOVA: x86-32 Userspace, TSS und System-Call ABI 1.0 bereit
+NOVA: BOOT phase=0x0000000B last_phase=0x0000000A
+NOVA: Kernel Context und Framebuffer aktiv
+NOVA_KERNEL_READY
+NOVA: Userspace Process.QuerySelf erfolgreich
+NOVA: Process.OpenSelf Handle typ- und rechtegeprueft
+NOVA: Userspace Thread.QuerySelf erfolgreich
+NOVA: Thread.OpenSelf Handle typ- und rechtegeprueft
+NOVA: Userspace IPC Inline-Roundtrip atomar erfolgreich
+NOVA: Typed IPC, fremder Type und Version sicher abgewiesen
+NOVA: Semantic Validation, ungueltiger Wert strukturiert abgewiesen
+NOVA: Userspace VFS.OpenRoot Handle erfolgreich
+NOVA: Userspace VFS.Lookup Pfad '/' erfolgreich
+NOVA: Userspace Handle geschlossen, alter W

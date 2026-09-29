@@ -1,4 +1,5 @@
 #include "kernel_loader.h"
+#include "runtime_bridge.h"
 #include "../bootmenu/graphics.h"
 #include "firmware.h"
 #include "boot_control.h"
@@ -498,6 +499,11 @@ static UINTN build_bib(const EFI_SYSTEM_TABLE *st,const VOID *map,UINTN map_size
     system->flags=uefi_boot_control_persistent()?1u:0u;at=value+16;
     uint32_t rsdp=find_acpi_rsdp(st);
     if(rsdp){value=append_tlv(at,NOVA_BIB_TLV_ACPI,0,16);((nova_bib_pointer_info_t *)value)->address=rsdp;at=value+16;}
+    nova_bib_firmware_runtime_t runtime_descriptor;
+    if(uefi_runtime_bridge_descriptor(&runtime_descriptor)){
+        value=append_tlv(at,NOVA_BIB_TLV_FIRMWARE_RUNTIME,0,sizeof(runtime_descriptor));
+        bytes_copy(value,&runtime_descriptor,sizeof(runtime_descriptor));at=value+sizeof(runtime_descriptor);
+    }
     value=append_tlv(at,NOVA_BIB_TLV_KERNEL_IDENTITY,0,32);bytes_copy(value,build_id,20);((uint32_t *)value)[5]=kernel_format;((uint32_t *)value)[6]=nki_container?1u:0u;at=value+32;
     header->total_size=(uint32_t)(at-base);header->checksum=crc32_with_zero(base,header->total_size,20,4);return count;
 }
@@ -594,6 +600,8 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     nova_debug_string("UEFI:KERNEL-SIGNATURE-NOT-PRESENT\n");
     if(show_bootsplash(image_handle,st))nova_debug_string("UEFI:BOOTSPLASH-READY\n");
     else nova_debug_string("UEFI:BOOTSPLASH-ERROR\n");
+    if(uefi_runtime_bridge_prepare(st))nova_debug_string("UEFI:FIRMWARE-RUNTIME-BRIDGE-READY\n");
+    else nova_debug_string("UEFI:FIRMWARE-RUNTIME-BRIDGE-UNAVAILABLE\n");
     UINTN map_capacity=0,map_size=0,map_key=0,descriptor_size=0;uint32_t descriptor_version=0;VOID *map=0;
     efi_exit_boot_services_fn exit_bs=(efi_exit_boot_services_fn)st->BootServices->ExitBootServices;
     for(unsigned attempt=0;attempt<3;++attempt){

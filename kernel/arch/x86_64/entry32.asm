@@ -380,6 +380,18 @@ kernel_entry:
     jc panic_boot_health
     mov esi, message_boot_health_kernel_initialized
     call serial_write_string
+    call firmware_runtime_boot_health_checkpoint
+    cmp eax, 1
+    jne .boot_health_checkpoint_not_written
+    mov esi, message_boot_health_checkpoint_written
+    call serial_write_string
+    jmp .boot_health_checkpoint_done
+.boot_health_checkpoint_not_written:
+    cmp eax, 2
+    jne .boot_health_checkpoint_done
+    mov esi, message_boot_health_checkpoint_failed
+    call serial_write_string
+.boot_health_checkpoint_done:
 
     mov dword [boot_phase_last_success], BOOT_PHASE_DEVICE_DISCOVERY
     mov dword [boot_phase_current], BOOT_PHASE_ROOT_FILESYSTEM
@@ -801,6 +813,8 @@ create_kernel_context:
     je .system
     cmp eax, BIB_TLV_KERNEL_IDENTITY
     je .kernel_identity
+    cmp eax, BIB_TLV_FIRMWARE_RUNTIME
+    je .firmware_runtime
     test word [esi + 2], BIB_TLV_FLAG_REQUIRED
     jnz .invalid
     jmp .advance                    ; unbekannte optionale TLVs überspringen
@@ -891,6 +905,29 @@ create_kernel_context:
     mov [kernel_context + CONTEXT_KERNEL_BUILD_ID + 16], eax
     mov eax, [edx + 20]
     mov [kernel_context + CONTEXT_KERNEL_FORMAT], eax
+    jmp .advance
+
+.firmware_runtime:
+    cmp ecx, BIB_FIRMWARE_RUNTIME_SIZE
+    jb .invalid
+    cmp dword [edx + 0], NOVA_FIRMWARE_RUNTIME_PROVIDER_UEFI_X64
+    jne .advance
+    test dword [edx + 4], NOVA_FIRMWARE_RUNTIME_PERSIST_BOOT_HEALTH
+    jz .advance
+    cmp dword [edx + 12], 0
+    jne .advance
+    cmp dword [edx + 20], 0
+    jne .advance
+    cmp dword [edx + 24], 64
+    jb .advance
+    cmp dword [edx + 28], 0
+    jne .advance
+    mov eax, [edx + 4]
+    mov [kernel_context + CONTEXT_FIRMWARE_RUNTIME_CAPS], eax
+    mov eax, [edx + 8]
+    mov [kernel_context + CONTEXT_FIRMWARE_RUNTIME_CONTEXT], eax
+    mov eax, [edx + 16]
+    mov [kernel_context + CONTEXT_FIRMWARE_RUNTIME_ENTRY], eax
     jmp .advance
 
 .security:
@@ -15725,6 +15762,150 @@ boot_health_selftest_ready:
     call boot_health_submit_report
     ret
 
+; Persistiert einen groben Candidate-Checkpoint ueber den normalisierten
+; Firmware-Provider. EAX=0 nicht erforderlich, 1 geschrieben, 2 fehlgeschlagen.
+firmware_runtime_boot_health_checkpoint:
+    cmp dword [kernel_context + CONTEXT_BOOT_ATTEMPT], 0
+    je .not_required
+    cmp dword [kernel_context + CONTEXT_BOOT_GENERATION], 1
+    ja .not_required
+    test dword [kernel_context + CONTEXT_FIRMWARE_RUNTIME_CAPS], NOVA_FIRMWARE_RUNTIME_PERSIST_BOOT_HEALTH
+    jz .not_required
+    cmp dword [kernel_context + CONTEXT_FIRMWARE_RUNTIME_CONTEXT], 0
+    je .failed
+    cmp dword [kernel_context + CONTEXT_FIRMWARE_RUNTIME_ENTRY], 0
+    je .failed
+    cmp dword [boot_health_record + BH_RECORD_GENERATION_HI], 0
+    jne .failed
+    mov dword [boot_health_wire + 0], 0x41564F4E
+    mov dword [boot_health_wire + 4], 0x56454842
+    mov word [boot_health_wire + 8], 1
+    mov word [boot_health_wire + 10], 64
+    mov eax, [kernel_context + CONTEXT_BOOT_GENERATION]
+    mov [boot_health_wire + 12], eax
+    mov eax, [boot_health_record + BH_RECORD_GENERATION_LO]
+    mov [boot_health_wire + 16], eax
+    mov dword [boot_health_wire + 20], 0
+    mov eax, [boot_health_record + BH_RECORD_BOOT_ATTEMPT]
+    mov [boot_health_wire + 24], eax
+    mov eax, [boot_health_record + BH_RECORD_REACHED]
+    mov [boot_health_wire + 28], eax
+    mov eax, [boot_health_record + BH_RECORD_FAILED]
+    mov [boot_health_wire + 32], eax
+    mov eax, [boot_health_record + BH_RECORD_STATUS]
+    mov [boot_health_wire + 36], eax
+    xor eax, eax
+    test dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_TRUST_VERIFIED
+    jz .trust_stored
+    inc eax
+.trust_stored:
+    mov [boot_health_wire + 40], eax
+    mov eax, [boot_health_record + BH_RECORD_SEQUENCE]
+    mov [boot_health_wire + 44], eax
+    mov dword [boot_health_wire + 48], 0
+    mov dword [boot_health_wire + 52], 0
+    mov dword [boot_health_wire + 56], 0
+    mov dword [boot_health_wire + 60], 0
+    mov esi, boot_health_wire
+    call boot_health_wire_crc
+    mov [boot_health_wire + 60], eax
+    mov esi, boot_health_wire
+    mov edi, [kernel_context + CONTEXT_FIRMWARE_RUNTIME_CONTEXT]
+    mov eax, [kernel_context + CONTEXT_FIRMWARE_RUNTIME_ENTRY]
+    call firmware_runtime_invoke
+    cmp eax, 1
+    jne .failed
+    mov eax, 1
+    ret
+.not_required:
+    xor eax, eax
+    ret
+.failed:
+    mov eax, 2
+    ret
+
+; EAX=physischer Provider-Entry, EDI=Kontext, ESI=Payload. Der Loaderbereich
+; bleibt reserviert, ist aber nicht Bestandteil der Kernel-Seitentabellen.
+firmware_runtime_invoke:
+    mov [firmware_runtime_entry], eax
+    pushfd
+    cli
+    mov al, 'I'
+    out 0xE9, al
+    mov eax, cr0
+    mov [firmware_runtime_saved_cr0], eax
+    mov eax, cr3
+    mov [firmware_runtime_saved_cr3], eax
+    mov eax, cr4
+    mov [firmware_runtime_saved_cr4], eax
+    sgdt [firmware_runtime_saved_gdtr]
+    mov ecx, 0xC0000080
+    rdmsr
+    mov [firmware_runtime_saved_efer_lo], eax
+    mov [firmware_runtime_saved_efer_hi], edx
+    mov eax, [firmware_runtime_saved_cr0]
+    and eax, 0x7FFFFFFF
+    mov cr0, eax
+    mov eax, [firmware_runtime_entry]
+    call eax
+    mov [firmware_runtime_result], eax
+    mov al, 'J'
+    out 0xE9, al
+    mov eax, [firmware_runtime_saved_cr4]
+    mov cr4, eax
+    mov al, 'K'
+    out 0xE9, al
+    mov eax, [firmware_runtime_saved_cr3]
+    mov cr3, eax
+    mov al, 'L'
+    out 0xE9, al
+    mov ecx, 0xC0000080
+    mov eax, [firmware_runtime_saved_efer_lo]
+    mov edx, [firmware_runtime_saved_efer_hi]
+    wrmsr
+    mov al, 'M'
+    out 0xE9, al
+    mov eax, [firmware_runtime_saved_cr0]
+    mov cr0, eax
+    lgdt [firmware_runtime_saved_gdtr]
+    jmp 0x08:.kernel_segments_restored
+.kernel_segments_restored:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    popfd
+    mov eax, [firmware_runtime_result]
+    ret
+
+; ESI=64-Byte-Wire-Datensatz; Checksum-Feld liegt am Ende und ist bereits null.
+boot_health_wire_crc:
+    push ebx
+    push ecx
+    push edx
+    mov eax, 0xFFFFFFFF
+    xor edx, edx
+.byte:
+    cmp edx, 60
+    jae .done
+    movzx ebx, byte [esi + edx]
+    xor al, bl
+    mov ecx, 8
+.bit:
+    shr eax, 1
+    jnc .next_bit
+    xor eax, 0xEDB88320
+.next_bit:
+    loop .bit
+    inc edx
+    jmp .byte
+.done:
+    not eax
+    pop edx
+    pop ecx
+    pop ebx
+    ret
+
 align 4
 boot_health_api:
     dd BOOT_HEALTH_API_SIZE
@@ -15763,6 +15944,16 @@ boot_health_temp_report:     times BOOT_HEALTH_REPORT_SIZE db 0
 boot_health_record:          times BOOT_HEALTH_RECORD_SIZE db 0
 boot_health_saved_record:    times BOOT_HEALTH_RECORD_SIZE db 0
 boot_health_test_evidence:   times BOOT_HEALTH_EVIDENCE_SIZE db 0
+boot_health_wire:            times 64 db 0
+firmware_runtime_entry:       dd 0
+firmware_runtime_result:      dd 0
+firmware_runtime_saved_cr0:   dd 0
+firmware_runtime_saved_cr3:   dd 0
+firmware_runtime_saved_cr4:   dd 0
+firmware_runtime_saved_efer_lo: dd 0
+firmware_runtime_saved_efer_hi: dd 0
+firmware_runtime_saved_gdtr:   dw 0
+                               dd 0
 
 ; ---------------------------------------------------------------------------
 ; CPU Manager / BSP- und Topologieerkennung (NPSPEC-KERNEL-0026)
@@ -21078,7 +21269,10 @@ CONTEXT_BOOT_FLAGS        equ 144
 CONTEXT_BOOT_GENERATION   equ 148
 CONTEXT_FALLBACK_LEVEL    equ 152
 CONTEXT_SYSTEM_GENERATION_HI equ 156
-CONTEXT_SIZE              equ 160
+CONTEXT_FIRMWARE_RUNTIME_CAPS equ 160
+CONTEXT_FIRMWARE_RUNTIME_CONTEXT equ 164
+CONTEXT_FIRMWARE_RUNTIME_ENTRY equ 168
+CONTEXT_SIZE              equ 172
 
 CONTEXT_HAS_FIRMWARE      equ 0x01
 CONTEXT_HAS_MEMORY        equ 0x02
@@ -21809,6 +22003,10 @@ message_boot_health_authority_ok:
     db "NOVA: Boot Health Authority ABI 1.0 capabilitygeschuetzt bereit", 13, 10, 0
 message_boot_health_kernel_initialized:
     db "NOVA: Boot Health Milestone KernelInitialized aggregiert", 13, 10, 0
+message_boot_health_checkpoint_written:
+    db "NOVA: Boot Health Candidate-Checkpoint ueber Firmware Provider persistiert", 13, 10, 0
+message_boot_health_checkpoint_failed:
+    db "NOVA: Boot Health Candidate-Checkpoint konnte nicht persistiert werden", 13, 10, 0
 message_boot_health_root_pending:
     db "NOVA: Boot Health wartet auf persistentes SystemRoot und Trust", 13, 10, 0
 message_boot_health_error:
