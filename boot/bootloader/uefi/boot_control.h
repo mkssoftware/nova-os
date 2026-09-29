@@ -14,7 +14,10 @@ typedef enum nova_boot_control_result {
     NOVA_BOOT_RESULT_PENDING = 1,
     NOVA_BOOT_RESULT_HEALTH_CONFIRMED = 2,
     NOVA_BOOT_RESULT_ARTIFACT_INVALID = 3,
-    NOVA_BOOT_RESULT_ATTEMPT_LIMIT = 4
+    NOVA_BOOT_RESULT_ATTEMPT_LIMIT = 4,
+    NOVA_BOOT_RESULT_HEALTH_FAILED = 5,
+    NOVA_BOOT_RESULT_HEALTH_TIMED_OUT = 6,
+    NOVA_BOOT_RESULT_HEALTH_DEGRADED = 7
 } nova_boot_control_result_t;
 
 typedef enum nova_boot_milestone {
@@ -24,8 +27,43 @@ typedef enum nova_boot_milestone {
     NOVA_BOOT_MILESTONE_KERNEL_INITIALIZED = 3,
     NOVA_BOOT_MILESTONE_SYSTEM_ROOT_READY = 4,
     NOVA_BOOT_MILESTONE_CRITICAL_SERVICES_READY = 5,
-    NOVA_BOOT_MILESTONE_OPERATIONAL = 6
+    NOVA_BOOT_MILESTONE_OPERATIONAL = 6,
+    NOVA_BOOT_MILESTONE_HEALTH_CONFIRMED = 7
 } nova_boot_milestone_t;
+
+#define NOVA_BOOT_MILESTONE_BIT(value) (UINT32_C(1) << (uint32_t)(value))
+#define NOVA_BOOT_HEALTH_REQUIRED_DESKTOP \
+    (NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_KERNEL_ENTERED) | \
+     NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_KERNEL_INITIALIZED) | \
+     NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_SYSTEM_ROOT_READY) | \
+     NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_CRITICAL_SERVICES_READY) | \
+     NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_OPERATIONAL))
+#define NOVA_BOOT_HEALTH_ALL_MILESTONES \
+    ((NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_HEALTH_CONFIRMED) << 1) - 2u)
+
+typedef enum nova_boot_health_status {
+    NOVA_BOOT_HEALTH_UNKNOWN = 0,
+    NOVA_BOOT_HEALTH_PENDING = 1,
+    NOVA_BOOT_HEALTH_HEALTHY = 2,
+    NOVA_BOOT_HEALTH_DEGRADED = 3,
+    NOVA_BOOT_HEALTH_FAILED = 4,
+    NOVA_BOOT_HEALTH_TIMED_OUT = 5
+} nova_boot_health_status_t;
+
+typedef struct nova_boot_health_policy {
+    uint32_t required_milestones;
+    bool degraded_may_commit;
+} nova_boot_health_policy_t;
+
+typedef struct nova_boot_health_evidence {
+    uint32_t slot;
+    uint32_t generation;
+    uint32_t boot_attempt;
+    uint32_t reached_milestones;
+    nova_boot_milestone_t failed_milestone;
+    nova_boot_health_status_t status;
+    bool trust_verified;
+} nova_boot_health_evidence_t;
 
 #pragma pack(push, 1)
 typedef struct nova_boot_control_record {
@@ -42,7 +80,7 @@ typedef struct nova_boot_control_record {
     uint32_t last_milestone;
     uint32_t flags;
     uint32_t checksum;
-    uint8_t reserved[8];
+    uint32_t slot_generation[2];
 } nova_boot_control_record_t;
 #pragma pack(pop)
 
@@ -59,6 +97,10 @@ bool nova_boot_control_prepare_candidate(nova_boot_control_record_t *record, uin
 uint32_t nova_boot_control_select(nova_boot_control_record_t *record, bool *state_changed);
 bool nova_boot_control_begin_attempt(nova_boot_control_record_t *record, uint32_t slot);
 bool nova_boot_control_artifact_failed(nova_boot_control_record_t *record, uint32_t slot);
+bool nova_boot_control_apply_health(nova_boot_control_record_t *record,
+                                    const nova_boot_health_policy_t *policy,
+                                    const nova_boot_health_evidence_t *evidence,
+                                    bool capability_authorized);
 
 bool uefi_boot_control_initialize(EFI_SYSTEM_TABLE *system_table);
 const nova_boot_control_record_t *uefi_boot_control_state(void);

@@ -37,7 +37,8 @@ function Invoke-BootControlBoot([string]$name,[string]$requiredMarker,
                 throw "${name}: QEMU wurde vor der Boot-Control-Pruefung beendet. $detail"
             }
         } while($content-notlike'*NOVA_KERNEL_READY*'-and[DateTime]::UtcNow-lt$deadline)
-        $markers=@($requiredMarker,'UEFI:BOOT-CONTROL-READY',$kernelMarker,
+        $markers=@($requiredMarker,'UEFI:BOOT-HEALTH-STATE-MACHINE-READY',
+                   'UEFI:BOOT-CONTROL-READY',$kernelMarker,
                    'UEFI:KERNEL-HANDOFF-READY','NOVA_KERNEL_READY')
         if($modeMarker){$markers+=$modeMarker}
         foreach($marker in $markers){

@@ -65,6 +65,83 @@ static int check_candidate_cycle(uint32_t known_good,uint32_t candidate,uint32_t
     return 0;
 }
 
+static int check_health_cycle(void)
+{
+    nova_boot_control_record_t state,before;nova_boot_control_default(&state);
+    nova_boot_health_policy_t policy={NOVA_BOOT_HEALTH_REQUIRED_DESKTOP,false};
+    if(check(nova_boot_control_prepare_candidate(&state,1,3),"Health-Candidate fehlt")||
+       check(state.slot_generation[1]==2,"Candidate-Generation ist nicht eindeutig")||
+       check(nova_boot_control_begin_attempt(&state,1),"Health-Attempt fehlt"))return 1;
+    nova_boot_health_evidence_t evidence={
+        .slot=1,.generation=state.slot_generation[1],.boot_attempt=state.attempt_count,
+        .reached_milestones=NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_BOOTLOADER_STARTED)|
+            NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_KERNEL_ENTERED),
+        .failed_milestone=NOVA_BOOT_MILESTONE_NONE,.status=NOVA_BOOT_HEALTH_PENDING,
+        .trust_verified=true
+    };
+    if(check(nova_boot_control_apply_health(&state,&policy,&evidence,true),
+             "autorisiertes KernelEntered-Milestone abgelehnt")||
+       check(state.last_milestone==NOVA_BOOT_MILESTONE_KERNEL_ENTERED&&
+             state.candidate_slot==1,"Kernel Entry hat Candidate falsch committed"))return 1;
+    before=state;evidence.status=NOVA_BOOT_HEALTH_HEALTHY;
+    if(check(!nova_boot_control_apply_health(&state,&policy,&evidence,true),
+             "unvollstaendige Milestones wurden als Healthy akzeptiert")||
+       check(memcmp(&state,&before,sizeof(state))==0,"abgelehnter Health-Commit mutiert Zustand"))return 1;
+    evidence.reached_milestones=NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_BOOTLOADER_STARTED)|
+        NOVA_BOOT_HEALTH_REQUIRED_DESKTOP;
+    if(check(!nova_boot_control_apply_health(&state,&policy,&evidence,false),
+             "nicht autorisierter Health-Commit wurde akzeptiert")||
+       check(memcmp(&state,&before,sizeof(state))==0,"Autorisierungsfehler mutiert Zustand"))return 1;
+    evidence.boot_attempt++;
+    if(check(!nova_boot_control_apply_health(&state,&policy,&evidence,true),
+             "Evidence eines anderen Attempts wurde wiederverwendet"))return 1;
+    evidence.boot_attempt--;evidence.generation++;
+    if(check(!nova_boot_control_apply_health(&state,&policy,&evidence,true),
+             "Evidence einer anderen Generation wurde wiederverwendet"))return 1;
+    evidence.generation--;evidence.trust_verified=false;
+    if(check(!nova_boot_control_apply_health(&state,&policy,&evidence,true),
+             "Health ohne Trust wurde committed"))return 1;
+    evidence.trust_verified=true;
+    if(check(nova_boot_control_apply_health(&state,&policy,&evidence,true),
+             "vollstaendiger autorisierter Health-Commit abgelehnt")||
+       check(state.known_good_slot==1&&state.active_slot==1&&
+             state.candidate_slot==NOVA_BOOT_CONTROL_NO_SLOT&&
+             state.last_result==NOVA_BOOT_RESULT_HEALTH_CONFIRMED&&
+             state.last_milestone==NOVA_BOOT_MILESTONE_HEALTH_CONFIRMED,
+             "Health-Commit erzeugt keinen eindeutigen Known-Good-Zustand"))return 1;
+
+    if(check(nova_boot_control_prepare_candidate(&state,0,2),"zweiter Health-Candidate fehlt")||
+       check(state.slot_generation[0]==3,"neue Candidate-Generation wurde wiederverwendet")||
+       check(nova_boot_control_begin_attempt(&state,0),"zweiter Health-Attempt fehlt"))return 1;
+    evidence=(nova_boot_health_evidence_t){
+        .slot=0,.generation=state.slot_generation[0],.boot_attempt=state.attempt_count,
+        .reached_milestones=NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_BOOTLOADER_STARTED)|
+            NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_KERNEL_ENTERED),
+        .failed_milestone=NOVA_BOOT_MILESTONE_KERNEL_INITIALIZED,
+        .status=NOVA_BOOT_HEALTH_TIMED_OUT,.trust_verified=true
+    };
+    if(check(nova_boot_control_apply_health(&state,&policy,&evidence,true),
+             "Health-Timeout wurde nicht gespeichert")||
+       check(state.last_result==NOVA_BOOT_RESULT_HEALTH_TIMED_OUT&&
+             state.last_milestone==NOVA_BOOT_MILESTONE_KERNEL_INITIALIZED&&
+             state.candidate_slot==0,"Timeout hat Candidate unkontrolliert committed"))return 1;
+    if(check(nova_boot_control_begin_attempt(&state,0),
+             "Retry nach Health-Timeout wurde abgelehnt"))return 1;
+    evidence.boot_attempt=state.attempt_count;
+    evidence.status=NOVA_BOOT_HEALTH_DEGRADED;
+    evidence.failed_milestone=NOVA_BOOT_MILESTONE_NONE;
+    evidence.reached_milestones=NOVA_BOOT_MILESTONE_BIT(NOVA_BOOT_MILESTONE_BOOTLOADER_STARTED)|
+        NOVA_BOOT_HEALTH_REQUIRED_DESKTOP;
+    if(check(!nova_boot_control_apply_health(&state,&policy,&evidence,true),
+             "Degraded wurde entgegen Policy committed"))return 1;
+    policy.degraded_may_commit=true;
+    if(check(nova_boot_control_apply_health(&state,&policy,&evidence,true),
+             "policyerlaubter Degraded-Commit wurde abgelehnt")||
+       check(state.last_result==NOVA_BOOT_RESULT_HEALTH_DEGRADED&&state.known_good_slot==0,
+             "Degraded-Commit wurde nicht nachvollziehbar gespeichert"))return 1;
+    return 0;
+}
+
 int main(void)
 {
     nova_boot_control_record_t state,copy_a,copy_b,selected;bool changed=false;
@@ -85,6 +162,7 @@ int main(void)
     for(uint32_t max_attempts=1;max_attempts<=16u;++max_attempts){
         if(check_candidate_cycle(0,1,max_attempts)||check_candidate_cycle(1,0,max_attempts))return 1;
     }
+    if(check_health_cycle())return 1;
     nova_boot_control_default(&state);copy_a=state;
     if(check(!nova_boot_control_prepare_candidate(&state,0,2),
              "Known-Good wurde unzulaessig als Candidate akzeptiert")||
@@ -102,17 +180,17 @@ int main(void)
     set_sequence(&copy_a,41);set_sequence(&copy_b,42);
     if(check(nova_boot_control_choose_newest(&copy_a,&copy_b,&selected)&&selected.sequence==42,
              "neueste redundante Kopie nicht gewaehlt"))return 1;
-    copy_b.reserved[0]^=0x5a;
+    copy_b.slot_generation[0]^=0x5a;
     if(check(nova_boot_control_choose_newest(&copy_a,&copy_b,&selected)&&selected.sequence==41,
              "beschaedigte neuere Kopie verdraengt letzte gueltige Kopie"))return 1;
-    copy_a.reserved[0]^=0x5a;
+    copy_a.slot_generation[0]^=0x5a;
     if(check(!nova_boot_control_choose_newest(&copy_a,&copy_b,&selected),
              "zwei beschaedigte Kopien wurden akzeptiert"))return 1;
     nova_boot_control_default(&copy_a);copy_b=copy_a;
     set_sequence(&copy_a,UINT64_MAX);set_sequence(&copy_b,0);
     if(check(nova_boot_control_choose_newest(&copy_a,&copy_b,&selected)&&selected.sequence==0,
              "Sequenzueberlauf waehlt nicht die neue Kopie"))return 1;
-    state.reserved[0]^=0x5a;
+    state.slot_generation[0]^=0x5a;
     if(check(!nova_boot_control_validate(&state),"CRC erkennt Korruption nicht"))return 1;
     puts("UEFI Boot-Control-Zustandsautomat erfolgreich");return 0;
 }

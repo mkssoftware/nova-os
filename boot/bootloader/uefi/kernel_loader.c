@@ -492,7 +492,9 @@ static UINTN build_bib(const EFI_SYSTEM_TABLE *st,const VOID *map,UINTN map_size
     value=append_tlv(at,NOVA_BIB_TLV_SYSTEM,NOVA_BIB_TLV_FLAG_REQUIRED,16);
     nova_bib_system_t *system=(nova_bib_system_t *)value;
     const nova_boot_control_record_t *control=uefi_boot_control_state();
-    system->generation=0;system->boot_attempt=control?control->attempt_count:0u;
+    system->generation=control&&selected_generation<=NOVA_BOOT_GENERATION_BACKUP?
+        control->slot_generation[selected_generation]:selected_generation;
+    system->boot_attempt=control?control->attempt_count:0u;
     system->flags=uefi_boot_control_persistent()?1u:0u;at=value+16;
     uint32_t rsdp=find_acpi_rsdp(st);
     if(rsdp){value=append_tlv(at,NOVA_BIB_TLV_ACPI,0,16);((nova_bib_pointer_info_t *)value)->address=rsdp;at=value+16;}

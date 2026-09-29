@@ -1299,10 +1299,10 @@ Danach beschädigt der Test beide Kopien. Der dritte Start muss
 `RECOVERY-NKI-VALIDATED` melden; der Kernel bestätigt den Recovery-Modus aus
 NBHP/BIB und erreicht wiederum `NOVA_KERNEL_READY`.
 
-Bewusst fehlt noch `Candidate -> KnownGood`: Die ADR verbietet einen Commit
-allein aufgrund von Kernel Entry. Erst ein künftig spezifizierter,
-capabilitygeschützter Health Provider darf die erforderlichen Milestones
-bestätigen und den Commit auslösen.
+`Candidate -> KnownGood` ist nun als streng geprüfter Zustandsübergang
+vorhanden. Kernel Entry allein reicht weiterhin nicht. Die persistente
+Anbindung eines capabilitygeschützten Health Providers aus dem laufenden
+Kernel beziehungsweise Userspace bleibt ein eigener Folgeschritt.
 
 ### Erkannte CPUs
 
@@ -1317,9 +1317,10 @@ NOVA: ACPI MADT, erkannte CPUs (hex): 0x00000004
 - produktiver kryptografischer NKI-Signaturcontainer
 - Schlüssel-, Trust-Anchor- und Revocation-Verwaltung
 - TPM-gestütztes Measured Boot
-- autorisierte Candidate-Staging-Schnittstelle, eindeutige Generationen und
-  capabilitygeschützter Health-Commit; persistente redundante Auswahl,
-  Bootversuchslimit und Known-Good-Rollback sind bereits vorhanden
+- autorisierte Candidate-Staging-Schnittstelle und capabilitygeschützte
+  Kernel-/Userspace-Transportbrücke für Health Evidence; eindeutige
+  Generationen, Health-Commit, redundante Auswahl, Bootversuchslimit und
+  Known-Good-Rollback sind bereits vorhanden
 - echte Prozess-/Stromunterbrechung an jedem UEFI-Schreibzeitpunkt; CRC-Korruption
   der neuesten Kopie mit erfolgreichem Rückfall ist bereits in QEMU geprüft
 - Kernelkompression mit LZ4, ZSTD und GZIP
@@ -2294,3 +2295,56 @@ legt aber noch keine globale Placement-, Migration- oder Distanzpolitik fest.
 ABI-Prüfung, normaler UEFI-Desktoptest und der Zwei-Knoten-NUMA-Test laufen mit
 dem Marker `NOVA: PMM NUMA ABI 1.1, Preferred und Strict Allocation aktiv`
 erfolgreich durch.
+
+## 87. Persistenter Boot-Health-Zustandsautomat
+
+Die inzwischen angenommenen Boot-Health-, A/B- und Rollback-NPSPECs wurden in
+den vorhandenen 64-Byte-Boot-Control-Datensatz integriert, ohne dessen Größe
+oder CRC-/Redundanzmodell zu ändern. Die früher reservierten acht Bytes tragen
+nun getrennte logische Generationen für Slot A und B. Beim Candidate-Staging
+wird monoton eine neue Generation vergeben. Vorhandene Datensätze aus dem
+älteren Layout werden beim UEFI-Start erkannt, mit Generationen versehen und
+über den bestehenden Write-and-read-back-Pfad crash-konsistent migriert.
+
+Der Health-Aggregator unterscheidet `Unknown`, `Pending`, `Healthy`,
+`Degraded`, `Failed` und `TimedOut`. Er verarbeitet die semantischen
+Milestones `BootloaderStarted`, `KernelEntered`, `KernelInitialized`,
+`SystemRootReady`, `CriticalServicesReady`, `Operational` und
+`HealthConfirmed`. Milestone-Masken dürfen keine Lücken enthalten und nur
+monoton wachsen.
+
+Ein Candidate-Commit ist nur möglich, wenn:
+
+- Slot, logische Generation und Bootversuch exakt zum laufenden Candidate
+  gehören,
+- die aktive Policy alle Required-Milestones als erreicht bewertet,
+- kein blockierender Milestone fehlgeschlagen ist,
+- die Bootartefakte als vertrauenswürdig bestätigt wurden,
+- der Aufrufer bereits durch die Capability-Grenze autorisiert wurde.
+
+`Degraded` darf nur committen, wenn die aktive Policy dies ausdrücklich
+zulässt. `Failed` und `TimedOut` bleiben diagnostizierbar, committen den Slot
+nicht und erlauben entsprechend dem Versuchslimit einen weiteren Boot oder den
+Rollback. Evidence einer anderen Generation oder eines früheren Attempts,
+unautorisierte Meldungen, unbekannter Zustand, nur `KernelEntered` und fehlende
+Trust-Bestätigung werden ohne Zustandsänderung abgewiesen.
+
+Der NBHP/BIB-System-TLV übergibt nun die tatsächliche logische Slot-Generation
+statt des bisherigen konstanten Nullwerts. Der isolierte C-Test deckt positive
+und negative Health-Pfade sowie Generationswechsel ab. Der UEFI-QEMU-Test
+bestätigt zusätzlich redundante Variablen, beschädigte neueste Kopie,
+vollständig beschädigte Metadaten und Recovery über drei Starts. Der normale
+Desktop-/Shutdown-Pfad bleibt erfolgreich.
+
+Während dieser Prüfung wurde außerdem ein HAL-Randfehler behoben: Der
+Fallback-NUMA-Provider hatte `EBX` mit dem Unknown-Sentinel überschrieben und
+diesen Wert auf Ein-CPU-Systemen als Package-Key weiterverwendet. Die
+Package-Bildung verwendet jetzt immer die gespeicherte APIC-ID. Ein zusätzlicher
+serieller Initialisierungsmarker und eine Fehlerstufe erleichtern künftige
+CPU-Manager-Diagnosen.
+
+Noch offen ist die eigentliche capabilitygeschützte Transportbrücke, über die
+Kernel und kritische Userspace-Dienste Health Evidence an die persistente
+Boot-Control-Autorität liefern. Der Zustandsautomat nimmt dafür bewusst nur
+bereits autorisierte Evidence entgegen; er erfindet keine Transport- oder
+Credential-Semantik außerhalb der vorhandenen Spezifikationen.

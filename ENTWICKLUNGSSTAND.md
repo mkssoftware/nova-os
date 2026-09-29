@@ -517,10 +517,13 @@ Start werden beide Kopien beschädigt. Dieser Lauf muss `RECOVERY.NKI` auswähle
 den automatischen Recovery-Modus über NBHP/BIB an den Kernel übertragen und
 ebenfalls `NOVA_KERNEL_READY` erreichen.
 
-Noch nicht umgesetzt ist der sicherheitskritische Health-Commit: Kernel Entry
-allein markiert einen Candidate ausdrücklich nicht als Known-Good. Dafür fehlen
-im aktuellen Dokumentbestand noch die in den ADRs referenzierten detaillierten
-Boot-State-, Attempt-, Known-Good- und Health-Provider-NPSPECs.
+Der sicherheitskritische Health-Commit ist nun als deterministischer
+Boot-Control-Zustandsautomat umgesetzt. Kernel Entry allein markiert weiterhin
+keinen Candidate als Known-Good. Ein Commit verlangt vollständige Required-
+Milestones, passende Slot-/Generations-/Attempt-Identität, bestätigten Trust
+und eine vorgelagerte Capability-Autorisierung. Offen ist noch die geschützte
+Transportbrücke vom laufenden Kernel beziehungsweise den kritischen
+Userspace-Diensten zur persistenten UEFI-Boot-Control-Autorität.
 
 ## 10. Noch offene oder nur teilweise umgesetzte Punkte
 
@@ -530,11 +533,11 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 - kryptografischer Kernelsignaturcontainer, Schlüssel-/Revocation-Policy und
   vollständige NovaOS-Trustentscheidung; der UEFI-Secure-Boot- und
   Integritätszustand wird bereits getrennt in den BIB übertragen
-- autorisierte Candidate-Staging-Schnittstelle, eindeutige Generationen und
-  capabilitygeschützter Health-Commit; der persistente Boot-Control-Kern mit
-  redundanter Speicherung, Candidate, Known-Good, Versuchslimit und Rollback
-  ist vorhanden, alle drei Container verwenden derzeit aber noch dasselbe
-  Entwicklungskernelpayload
+- autorisierte Candidate-Staging-Schnittstelle und die capabilitygeschützte
+  Kernel-/Userspace-Transportbrücke für Health Evidence; eindeutige logische
+  Generationen, Health-Aggregation, Candidate-Commit, redundante Speicherung,
+  Versuchslimit und Rollback sind vorhanden, alle drei Container verwenden
+  derzeit aber noch dasselbe Entwicklungskernelpayload
 - echte Prozess-/Stromunterbrechung an jedem einzelnen UEFI-Schreibzeitpunkt;
   die CRC-beschädigte neueste Kopie und der Rückfall auf die ältere Kopie sind
   bereits in QEMU geprüft
@@ -557,8 +560,8 @@ Reihenfolge an:
 
 1. normativen Kernel-Signaturcontainer sowie Schlüssel- und Revocation-Policy
    spezifizieren beziehungsweise implementieren,
-2. die fehlenden Boot-Control-/Health-NPSPECs ergänzen und darauf die
-   autorisierte Candidate-Aktivierung sowie den Health-Commit aufbauen,
+2. die capabilitygeschützte Health-Evidence-Brücke und anschließend die
+   autorisierte Candidate-Staging-Schnittstelle anbinden,
 3. VirtualBox-UEFI mit dem aktuellen GPT/FAT32-Image erneut validieren,
 4. danach die nächsten Kernel- und Semantic-Type-Abschnitte umsetzen.
 

@@ -319,6 +319,8 @@ kernel_entry:
 
     call cpu_manager_initialize
     jc panic_cpu_manager
+    mov esi, message_cpu_manager_initialized
+    call serial_write_string
     call cpu_manager_self_test
     jc panic_cpu_manager
     mov esi, message_cpu_manager_ok
@@ -7266,7 +7268,7 @@ topology_initialize:
     jne .thread_parent_ready
 
     ; Package-Key = APIC-ID oberhalb der Core-Ebene.
-    mov eax, ebx
+    mov eax, [topology_cpu_apic_id]
     mov ecx, [topology_cpu_core_shift]
     shr eax, cl
     mov [topology_cpu_package_key], eax
@@ -15517,13 +15519,19 @@ cpu_import_hal_topology:
     mov edx, [esi + TOPOLOGY_NUMA_NODE]
     mov [edi + CPU_NUMA_NODE_ID], edx
 .locality_ready:
-    test dword [esi + TOPOLOGY_FLAGS], TOPOLOGY_FLAG_ARCH_VALIDATED
-    jz .complete
+    ; Die normalisierte Parent-Kette ist die Quelle der Wahrheit. Ein
+    ; Fallback-Thread hängt direkt an NUMA und behält Unknown; eine
+    ; validierte Architekturkette führt über Core zu Package.
+    mov edi, [cpu_temp_record]
+    mov eax, [edi + CPU_TOPOLOGY_NODE]
+    call topology_lookup
+    jc .invalid
+    mov esi, eax
     mov eax, [esi + TOPOLOGY_PARENT]
     call topology_lookup
     jc .invalid
     cmp dword [eax + TOPOLOGY_TYPE], TOPOLOGY_TYPE_CPU_CORE
-    jne .invalid
+    jne .complete
     mov edi, [cpu_temp_record]
     mov edx, [eax + TOPOLOGY_HARDWARE_ID]
     mov [edi + CPU_CORE_ID], edx
@@ -15576,6 +15584,7 @@ cpu_offline:
     ret
 
 cpu_manager_self_test:
+    mov dword [cpu_selftest_stage], 1
     mov eax, [acpi_cpu_count]
     cmp dword [cpu_discovered_count], eax
     jne .invalid
@@ -15585,41 +15594,58 @@ cpu_manager_self_test:
     jne .invalid
     mov dword [cpu_test_index], 0
 .topology_next:
+    mov dword [cpu_selftest_stage], 0x10
     mov eax, [cpu_test_index]
     cmp eax, [cpu_discovered_count]
     jae .topology_complete
     call cpu_query
     jc .invalid
+    mov dword [cpu_selftest_stage], 0x11
     mov [cpu_temp_record], edx
     mov ecx, [cpu_test_index]
     mov eax, [acpi_apic_ids + ecx * 4]
     cmp [edx + CPU_HARDWARE_LOW], eax
     jne .invalid
+    mov dword [cpu_selftest_stage], 0x12
     mov eax, [edx + CPU_TOPOLOGY_NODE]
     test eax, eax
     jz .invalid
     call topology_lookup
     jc .invalid
+    mov dword [cpu_selftest_stage], 0x13
     mov edx, [cpu_temp_record]
     mov ecx, [eax + TOPOLOGY_GENERATION]
     cmp [edx + CPU_TOPOLOGY_GENERATION], ecx
     jne .invalid
+    mov dword [cpu_selftest_stage], 0x14
     mov ecx, [eax + TOPOLOGY_PROPERTY2]
     cmp [edx + CPU_THREAD_ID], ecx
     jne .invalid
+    mov dword [cpu_selftest_stage], 0x15
     test dword [eax + TOPOLOGY_FLAGS], TOPOLOGY_FLAG_ARCH_VALIDATED
     jz .topology_fallback
+    mov dword [cpu_selftest_stage], 0x151
     cmp dword [edx + CPU_PACKAGE_ID], CPU_TOPOLOGY_UNKNOWN
-    je .invalid
+    je .package_unknown
+    mov dword [cpu_selftest_stage], 0x152
     cmp dword [edx + CPU_CORE_ID], CPU_TOPOLOGY_UNKNOWN
     je .invalid
     jmp .topology_entry_valid
+.package_unknown:
+    mov eax, [eax + TOPOLOGY_PARENT]
+    call topology_lookup
+    jc .invalid
+    mov eax, [eax + TOPOLOGY_TYPE]
+    add eax, 0x1510
+    mov [cpu_selftest_stage], eax
+    jmp .invalid
 .topology_fallback:
     cmp dword [edx + CPU_PACKAGE_ID], CPU_TOPOLOGY_UNKNOWN
     jne .invalid
     cmp dword [edx + CPU_CORE_ID], CPU_TOPOLOGY_UNKNOWN
     jne .invalid
 .topology_entry_valid:
+    mov dword [cpu_selftest_stage], 0x16
     cmp dword [edx + CPU_DIE_ID], CPU_TOPOLOGY_UNKNOWN
     jne .invalid
     cmp dword [edx + CPU_CLUSTER_ID], CPU_TOPOLOGY_UNKNOWN
@@ -15634,9 +15660,11 @@ cpu_manager_self_test:
     cmp dword [edx + CPU_NUMA_NODE_ID], CPU_TOPOLOGY_UNKNOWN
     jne .invalid
 .cpu_numa_valid:
+    mov dword [cpu_selftest_stage], 0x17
     inc dword [cpu_test_index]
     jmp .topology_next
 .topology_complete:
+    mov dword [cpu_selftest_stage], 2
     mov eax, [kernel_boot_stack_top]
     cmp dword [cpu_local_data + 28], eax
     jne .invalid
@@ -15659,6 +15687,7 @@ cpu_manager_self_test:
     cmp dword [cpu_records + CPU_RECORD_SIZE + CPU_LOCAL_DATA], 0
     jne .invalid
 .no_ap:
+    mov dword [cpu_selftest_stage], 3
     mov eax, CPU_CAPACITY
     call cpu_query
     jnc .invalid
@@ -15671,6 +15700,12 @@ cpu_manager_self_test:
     clc
     ret
 .invalid:
+    mov esi, message_cpu_manager_selftest_stage
+    call serial_write_string
+    mov eax, [cpu_selftest_stage]
+    call serial_write_hex32
+    mov esi, message_newline
+    call serial_write_string
     stc
     ret
 
@@ -15689,6 +15724,7 @@ cpu_manager_api:
     dd cpu_active_set
     dd cpu_local_data
 cpu_max_basic_leaf:      dd 0
+cpu_selftest_stage:       dd 0
 cpu_system_features:     dd 0
 cpu_possible_set:        dd 0
 cpu_discovered_set:      dd 0
@@ -21054,6 +21090,10 @@ message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
     db "NOVA PANIC: Module Loader Selbsttest fehlgeschlagen", 13, 10, 0
+message_cpu_manager_initialized:
+    db "NOVA: CPU Manager Initialisierung abgeschlossen", 13, 10, 0
+message_cpu_manager_selftest_stage:
+    db "NOVA: CPU Manager Selbsttest-Stufe 0x", 0
 message_cpu_manager_ok:
     db "NOVA: CPU Manager ABI 1.0, BSP-Topologie und per-CPU-Daten aktiv", 13, 10, 0
 message_cpu_topology_import_ok:
