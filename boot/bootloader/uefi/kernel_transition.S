@@ -72,8 +72,6 @@ uefi_runtime_bridge_entry32:
     pushfl
     cli
     pushal
-    movb $'A', %al
-    outb %al, $0xe9
     movl %esp, 56(%edi)
     movl %edi, %ebx
     leal 64(%edi), %edi
@@ -94,14 +92,10 @@ uefi_runtime_bridge_entry32:
     movl %cr0, %eax
     orl $0x80000000, %eax
     movl %eax, %cr0
-    movb $'B', %al
-    outb %al, $0xe9
     ljmp *166(%edi)
 
     .code64
 uefi_runtime_bridge_entry64:
-    movb $'D', %al
-    outb %al, $0xe9
     movl %edi, %r12d
     movq 56(%r12), %rsp
     andq $-16, %rsp
@@ -113,14 +107,8 @@ uefi_runtime_bridge_entry64:
     leaq 64(%r12), %rax
     movq %rax, 32(%rsp)
     movq 24(%r12), %rax
-    movb $'E', %al
-    outb %al, $0xe9
-    movq 24(%r12), %rax
     call *%rax
     movq %rax, 48(%r12)
-    movb $'F', %cl
-    movb %cl, %al
-    outb %al, $0xe9
     pushq $0x18
     leaq uefi_runtime_bridge_return32(%rip), %rax
     pushq %rax
@@ -128,8 +116,6 @@ uefi_runtime_bridge_entry64:
 
     .code32
 uefi_runtime_bridge_return32:
-    movb $'G', %al
-    outb %al, $0xe9
     movw $0x10, %ax
     movw %ax, %ds
     movw %ax, %es
@@ -144,8 +130,6 @@ uefi_runtime_bridge_return32:
     movl %cr4, %eax
     andl $0xffffffdf, %eax
     movl %eax, %cr4
-    movb $'H', %al
-    outb %al, $0xe9
     movl 56(%edi), %esp
     popal
     movl 48(%edi), %eax

@@ -296,9 +296,21 @@ static void consume_health_evidence(void)
     if(!present)return;
     nova_boot_control_record_t before=current;
     nova_boot_health_policy_t policy={NOVA_BOOT_HEALTH_REQUIRED_DESKTOP,false};
-    if(!readable||!nova_boot_control_apply_wire(&current,&policy,&wire,true)){
+    if(!readable){
         (void)delete_health_evidence();
-        nova_debug_string("UEFI:BOOT-HEALTH-EVIDENCE-REJECTED\n");
+        nova_debug_string("UEFI:BOOT-HEALTH-EVIDENCE-TRANSPORT-REJECTED\n");
+        return;
+    }
+    if(!nova_boot_health_wire_validate(&wire)){
+        (void)delete_health_evidence();
+        nova_debug_string(wire_crc(&wire)!=wire.checksum?
+            "UEFI:BOOT-HEALTH-EVIDENCE-CRC-REJECTED\n":
+            "UEFI:BOOT-HEALTH-EVIDENCE-FIELDS-REJECTED\n");
+        return;
+    }
+    if(!nova_boot_control_apply_wire(&current,&policy,&wire,true)){
+        (void)delete_health_evidence();
+        nova_debug_string("UEFI:BOOT-HEALTH-EVIDENCE-STATE-REJECTED\n");
         return;
     }
     uint32_t result=current.last_result;

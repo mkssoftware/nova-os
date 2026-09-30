@@ -15830,8 +15830,6 @@ firmware_runtime_invoke:
     mov [firmware_runtime_entry], eax
     pushfd
     cli
-    mov al, 'I'
-    out 0xE9, al
     mov eax, cr0
     mov [firmware_runtime_saved_cr0], eax
     mov eax, cr3
@@ -15849,22 +15847,14 @@ firmware_runtime_invoke:
     mov eax, [firmware_runtime_entry]
     call eax
     mov [firmware_runtime_result], eax
-    mov al, 'J'
-    out 0xE9, al
     mov eax, [firmware_runtime_saved_cr4]
     mov cr4, eax
-    mov al, 'K'
-    out 0xE9, al
     mov eax, [firmware_runtime_saved_cr3]
     mov cr3, eax
-    mov al, 'L'
-    out 0xE9, al
     mov ecx, 0xC0000080
     mov eax, [firmware_runtime_saved_efer_lo]
     mov edx, [firmware_runtime_saved_efer_hi]
     wrmsr
-    mov al, 'M'
-    out 0xE9, al
     mov eax, [firmware_runtime_saved_cr0]
     mov cr0, eax
     lgdt [firmware_runtime_saved_gdtr]
@@ -15886,7 +15876,7 @@ boot_health_wire_crc:
     mov eax, 0xFFFFFFFF
     xor edx, edx
 .byte:
-    cmp edx, 60
+    cmp edx, 64
     jae .done
     movzx ebx, byte [esi + edx]
     xor al, bl

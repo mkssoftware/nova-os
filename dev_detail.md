@@ -2343,11 +2343,9 @@ Package-Bildung verwendet jetzt immer die gespeicherte APIC-ID. Ein zusätzliche
 serieller Initialisierungsmarker und eine Fehlerstufe erleichtern künftige
 CPU-Manager-Diagnosen.
 
-Noch offen ist die eigentliche capabilitygeschützte Transportbrücke, über die
-Kernel und kritische Userspace-Dienste Health Evidence an die persistente
-Boot-Control-Autorität liefern. Der Zustandsautomat nimmt dafür bewusst nur
-bereits autorisierte Evidence entgegen; er erfindet keine Transport- oder
-Credential-Semantik außerhalb der vorhandenen Spezifikationen.
+Die danach ergänzte capabilitygeschützte Transportbrücke ist in Abschnitt 89
+beschrieben. Der Zustandsautomat nimmt weiterhin ausschließlich bereits
+autorisierte und vollständig validierte Evidence entgegen.
 
 ## 88. Kernel-seitige Boot-Health-Autorität
 
@@ -2394,12 +2392,62 @@ behauptet. Die serielle Diagnose zeigt diesen wartenden Zustand ausdrücklich.
 `scripts/test-uefi-display-server.ps1` verlangt die neuen Health-Marker und
 prüft anschließend weiterhin Desktop, Eingabe und `PLATFORM_OFF`. Zusätzlich
 erfolgreich sind ABI-Check, der dreistufige persistente Boot-Control-Test und
-der Zwei-Knoten-NUMA-Test. Die verbleibende Arbeit ist ein spezifizierter
-Laufzeittransport, der finale Evidence crash-konsistent an die redundante
-UEFI-Boot-Control-Autorität übergibt.
+der Zwei-Knoten-NUMA-Test. Der anschließend implementierte Laufzeittransport
+ist in Abschnitt 89 beschrieben.
 
 Beim Abgleich der Identitätsbindung wurde außerdem korrigiert, dass der interne
 Kernel-Kontext zuvor nur die unteren 32 Bit der als `uint64_t` spezifizierten
 BIB-Systemgeneration kopierte. Ein zusätzliches internes High-Dword bewahrt
 die vorhandenen Kontextoffsets und bindet Reports sowie Evidence nun an alle
 64 Bit der Generation.
+
+## 89. UEFI-Boot-Health-Runtime-Transport
+
+Der öffentliche NBHP/BIB-Vertrag besitzt jetzt den optionalen TLV-Typ 15
+`FIRMWARE_RUNTIME`. Seine 32-Byte-Struktur beschreibt einen x64-UEFI-Provider,
+die Capability `PERSIST_BOOT_HEALTH`, eine Kontext- und Einsprungadresse sowie
+die maximale Wire-Größe. Unbekannte oder nicht verfügbare Provider bleiben
+durch den optionalen TLV abwärtskompatibel.
+
+Der UEFI-Loader reserviert einen dauerhaft erreichbaren 192-Byte-Kontext. Er
+enthält die gesicherte Firmware-Seitentabelle, `SetVariable`, Variablenname und
+GUID, einen privaten Evidence-Puffer sowie eine minimale temporäre GDT. Alle
+für den IA32-Kernel sichtbaren Adressen werden vor Veröffentlichung auf
+32-Bit-Darstellbarkeit geprüft. Der Provider selbst wechselt von Protected
+Mode in Long Mode, ruft `SetVariable` nach Microsoft-x64-ABI auf und kehrt mit
+dem EFI-Status wieder in den 32-Bit-Aufrufer zurück.
+
+Da der Kernel zu diesem Zeitpunkt bereits eigene Seitentabellen und eine
+eigene GDT verwendet, sichert der Aufrufpfad CR0, CR3, CR4, EFER, GDTR und
+EFLAGS. Er deaktiviert sein Paging für den physischen Provider, lässt diesen
+kurz in den Firmware-Runtime-Kontext wechseln und stellt danach Kernel-Paging,
+GDT, Codesegment und Interruptzustand wieder her. Dadurch läuft der normale
+Kernelpfad nach dem Firmwareaufruf ohne Sonderzustand weiter.
+
+Die Inbox `NovaBootHealth` verwendet einen festen 64-Byte-Wire-Datensatz mit
+Magic, Version, Slot, 64-Bit-Generation, Bootversuch, Milestones, Fehlerpunkt,
+Health-Status, Trust-Bit, Sequenznummer und CRC32. Der Kernel schreibt nur für
+einen echten Candidate mit `BootAttempt > 0`; ein gewöhnlicher Known-Good-Boot
+führt keinen NVRAM-Schreibzugriff aus.
+
+Beim nächsten UEFI-Start wird die Inbox vor der Slotwahl konsumiert. Der
+Bootloader trennt Transport-, CRC-, Feld- und Zustandsfehler in eindeutige
+Diagnosemarker. Slot, Generation, Attempt, Sequenz, monotone Milestones,
+Policy, Trust und Commit-Regeln werden erneut geprüft. Erst wenn der redundante
+Boot-Control-Datensatz erfolgreich geschrieben und rückgelesen wurde, wird die
+Inbox gelöscht. Bei einem Persistenzfehler bleibt sie zur Wiederholung
+erhalten; Replay oder fremde/stale Evidence verändert den Zustand nicht.
+
+Der Hosttest prüft Wire-Validierung, Capability, fremde Generationen,
+CRC-Fehler, Commit und Replay. Der QEMU-End-to-End-Test staged zusätzlich Slot
+B als Candidate, beobachtet den Kernel-Checkpoint in der persistenten Inbox
+und verlangt beim Folgestart den Marker
+`UEFI:BOOT-HEALTH-EVIDENCE-UPDATED`. Danach laufen weiterhin die redundanten
+Korruptions- und Recovery-Szenarien. Der normale Displaytest verlangt außerdem
+`UEFI:FIRMWARE-RUNTIME-BRIDGE-READY` und bestätigt, dass Desktop, Eingabe und
+geordneter Shutdown unverändert funktionieren.
+
+Ein finaler Candidate-Commit wird derzeit bewusst nicht erzeugt: Dafür fehlen
+noch ein echtes persistentes SystemRoot und ein Trust-Provider. Sobald diese
+Provider `HealthConfirmed` liefern, kann dieselbe vollständig implementierte
+Brücke die finale Evidence ohne weiteres ABI-Redesign persistieren.

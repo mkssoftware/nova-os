@@ -1050,6 +1050,34 @@ nur integritätsgeprüfte NKI-Pfad werden bewusst nicht als persistentes
 der reale Health-Zustand korrekt auf `Pending`, bis diese Dienste existieren.
 
 ABI-Prüfung, UEFI-Desktop einschließlich Eingabe und Shutdown, persistentes
-Boot-Control/Rollback sowie der Zwei-Knoten-NUMA-Test sind erfolgreich. Noch
-offen ist der Laufzeittransport der fertigen Evidence zurück in die
-redundanten UEFI-Boot-Control-Variablen.
+Boot-Control/Rollback sowie der Zwei-Knoten-NUMA-Test sind erfolgreich. Der
+anschließend umgesetzte Laufzeittransport ist im folgenden Abschnitt
+beschrieben.
+
+### UEFI-Runtime-Transport für Boot Health
+
+Der NBHP/BIB kann nun einen optionalen, versionierten Firmware-Runtime-TLV an
+den Kernel übergeben. Er enthält ausschließlich Provider-ID, Capability,
+Kontext, Einstiegspunkt und maximale Nutzlastgröße. Der Kernel benutzt diesen
+Provider nur bei einem tatsächlich laufenden A/B-Candidate; normale
+Known-Good-Boots schreiben keine Firmwarevariable.
+
+Die 64-Byte-Health-Evidence wird mit Slot, 64-Bit-Generation, Bootversuch,
+Milestones, Status, Trust-Zustand, Sequenznummer und CRC32 in die
+`NovaBootHealth`-Inbox geschrieben. Der IA32-Kernel wechselt dafür kontrolliert
+in den von UEFI benötigten x64-Runtime-Kontext und stellt anschließend seine
+Seitentabellen, GDT und Interruptlage vollständig wieder her.
+
+Beim folgenden Start validiert der Bootloader Transportgröße, Wire-Version,
+CRC, Slot, Generation, Attempt, Sequenz und Zustandsregeln. Erst danach wird
+die Evidence crash-konsistent in die redundanten Boot-Control-Variablen
+übernommen; die Inbox wird erst nach erfolgreicher Persistierung gelöscht.
+Ungültige, fremde, veraltete oder wiederholte Evidence kann den persistenten
+Zustand nicht verändern.
+
+Der automatisierte UEFI-Test deckt den kompletten Pfad ab: Candidate-Staging,
+Kernel-Checkpoint, persistente Inbox, Übernahme beim Neustart sowie die
+bisherigen Redundanz-, CRC- und Recovery-Fälle. Vollständiges
+`HealthConfirmed` bleibt absichtlich aus, solange NovaOS noch kein echtes
+persistentes SystemRoot und keinen Trust-Provider besitzt; die Transportbrücke
+selbst ist vollständig funktionsfähig.

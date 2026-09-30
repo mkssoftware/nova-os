@@ -71,6 +71,7 @@ try {
     foreach($marker in @(
         'UEFI:KERNEL-HANDOFF-READY',
         'UEFI:BOOTSPLASH-READY',
+        'UEFI:FIRMWARE-RUNTIME-BRIDGE-READY',
         'NOVA: Task Scope ABI 1.0, Hierarchie und Cancellation aktiv',
         'NOVA: Task ABI 1.0, Lifecycle und kooperative Cancellation aktiv',
         'NOVA: Task Deadline ABI 1.0, Parent-Clamp und Miss-Policy aktiv',
