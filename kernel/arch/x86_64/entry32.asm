@@ -169,6 +169,18 @@ kernel_entry:
     jc panic_ipc
     mov esi, message_semantic_ok
     call serial_write_string
+    call state_manager_initialize
+    jc panic_state_manager
+    call state_manager_self_test
+    jc panic_state_manager
+    mov esi, message_state_manager_ok
+    call serial_write_string
+    call transaction_manager_initialize
+    jc panic_transaction_manager
+    call transaction_manager_self_test
+    jc panic_transaction_manager
+    mov esi, message_transaction_manager_ok
+    call serial_write_string
     mov esi, message_ipc_ok
     call serial_write_string
 
@@ -470,6 +482,18 @@ panic_ipc:
     mov eax, 0x00002005
     mov edx, 5
     mov esi, message_ipc_error
+    jmp kernel_panic
+
+panic_state_manager:
+    mov eax, 0x00002027
+    mov edx, 0x53544154             ; "STAT"
+    mov esi, message_state_manager_error
+    jmp kernel_panic
+
+panic_transaction_manager:
+    mov eax, 0x00002028
+    mov edx, 0x54584E20             ; "TXN "
+    mov esi, message_transaction_manager_error
     jmp kernel_panic
 
 panic_service_manager:
@@ -3729,6 +3753,7 @@ interrupt_api:
 ; ---------------------------------------------------------------------------
 
 %include "arch/x86_64/semantic32.inc"
+%include "arch/x86_64/state32.inc"
 
 IPC_MESSAGE_SIZE   equ 16
 IPC_QUEUE_CAPACITY equ 16
@@ -21905,12 +21930,20 @@ message_ipc_ok:
     db "NOVA: IPC ABI 1.0 FIFO bereit", 13, 10, 0
 message_semantic_ok:
     db "NOVA: Semantic Types v1, Registry, Kompatibilitaet und Typed Contracts bereit", 13, 10, 0
+message_state_manager_ok:
+    db "NOVA: Global State ABI 1.0, Versionen und Unknown-State-Pruefung bereit", 13, 10, 0
+message_transaction_manager_ok:
+    db "NOVA: Transaction ABI 1.0, Begin-Prepare-Commit-Verify bereit", 13, 10, 0
 message_semantic_reject_ok:
     db "NOVA: Typed IPC, fremder Type und Version sicher abgewiesen", 13, 10, 0
 message_semantic_validation_ok:
     db "NOVA: Semantic Validation, ungueltiger Wert strukturiert abgewiesen", 13, 10, 0
 message_ipc_error:
     db "NOVA PANIC: Kernel-IPC nicht initialisierbar", 13, 10, 0
+message_state_manager_error:
+    db "NOVA PANIC: Global State Manager nicht initialisierbar", 13, 10, 0
+message_transaction_manager_error:
+    db "NOVA PANIC: Transaction Manager nicht initialisierbar", 13, 10, 0
 message_service_manager_ok:
     db "NOVA: Service Manager ABI 1.0 bereit", 13, 10, 0
 message_service_manager_error:

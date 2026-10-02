@@ -7,6 +7,8 @@
 #include "../kernel/include/nova/boot_health.h"
 #include "../kernel/include/nova/vfs.h"
 #include "../kernel/include/nova/syscall.h"
+#include "../kernel/include/nova/state.h"
+#include "../kernel/include/nova/transaction.h"
 #include "../kernel/include/nova/handle.h"
 #include "../kernel/include/nova/process.h"
 #include "../kernel/include/nova/thread.h"
@@ -44,6 +46,17 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(NovaIdentityResultV1)==16&&
            sizeof(NovaHandleCloseArgumentsV1)==16&&
            sizeof(NovaSharedServicePageV1)==64&&
+           sizeof(NovaSyscallFeatureDescriptorV1)==64&&
+           sizeof(NovaApiDiscoveryRequestV1)==64&&
+           sizeof(NovaApiDiscoveryResultV1)==64&&
+           sizeof(NovaSemanticApiDescriptorV1)==64&&
+           sizeof(NovaOperationResultV1)==40&&
+           sizeof(NovaStateIdV1)==16&&sizeof(NovaStateVersionV1)==64&&
+           sizeof(NovaStateRecordV1)==88&&
+           sizeof(NovaStateTransitionV1)==64&&
+           sizeof(NovaTransactionIdV1)==16&&
+           sizeof(NovaTransactionRecordV1)==96&&
+           sizeof(NovaTransactionDecisionV1)==64&&
            sizeof(NovaIpcPacketV1)==48&&
            sizeof(NovaVfsLookupArgumentsV1)==32&&
            sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&

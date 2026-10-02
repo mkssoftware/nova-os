@@ -9,6 +9,15 @@
 #define NOVA_SHARED_SERVICE_PAGE_ADDRESS 0x00403000u
 #define NOVA_SHARED_SERVICE_PAGE_SIGNATURE 0x5353564Eu /* NVSS */
 
+#define NOVA_SYSCALL_FEATURE_INT80          0x00000001u
+#define NOVA_SYSCALL_FEATURE_COPY_IO        0x00000002u
+#define NOVA_SYSCALL_FEATURE_PREEMPT        0x00000004u
+#define NOVA_SYSCALL_FEATURE_DISPLAY        0x00000008u
+#define NOVA_SYSCALL_FEATURE_DISCOVERY      0x00000010u
+#define NOVA_SYSCALL_FEATURE_TYPED_IPC      0x00000020u
+#define NOVA_SYSCALL_FEATURE_STATE_VERSION  0x00000040u
+#define NOVA_SYSCALL_FEATURE_TRANSACTIONS   0x00000080u
+
 enum NovaServiceId {
     NOVA_SERVICE_CORE = 1,
     NOVA_SERVICE_PROCESS = 2,
@@ -27,7 +36,9 @@ enum NovaServiceId {
 enum NovaCoreOperationId {
     NOVA_CORE_OPERATION_EXIT = 1,
     NOVA_CORE_OPERATION_READY = 2,
-    NOVA_CORE_OPERATION_CLOSE_HANDLE = 3
+    NOVA_CORE_OPERATION_CLOSE_HANDLE = 3,
+    NOVA_CORE_OPERATION_QUERY_ABI = 4,
+    NOVA_CORE_OPERATION_DISCOVER_API = 5
 };
 
 enum NovaProcessOperationId {
@@ -137,6 +148,75 @@ typedef struct NovaSharedServicePageV1 {
     uint32_t Reserved[6];
 } NovaSharedServicePageV1;
 
+typedef struct NovaSyscallFeatureDescriptorV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t ArchitectureProfile;
+    uint32_t FeatureFlags;
+    uint32_t ServiceBitmap;
+    uint32_t DeprecatedServiceBitmap;
+    uint32_t MaxInlineArgumentSize;
+    uint32_t MaxCopySize;
+    uint64_t StableSyscallMask;
+    uint64_t OptionalSyscallMask;
+    uint32_t Reserved[4];
+} NovaSyscallFeatureDescriptorV1;
+
+typedef struct NovaApiDiscoveryRequestV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t ApiId;
+    uint32_t MinVersion;
+    uint32_t MaxVersion;
+    uint32_t RequiredFeatures;
+    uint32_t SemanticType;
+    uint32_t RequiredCapabilities;
+    uint32_t HardConstraints;
+    uint32_t ProviderHint;
+    uint64_t ExecutionContractId;
+    uint32_t Reserved[4];
+} NovaApiDiscoveryRequestV1;
+
+typedef struct NovaApiDiscoveryResultV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t ApiId;
+    uint32_t SelectedVersion;
+    uint32_t ProviderId;
+    uint32_t ContractId;
+    uint32_t FeatureFlags;
+    uint32_t AvailabilityState;
+    uint32_t CompatibilityState;
+    uint32_t TrustState;
+    uint64_t ValidUntilGeneration;
+    uint32_t Reserved[4];
+} NovaApiDiscoveryResultV1;
+
+typedef struct NovaSemanticApiDescriptorV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t SemanticApiId;
+    uint32_t OperationId;
+    uint32_t InputSemanticType;
+    uint32_t OutputSemanticType;
+    uint32_t RequiredCapabilities;
+    uint32_t ContractId;
+    uint32_t TransactionFlags;
+    uint32_t SideEffectFlags;
+    uint64_t ExecutionContractId;
+    uint32_t Reserved[4];
+} NovaSemanticApiDescriptorV1;
+
+typedef struct NovaOperationResultV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    int32_t Status;
+    uint32_t Flags;
+    uint64_t OperationId;
+    uint64_t CompletedBytes;
+    uint64_t RequestedBytes;
+} NovaOperationResultV1;
+
 typedef struct NovaIpcPacketV1 {
     uint32_t StructSize;
     NovaAbiVersion Version;
@@ -211,6 +291,16 @@ _Static_assert(sizeof(NovaHandleCloseArgumentsV1) == 16,
                "NovaHandleCloseArgumentsV1 ABI size changed");
 _Static_assert(sizeof(NovaSharedServicePageV1) == 64,
                "NovaSharedServicePageV1 ABI size changed");
+_Static_assert(sizeof(NovaSyscallFeatureDescriptorV1) == 64,
+               "NovaSyscallFeatureDescriptorV1 ABI size changed");
+_Static_assert(sizeof(NovaApiDiscoveryRequestV1) == 64,
+               "NovaApiDiscoveryRequestV1 ABI size changed");
+_Static_assert(sizeof(NovaApiDiscoveryResultV1) == 64,
+               "NovaApiDiscoveryResultV1 ABI size changed");
+_Static_assert(sizeof(NovaSemanticApiDescriptorV1) == 64,
+               "NovaSemanticApiDescriptorV1 ABI size changed");
+_Static_assert(sizeof(NovaOperationResultV1) == 40,
+               "NovaOperationResultV1 ABI size changed");
 _Static_assert(sizeof(NovaIpcPacketV1) == 48,
                "NovaIpcPacketV1 ABI size changed");
 _Static_assert(sizeof(NovaVfsLookupArgumentsV1) == 32,
