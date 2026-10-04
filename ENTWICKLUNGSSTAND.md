@@ -1081,3 +1081,47 @@ bisherigen Redundanz-, CRC- und Recovery-Fälle. Vollständiges
 `HealthConfirmed` bleibt absichtlich aus, solange NovaOS noch kein echtes
 persistentes SystemRoot und keinen Trust-Provider besitzt; die Transportbrücke
 selbst ist vollständig funktionsfähig.
+
+### ABI Discovery, Global State und Transactions
+
+Der Kernel besitzt nun erste öffentliche V1-Layouts für Syscall-Feature-
+Discovery, API-Discovery, semantische API-Deskriptoren, Operationsergebnisse,
+versionierte Global-State-Records und Transaction-Records. Die Layouts liegen
+in `kernel/include/nova/syscall.h`, `kernel/include/nova/state.h` und
+`kernel/include/nova/transaction.h` und werden durch den vorhandenen
+`make abi-check` statisch geprüft.
+
+Im Kernelstart laufen außerdem ein Global-State- und ein Transaction-
+Bootstrap-Selbsttest. Der State-Test prüft stabile State-ID, expliziten
+Unknown-State, Versionsfortschritt und Stale-State-Erkennung bei veralteter
+Änderung. Der Transaction-Test prüft Begin, Prepare, Commit und Verify sowie
+einen Versionskonflikt vor Commit. Der UEFI-Smoke-Test erreicht danach weiter
+`NOVA_KERNEL_READY` und meldet:
+
+```text
+NOVA: Global State ABI 1.0, Versionen und Unknown-State-Pruefung bereit
+NOVA: Transaction ABI 1.0, Begin-Prepare-Commit-Verify bereit
+```
+
+### Neuer UEFI-Boot-Splash und Boot-Konsole
+
+Der neue NPSPEC-Pfad `docs/NPSPEC/Boot/newBoot` ist eingelesen und der UEFI-
+Bootpfad nutzt nun die dortigen Referenzbilder als verbindliche Boot-Assets.
+`boot/image/bootsplash.png` wurde durch den neuen NovaOS-Splash ersetzt;
+zusätzlich gibt es `boot/image/bootconsole.png` als visuelle Vorlage für die
+Boot-Konsole. Beide Bilder werden verlustfrei in das interne NBS-Format
+gewandelt und als `SPLASH.NBS` sowie `CONSOLE.NBS` in die GPT/FAT32-UEFI-
+Image-Datei geschrieben.
+
+Die NBS-Konvertierung skaliert Bilder jetzt per hochwertigem Aspect-Fill mit
+zentriertem Crop. Dadurch wird der neue Space-/Earth-Hintergrund nicht mehr
+verzerrt oder mit sichtbaren schwarzen Rändern angezeigt. Der UEFI-Loader
+zeichnet die Bootbilder ebenfalls bildschirmfüllend mit bilinearer Abtastung.
+
+Der normale Boot zeigt standardmäßig den Splashscreen. Während des kurzen
+Boot-Splash-Fensters öffnet `F3` die Boot-Konsole; `ESC` wechselt von dort
+zurück zum Splash. Kernel-Lade- oder Validierungsfehler führen nun direkt in
+die Console-Ansicht und setzen den Diagnosemarker
+`UEFI:BOOT-CONSOLE-ERROR-VIEW`. Der bestehende Kernel-Handoff bleibt
+unverändert und der erfolgreiche UEFI-Display-Server-Test erreicht weiterhin
+den Desktop-, Startmenü-, Ribbon- und Shutdown-Pfad.

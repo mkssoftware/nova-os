@@ -66,6 +66,7 @@ static CHAR16 elf64_path[]={'\\','K','E','R','N','E','L','6','4','.','E','L','F'
 static CHAR16 backup_nki_path[]={'\\','B','A','C','K','U','P','.','N','K','I',0};
 static CHAR16 recovery_nki_path[]={'\\','R','E','C','O','V','E','R','Y','.','N','K','I',0};
 static CHAR16 bootsplash_path[]={'\\','S','P','L','A','S','H','.','N','B','S',0};
+static CHAR16 bootconsole_path[]={'\\','C','O','N','S','O','L','E','.','N','B','S',0};
 
 typedef struct {
     uint8_t magic[4];
@@ -119,14 +120,25 @@ static uint8_t bootsplash_lerp_channel(uint32_t first,uint32_t second,
     return (uint8_t)((a*(65536u-fraction)+b*fraction+32768u)>>16);
 }
 
-static uint32_t bootsplash_sample_bilinear(const nova_bootsplash_header *header,
+static uint32_t bootsplash_sample_cover(const nova_bootsplash_header *header,
     const uint8_t *pixels,uint32_t x,uint32_t y,uint32_t target_width,
     uint32_t target_height)
 {
-    if(target_width==header->width&&target_height==header->height)
-        return bootsplash_read_pixel(header,pixels,x,y);
-    uint64_t x_fixed=target_width>1u?(uint64_t)x*(header->width-1u)*65536u/(target_width-1u):0;
-    uint64_t y_fixed=target_height>1u?(uint64_t)y*(header->height-1u)*65536u/(target_height-1u):0;
+    if(!target_width||!target_height)return 0xff000000u;
+    uint32_t crop_x=0,crop_y=0,crop_width=header->width,crop_height=header->height;
+    if((uint64_t)header->width*target_height>(uint64_t)header->height*target_width){
+        crop_width=(uint32_t)((uint64_t)header->height*target_width/target_height);
+        if(crop_width<1u)crop_width=1u;
+        crop_x=(header->width-crop_width)/2u;
+    }else if((uint64_t)header->width*target_height<(uint64_t)header->height*target_width){
+        crop_height=(uint32_t)((uint64_t)header->width*target_height/target_width);
+        if(crop_height<1u)crop_height=1u;
+        crop_y=(header->height-crop_height)/2u;
+    }
+    uint64_t x_fixed=(uint64_t)crop_x*65536u+
+        (target_width>1u?(uint64_t)x*(crop_width-1u)*65536u/(target_width-1u):0);
+    uint64_t y_fixed=(uint64_t)crop_y*65536u+
+        (target_height>1u?(uint64_t)y*(crop_height-1u)*65536u/(target_height-1u):0);
     uint32_t x0=(uint32_t)(x_fixed>>16),y0=(uint32_t)(y_fixed>>16);
     uint32_t x1=x0+1u<header->width?x0+1u:x0;
     uint32_t y1=y0+1u<header->height?y0+1u:y0;
@@ -147,10 +159,10 @@ static uint32_t bootsplash_sample_bilinear(const nova_bootsplash_header *header,
     return 0xff000000u|red<<16|green<<8|blue;
 }
 
-static bool show_bootsplash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
+static bool show_boot_image(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,CHAR16 *path)
 {
     uint8_t *file=0;UINTN size=0;
-    EFI_STATUS status=read_kernel_file(image,st,bootsplash_path,&file,&size);
+    EFI_STATUS status=read_kernel_file(image,st,path,&file,&size);
     if(EFI_ERROR(status)||!file)return false;
     bool valid=false;
     if(size>=sizeof(nova_bootsplash_header)){
@@ -172,27 +184,51 @@ static bool show_bootsplash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
         if(valid){
             for(uint32_t y=0;y<graphics->height;++y)
                 for(uint32_t x=0;x<graphics->width;++x)
-                    bootsplash_write_pixel(graphics,x,y,0xff000000u);
-            uint32_t target_width=graphics->width;
-            uint32_t target_height=(uint32_t)((uint64_t)target_width*header->height/header->width);
-            if(target_height>graphics->height){
-                target_height=graphics->height;
-                target_width=(uint32_t)((uint64_t)target_height*header->width/header->height);
-            }
-            uint32_t left=(graphics->width-target_width)/2u;
-            uint32_t top=(graphics->height-target_height)/2u;
+                    bootsplash_write_pixel(graphics,x,y,0xff020713u);
             const uint8_t *pixels=file+header->header_size;
-            for(uint32_t y=0;y<target_height;++y){
-                for(uint32_t x=0;x<target_width;++x){
-                    uint32_t rgba=bootsplash_sample_bilinear(header,pixels,x,y,
-                                                              target_width,target_height);
-                    bootsplash_write_pixel(graphics,left+x,top+y,rgba);
+            for(uint32_t y=0;y<graphics->height;++y){
+                for(uint32_t x=0;x<graphics->width;++x){
+                    uint32_t rgba=bootsplash_sample_cover(header,pixels,x,y,
+                                                          graphics->width,graphics->height);
+                    bootsplash_write_pixel(graphics,x,y,rgba);
                 }
             }
         }
     }
     st->BootServices->FreePool(file);
     return valid;
+}
+
+static bool show_bootsplash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
+{return show_boot_image(image,st,bootsplash_path);}
+
+static bool show_bootconsole(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
+{return show_boot_image(image,st,bootconsole_path);}
+
+static void boot_view_switch_window(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,unsigned polls)
+{
+    if(!st||!st->BootServices||!st->ConIn)return;
+    bool console=false;
+    for(unsigned index=0;index<polls;++index){
+        EFI_INPUT_KEY key;bytes_zero(&key,sizeof(key));
+        EFI_STATUS status=st->ConIn->ReadKeyStroke(st->ConIn,&key);
+        if(!EFI_ERROR(status)){
+            if(!console&&key.ScanCode==13u){
+                if(show_bootconsole(image,st)){
+                    console=true;
+                    nova_debug_string("UEFI:BOOT-VIEW-SWITCH-F3\n");
+                    nova_debug_string("UEFI:BOOT-CONSOLE-READY\n");
+                }
+            }else if(console&&(key.ScanCode==23u||key.UnicodeChar==27u)){
+                if(show_bootsplash(image,st)){
+                    console=false;
+                    nova_debug_string("UEFI:BOOT-VIEW-SWITCH-ESC\n");
+                    nova_debug_string("UEFI:BOOT-VIEW-SPLASH-READY\n");
+                }
+            }
+        }
+        st->BootServices->Stall(50000);
+    }
 }
 
 static EFI_STATUS allocate_fixed(EFI_BOOT_SERVICES *bs,uint64_t address,UINTN pages)
@@ -541,7 +577,9 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     }
     if(!loaded&&recovery_mode){
         if(file)st->BootServices->FreePool(file);
-        nova_debug_string(EFI_ERROR(status)?"UEFI:RECOVERY-KERNEL-FILE-ERROR\n":"UEFI:KERNEL-VALIDATION-ERROR\n");return 1;
+        nova_debug_string(EFI_ERROR(status)?"UEFI:RECOVERY-KERNEL-FILE-ERROR\n":"UEFI:KERNEL-VALIDATION-ERROR\n");
+        if(show_bootconsole(image_handle,st))nova_debug_string("UEFI:BOOT-CONSOLE-ERROR-VIEW\n");
+        return 1;
     }
     if(!loaded){
         if(file)st->BootServices->FreePool(file);
@@ -570,7 +608,12 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
         status=read_kernel_file(image_handle,st,recovery_nki_path,&file,&size);
         if(!EFI_ERROR(status))loaded=load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
     }
-    if(!loaded){if(file)st->BootServices->FreePool(file);nova_debug_string("UEFI:KERNEL-VALIDATION-ERROR\n");return 1;}
+    if(!loaded){
+        if(file)st->BootServices->FreePool(file);
+        nova_debug_string("UEFI:KERNEL-VALIDATION-ERROR\n");
+        if(show_bootconsole(image_handle,st))nova_debug_string("UEFI:BOOT-CONSOLE-ERROR-VIEW\n");
+        return 1;
+    }
     if(candidate_boot&&selected_generation==requested_slot){
         if(!uefi_boot_control_begin_attempt(requested_slot))nova_debug_string("UEFI:BOOT-CONTROL-ATTEMPT-VOLATILE\n");
         else nova_debug_string("UEFI:BOOT-CONTROL-CANDIDATE-ATTEMPT\n");
@@ -598,7 +641,11 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     else nova_debug_string(kernel_format==NOVA_KERNEL_FORMAT_ELF32?"UEFI:ELF32-DIRECT-VALIDATED\n":"UEFI:ELF64-DIRECT-VALIDATED\n");
     nova_debug_string(nki_container?"UEFI:KERNEL-INTEGRITY-VERIFIED\n":"UEFI:KERNEL-STRUCTURE-VALIDATED\n");
     nova_debug_string("UEFI:KERNEL-SIGNATURE-NOT-PRESENT\n");
-    if(show_bootsplash(image_handle,st))nova_debug_string("UEFI:BOOTSPLASH-READY\n");
+    if(show_bootsplash(image_handle,st)){
+        nova_debug_string("UEFI:BOOTSPLASH-READY\n");
+        nova_debug_string("UEFI:BOOT-VIEW-SPLASH-READY\n");
+        boot_view_switch_window(image_handle,st,24);
+    }
     else nova_debug_string("UEFI:BOOTSPLASH-ERROR\n");
     if(uefi_runtime_bridge_prepare(st))nova_debug_string("UEFI:FIRMWARE-RUNTIME-BRIDGE-READY\n");
     else nova_debug_string("UEFI:FIRMWARE-RUNTIME-BRIDGE-UNAVAILABLE\n");

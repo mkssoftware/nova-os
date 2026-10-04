@@ -5,7 +5,8 @@ param([Parameter(Mandatory=$true)][string]$EfiApplication,
       [string]$KernelElf64,
       [string]$BackupKernelImage,
       [string]$RecoveryKernelImage,
-      [string]$BootSplash)
+      [string]$BootSplash,
+      [string]$BootConsole)
 $ErrorActionPreference='Stop'
 $efi=[IO.File]::ReadAllBytes([IO.Path]::GetFullPath($EfiApplication))
 $payloadFiles=@(
@@ -40,6 +41,11 @@ if($BootSplash){
     $splashPath=[IO.Path]::GetFullPath($BootSplash)
     if(!(Test-Path -LiteralPath $splashPath)){throw "Bootsplash fehlt: $splashPath"}
     $payloadFiles+=@{Name='SPLASH';Ext='NBS';Data=[IO.File]::ReadAllBytes($splashPath);Cluster=0}
+}
+if($BootConsole){
+    $consolePath=[IO.Path]::GetFullPath($BootConsole)
+    if(!(Test-Path -LiteralPath $consolePath)){throw "Bootkonsole fehlt: $consolePath"}
+    $payloadFiles+=@{Name='CONSOLE';Ext='NBS';Data=[IO.File]::ReadAllBytes($consolePath);Cluster=0}
 }
 $ss=512;$total=131072L;$partFirst=2048L;$partLast=$total-34;$partSectors=$partLast-$partFirst+1
 $image=[byte[]]::new($total*$ss)

@@ -2451,3 +2451,93 @@ Ein finaler Candidate-Commit wird derzeit bewusst nicht erzeugt: Dafür fehlen
 noch ein echtes persistentes SystemRoot und ein Trust-Provider. Sobald diese
 Provider `HealthConfirmed` liefern, kann dieselbe vollständig implementierte
 Brücke die finale Evidence ohne weiteres ABI-Redesign persistieren.
+
+## 90. Syscall Discovery, Global State und Transaction ABI
+
+`kernel/include/nova/syscall.h` wurde um feste V1-Strukturen für
+Syscall-Feature-Discovery, API-Discovery, semantische API-Deskriptoren und
+Operationsergebnisse ergänzt. Damit kann Userspace künftig verfügbare Features,
+Providerkandidaten und semantische Verträge abfragen, ohne daraus automatisch
+Authority abzuleiten.
+
+`kernel/include/nova/state.h` definiert stabile State-IDs, State-Versionen,
+Records und Transitions. State-ID, Version, Generation, Validity und Owner sind
+getrennt, damit Unknown-, Stale- und Conflict-Zustände nicht mit gültigem
+aktuellen Zustand verwechselt werden.
+
+`kernel/include/nova/transaction.h` definiert stabile Transaction-IDs,
+Transaction-Records und Entscheidungen. Der Datensatz trennt Active, Prepared,
+Committed und Completed, sodass Commit und Verification nicht vermischt werden.
+
+Der Assemblerkern bindet diese Grundlage über
+`kernel/arch/x86_64/state32.inc` ein. Beim Boot werden State- und Transaction-
+Bootstrap-Selbsttests nach den Semantic Types und vor dem Service Manager
+ausgeführt. Der UEFI-Smoke-Test bestätigt die neuen Marker:
+
+```text
+NOVA: Global State ABI 1.0, Versionen und Unknown-State-Pruefung bereit
+NOVA: Transaction ABI 1.0, Begin-Prepare-Commit-Verify bereit
+```
+
+Geprüft wurden `make abi-check`, `make uefi-image`,
+`make test-uefi-display-server` und ein zusätzlicher UEFI-Smoke-Lauf bis
+`NOVA_KERNEL_READY`.
+
+## 91. Neuer Boot-Splash und Boot-Konsole nach `newBoot`
+
+Die NPSPECs unter `docs/NPSPEC/Boot/newBoot` definieren den normalen
+Boot-Splash als Standardansicht, die Boot-Konsole als Diagnoseansicht und eine
+zustandserhaltende Umschaltung zwischen beiden Ansichten. Als visuelle
+Referenz dienen `bootSplash.png` und `BootKonsole.png`.
+
+Die Referenzbilder wurden als Boot-Assets übernommen:
+
+- `boot/image/bootsplash.png` enthält den neuen Space-/Earth-Splash mit
+  NovaOS-Mitte und dezenter Fortschrittslinie.
+- `boot/image/bootconsole.png` enthält die neue Glas-/Acrylic-Konsole mit
+  Logbereich, Statuschips und Progressbereich.
+
+`scripts/build-bootsplash.ps1` wandelt beide Bilder in das Nova Boot Splash
+Format `NBS1` um. Das Format ist ein kleiner Header plus RGB888-Pixeln und
+CRC32-Prüfsumme. Die Skalierung wurde auf Aspect-Fill geändert: Das Bild füllt
+die Zielauflösung vollständig, bleibt proportional und wird bei abweichendem
+Seitenverhältnis zentriert beschnitten. Das verhindert die früher sichtbare
+Kompression beziehungsweise schwarze Balken.
+
+`scripts/build-uefi-image.ps1` kann nun zusätzlich `-BootConsole` aufnehmen.
+Das UEFI-Image enthält dadurch neben `SPLASH.NBS` auch `CONSOLE.NBS`. Der
+Makefile-Target `uefi-image` erzeugt `build/bootconsole.nbs` automatisch und
+packt beide Ressourcen in `build/nova-uefi.img`.
+
+Im UEFI-Kernel-Loader wurde das Zeichnen von NBS-Bildern verallgemeinert. Die
+Funktion rendert Splash und Console bildschirmfüllend mit bilinearer
+Abtastung. Der Standardpfad zeichnet zuerst den Splash und meldet:
+
+```text
+UEFI:BOOTSPLASH-READY
+UEFI:BOOT-VIEW-SPLASH-READY
+```
+
+Während des Splash-Fensters schaltet `F3` auf die Boot-Konsole und erzeugt:
+
+```text
+UEFI:BOOT-VIEW-SWITCH-F3
+UEFI:BOOT-CONSOLE-READY
+```
+
+In der Boot-Konsole bringt `ESC` die Ansicht zurück zum Splash:
+
+```text
+UEFI:BOOT-VIEW-SWITCH-ESC
+UEFI:BOOT-VIEW-SPLASH-READY
+```
+
+Wenn der Kernel nicht geladen oder validiert werden kann, wird keine separate
+stille Fehleransicht verwendet; der Loader zeichnet `CONSOLE.NBS` und meldet
+`UEFI:BOOT-CONSOLE-ERROR-VIEW`. Damit ist der sichtbare Fehlerpfad an die neue
+Boot-Konsole gekoppelt.
+
+Geprüft wurden der vollständige UEFI-Image-Build mit beiden NBS-Ressourcen und
+`make test-uefi-display-server`. Der Test bestätigt weiterhin
+`UEFI:BOOTSPLASH-READY`, den Kernel-Handoff, die Ring-3-System-UI und den
+geordneten Shutdown.

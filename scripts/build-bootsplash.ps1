@@ -42,8 +42,21 @@ try {
         $graphics.InterpolationMode=[Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
         $graphics.PixelOffsetMode=[Drawing.Drawing2D.PixelOffsetMode]::HighQuality
         $graphics.SmoothingMode=[Drawing.Drawing2D.SmoothingMode]::HighQuality
+        $sourceAspect=[double]$source.Width/[double]$source.Height
+        $targetAspect=[double]$Width/[double]$Height
+        if($sourceAspect -gt $targetAspect){
+            $cropHeight=$source.Height
+            $cropWidth=[int][Math]::Round($source.Height*$targetAspect)
+            $cropX=[int][Math]::Floor(($source.Width-$cropWidth)/2)
+            $cropY=0
+        } else {
+            $cropWidth=$source.Width
+            $cropHeight=[int][Math]::Round($source.Width/$targetAspect)
+            $cropX=0
+            $cropY=[int][Math]::Floor(($source.Height-$cropHeight)/2)
+        }
         $graphics.DrawImage($source,[Drawing.Rectangle]::new(0,0,$Width,$Height),
-            0,0,$source.Width,$source.Height,[Drawing.GraphicsUnit]::Pixel)
+            $cropX,$cropY,$cropWidth,$cropHeight,[Drawing.GraphicsUnit]::Pixel)
     } finally {$graphics.Dispose()}
 
     $rectangle=[Drawing.Rectangle]::new(0,0,$Width,$Height)
