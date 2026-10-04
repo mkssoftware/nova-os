@@ -2490,28 +2490,30 @@ Boot-Splash als Standardansicht, die Boot-Konsole als Diagnoseansicht und eine
 zustandserhaltende Umschaltung zwischen beiden Ansichten. Als visuelle
 Referenz dienen `bootSplash.png` und `BootKonsole.png`.
 
-Die Referenzbilder wurden als Boot-Assets übernommen:
+Die Referenzbilder wurden in ein dynamisches Boot-Rendering überführt:
 
-- `boot/image/bootsplash.png` enthält den neuen Space-/Earth-Splash mit
-  NovaOS-Mitte und dezenter Fortschrittslinie.
-- `boot/image/bootconsole.png` enthält die neue Glas-/Acrylic-Konsole mit
-  Logbereich, Statuschips und Progressbereich.
+- `boot/image/bootbackground.png` enthält nur den gemeinsamen Space-/Earth-
+  Hintergrund für Splash und Boot-Konsole.
+- Nova-Stern, NovaOS-Schriftzug, Fortschrittsbalken, Console-Panel und
+  Logzeilen werden vom UEFI-Loader live darüber gezeichnet.
 
-`scripts/build-bootsplash.ps1` wandelt beide Bilder in das Nova Boot Splash
+`scripts/build-bootsplash.ps1` wandelt den Hintergrund in das Nova Boot Splash
 Format `NBS1` um. Das Format ist ein kleiner Header plus RGB888-Pixeln und
 CRC32-Prüfsumme. Die Skalierung wurde auf Aspect-Fill geändert: Das Bild füllt
 die Zielauflösung vollständig, bleibt proportional und wird bei abweichendem
 Seitenverhältnis zentriert beschnitten. Das verhindert die früher sichtbare
 Kompression beziehungsweise schwarze Balken.
 
-`scripts/build-uefi-image.ps1` kann nun zusätzlich `-BootConsole` aufnehmen.
-Das UEFI-Image enthält dadurch neben `SPLASH.NBS` auch `CONSOLE.NBS`. Der
-Makefile-Target `uefi-image` erzeugt `build/bootconsole.nbs` automatisch und
-packt beide Ressourcen in `build/nova-uefi.img`.
+`scripts/build-uefi-image.ps1` kann nun `-BootBackground` aufnehmen. Das UEFI-
+Image enthält dadurch `BACKGRND.NBS`. Der Makefile-Target `uefi-image` erzeugt
+`build/bootbackground.nbs` automatisch und packt die Ressource in
+`build/nova-uefi.img`.
 
 Im UEFI-Kernel-Loader wurde das Zeichnen von NBS-Bildern verallgemeinert. Die
-Funktion rendert Splash und Console bildschirmfüllend mit bilinearer
-Abtastung. Der Standardpfad zeichnet zuerst den Splash und meldet:
+Funktion rendert den Hintergrund bildschirmfüllend mit bilinearer Abtastung.
+Darüber zeichnen kleine Primitive den Nova-Stern, Text, Alpha-Rechtecke,
+Rahmen und Fortschrittsbalken. Der Standardpfad zeichnet zuerst den Splash und
+meldet:
 
 ```text
 UEFI:BOOTSPLASH-READY
@@ -2533,11 +2535,12 @@ UEFI:BOOT-VIEW-SPLASH-READY
 ```
 
 Wenn der Kernel nicht geladen oder validiert werden kann, wird keine separate
-stille Fehleransicht verwendet; der Loader zeichnet `CONSOLE.NBS` und meldet
+stille Fehleransicht verwendet; der Loader zeichnet den gemeinsamen Hintergrund
+und darauf die dynamische Boot-Konsole mit ERROR-Eintrag. Danach meldet er
 `UEFI:BOOT-CONSOLE-ERROR-VIEW`. Damit ist der sichtbare Fehlerpfad an die neue
 Boot-Konsole gekoppelt.
 
-Geprüft wurden der vollständige UEFI-Image-Build mit beiden NBS-Ressourcen und
+Geprüft wurden der vollständige UEFI-Image-Build mit `BACKGRND.NBS` und
 `make test-uefi-display-server`. Der Test bestätigt weiterhin
 `UEFI:BOOTSPLASH-READY`, den Kernel-Handoff, die Ring-3-System-UI und den
 geordneten Shutdown.

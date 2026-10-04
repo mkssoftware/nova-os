@@ -1106,22 +1106,23 @@ NOVA: Transaction ABI 1.0, Begin-Prepare-Commit-Verify bereit
 ### Neuer UEFI-Boot-Splash und Boot-Konsole
 
 Der neue NPSPEC-Pfad `docs/NPSPEC/Boot/newBoot` ist eingelesen und der UEFI-
-Bootpfad nutzt nun die dortigen Referenzbilder als verbindliche Boot-Assets.
-`boot/image/bootsplash.png` wurde durch den neuen NovaOS-Splash ersetzt;
-zusätzlich gibt es `boot/image/bootconsole.png` als visuelle Vorlage für die
-Boot-Konsole. Beide Bilder werden verlustfrei in das interne NBS-Format
-gewandelt und als `SPLASH.NBS` sowie `CONSOLE.NBS` in die GPT/FAT32-UEFI-
-Image-Datei geschrieben.
+Bootpfad nutzt nun ein gemeinsames Hintergrundbild als einzige statische
+Bootgrafik. `boot/image/bootbackground.png` wird verlustfrei in das interne
+NBS-Format gewandelt und als `BACKGRND.NBS` in die GPT/FAT32-UEFI-Image-Datei
+geschrieben. Splash und Boot-Konsole werden nicht mehr als fertige Screenshots
+angezeigt, sondern dynamisch auf diesen Hintergrund gezeichnet.
 
-Die NBS-Konvertierung skaliert Bilder jetzt per hochwertigem Aspect-Fill mit
-zentriertem Crop. Dadurch wird der neue Space-/Earth-Hintergrund nicht mehr
-verzerrt oder mit sichtbaren schwarzen Rändern angezeigt. Der UEFI-Loader
-zeichnet die Bootbilder ebenfalls bildschirmfüllend mit bilinearer Abtastung.
+Die NBS-Konvertierung skaliert per hochwertigem Aspect-Fill mit zentriertem
+Crop. Dadurch wird der Space-/Earth-Hintergrund nicht mehr verzerrt oder mit
+sichtbaren schwarzen Rändern angezeigt. Der UEFI-Loader rendert den Hintergrund
+bildschirmfüllend mit bilinearer Abtastung.
 
-Der normale Boot zeigt standardmäßig den Splashscreen. Während des kurzen
-Boot-Splash-Fensters öffnet `F3` die Boot-Konsole; `ESC` wechselt von dort
-zurück zum Splash. Kernel-Lade- oder Validierungsfehler führen nun direkt in
-die Console-Ansicht und setzen den Diagnosemarker
-`UEFI:BOOT-CONSOLE-ERROR-VIEW`. Der bestehende Kernel-Handoff bleibt
-unverändert und der erfolgreiche UEFI-Display-Server-Test erreicht weiterhin
-den Desktop-, Startmenü-, Ribbon- und Shutdown-Pfad.
+Der normale Boot zeigt standardmäßig den Splashscreen mit dynamisch gezeichnetem
+Nova-Stern, NovaOS-Schriftzug und echter Fortschrittsleiste. `F3` öffnet die
+Boot-Konsole; `ESC` wechselt von dort zurück zum Splash. Die Boot-Konsole
+zeichnet ihr Panel, den Fortschrittsbalken und echte Loader-Logzeilen live aus
+dem Bootzustand. Kernel-Lade- oder Validierungsfehler führen direkt in diese
+Console-Ansicht und setzen den Diagnosemarker `UEFI:BOOT-CONSOLE-ERROR-VIEW`.
+Der bestehende Kernel-Handoff bleibt unverändert und der erfolgreiche
+UEFI-Display-Server-Test erreicht weiterhin den Desktop-, Startmenü-, Ribbon-
+und Shutdown-Pfad.

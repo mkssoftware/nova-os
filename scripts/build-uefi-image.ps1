@@ -6,6 +6,7 @@ param([Parameter(Mandatory=$true)][string]$EfiApplication,
       [string]$BackupKernelImage,
       [string]$RecoveryKernelImage,
       [string]$BootSplash,
+      [string]$BootBackground,
       [string]$BootConsole)
 $ErrorActionPreference='Stop'
 $efi=[IO.File]::ReadAllBytes([IO.Path]::GetFullPath($EfiApplication))
@@ -41,6 +42,11 @@ if($BootSplash){
     $splashPath=[IO.Path]::GetFullPath($BootSplash)
     if(!(Test-Path -LiteralPath $splashPath)){throw "Bootsplash fehlt: $splashPath"}
     $payloadFiles+=@{Name='SPLASH';Ext='NBS';Data=[IO.File]::ReadAllBytes($splashPath);Cluster=0}
+}
+if($BootBackground){
+    $backgroundPath=[IO.Path]::GetFullPath($BootBackground)
+    if(!(Test-Path -LiteralPath $backgroundPath)){throw "Boot-Hintergrund fehlt: $backgroundPath"}
+    $payloadFiles+=@{Name='BACKGRND';Ext='NBS';Data=[IO.File]::ReadAllBytes($backgroundPath);Cluster=0}
 }
 if($BootConsole){
     $consolePath=[IO.Path]::GetFullPath($BootConsole)

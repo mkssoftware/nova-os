@@ -65,8 +65,7 @@ static CHAR16 elf_path[]={'\\','K','E','R','N','E','L','.','E','L','F',0};
 static CHAR16 elf64_path[]={'\\','K','E','R','N','E','L','6','4','.','E','L','F',0};
 static CHAR16 backup_nki_path[]={'\\','B','A','C','K','U','P','.','N','K','I',0};
 static CHAR16 recovery_nki_path[]={'\\','R','E','C','O','V','E','R','Y','.','N','K','I',0};
-static CHAR16 bootsplash_path[]={'\\','S','P','L','A','S','H','.','N','B','S',0};
-static CHAR16 bootconsole_path[]={'\\','C','O','N','S','O','L','E','.','N','B','S',0};
+static CHAR16 bootbackground_path[]={'\\','B','A','C','K','G','R','N','D','.','N','B','S',0};
 
 typedef struct {
     uint8_t magic[4];
@@ -199,29 +198,166 @@ static bool show_boot_image(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,CHAR16 *path)
     return valid;
 }
 
+typedef enum {NOVA_BOOT_VIEW_SPLASH,NOVA_BOOT_VIEW_CONSOLE} nova_boot_view_t;
+typedef enum {NOVA_BOOT_LOG_INFO,NOVA_BOOT_LOG_WARN,NOVA_BOOT_LOG_ERROR} nova_boot_log_level_t;
+typedef struct {nova_boot_log_level_t level;const char *message;} nova_boot_log_entry_t;
+static nova_boot_view_t boot_view=NOVA_BOOT_VIEW_SPLASH;
+static uint16_t boot_progress_per_mille=0;
+static nova_boot_log_entry_t boot_log[18];
+static uint8_t boot_log_count=0;
+
+static uint32_t boot_sx(const nova_graphics_context_t *g,uint32_t x){return (uint32_t)((uint64_t)x*g->width/1680u);}
+static uint32_t boot_sy(const nova_graphics_context_t *g,uint32_t y){return (uint32_t)((uint64_t)y*g->height/945u);}
+static uint32_t boot_ss(const nova_graphics_context_t *g,uint32_t v)
+{uint32_t sx=boot_sx(g,v),sy=boot_sy(g,v);return sx<sy?sx:sy;}
+
+static uint32_t boot_read_framebuffer_pixel(const nova_graphics_context_t *graphics,uint32_t x,uint32_t y)
+{
+    uint32_t bytes=(graphics->bits_per_pixel+7u)/8u;
+    uint8_t *row=(uint8_t *)graphics->framebuffer+(uint64_t)y*graphics->pitch;
+    if(bytes==2){
+        uint16_t rgb565=((uint16_t *)row)[x];
+        uint8_t red=(uint8_t)((((rgb565>>11)&31u)*255u+15u)/31u);
+        uint8_t green=(uint8_t)((((rgb565>>5)&63u)*255u+31u)/63u);
+        uint8_t blue=(uint8_t)(((rgb565&31u)*255u+15u)/31u);
+        return 0xff000000u|(uint32_t)red<<16|(uint32_t)green<<8|blue;
+    }
+    if(bytes==3){uint8_t *p=row+x*3u;return 0xff000000u|(uint32_t)p[2]<<16|(uint32_t)p[1]<<8|p[0];}
+    uint32_t native=((uint32_t *)row)[x];
+    if(graphics->pixel_format==NOVA_PIXEL_BGRA8888)return 0xff000000u|((native&0xffu)<<16)|(native&0xff00u)|((native>>16)&0xffu);
+    return 0xff000000u|(native&0x00ffffffu);
+}
+
+static void boot_blend_pixel(const nova_graphics_context_t *graphics,uint32_t x,uint32_t y,uint32_t rgba)
+{
+    if(!graphics||x>=graphics->width||y>=graphics->height)return;
+    uint32_t alpha=(rgba>>24)&0xffu;
+    if(alpha==255u){bootsplash_write_pixel(graphics,x,y,rgba);return;}
+    uint32_t dst=boot_read_framebuffer_pixel(graphics,x,y);
+    uint32_t sr=(rgba>>16)&0xffu,sg=(rgba>>8)&0xffu,sb=rgba&0xffu;
+    uint32_t dr=(dst>>16)&0xffu,dg=(dst>>8)&0xffu,db=dst&0xffu;
+    uint32_t r=(sr*alpha+dr*(255u-alpha)+127u)/255u;
+    uint32_t g=(sg*alpha+dg*(255u-alpha)+127u)/255u;
+    uint32_t b=(sb*alpha+db*(255u-alpha)+127u)/255u;
+    bootsplash_write_pixel(graphics,x,y,0xff000000u|r<<16|g<<8|b);
+}
+
+static void boot_fill_rect(const nova_graphics_context_t *g,uint32_t x,uint32_t y,uint32_t w,uint32_t h,uint32_t rgba)
+{for(uint32_t yy=0;yy<h;++yy)for(uint32_t xx=0;xx<w;++xx)boot_blend_pixel(g,x+xx,y+yy,rgba);}
+
+static void boot_stroke_rect(const nova_graphics_context_t *g,uint32_t x,uint32_t y,uint32_t w,uint32_t h,uint32_t t,uint32_t rgba)
+{boot_fill_rect(g,x,y,w,t,rgba);boot_fill_rect(g,x,y+h-t,w,t,rgba);boot_fill_rect(g,x,y,t,h,rgba);boot_fill_rect(g,x+w-t,y,t,h,rgba);}
+
+static void boot_line(const nova_graphics_context_t *g,int32_t x0,int32_t y0,int32_t x1,int32_t y1,uint32_t rgba,uint32_t thick)
+{
+    int32_t dx=x1>x0?x1-x0:x0-x1,sx=x0<x1?1:-1,dy=y1>y0?y0-y1:y1-y0,sy=y0<y1?1:-1,err=dx+dy;
+    for(;;){
+        for(uint32_t ty=0;ty<thick;++ty)
+            for(uint32_t tx=0;tx<thick;++tx)
+                boot_blend_pixel(g,(uint32_t)(x0+(int32_t)tx),
+                                 (uint32_t)(y0+(int32_t)ty),rgba);
+        if(x0==x1&&y0==y1)break;
+        int32_t e2=2*err;
+        if(e2>=dy){err+=dy;x0+=sx;}
+        if(e2<=dx){err+=dx;y0+=sy;}
+    }
+}
+
+static const uint8_t *boot_glyph(char c)
+{
+    static const uint8_t sp[7]={0,0,0,0,0,0,0},q[7]={14,17,1,2,4,0,4};
+    static const uint8_t a[7]={14,17,17,31,17,17,17},b[7]={30,17,17,30,17,17,30},c_[7]={14,17,16,16,16,17,14},d[7]={30,17,17,17,17,17,30};
+    static const uint8_t e[7]={31,16,16,30,16,16,31},f[7]={31,16,16,30,16,16,16},g[7]={14,17,16,23,17,17,15},h[7]={17,17,17,31,17,17,17};
+    static const uint8_t i[7]={14,4,4,4,4,4,14},j[7]={1,1,1,1,17,17,14},k[7]={17,18,20,24,20,18,17},l[7]={16,16,16,16,16,16,31};
+    static const uint8_t m[7]={17,27,21,21,17,17,17},n[7]={17,25,21,19,17,17,17},o[7]={14,17,17,17,17,17,14},p[7]={30,17,17,30,16,16,16};
+    static const uint8_t qg[7]={14,17,17,17,21,18,13},r[7]={30,17,17,30,20,18,17},s[7]={15,16,16,14,1,1,30},t[7]={31,4,4,4,4,4,4};
+    static const uint8_t u[7]={17,17,17,17,17,17,14},v[7]={17,17,17,17,17,10,4},w[7]={17,17,17,21,21,21,10},x[7]={17,17,10,4,10,17,17};
+    static const uint8_t y[7]={17,17,10,4,4,4,4},z[7]={31,1,2,4,8,16,31};
+    static const uint8_t n0[7]={14,17,19,21,25,17,14},n1[7]={4,12,4,4,4,4,14},n2[7]={14,17,1,2,4,8,31},n3[7]={30,1,1,14,1,1,30};
+    static const uint8_t n4[7]={2,6,10,18,31,2,2},n5[7]={31,16,30,1,1,17,14},n6[7]={6,8,16,30,17,17,14},n7[7]={31,1,2,4,8,8,8};
+    static const uint8_t n8[7]={14,17,17,14,17,17,14},n9[7]={14,17,17,15,1,2,12},colon[7]={0,4,4,0,4,4,0},dash[7]={0,0,0,31,0,0,0};
+    static const uint8_t dot[7]={0,0,0,0,0,12,12},slash[7]={1,2,2,4,8,8,16},bar[7]={4,4,4,4,4,4,4};
+    if(c>='a'&&c<='z')c=(char)(c-'a'+'A');
+    if(c>='A'&&c<='Z'){const uint8_t *letters[]={a,b,c_,d,e,f,g,h,i,j,k,l,m,n,o,p,qg,r,s,t,u,v,w,x,y,z};return letters[c-'A'];}
+    if(c>='0'&&c<='9'){const uint8_t *digits[]={n0,n1,n2,n3,n4,n5,n6,n7,n8,n9};return digits[c-'0'];}
+    switch(c){case ' ':return sp;case ':':return colon;case '-':return dash;case '.':return dot;case '/':return slash;case '|':return bar;default:return q;}
+}
+
+static void boot_draw_text(const nova_graphics_context_t *g,uint32_t x,uint32_t y,const char *text,uint32_t rgba,uint32_t scale)
+{if(!scale)scale=1;for(const char *p=text;*p;++p){const uint8_t *rows=boot_glyph(*p);for(uint32_t row=0;row<7;++row)for(uint32_t col=0;col<5;++col)if(rows[row]&(1u<<(4u-col)))boot_fill_rect(g,x+col*scale,y+row*scale,scale,scale,rgba);x+=6u*scale;}}
+
+static void boot_log_add(nova_boot_log_level_t level,const char *message)
+{if(boot_log_count<sizeof(boot_log)/sizeof(boot_log[0])){boot_log[boot_log_count].level=level;boot_log[boot_log_count].message=message;++boot_log_count;}else{for(uint8_t i=1;i<boot_log_count;++i)boot_log[i-1]=boot_log[i];boot_log[boot_log_count-1].level=level;boot_log[boot_log_count-1].message=message;}}
+static void boot_set_progress(uint16_t per_mille){if(per_mille>boot_progress_per_mille)boot_progress_per_mille=per_mille>1000u?1000u:per_mille;}
+static bool boot_draw_background(EFI_HANDLE image,EFI_SYSTEM_TABLE *st){return show_boot_image(image,st,bootbackground_path);}
+
+static void boot_draw_nova_mark(const nova_graphics_context_t *g,uint32_t cx,uint32_t cy,uint32_t size)
+{
+    uint32_t blue=0xff35a9ffu,cyan=0xff65d7ffu,white=0xffeaf7ffu,th=boot_ss(g,3);
+    boot_line(g,(int32_t)cx,(int32_t)(cy-size/2),(int32_t)(cx+size/7),(int32_t)(cy-size/8),cyan,th);
+    boot_line(g,(int32_t)(cx+size/7),(int32_t)(cy-size/8),(int32_t)(cx+size/2),(int32_t)cy,blue,th);
+    boot_line(g,(int32_t)cx,(int32_t)(cy-size/2),(int32_t)(cx-size/7),(int32_t)(cy-size/8),cyan,th);
+    boot_line(g,(int32_t)(cx-size/7),(int32_t)(cy-size/8),(int32_t)(cx-size/2),(int32_t)cy,blue,th);
+    boot_line(g,(int32_t)(cx-size/2),(int32_t)cy,(int32_t)(cx-size/8),(int32_t)(cy+size/8),blue,th);
+    boot_line(g,(int32_t)(cx-size/8),(int32_t)(cy+size/8),(int32_t)cx,(int32_t)(cy+size/2),white,th);
+    boot_line(g,(int32_t)cx,(int32_t)(cy+size/2),(int32_t)(cx+size/8),(int32_t)(cy+size/8),white,th);
+    boot_line(g,(int32_t)(cx+size/8),(int32_t)(cy+size/8),(int32_t)(cx+size/2),(int32_t)cy,blue,th);
+}
+
+static void boot_draw_progress(const nova_graphics_context_t *g,uint32_t x,uint32_t y,uint32_t w,uint32_t h)
+{
+    uint32_t inset=boot_ss(g,2);boot_fill_rect(g,x,y,w,h,0x66030a1cu);boot_stroke_rect(g,x,y,w,h,boot_ss(g,1),0xaa2d9cffu);
+    uint32_t fill=(uint32_t)((uint64_t)(w-inset*2u)*boot_progress_per_mille/1000u);
+    if(fill)boot_fill_rect(g,x+inset,y+inset,fill,h-inset*2u,0xff2ba8ffu);
+}
+
+static bool boot_render_splash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
+{
+    if(!boot_draw_background(image,st))return false;
+    const nova_graphics_context_t *g=nova_graphics_context();
+    if(!g||!g->initialized)return false;
+    uint32_t cx=boot_sx(g,840),cy=boot_sy(g,390),mark=boot_ss(g,170);
+    boot_draw_nova_mark(g,cx,cy,mark);boot_draw_text(g,boot_sx(g,724),boot_sy(g,496),"NovaOS",0xffdff7ffu,boot_ss(g,8));
+    boot_draw_progress(g,boot_sx(g,560),boot_sy(g,596),boot_sx(g,560),boot_sy(g,8));return true;
+}
+
+static bool boot_render_console(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
+{
+    if(!boot_draw_background(image,st))return false;
+    const nova_graphics_context_t *g=nova_graphics_context();
+    if(!g||!g->initialized)return false;
+    uint32_t x=boot_sx(g,180),y=boot_sy(g,110),w=boot_sx(g,1320),h=boot_sy(g,700);boot_fill_rect(g,x,y,w,h,0xdd030915u);boot_stroke_rect(g,x,y,w,h,boot_ss(g,2),0xaa2c98ffu);
+    boot_draw_text(g,x+boot_ss(g,38),y+boot_ss(g,34),"NovaOS Boot Console",0xffeaf7ffu,boot_ss(g,5));boot_draw_text(g,x+boot_ss(g,40),y+boot_ss(g,88),"System Initialization and Diagnostics",0xff8aa6c4u,boot_ss(g,3));
+    uint32_t log_y=y+boot_ss(g,155),line_h=boot_ss(g,34);
+    for(uint8_t index=0;index<boot_log_count;++index){uint32_t color=boot_log[index].level==NOVA_BOOT_LOG_ERROR?0xffff4b7du:boot_log[index].level==NOVA_BOOT_LOG_WARN?0xffffb84du:0xff5fe38au;
+        boot_draw_text(g,x+boot_ss(g,44),log_y+index*line_h,boot_log[index].level==NOVA_BOOT_LOG_ERROR?"ERROR":boot_log[index].level==NOVA_BOOT_LOG_WARN?"WARN":"INFO",color,boot_ss(g,3));
+        boot_draw_text(g,x+boot_ss(g,185),log_y+index*line_h,boot_log[index].message,0xffd7e4f2u,boot_ss(g,3));}
+    boot_draw_progress(g,x+boot_ss(g,44),y+h-boot_ss(g,80),w-boot_ss(g,88),boot_ss(g,10));boot_draw_text(g,x+boot_ss(g,44),y+h-boot_ss(g,48),"F3 Console | ESC Splash",0xff88a6c8u,boot_ss(g,3));return true;
+}
+
 static bool show_bootsplash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
-{return show_boot_image(image,st,bootsplash_path);}
+{boot_view=NOVA_BOOT_VIEW_SPLASH;return boot_render_splash(image,st);}
 
 static bool show_bootconsole(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
-{return show_boot_image(image,st,bootconsole_path);}
+{boot_view=NOVA_BOOT_VIEW_CONSOLE;return boot_render_console(image,st);}
+
+static void boot_refresh_if_console(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
+{if(boot_view==NOVA_BOOT_VIEW_CONSOLE)(void)boot_render_console(image,st);}
 
 static void boot_view_switch_window(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,unsigned polls)
 {
     if(!st||!st->BootServices||!st->ConIn)return;
-    bool console=false;
     for(unsigned index=0;index<polls;++index){
         EFI_INPUT_KEY key;bytes_zero(&key,sizeof(key));
         EFI_STATUS status=st->ConIn->ReadKeyStroke(st->ConIn,&key);
         if(!EFI_ERROR(status)){
-            if(!console&&key.ScanCode==13u){
+            if(boot_view!=NOVA_BOOT_VIEW_CONSOLE&&key.ScanCode==13u){
                 if(show_bootconsole(image,st)){
-                    console=true;
                     nova_debug_string("UEFI:BOOT-VIEW-SWITCH-F3\n");
                     nova_debug_string("UEFI:BOOT-CONSOLE-READY\n");
                 }
-            }else if(console&&(key.ScanCode==23u||key.UnicodeChar==27u)){
+            }else if(boot_view==NOVA_BOOT_VIEW_CONSOLE&&(key.ScanCode==23u||key.UnicodeChar==27u)){
                 if(show_bootsplash(image,st)){
-                    console=false;
                     nova_debug_string("UEFI:BOOT-VIEW-SWITCH-ESC\n");
                     nova_debug_string("UEFI:BOOT-VIEW-SPLASH-READY\n");
                 }
@@ -547,6 +683,9 @@ static UINTN build_bib(const EFI_SYSTEM_TABLE *st,const VOID *map,UINTN map_size
 static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool recovery_only)
 {
     (void)uefi_firmware_refresh();
+    boot_view=NOVA_BOOT_VIEW_SPLASH;boot_progress_per_mille=0;boot_log_count=0;
+    boot_log_add(NOVA_BOOT_LOG_INFO,"UEFI BOOT LOADER STARTED");
+    boot_set_progress(80);
     uint8_t *file=0;UINTN size=0;bool nki_container=true;
     bool metadata_recovery=uefi_boot_control_requires_recovery();
     bool recovery_mode=recovery_only||metadata_recovery;
@@ -578,6 +717,8 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     if(!loaded&&recovery_mode){
         if(file)st->BootServices->FreePool(file);
         nova_debug_string(EFI_ERROR(status)?"UEFI:RECOVERY-KERNEL-FILE-ERROR\n":"UEFI:KERNEL-VALIDATION-ERROR\n");
+        boot_log_add(NOVA_BOOT_LOG_ERROR,EFI_ERROR(status)?"RECOVERY KERNEL FILE NOT READABLE":"RECOVERY KERNEL VALIDATION FAILED");
+        boot_set_progress(1000);
         if(show_bootconsole(image_handle,st))nova_debug_string("UEFI:BOOT-CONSOLE-ERROR-VIEW\n");
         return 1;
     }
@@ -611,6 +752,8 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     if(!loaded){
         if(file)st->BootServices->FreePool(file);
         nova_debug_string("UEFI:KERNEL-VALIDATION-ERROR\n");
+        boot_log_add(NOVA_BOOT_LOG_ERROR,"NO VALID PRIMARY BACKUP OR RECOVERY KERNEL");
+        boot_set_progress(1000);
         if(show_bootconsole(image_handle,st))nova_debug_string("UEFI:BOOT-CONSOLE-ERROR-VIEW\n");
         return 1;
     }
@@ -641,14 +784,23 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     else nova_debug_string(kernel_format==NOVA_KERNEL_FORMAT_ELF32?"UEFI:ELF32-DIRECT-VALIDATED\n":"UEFI:ELF64-DIRECT-VALIDATED\n");
     nova_debug_string(nki_container?"UEFI:KERNEL-INTEGRITY-VERIFIED\n":"UEFI:KERNEL-STRUCTURE-VALIDATED\n");
     nova_debug_string("UEFI:KERNEL-SIGNATURE-NOT-PRESENT\n");
+    boot_log_add(NOVA_BOOT_LOG_INFO,nki_container?"NKI KERNEL IMAGE VALIDATED":"ELF KERNEL IMAGE VALIDATED");
+    boot_log_add(NOVA_BOOT_LOG_WARN,"KERNEL SIGNATURE NOT PRESENT");
+    boot_set_progress(450);
     if(show_bootsplash(image_handle,st)){
         nova_debug_string("UEFI:BOOTSPLASH-READY\n");
         nova_debug_string("UEFI:BOOT-VIEW-SPLASH-READY\n");
         boot_view_switch_window(image_handle,st,24);
     }
     else nova_debug_string("UEFI:BOOTSPLASH-ERROR\n");
-    if(uefi_runtime_bridge_prepare(st))nova_debug_string("UEFI:FIRMWARE-RUNTIME-BRIDGE-READY\n");
-    else nova_debug_string("UEFI:FIRMWARE-RUNTIME-BRIDGE-UNAVAILABLE\n");
+    if(uefi_runtime_bridge_prepare(st)){
+        nova_debug_string("UEFI:FIRMWARE-RUNTIME-BRIDGE-READY\n");
+        boot_log_add(NOVA_BOOT_LOG_INFO,"FIRMWARE RUNTIME BRIDGE READY");
+    }else{
+        nova_debug_string("UEFI:FIRMWARE-RUNTIME-BRIDGE-UNAVAILABLE\n");
+        boot_log_add(NOVA_BOOT_LOG_WARN,"FIRMWARE RUNTIME BRIDGE UNAVAILABLE");
+    }
+    boot_set_progress(620);boot_refresh_if_console(image_handle,st);
     UINTN map_capacity=0,map_size=0,map_key=0,descriptor_size=0;uint32_t descriptor_version=0;VOID *map=0;
     efi_exit_boot_services_fn exit_bs=(efi_exit_boot_services_fn)st->BootServices->ExitBootServices;
     for(unsigned attempt=0;attempt<3;++attempt){
@@ -661,11 +813,16 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
                       recovery_mode?NOVA_BOOT_MODE_RECOVERY:NOVA_BOOT_MODE_NORMAL,boot_flags,selected_generation,
                       fallback_level)){nova_debug_string("UEFI:BIB-ERROR\n");return 1;}
         nova_debug_string("UEFI:NBHP-BIB-READY\n");
+        boot_log_add(NOVA_BOOT_LOG_INFO,"NBHP BIB HANDOFF BLOCK READY");
+        boot_set_progress(820);boot_refresh_if_console(image_handle,st);
         status=exit_bs(image_handle,map_key);
         if(!EFI_ERROR(status))break;
         nova_debug_string("UEFI:EXIT-BOOT-SERVICES-RETRY\n");
     }
     if(EFI_ERROR(status)){nova_debug_string("UEFI:EXIT-BOOT-SERVICES-ERROR\n");return status;}
+    boot_log_add(NOVA_BOOT_LOG_INFO,"EXIT BOOT SERVICES READY");
+    boot_log_add(NOVA_BOOT_LOG_INFO,"HANDOFF TO KERNEL");
+    boot_set_progress(950);boot_refresh_if_console(image_handle,st);
     nova_debug_string("UEFI:EXIT-BOOT-SERVICES-READY\n");nova_debug_string("UEFI:KERNEL-HANDOFF-READY\n");
     if(kernel_format==NOVA_KERNEL_FORMAT_ELF64)uefi_enter_kernel64(entry,(uint32_t)BIB_ADDRESS,stack_top);
     else uefi_enter_kernel32(entry,(uint32_t)BIB_ADDRESS,stack_top);
