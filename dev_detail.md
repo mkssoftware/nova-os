@@ -2494,8 +2494,12 @@ Die Referenzbilder wurden in ein dynamisches Boot-Rendering überführt:
 
 - `boot/image/bootbackground.png` enthält nur den gemeinsamen Space-/Earth-
   Hintergrund für Splash und Boot-Konsole.
-- Nova-Stern, NovaOS-Schriftzug, Fortschrittsbalken, Console-Panel und
-  Logzeilen werden vom UEFI-Loader live darüber gezeichnet.
+- `boot/image/bootlogo.png` enthält das neue Logo für den normalen Splash.
+  Es wird als `LOGO.NBS` eingebettet, proportional in seine Zielbox eingepasst
+  und mit dem Hintergrund im Mischmodus Screen/Bildschirm verrechnet. Schwarze
+  Pixel verändern den Hintergrund dadurch nicht sichtbar.
+- Fortschrittsbalken, Console-Panel und Logzeilen werden vom UEFI-Loader live
+  darüber gezeichnet.
 
 `scripts/build-bootsplash.ps1` wandelt den Hintergrund in das Nova Boot Splash
 Format `NBS1` um. Das Format ist ein kleiner Header plus RGB888-Pixeln und
@@ -2504,16 +2508,18 @@ die Zielauflösung vollständig, bleibt proportional und wird bei abweichendem
 Seitenverhältnis zentriert beschnitten. Das verhindert die früher sichtbare
 Kompression beziehungsweise schwarze Balken.
 
-`scripts/build-uefi-image.ps1` kann nun `-BootBackground` aufnehmen. Das UEFI-
-Image enthält dadurch `BACKGRND.NBS`. Der Makefile-Target `uefi-image` erzeugt
-`build/bootbackground.nbs` automatisch und packt die Ressource in
+`scripts/build-uefi-image.ps1` kann nun `-BootBackground` und `-BootLogo`
+aufnehmen. Das UEFI-Image enthält dadurch `BACKGRND.NBS` und `LOGO.NBS`. Der
+Makefile-Target `uefi-image` erzeugt `build/bootbackground.nbs` sowie
+`build/bootlogo.nbs` automatisch und packt beide Ressourcen in
 `build/nova-uefi.img`.
 
 Im UEFI-Kernel-Loader wurde das Zeichnen von NBS-Bildern verallgemeinert. Die
 Funktion rendert den Hintergrund bildschirmfüllend mit bilinearer Abtastung.
-Darüber zeichnen kleine Primitive den Nova-Stern, Text, Alpha-Rechtecke,
-Rahmen und Fortschrittsbalken. Der Standardpfad zeichnet zuerst den Splash und
-meldet:
+Das Logo wird separat skaliert, bilinear abgetastet, seitenverhältnistreu in
+die Zielbox eingepasst und per Screen-Blending über den Hintergrund gelegt.
+Darüber hinaus zeichnen kleine Primitive Alpha-Rechtecke, Rahmen und
+Fortschrittsbalken. Der Standardpfad zeichnet zuerst den Splash und meldet:
 
 ```text
 UEFI:BOOTSPLASH-READY
@@ -2541,6 +2547,6 @@ und darauf die dynamische Boot-Konsole mit ERROR-Eintrag. Danach meldet er
 Boot-Konsole gekoppelt.
 
 Geprüft wurden der vollständige UEFI-Image-Build mit `BACKGRND.NBS` und
-`make test-uefi-display-server`. Der Test bestätigt weiterhin
+`LOGO.NBS` sowie `make test-uefi-display-server`. Der Test bestätigt weiterhin
 `UEFI:BOOTSPLASH-READY`, den Kernel-Handoff, die Ring-3-System-UI und den
 geordneten Shutdown.

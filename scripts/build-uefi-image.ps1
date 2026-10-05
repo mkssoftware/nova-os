@@ -5,9 +5,8 @@ param([Parameter(Mandatory=$true)][string]$EfiApplication,
       [string]$KernelElf64,
       [string]$BackupKernelImage,
       [string]$RecoveryKernelImage,
-      [string]$BootSplash,
       [string]$BootBackground,
-      [string]$BootConsole)
+      [string]$BootLogo)
 $ErrorActionPreference='Stop'
 $efi=[IO.File]::ReadAllBytes([IO.Path]::GetFullPath($EfiApplication))
 $payloadFiles=@(
@@ -38,20 +37,15 @@ if($RecoveryKernelImage){
     if(!(Test-Path -LiteralPath $recoveryPath)){throw "Recovery-NKI fehlt: $recoveryPath"}
     $payloadFiles+=@{Name='RECOVERY';Ext='NKI';Data=[IO.File]::ReadAllBytes($recoveryPath);Cluster=0}
 }
-if($BootSplash){
-    $splashPath=[IO.Path]::GetFullPath($BootSplash)
-    if(!(Test-Path -LiteralPath $splashPath)){throw "Bootsplash fehlt: $splashPath"}
-    $payloadFiles+=@{Name='SPLASH';Ext='NBS';Data=[IO.File]::ReadAllBytes($splashPath);Cluster=0}
-}
 if($BootBackground){
     $backgroundPath=[IO.Path]::GetFullPath($BootBackground)
     if(!(Test-Path -LiteralPath $backgroundPath)){throw "Boot-Hintergrund fehlt: $backgroundPath"}
     $payloadFiles+=@{Name='BACKGRND';Ext='NBS';Data=[IO.File]::ReadAllBytes($backgroundPath);Cluster=0}
 }
-if($BootConsole){
-    $consolePath=[IO.Path]::GetFullPath($BootConsole)
-    if(!(Test-Path -LiteralPath $consolePath)){throw "Bootkonsole fehlt: $consolePath"}
-    $payloadFiles+=@{Name='CONSOLE';Ext='NBS';Data=[IO.File]::ReadAllBytes($consolePath);Cluster=0}
+if($BootLogo){
+    $logoPath=[IO.Path]::GetFullPath($BootLogo)
+    if(!(Test-Path -LiteralPath $logoPath)){throw "Boot-Logo fehlt: $logoPath"}
+    $payloadFiles+=@{Name='LOGO';Ext='NBS';Data=[IO.File]::ReadAllBytes($logoPath);Cluster=0}
 }
 $ss=512;$total=131072L;$partFirst=2048L;$partLast=$total-34;$partSectors=$partLast-$partFirst+1
 $image=[byte[]]::new($total*$ss)

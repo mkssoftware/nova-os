@@ -1117,8 +1117,10 @@ Crop. Dadurch wird der Space-/Earth-Hintergrund nicht mehr verzerrt oder mit
 sichtbaren schwarzen Rändern angezeigt. Der UEFI-Loader rendert den Hintergrund
 bildschirmfüllend mit bilinearer Abtastung.
 
-Der normale Boot zeigt standardmäßig den Splashscreen mit dynamisch gezeichnetem
-Nova-Stern, NovaOS-Schriftzug und echter Fortschrittsleiste. `F3` öffnet die
+Der normale Boot zeigt standardmäßig den Splashscreen mit dem neuen Logo-Asset
+`LOGO.NBS`. Schwarze Pixel des Logos werden beim Zeichnen ausgeblendet, sodass
+nur Stern, Glow und NovaOS-Schriftzug über dem Hintergrund sichtbar bleiben.
+Darunter wird die echte Fortschrittsleiste gezeichnet. `F3` öffnet die
 Boot-Konsole; `ESC` wechselt von dort zurück zum Splash. Die Boot-Konsole
 zeichnet ihr Panel, den Fortschrittsbalken und echte Loader-Logzeilen live aus
 dem Bootzustand. Kernel-Lade- oder Validierungsfehler führen direkt in diese

@@ -37,6 +37,7 @@ UEFI_DIR := $(BUILD_DIR)/uefi
 UEFI_APP := $(UEFI_DIR)/EFI/BOOT/BOOTX64.EFI
 UEFI_FIRMWARE := $(UEFI_DIR)/edk2-x86_64.fd
 BOOT_BACKGROUND := $(BUILD_DIR)/bootbackground.nbs
+BOOT_LOGO := $(BUILD_DIR)/bootlogo.nbs
 UEFI_DEBUG_LOG := $(BUILD_DIR)/qemu-uefi-debug.log
 UEFI_INPUT_DEBUG_LOG := $(BUILD_DIR)/qemu-uefi-input-debug.log
 UEFI_POWER_DEBUG_LOG := $(BUILD_DIR)/qemu-uefi-power-debug.log
@@ -327,12 +328,17 @@ $(BOOT_BACKGROUND): boot/image/bootbackground.png scripts/build-bootsplash.ps1 |
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-bootsplash.ps1 \
 		-InputFile boot/image/bootbackground.png -OutputFile $(BOOT_BACKGROUND)
 
-uefi-image: uefi $(KERNEL_IMAGE) $(BACKUP_KERNEL_IMAGE) $(RECOVERY_KERNEL_IMAGE) $(BOOT_BACKGROUND)
+$(BOOT_LOGO): boot/image/bootlogo.png scripts/build-bootsplash.ps1 | $(BUILD_DIR)
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-bootsplash.ps1 \
+		-InputFile boot/image/bootlogo.png -OutputFile $(BOOT_LOGO) -Width 720 -Height 720
+
+uefi-image: uefi $(KERNEL_IMAGE) $(BACKUP_KERNEL_IMAGE) $(RECOVERY_KERNEL_IMAGE) $(BOOT_BACKGROUND) $(BOOT_LOGO)
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-uefi-image.ps1 \
 		-EfiApplication $(UEFI_APP) -KernelImage $(KERNEL_IMAGE) -KernelElf $(KERNEL_ELF) \
 		-BackupKernelImage $(BACKUP_KERNEL_IMAGE) \
 		-RecoveryKernelImage $(RECOVERY_KERNEL_IMAGE) \
 		-BootBackground $(BOOT_BACKGROUND) \
+		-BootLogo $(BOOT_LOGO) \
 		-OutputImage build/nova-uefi.img
 
 test-uefi-kernel-validation: uefi $(KERNEL_IMAGE) $(KERNEL_ELF) $(ELF64_TEST)
