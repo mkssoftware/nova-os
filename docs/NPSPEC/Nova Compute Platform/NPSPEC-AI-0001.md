@@ -1,5 +1,4 @@
-    # NPSPEC-AI-0001
-# AI Compute Runtime
+# NPSPEC-AI-0001 – AI Compute Runtime
 
 | Feld | Wert |
 |------|------|

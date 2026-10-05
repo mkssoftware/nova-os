@@ -2,7 +2,15 @@
 
 ## Status
 
-Angenommen
+Ersetzt
+
+## Ersetzt durch
+
+- `NPSPEC-NAMESPACE-OVERLAY-0002`
+
+## Hinweis
+
+Diese Fassung bleibt als historische Grundlage erhalten. Maßgeblich für Implementierung und spätere Spezifikationen ist `NPSPEC-NAMESPACE-OVERLAY-0002`, weil dort OverlayID, Prioritäten, Schreibziele und Authority-Grenzen präzisiert sind.
 
 ## Kategorie
 

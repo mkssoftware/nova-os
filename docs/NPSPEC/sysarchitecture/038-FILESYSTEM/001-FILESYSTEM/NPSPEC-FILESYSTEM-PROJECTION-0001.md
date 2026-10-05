@@ -2,7 +2,15 @@
 
 ## Status
 
-Angenommen
+Ersetzt
+
+## Ersetzt durch
+
+- `NPSPEC-FILESYSTEM-PROJECTION-0002`
+
+## Hinweis
+
+Diese Fassung bleibt als historische Grundlage erhalten. Maßgeblich für Implementierung und spätere Spezifikationen ist `NPSPEC-FILESYSTEM-PROJECTION-0002`, weil dort ProjectionID, Konfliktauflösung, Schreibverhalten, Authority-Trennung und die Beziehung zum globalen Namespace präzisiert sind.
 
 ## Kategorie
 

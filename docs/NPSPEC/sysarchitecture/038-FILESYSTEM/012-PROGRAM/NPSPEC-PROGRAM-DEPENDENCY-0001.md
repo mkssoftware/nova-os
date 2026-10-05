@@ -2,7 +2,15 @@
 
 ## Status
 
-Angenommen
+Ersetzt
+
+## Ersetzt durch
+
+- `NPSPEC-PROGRAM-DEPENDENCY-0002`
+
+## Hinweis
+
+Diese Fassung bleibt als historische Grundlage erhalten. Maßgeblich für Implementierung und spätere Spezifikationen ist `NPSPEC-PROGRAM-DEPENDENCY-0002`, weil dort DependencyID, Versionsbindung, Konfliktfreiheit und reproduzierbare Dependency-Auflösung präzisiert sind.
 
 ## Kategorie
 

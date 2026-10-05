@@ -2,7 +2,15 @@
 
 ## Status
 
-Angenommen
+Ersetzt
+
+## Ersetzt durch
+
+- `NPSPEC-FILESYSTEM-NAMESPACE-0002`
+
+## Hinweis
+
+Diese Fassung bleibt als historische Grundlage erhalten. Maßgeblich für Implementierung und spätere Spezifikationen ist `NPSPEC-FILESYSTEM-NAMESPACE-0002`, weil dort der globale Root-Namespace `/`, die Standardbereiche und die Trennung von Namespace, Volume, ObjectID und Projection präzisiert sind.
 
 ## Kategorie
 

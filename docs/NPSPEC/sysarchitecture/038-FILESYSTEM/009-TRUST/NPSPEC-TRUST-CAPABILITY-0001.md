@@ -1,4 +1,4 @@
-# NPSPEC-TRUST-CAPABILITY-0001 – Nova Capability Trust
+# NPSPEC-TRUST-CAPABILITY-0001 – Nova Capability Provider Trust Policy
 
 ## Status
 

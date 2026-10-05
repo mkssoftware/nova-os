@@ -1,5 +1,4 @@
-### **NPSPEC-BOOTSTAGE2-0001**
-# Nova Boot Stage 2 Framework
+# NPSPEC-BOOTSTAGE2-0001 – Nova Boot Stage 2 Framework
 
 | Feld | Wert |
 |------|------|

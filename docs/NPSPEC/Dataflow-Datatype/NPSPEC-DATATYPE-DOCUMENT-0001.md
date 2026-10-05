@@ -1,4 +1,4 @@
-NPSPEC-DATATYPE-DOCUMENT-0001: Dokument- und Texttypen
+# NPSPEC-DATATYPE-DOCUMENT-0001 – Dokument- und Texttypen
 
 - **Dokumenttyp:** Nova Platform Specification (NPSPEC)
 - **Version:** 1.0

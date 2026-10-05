@@ -1,4 +1,4 @@
-# NPSPEC-PROGRAM-TRUST-0001 – Nova Program Trust
+# NPSPEC-PROGRAM-TRUST-0001 – Nova Program Package Trust Integration
 
 ## Status
 

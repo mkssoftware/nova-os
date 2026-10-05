@@ -1,4 +1,4 @@
-# NPSPEC-CAPABILITY-TRUST-0001 – Nova Capability Trust
+# NPSPEC-CAPABILITY-TRUST-0001 – Nova Capability Trust Integration
 
 ## Status
 
