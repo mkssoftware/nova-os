@@ -2594,8 +2594,125 @@ Der Kernel prüft beim Start:
 Bei Erfolg erscheinen im Bootlog:
 
 ```text
+NOVA: Capability Authority Rechtepruefung bereit
+NOVA: Capability Lifecycle Lookup und Revoke bereit
 NOVA: ObjectID Registry Lookup bereit
 NOVA: Namespace Lookup bereit
+NOVA: Namespace Pfadauflösung bereit
+NOVA: Namespace Introspection bereit
+NOVA: Namespace Enumeration bereit
 NOVA: ObjectID Projection Map bereit
+NOVA: Projection Introspection bereit
 NOVA: Kernel Object Handle ABI bereit
+NOVA: Handle Rechtevalidierung gegen Capabilities bereit
+NOVA: Namespace Pfad zu Handle bereit
 ```
+
+### Capability Authority
+
+Die Capability Authority ist die erste Kernel-interne Rechteentscheidung vor
+dem Erzeugen eines Object-Handles. Sie enthält im frühen Boot feste Einträge
+für System-, Apps- und Boot-Objekte. Ein Handle wird nur geöffnet, wenn eine
+aktive Capability die angeforderten Rechte vollständig abdeckt.
+
+Der Selbsttest prüft dadurch zwei Fälle:
+
+- Lesen auf dem Systemobjekt ist erlaubt.
+- Schreiben auf demselben Objekt wird abgewiesen, weil dafür keine Capability
+  existiert.
+
+### Capability Lifecycle
+
+Capabilities können jetzt über ihre CapabilityID gefunden und gezielt widerrufen
+werden. Ein widerrufener Eintrag bleibt als Datensatz vorhanden, verliert aber
+sein Active-Flag. Lookup und Rechteprüfung ignorieren ihn danach.
+
+Der Kernel-Selbsttest nutzt eine frühe Volumes-Test-Capability:
+
+1. Capability per ID finden.
+2. Leserecht auf das Volumes-Objekt bestätigen.
+3. Capability widerrufen.
+4. Nachweisen, dass Lookup und Rechteprüfung sie nicht mehr akzeptieren.
+
+### Handle-Rechtevalidierung
+
+Ein geöffnetes Handle wird nicht mehr nur beim Erzeugen geprüft. Der Kernel kann
+jetzt ein Handle für eine konkrete Operation erneut validieren:
+
+1. Handle muss aktiv sein.
+2. Handle muss die angeforderten Rechte enthalten.
+3. Für die referenzierte ObjectID muss weiterhin eine aktive Capability mit
+   diesen Rechten existieren.
+
+Dadurch entzieht ein Capability-Revoke auch bereits geöffneten Handles ihre
+Nutzbarkeit. Der Selbsttest öffnet ein Volumes-Handle, validiert es, widerruft
+die Capability und erwartet danach, dass dieselbe Handle-Validierung fehlschlägt.
+
+### Namespace-Pfadauflösung
+
+Der frühe Namespace-Core kann jetzt absolute Bootstrap-Pfade auflösen. In dieser
+ersten Stufe sind bewusst nur Root und ein Segment unter Root erlaubt:
+
+- `/`
+- `/System`
+- `/Benutzer`
+- `/Apps`
+- `/Volumes`
+- `/Boot`
+
+Der Resolver gibt den Namespace-Datensatz zurück. Unbekannte Pfade werden
+abgelehnt. Das reicht für die nächsten Service- und Userspace-Anbindungen, ohne
+schon ein vollständiges VFS vorzutäuschen.
+
+### Namespace-Pfad zu Object-Handle
+
+`semantic_core_handle_open_by_path` verbindet den Namespace-Core mit dem
+Handle- und Capability-Pfad:
+
+1. absoluten Pfad auflösen,
+2. ObjectID aus dem Namespace-Eintrag übernehmen,
+3. Capability-Rechte prüfen,
+4. Kernel-Object-Handle erzeugen.
+
+Der Kernel-Selbsttest öffnet `/System` mit Leserecht, validiert das erzeugte
+Handle und schließt es wieder.
+
+### Namespace-Introspection
+
+`semantic_core_namespace_count_children` zählt direkte Kinder eines Namespace-
+Knotens. Optional kann die Zählung auf Einträge mit bestimmten Flags begrenzt
+werden, zum Beispiel nur benutzersichtbare oder nur System-Namespace-Einträge.
+
+Der Kernel-Selbsttest prüft am Root-Namespace:
+
+- 5 direkte Kinder insgesamt,
+- 3 benutzersichtbare Kinder,
+- 2 System-Kinder.
+
+### Namespace-Enumeration
+
+`semantic_core_namespace_child_at` gibt ein direktes Kind eines Namespace nach
+Ordinal zurück. Wie bei der Zählung kann optional nach Flags gefiltert werden.
+Damit kann ein Dienst später schrittweise Listen aufbauen, ohne die internen
+Namespace-Tabellen direkt zu kennen.
+
+Der Kernel-Selbsttest prüft:
+
+- erstes benutzersichtbares Root-Kind,
+- drittes benutzersichtbares Root-Kind,
+- Out-of-range-Ablehnung,
+- letztes ungefiltertes Root-Kind.
+
+### Projection-Introspection
+
+Die ObjectID-Projektionen können jetzt pro Namespace gezählt und nach Ordinal
+abgerufen werden. Das erlaubt späteren Diensten, die sichtbaren Objektprojektionen
+eines Namespace zu inspizieren, ohne die interne Projection-Tabelle direkt zu
+kennen.
+
+Der Kernel-Selbsttest prüft:
+
+- Anzahl der Projektionen in `System`,
+- Anzahl der Projektionen in Root,
+- erste Projektion in `Apps`,
+- Out-of-range-Ablehnung in `Apps`.

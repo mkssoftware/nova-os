@@ -179,15 +179,31 @@ kernel_entry:
     call serial_write_string
     mov esi, message_capability_registry_ok
     call serial_write_string
+    mov esi, message_capability_authority_ok
+    call serial_write_string
+    mov esi, message_capability_lifecycle_ok
+    call serial_write_string
     mov esi, message_namespace_core_ok
     call serial_write_string
     mov esi, message_object_id_lookup_ok
     call serial_write_string
     mov esi, message_namespace_lookup_ok
     call serial_write_string
+    mov esi, message_namespace_path_ok
+    call serial_write_string
+    mov esi, message_namespace_introspection_ok
+    call serial_write_string
+    mov esi, message_namespace_enumeration_ok
+    call serial_write_string
     mov esi, message_projection_map_ok
     call serial_write_string
+    mov esi, message_projection_introspection_ok
+    call serial_write_string
     mov esi, message_object_handle_ok
+    call serial_write_string
+    mov esi, message_handle_validation_ok
+    call serial_write_string
+    mov esi, message_handle_path_ok
     call serial_write_string
     call state_manager_initialize
     jc panic_state_manager
@@ -21963,16 +21979,32 @@ message_object_id_abi_ok:
     db "NOVA: ObjectID ABI bereit", 13, 10, 0
 message_capability_registry_ok:
     db "NOVA: Capability Registry bereit", 13, 10, 0
+message_capability_authority_ok:
+    db "NOVA: Capability Authority Rechtepruefung bereit", 13, 10, 0
+message_capability_lifecycle_ok:
+    db "NOVA: Capability Lifecycle Lookup und Revoke bereit", 13, 10, 0
 message_namespace_core_ok:
     db "NOVA: Namespace Core bereit: / System Benutzer Apps Volumes Boot", 13, 10, 0
 message_object_id_lookup_ok:
     db "NOVA: ObjectID Registry Lookup bereit", 13, 10, 0
 message_namespace_lookup_ok:
     db "NOVA: Namespace Lookup bereit", 13, 10, 0
+message_namespace_path_ok:
+    db "NOVA: Namespace Pfadauflösung bereit", 13, 10, 0
+message_namespace_introspection_ok:
+    db "NOVA: Namespace Introspection bereit", 13, 10, 0
+message_namespace_enumeration_ok:
+    db "NOVA: Namespace Enumeration bereit", 13, 10, 0
 message_projection_map_ok:
     db "NOVA: ObjectID Projection Map bereit", 13, 10, 0
+message_projection_introspection_ok:
+    db "NOVA: Projection Introspection bereit", 13, 10, 0
 message_object_handle_ok:
     db "NOVA: Kernel Object Handle ABI bereit", 13, 10, 0
+message_handle_validation_ok:
+    db "NOVA: Handle Rechtevalidierung gegen Capabilities bereit", 13, 10, 0
+message_handle_path_ok:
+    db "NOVA: Namespace Pfad zu Handle bereit", 13, 10, 0
 message_semantic_core_error:
     db "NOVA PANIC: Semantic Core nicht initialisierbar", 13, 10, 0
 message_state_manager_ok:

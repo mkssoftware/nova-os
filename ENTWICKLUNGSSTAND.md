@@ -1158,3 +1158,85 @@ Die neue Handle-Schicht trennt erste Kernelreferenzen von rohen ObjectIDs.
 Geschlossene Handles werden als inaktiv markiert und können vom frühen Kernel
 wiederverwendet werden, ohne unbegrenzt neue Slots zu belegen. Der Build wurde
 als UEFI-Image `build/nova-uefi.img` neu erzeugt.
+
+Darauf aufbauend besitzt der frühe Kernel jetzt eine erste statische Capability-
+Authority. Feste Boot-Capabilities erlauben nur definierte Rechte auf die
+System-, Apps- und Boot-Objekte. `semantic_core_handle_open_by_object` prüft die
+angeforderten Rechte vor dem Erzeugen eines Handles. Der Kernel-Selbsttest
+bestätigt erlaubtes Lesen und weist ein nicht gewährtes Schreibrecht ab. Im
+Bootlog erscheint zusätzlich:
+
+```text
+NOVA: Capability Authority Rechtepruefung bereit
+```
+
+Die Capability Authority besitzt nun außerdem Lookup und Revoke für einzelne
+CapabilityIDs. Der Selbsttest legt eine frühe Volumes-Test-Capability an,
+prüft deren Leserecht, entzieht sie wieder und bestätigt danach, dass weder der
+Capability-Lookup noch die Rechteprüfung sie weiterhin akzeptieren. Dadurch ist
+der Rechtepfad nicht nur statisch prüfend, sondern besitzt einen ersten
+Lebenszyklus.
+
+```text
+NOVA: Capability Lifecycle Lookup und Revoke bereit
+```
+
+Handles werden nun auch bei späterer Nutzung erneut validiert. Die neue
+Handle-Rechtevalidierung prüft das aktive Handle, die angeforderten Rechte und
+danach erneut die aktuell aktive Capability. Der Selbsttest öffnet ein Handle
+auf das Volumes-Objekt, validiert es, widerruft anschließend die zugehörige
+Capability und bestätigt, dass dasselbe Handle danach nicht mehr nutzbar ist.
+
+```text
+NOVA: Handle Rechtevalidierung gegen Capabilities bereit
+```
+
+Der Namespace-Core kann jetzt zusätzlich absolute frühe Ein-Segment-Pfade
+auflösen. Unterstützt werden im Bootstrap-Pfad `"/"` sowie die Root-Kinder
+`"/System"`, `"/Benutzer"`, `"/Apps"`, `"/Volumes"` und `"/Boot"`. Der
+Selbsttest prüft Root-, System- und Apps-Auflösung sowie die Ablehnung eines
+nicht vorhandenen Pfads.
+
+```text
+NOVA: Namespace Pfadauflösung bereit
+```
+
+Auf dieser Pfadauflösung baut nun ein erster Pfad-zu-Handle-Pfad auf.
+`semantic_core_handle_open_by_path` löst einen Namespace-Pfad auf, übernimmt die
+ObjectID des Namespace-Eintrags, prüft die Capability-Rechte und erzeugt dann
+ein Kernel-Object-Handle. Der Selbsttest öffnet `/System` mit Leserecht,
+validiert das Handle und schließt es wieder.
+
+```text
+NOVA: Namespace Pfad zu Handle bereit
+```
+
+Der Namespace-Core besitzt nun erste Introspection. Über
+`semantic_core_namespace_count_children` kann der frühe Kernel Kinder eines
+Namespace-Knotens zählen und optional nach Flags filtern. Der Selbsttest prüft
+für Root fünf Kinder, davon drei benutzersichtbare und zwei System-Namespace-
+Einträge.
+
+```text
+NOVA: Namespace Introspection bereit
+```
+
+Die Introspection wurde um Enumeration erweitert.
+`semantic_core_namespace_child_at` liefert einen direkten Kind-Namespace nach
+Ordinal und optionalem Flag-Filter. Der Selbsttest fragt benutzersichtbare
+Root-Kinder ab, prüft einen Out-of-range-Fall und liest außerdem das letzte
+ungefilterte Root-Kind.
+
+```text
+NOVA: Namespace Enumeration bereit
+```
+
+Zusätzlich besitzt die ObjectID-Projection-Map nun erste Introspection.
+`semantic_core_projection_count_by_namespace` zählt Projektionen pro Namespace,
+`semantic_core_projection_at_namespace` liefert eine Projektion nach Ordinal.
+Der Selbsttest prüft System-, Root- und Apps-Projektionen sowie einen
+Out-of-range-Fall.
+
+```text
+NOVA: Projection Introspection bereit
+```
