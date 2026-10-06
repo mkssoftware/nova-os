@@ -1,4 +1,4 @@
-# NPSPEC-CAPABILITY-EXECUTIONCONTRACT-0001 – Nova Capability Execution Contract
+# NPSPEC-FSCAPABILITY-EXECUTIONCONTRACT-0001 – Nova Filesystem Capability Execution Contract Integration
 
 ## Status
 

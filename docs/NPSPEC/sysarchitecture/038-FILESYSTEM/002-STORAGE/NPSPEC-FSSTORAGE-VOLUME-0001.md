@@ -1,4 +1,4 @@
-# NPSPEC-STORAGE-VOLUME-0001 – Nova Storage Volume
+# NPSPEC-FSSTORAGE-VOLUME-0001 – Nova Filesystem Storage Volume Integration
 
 ## Status
 
@@ -182,7 +182,7 @@ DeviceSet
 ## Abhängigkeiten
 
 - `NPSPEC-STORAGE-DEVICE-0001`
-- `NPSPEC-STORAGE-VOLUME-0001` ersetzt bzw. konkretisiert `ADR-STORAGE-0014`
+- `NPSPEC-FSSTORAGE-VOLUME-0001` ersetzt bzw. konkretisiert `ADR-STORAGE-0014`
 - `NPSPEC-STORAGE-ENCRYPTION-0001`
 - `NPSPEC-FILESYSTEM-NAMESPACE-0002`
 - `NPSPEC-FILESYSTEM-OBJECTID-0001`

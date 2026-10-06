@@ -2,7 +2,8 @@
 
 - **Dokumenttyp:** Nova Platform Specification (NPSPEC)
 - **Version:** 1.0
-- **Status:** Verbindlich
+- **Status:** Ersetzt
+- **Ersetzt durch:** `docs/NPSPEC/sysarchitecture/023-CAPABILITY/` als allgemeine Capability-Architektur; filesystem- und packagebezogene Integrationen liegen unter `docs/NPSPEC/sysarchitecture/038-FILESYSTEM/013-CAPABILITY/`.
 - **Kategorie:** Developer Platform
 - **Erstellt:** 2026-07-27
 - **Gültig für:** Gesamte Nova Platform
