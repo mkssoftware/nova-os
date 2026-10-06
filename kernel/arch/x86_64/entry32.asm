@@ -169,6 +169,24 @@ kernel_entry:
     jc panic_ipc
     mov esi, message_semantic_ok
     call serial_write_string
+    call semantic_core_initialize
+    jc panic_semantic_core
+    call semantic_core_self_test
+    jc panic_semantic_core
+    mov esi, message_semantic_core_ok
+    call serial_write_string
+    mov esi, message_object_id_abi_ok
+    call serial_write_string
+    mov esi, message_capability_registry_ok
+    call serial_write_string
+    mov esi, message_namespace_core_ok
+    call serial_write_string
+    mov esi, message_object_id_lookup_ok
+    call serial_write_string
+    mov esi, message_namespace_lookup_ok
+    call serial_write_string
+    mov esi, message_projection_map_ok
+    call serial_write_string
     call state_manager_initialize
     jc panic_state_manager
     call state_manager_self_test
@@ -482,6 +500,12 @@ panic_ipc:
     mov eax, 0x00002005
     mov edx, 5
     mov esi, message_ipc_error
+    jmp kernel_panic
+
+panic_semantic_core:
+    mov eax, 0x00002029
+    mov edx, 0x53454D43             ; "SEMC"
+    mov esi, message_semantic_core_error
     jmp kernel_panic
 
 panic_state_manager:
@@ -3753,6 +3777,7 @@ interrupt_api:
 ; ---------------------------------------------------------------------------
 
 %include "arch/x86_64/semantic32.inc"
+%include "arch/x86_64/semantic_core32.inc"
 %include "arch/x86_64/state32.inc"
 
 IPC_MESSAGE_SIZE   equ 16
@@ -21930,6 +21955,22 @@ message_ipc_ok:
     db "NOVA: IPC ABI 1.0 FIFO bereit", 13, 10, 0
 message_semantic_ok:
     db "NOVA: Semantic Types v1, Registry, Kompatibilitaet und Typed Contracts bereit", 13, 10, 0
+message_semantic_core_ok:
+    db "NOVA: Semantic Core bereit", 13, 10, 0
+message_object_id_abi_ok:
+    db "NOVA: ObjectID ABI bereit", 13, 10, 0
+message_capability_registry_ok:
+    db "NOVA: Capability Registry bereit", 13, 10, 0
+message_namespace_core_ok:
+    db "NOVA: Namespace Core bereit: / System Benutzer Apps Volumes Boot", 13, 10, 0
+message_object_id_lookup_ok:
+    db "NOVA: ObjectID Registry Lookup bereit", 13, 10, 0
+message_namespace_lookup_ok:
+    db "NOVA: Namespace Lookup bereit", 13, 10, 0
+message_projection_map_ok:
+    db "NOVA: ObjectID Projection Map bereit", 13, 10, 0
+message_semantic_core_error:
+    db "NOVA PANIC: Semantic Core nicht initialisierbar", 13, 10, 0
 message_state_manager_ok:
     db "NOVA: Global State ABI 1.0, Versionen und Unknown-State-Pruefung bereit", 13, 10, 0
 message_transaction_manager_ok:
