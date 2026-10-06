@@ -19,6 +19,17 @@ NOVA_REGISTRY_NAME         equ 12
 NOVA_REGISTRY_FLAGS        equ 16
 NOVA_REGISTRY_RESERVED     equ 20
 
+NOVA_OBJECT_CAPACITY       equ 16
+NOVA_OBJECT_RECORD_SIZE    equ 32
+NOVA_OBJECT_ID_HIGH        equ 0
+NOVA_OBJECT_ID_LOW         equ 4
+NOVA_OBJECT_NAMESPACE      equ 8
+NOVA_OBJECT_NAME           equ 12
+NOVA_OBJECT_FLAGS          equ 16
+NOVA_OBJECT_SEM_HIGH       equ 20
+NOVA_OBJECT_SEM_LOW        equ 24
+NOVA_OBJECT_RESERVED       equ 28
+
 NOVA_NAMESPACE_CAPACITY    equ 8
 NOVA_NAMESPACE_RECORD_SIZE equ 32
 NOVA_NAMESPACE_ID_HIGH     equ 0
@@ -74,6 +85,11 @@ NOVA_NS_FLAG_STABLE        equ 1
 NOVA_NS_FLAG_SYSTEM        equ 2
 NOVA_NS_FLAG_USER_VISIBLE  equ 4
 
+NOVA_OBJECT_FLAG_STABLE       equ 1
+NOVA_OBJECT_FLAG_SYSTEM       equ 2
+NOVA_OBJECT_FLAG_USER_VISIBLE equ 4
+NOVA_OBJECT_FLAG_NAMESPACE    equ 8
+
 NOVA_PROJ_FLAG_PRIMARY     equ 1
 NOVA_PROJ_FLAG_STABLE      equ 2
 
@@ -97,6 +113,9 @@ semantic_core_initialize:
     xor eax, eax
     mov ecx, (NOVA_REGISTRY_CAPACITY * NOVA_REGISTRY_RECORD_SIZE) / 4
     rep stosd
+    mov edi, nova_object_records
+    mov ecx, (NOVA_OBJECT_CAPACITY * NOVA_OBJECT_RECORD_SIZE) / 4
+    rep stosd
     mov edi, nova_namespace_records
     mov ecx, (NOVA_NAMESPACE_CAPACITY * NOVA_NAMESPACE_RECORD_SIZE) / 4
     rep stosd
@@ -110,6 +129,7 @@ semantic_core_initialize:
     mov ecx, (NOVA_HANDLE_CAPACITY * NOVA_HANDLE_RECORD_SIZE) / 4
     rep stosd
     mov dword [nova_registry_count], 0
+    mov dword [nova_object_count], 0
     mov dword [nova_namespace_count], 0
     mov dword [nova_projection_count], 0
     mov dword [nova_capability_count], 0
@@ -272,6 +292,55 @@ semantic_core_initialize:
     call semantic_core_projection_add
     jc .bad
 
+    ; Fruehe Filesystem-Object-Registry fuer stabile Namespace-Objekte.
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 1
+    mov ebx, NOVA_NAMESPACE_ROOT
+    mov esi, nova_ns_name_root
+    mov ecx, (NOVA_OBJECT_FLAG_STABLE | NOVA_OBJECT_FLAG_SYSTEM | NOVA_OBJECT_FLAG_NAMESPACE)
+    call semantic_core_object_add
+    jc .bad
+
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 2
+    mov ebx, NOVA_NAMESPACE_SYSTEM
+    mov esi, nova_ns_name_system
+    mov ecx, (NOVA_OBJECT_FLAG_STABLE | NOVA_OBJECT_FLAG_SYSTEM | NOVA_OBJECT_FLAG_NAMESPACE)
+    call semantic_core_object_add
+    jc .bad
+
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 3
+    mov ebx, NOVA_NAMESPACE_BENUTZER
+    mov esi, nova_ns_name_benutzer
+    mov ecx, (NOVA_OBJECT_FLAG_STABLE | NOVA_OBJECT_FLAG_USER_VISIBLE | NOVA_OBJECT_FLAG_NAMESPACE)
+    call semantic_core_object_add
+    jc .bad
+
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 4
+    mov ebx, NOVA_NAMESPACE_APPS
+    mov esi, nova_ns_name_apps
+    mov ecx, (NOVA_OBJECT_FLAG_STABLE | NOVA_OBJECT_FLAG_USER_VISIBLE | NOVA_OBJECT_FLAG_NAMESPACE)
+    call semantic_core_object_add
+    jc .bad
+
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 5
+    mov ebx, NOVA_NAMESPACE_VOLUMES
+    mov esi, nova_ns_name_volumes
+    mov ecx, (NOVA_OBJECT_FLAG_STABLE | NOVA_OBJECT_FLAG_USER_VISIBLE | NOVA_OBJECT_FLAG_NAMESPACE)
+    call semantic_core_object_add
+    jc .bad
+
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 6
+    mov ebx, NOVA_NAMESPACE_BOOT
+    mov esi, nova_ns_name_boot
+    mov ecx, (NOVA_OBJECT_FLAG_STABLE | NOVA_OBJECT_FLAG_SYSTEM | NOVA_OBJECT_FLAG_NAMESPACE)
+    call semantic_core_object_add
+    jc .bad
+
     ; Feste fruehe Kernel-Capabilities fuer Systemdienste.
     mov eax, NOVA_ID_CAPABILITY_HIGH
     mov edx, 1
@@ -378,6 +447,105 @@ semantic_core_registry_add:
     ret
 .bad:
     stc
+    ret
+
+; EAX/EDX=ObjectID, EBX=Namespace slot, ESI=name, ECX=flags.
+semantic_core_object_add:
+    test eax, eax
+    jz .bad
+    test edx, edx
+    jz .bad
+    cmp ebx, [nova_namespace_count]
+    jae .bad
+    test esi, esi
+    jz .bad
+    test ecx, ecx
+    jz .bad
+    mov [nova_object_temp_high], eax
+    mov [nova_object_temp_low], edx
+    mov [nova_object_temp_namespace], ebx
+    mov [nova_object_temp_name], esi
+    mov [nova_object_temp_flags], ecx
+    mov ecx, [nova_object_count]
+    cmp ecx, NOVA_OBJECT_CAPACITY
+    jae .bad
+    imul edi, ecx, NOVA_OBJECT_RECORD_SIZE
+    add edi, nova_object_records
+    mov eax, [nova_object_temp_high]
+    mov [edi + NOVA_OBJECT_ID_HIGH], eax
+    mov eax, [nova_object_temp_low]
+    mov [edi + NOVA_OBJECT_ID_LOW], eax
+    mov eax, [nova_object_temp_namespace]
+    mov [edi + NOVA_OBJECT_NAMESPACE], eax
+    mov eax, [nova_object_temp_name]
+    mov [edi + NOVA_OBJECT_NAME], eax
+    mov eax, [nova_object_temp_flags]
+    mov [edi + NOVA_OBJECT_FLAGS], eax
+    mov dword [edi + NOVA_OBJECT_SEM_HIGH], NOVA_ID_NAMESPACE_HIGH
+    mov eax, [nova_object_temp_low]
+    mov [edi + NOVA_OBJECT_SEM_LOW], eax
+    mov dword [edi + NOVA_OBJECT_RESERVED], 0
+    inc dword [nova_object_count]
+    clc
+    ret
+.bad:
+    stc
+    ret
+
+; EAX/EDX=ObjectID, EDI=object pointer oder CF=1.
+semantic_core_object_lookup:
+    test eax, eax
+    jz .bad
+    test edx, edx
+    jz .bad
+    mov [nova_object_lookup_high], eax
+    mov [nova_object_lookup_low], edx
+    xor esi, esi
+.scan:
+    cmp esi, [nova_object_count]
+    jae .bad
+    imul edi, esi, NOVA_OBJECT_RECORD_SIZE
+    add edi, nova_object_records
+    mov eax, [nova_object_lookup_high]
+    cmp [edi + NOVA_OBJECT_ID_HIGH], eax
+    jne .next
+    mov eax, [nova_object_lookup_low]
+    cmp [edi + NOVA_OBJECT_ID_LOW], eax
+    jne .next
+    clc
+    ret
+.next:
+    inc esi
+    jmp .scan
+.bad:
+    stc
+    ret
+
+; ECX=required flags oder 0, EAX=Anzahl.
+semantic_core_object_count_by_flags:
+    mov [nova_object_count_flags], ecx
+    mov dword [nova_object_count_result], 0
+    xor esi, esi
+.scan:
+    cmp esi, [nova_object_count]
+    jae .done
+    imul edi, esi, NOVA_OBJECT_RECORD_SIZE
+    add edi, nova_object_records
+    mov ecx, [nova_object_count_flags]
+    test ecx, ecx
+    jz .match
+    mov eax, [edi + NOVA_OBJECT_FLAGS]
+    and eax, ecx
+    cmp eax, ecx
+    jne .next
+.match:
+    inc dword [nova_object_count_result]
+.next:
+    inc esi
+    jmp .scan
+.done:
+    mov eax, [nova_object_count_result]
+    clc
     ret
 
 ; EAX/EDX=NamespaceID, EBX=parent slot oder 0xffffffff, ESI=name,
@@ -1006,6 +1174,8 @@ semantic_core_handle_open_by_path:
 semantic_core_self_test:
     cmp dword [nova_registry_count], 5
     jne .bad
+    cmp dword [nova_object_count], 6
+    jne .bad
     cmp dword [nova_namespace_count], 6
     jne .bad
     cmp dword [nova_projection_count], 6
@@ -1026,6 +1196,32 @@ semantic_core_self_test:
     jc .bad
     cmp dword [edi + NOVA_REGISTRY_KIND], NOVA_ID_KIND_CAPABILITY
     jne .bad
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 4
+    call semantic_core_object_lookup
+    jc .bad
+    cmp dword [edi + NOVA_OBJECT_NAMESPACE], NOVA_NAMESPACE_APPS
+    jne .bad
+    test dword [edi + NOVA_OBJECT_FLAGS], NOVA_OBJECT_FLAG_USER_VISIBLE
+    jz .bad
+    cmp dword [edi + NOVA_OBJECT_SEM_HIGH], NOVA_ID_NAMESPACE_HIGH
+    jne .bad
+    cmp dword [edi + NOVA_OBJECT_SEM_LOW], 4
+    jne .bad
+    mov ecx, NOVA_OBJECT_FLAG_SYSTEM
+    call semantic_core_object_count_by_flags
+    jc .bad
+    cmp eax, 3
+    jne .bad
+    mov ecx, NOVA_OBJECT_FLAG_USER_VISIBLE
+    call semantic_core_object_count_by_flags
+    jc .bad
+    cmp eax, 3
+    jne .bad
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 0x7000
+    call semantic_core_object_lookup
+    jnc .bad
     mov eax, NOVA_ID_NAMESPACE_HIGH
     mov edx, 2
     call semantic_core_namespace_lookup
@@ -1262,6 +1458,7 @@ semantic_core_namespace_record:
 
 align 4
 nova_registry_count:          dd 0
+nova_object_count:            dd 0
 nova_namespace_count:         dd 0
 nova_projection_count:        dd 0
 nova_capability_count:        dd 0
@@ -1277,6 +1474,15 @@ nova_registry_temp_high:      dd 0
 nova_registry_temp_low:       dd 0
 nova_registry_temp_kind:      dd 0
 nova_registry_temp_name:      dd 0
+nova_object_temp_high:        dd 0
+nova_object_temp_low:         dd 0
+nova_object_temp_namespace:   dd 0
+nova_object_temp_name:        dd 0
+nova_object_temp_flags:       dd 0
+nova_object_lookup_high:      dd 0
+nova_object_lookup_low:       dd 0
+nova_object_count_flags:      dd 0
+nova_object_count_result:     dd 0
 nova_namespace_temp_high:     dd 0
 nova_namespace_temp_low:      dd 0
 nova_namespace_temp_parent:   dd 0
@@ -1334,6 +1540,8 @@ nova_handle_path_selftest_id:     dd 0
 
 nova_registry_records:
     times NOVA_REGISTRY_CAPACITY * NOVA_REGISTRY_RECORD_SIZE db 0
+nova_object_records:
+    times NOVA_OBJECT_CAPACITY * NOVA_OBJECT_RECORD_SIZE db 0
 nova_namespace_records:
     times NOVA_NAMESPACE_CAPACITY * NOVA_NAMESPACE_RECORD_SIZE db 0
 nova_projection_records:

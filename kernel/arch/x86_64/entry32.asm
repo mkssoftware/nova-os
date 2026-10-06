@@ -177,6 +177,8 @@ kernel_entry:
     call serial_write_string
     mov esi, message_object_id_abi_ok
     call serial_write_string
+    mov esi, message_filesystem_object_registry_ok
+    call serial_write_string
     mov esi, message_capability_registry_ok
     call serial_write_string
     mov esi, message_capability_authority_ok
@@ -21977,6 +21979,8 @@ message_semantic_core_ok:
     db "NOVA: Semantic Core bereit", 13, 10, 0
 message_object_id_abi_ok:
     db "NOVA: ObjectID ABI bereit", 13, 10, 0
+message_filesystem_object_registry_ok:
+    db "NOVA: Filesystem Object Registry bereit", 13, 10, 0
 message_capability_registry_ok:
     db "NOVA: Capability Registry bereit", 13, 10, 0
 message_capability_authority_ok:

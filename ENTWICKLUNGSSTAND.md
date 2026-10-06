@@ -1240,3 +1240,14 @@ Out-of-range-Fall.
 ```text
 NOVA: Projection Introspection bereit
 ```
+
+Nach dem erneuten Einlesen der neuen Filesystem-NPSPECs besitzt der frühe
+Kernel zusätzlich eine erste Filesystem Object Registry. Die sechs
+Bootstrap-Namespace-Objekte `/`, `System`, `Benutzer`, `Apps`, `Volumes` und
+`Boot` werden jetzt als stabile ObjectID-Datensätze mit Namespace-Slot, Name,
+Flags und semantischer Namespace-Zuordnung geführt. Der Selbsttest prüft Lookup,
+System-/UserVisible-Flagzählung und die Ablehnung unbekannter ObjectIDs.
+
+```text
+NOVA: Filesystem Object Registry bereit
+```

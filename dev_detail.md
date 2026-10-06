@@ -2603,6 +2603,7 @@ NOVA: Namespace Introspection bereit
 NOVA: Namespace Enumeration bereit
 NOVA: ObjectID Projection Map bereit
 NOVA: Projection Introspection bereit
+NOVA: Filesystem Object Registry bereit
 NOVA: Kernel Object Handle ABI bereit
 NOVA: Handle Rechtevalidierung gegen Capabilities bereit
 NOVA: Namespace Pfad zu Handle bereit
@@ -2716,3 +2717,17 @@ Der Kernel-Selbsttest prüft:
 - Anzahl der Projektionen in Root,
 - erste Projektion in `Apps`,
 - Out-of-range-Ablehnung in `Apps`.
+
+### Filesystem Object Registry
+
+Die Bootstrap-Namespace-Einträge werden jetzt zusätzlich als echte
+Filesystem-Objekte geführt. Jeder Datensatz enthält:
+
+- ObjectID,
+- Namespace-Slot,
+- stabilen Namen,
+- Flags wie `Stable`, `System`, `UserVisible` und `Namespace`,
+- semantische Zuordnung zum passenden NamespaceID-Datensatz.
+
+Der Kernel-Selbsttest prüft den Lookup von `Apps`, die Flagzählung für System-
+und benutzersichtbare Objekte sowie die Ablehnung einer unbekannten ObjectID.
