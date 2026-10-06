@@ -2550,3 +2550,52 @@ Geprüft wurden der vollständige UEFI-Image-Build mit `BACKGRND.NBS` und
 `LOGO.NBS` sowie `make test-uefi-display-server`. Der Test bestätigt weiterhin
 `UEFI:BOOTSPLASH-READY`, den Kernel-Handoff, die Ring-3-System-UI und den
 geordneten Shutdown.
+
+## 94. Semantic Core Lookup und Kernel-Object-Handles
+
+Der frühe Kernel besitzt jetzt eine kleine, statische Semantic-Core-
+Implementierung. Sie ist bewusst begrenzt, damit sie bereits im frühen
+Bootpfad deterministisch funktioniert.
+
+### ObjectID
+
+Eine ObjectID ist die stabile Identität eines Kernel- oder Systemobjekts. Sie
+ist nicht dasselbe wie ein Benutzer-Handle.
+
+### NamespaceID
+
+Eine NamespaceID beschreibt einen benannten Bereich wie `/`, `System`,
+`Benutzer`, `Apps`, `Volumes` oder `Boot`. Namespaces geben später vor, wo ein
+Objekt sichtbar ist.
+
+### ObjectID-Projektion
+
+Eine Projektion ordnet eine ObjectID einem sichtbaren Namespace-Eintrag zu.
+Dadurch kann derselbe stabile Objektkern kontrolliert in einem Namensraum
+auftauchen, ohne seine Identität zu verlieren.
+
+### Kernel-Object-Handle
+
+Ein Kernel-Object-Handle ist eine temporäre Referenz auf eine ObjectID mit
+Rechten und Generation. Der Kernel kann ein Objekt öffnen, über das Handle
+wiederfinden und das Handle schließen. Geschlossene Handles werden als inaktiv
+markiert und können wiederverwendet werden.
+
+### Selbsttests im Kernelstart
+
+Der Kernel prüft beim Start:
+
+- Registry-Lookup für ObjectID und CapabilityID
+- Namespace-Lookup für `System`
+- Projektion von ObjectID nach Namespace
+- Ablehnung unbekannter ObjectIDs
+- Öffnen, Lookup, Schließen und ungültiges Lookup eines geschlossenen Handles
+
+Bei Erfolg erscheinen im Bootlog:
+
+```text
+NOVA: ObjectID Registry Lookup bereit
+NOVA: Namespace Lookup bereit
+NOVA: ObjectID Projection Map bereit
+NOVA: Kernel Object Handle ABI bereit
+```

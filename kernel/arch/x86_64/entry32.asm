@@ -187,6 +187,8 @@ kernel_entry:
     call serial_write_string
     mov esi, message_projection_map_ok
     call serial_write_string
+    mov esi, message_object_handle_ok
+    call serial_write_string
     call state_manager_initialize
     jc panic_state_manager
     call state_manager_self_test
@@ -21969,6 +21971,8 @@ message_namespace_lookup_ok:
     db "NOVA: Namespace Lookup bereit", 13, 10, 0
 message_projection_map_ok:
     db "NOVA: ObjectID Projection Map bereit", 13, 10, 0
+message_object_handle_ok:
+    db "NOVA: Kernel Object Handle ABI bereit", 13, 10, 0
 message_semantic_core_error:
     db "NOVA PANIC: Semantic Core nicht initialisierbar", 13, 10, 0
 message_state_manager_ok:

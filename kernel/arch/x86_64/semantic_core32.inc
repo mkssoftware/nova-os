@@ -41,6 +41,17 @@ NOVA_PROJECTION_TARGET_HIGH equ 20
 NOVA_PROJECTION_TARGET_LOW  equ 24
 NOVA_PROJECTION_RESERVED    equ 28
 
+NOVA_HANDLE_CAPACITY        equ 16
+NOVA_HANDLE_RECORD_SIZE     equ 32
+NOVA_HANDLE_ID              equ 0
+NOVA_HANDLE_OBJECT_HIGH     equ 4
+NOVA_HANDLE_OBJECT_LOW      equ 8
+NOVA_HANDLE_NAMESPACE       equ 12
+NOVA_HANDLE_RIGHTS          equ 16
+NOVA_HANDLE_FLAGS           equ 20
+NOVA_HANDLE_GENERATION      equ 24
+NOVA_HANDLE_RESERVED        equ 28
+
 NOVA_NAMESPACE_ROOT        equ 0
 NOVA_NAMESPACE_SYSTEM      equ 1
 NOVA_NAMESPACE_BENUTZER    equ 2
@@ -54,6 +65,12 @@ NOVA_NS_FLAG_USER_VISIBLE  equ 4
 
 NOVA_PROJ_FLAG_PRIMARY     equ 1
 NOVA_PROJ_FLAG_STABLE      equ 2
+
+NOVA_HANDLE_FLAG_ACTIVE    equ 1
+NOVA_HANDLE_RIGHT_READ     equ 1
+NOVA_HANDLE_RIGHT_WRITE    equ 2
+NOVA_HANDLE_RIGHT_EXECUTE  equ 4
+NOVA_HANDLE_RIGHT_MANAGE   equ 8
 
 NOVA_ID_OBJECT_HIGH        equ 0x4F424A49 ; "OBJI"
 NOVA_ID_VOLUME_HIGH        equ 0x564F4C49 ; "VOLI"
@@ -72,9 +89,15 @@ semantic_core_initialize:
     mov edi, nova_projection_records
     mov ecx, (NOVA_PROJECTION_CAPACITY * NOVA_PROJECTION_RECORD_SIZE) / 4
     rep stosd
+    mov edi, nova_handle_records
+    mov ecx, (NOVA_HANDLE_CAPACITY * NOVA_HANDLE_RECORD_SIZE) / 4
+    rep stosd
     mov dword [nova_registry_count], 0
     mov dword [nova_namespace_count], 0
     mov dword [nova_projection_count], 0
+    mov dword [nova_handle_count], 0
+    mov dword [nova_handle_next_id], 1
+    mov dword [nova_handle_generation], 1
     mov dword [nova_object_id_counter], 1
     mov dword [nova_volume_id_counter], 1
     mov dword [nova_namespace_id_counter], 1
@@ -450,12 +473,106 @@ semantic_core_projection_lookup_by_object:
     stc
     ret
 
+; EAX/EDX=ObjectID, EBX=rights, EAX=HandleID und EDI=handle pointer oder CF=1.
+semantic_core_handle_open_by_object:
+    test eax, eax
+    jz .bad
+    test edx, edx
+    jz .bad
+    test ebx, ebx
+    jz .bad
+    mov [nova_handle_temp_object_high], eax
+    mov [nova_handle_temp_object_low], edx
+    mov [nova_handle_temp_rights], ebx
+    call semantic_core_projection_lookup_by_object
+    jc .bad
+    mov eax, [edi + NOVA_PROJECTION_NAMESPACE]
+    mov [nova_handle_temp_namespace], eax
+    xor esi, esi
+.reuse_scan:
+    cmp esi, [nova_handle_count]
+    jae .append
+    imul edi, esi, NOVA_HANDLE_RECORD_SIZE
+    add edi, nova_handle_records
+    test dword [edi + NOVA_HANDLE_FLAGS], NOVA_HANDLE_FLAG_ACTIVE
+    jz .fill
+    inc esi
+    jmp .reuse_scan
+.append:
+    mov ecx, [nova_handle_count]
+    cmp ecx, NOVA_HANDLE_CAPACITY
+    jae .bad
+    imul edi, ecx, NOVA_HANDLE_RECORD_SIZE
+    add edi, nova_handle_records
+    inc dword [nova_handle_count]
+.fill:
+    mov eax, [nova_handle_next_id]
+    mov [edi + NOVA_HANDLE_ID], eax
+    mov eax, [nova_handle_temp_object_high]
+    mov [edi + NOVA_HANDLE_OBJECT_HIGH], eax
+    mov eax, [nova_handle_temp_object_low]
+    mov [edi + NOVA_HANDLE_OBJECT_LOW], eax
+    mov eax, [nova_handle_temp_namespace]
+    mov [edi + NOVA_HANDLE_NAMESPACE], eax
+    mov eax, [nova_handle_temp_rights]
+    mov [edi + NOVA_HANDLE_RIGHTS], eax
+    mov dword [edi + NOVA_HANDLE_FLAGS], NOVA_HANDLE_FLAG_ACTIVE
+    mov eax, [nova_handle_generation]
+    mov [edi + NOVA_HANDLE_GENERATION], eax
+    mov dword [edi + NOVA_HANDLE_RESERVED], 0
+    mov eax, [edi + NOVA_HANDLE_ID]
+    inc dword [nova_handle_next_id]
+    inc dword [nova_handle_generation]
+    clc
+    ret
+.bad:
+    stc
+    ret
+
+; EAX=HandleID, EDI=handle pointer oder CF=1.
+semantic_core_handle_lookup:
+    test eax, eax
+    jz .bad
+    mov [nova_handle_lookup_id], eax
+    xor esi, esi
+.scan:
+    cmp esi, [nova_handle_count]
+    jae .bad
+    imul edi, esi, NOVA_HANDLE_RECORD_SIZE
+    add edi, nova_handle_records
+    mov eax, [nova_handle_lookup_id]
+    cmp [edi + NOVA_HANDLE_ID], eax
+    jne .next
+    test dword [edi + NOVA_HANDLE_FLAGS], NOVA_HANDLE_FLAG_ACTIVE
+    jz .bad
+    clc
+    ret
+.next:
+    inc esi
+    jmp .scan
+.bad:
+    stc
+    ret
+
+; EAX=HandleID. Markiert Handle ungueltig oder CF=1.
+semantic_core_handle_close:
+    call semantic_core_handle_lookup
+    jc .bad
+    and dword [edi + NOVA_HANDLE_FLAGS], ~NOVA_HANDLE_FLAG_ACTIVE
+    clc
+    ret
+.bad:
+    stc
+    ret
+
 semantic_core_self_test:
     cmp dword [nova_registry_count], 5
     jne .bad
     cmp dword [nova_namespace_count], 6
     jne .bad
     cmp dword [nova_projection_count], 6
+    jne .bad
+    cmp dword [nova_handle_count], 0
     jne .bad
     mov eax, NOVA_ID_OBJECT_HIGH
     mov edx, 1
@@ -515,6 +632,27 @@ semantic_core_self_test:
     mov edx, 0x7000
     call semantic_core_projection_lookup_by_object
     jnc .bad
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 2
+    mov ebx, NOVA_HANDLE_RIGHT_READ
+    call semantic_core_handle_open_by_object
+    jc .bad
+    mov [nova_handle_selftest_id], eax
+    cmp dword [edi + NOVA_HANDLE_NAMESPACE], NOVA_NAMESPACE_SYSTEM
+    jne .bad
+    test dword [edi + NOVA_HANDLE_RIGHTS], NOVA_HANDLE_RIGHT_READ
+    jz .bad
+    mov eax, [nova_handle_selftest_id]
+    call semantic_core_handle_lookup
+    jc .bad
+    cmp dword [edi + NOVA_HANDLE_OBJECT_LOW], 2
+    jne .bad
+    mov eax, [nova_handle_selftest_id]
+    call semantic_core_handle_close
+    jc .bad
+    mov eax, [nova_handle_selftest_id]
+    call semantic_core_handle_lookup
+    jnc .bad
     clc
     ret
 .bad:
@@ -537,6 +675,9 @@ align 4
 nova_registry_count:          dd 0
 nova_namespace_count:         dd 0
 nova_projection_count:        dd 0
+nova_handle_count:            dd 0
+nova_handle_next_id:          dd 0
+nova_handle_generation:       dd 0
 nova_object_id_counter:       dd 0
 nova_volume_id_counter:       dd 0
 nova_namespace_id_counter:    dd 0
@@ -562,6 +703,12 @@ nova_projection_temp_target_high: dd 0
 nova_projection_temp_target_low:  dd 0
 nova_projection_lookup_high:      dd 0
 nova_projection_lookup_low:       dd 0
+nova_handle_temp_object_high:     dd 0
+nova_handle_temp_object_low:      dd 0
+nova_handle_temp_namespace:       dd 0
+nova_handle_temp_rights:          dd 0
+nova_handle_lookup_id:            dd 0
+nova_handle_selftest_id:          dd 0
 
 nova_registry_records:
     times NOVA_REGISTRY_CAPACITY * NOVA_REGISTRY_RECORD_SIZE db 0
@@ -569,6 +716,8 @@ nova_namespace_records:
     times NOVA_NAMESPACE_CAPACITY * NOVA_NAMESPACE_RECORD_SIZE db 0
 nova_projection_records:
     times NOVA_PROJECTION_CAPACITY * NOVA_PROJECTION_RECORD_SIZE db 0
+nova_handle_records:
+    times NOVA_HANDLE_CAPACITY * NOVA_HANDLE_RECORD_SIZE db 0
 
 nova_registry_name_object:
     db 'ObjectID', 0

@@ -1128,3 +1128,33 @@ Console-Ansicht und setzen den Diagnosemarker `UEFI:BOOT-CONSOLE-ERROR-VIEW`.
 Der bestehende Kernel-Handoff bleibt unverändert und der erfolgreiche
 UEFI-Display-Server-Test erreicht weiterhin den Desktop-, Startmenü-, Ribbon-
 und Shutdown-Pfad.
+
+### Semantic Core: Lookup, Projektionen und Kernel-Handles
+
+Der UEFI-Kernel besitzt jetzt einen ersten statischen Semantic Core für die
+späteren Systemdienste. Neben den bestehenden stabilen ObjectID-, NamespaceID-,
+CapabilityID- und SemanticTypeID-Grundlagen werden Registry-Einträge,
+Namespace-Einträge und ObjectID-Projektionen intern auflösbar.
+
+Der Kernel prüft beim Start:
+
+- Registry-Lookup für ObjectID und CapabilityID
+- Namespace-Lookup für Systemeinträge
+- ObjectID-zu-Namespace-Projektion
+- Ablehnung unbekannter ObjectIDs
+- Öffnen, Auflösen, Schließen und danach ungültiges Lookup eines
+  Kernel-Object-Handles
+
+Zusätzlich gibt der Kernel jetzt sichtbar aus:
+
+```text
+NOVA: ObjectID Registry Lookup bereit
+NOVA: Namespace Lookup bereit
+NOVA: ObjectID Projection Map bereit
+NOVA: Kernel Object Handle ABI bereit
+```
+
+Die neue Handle-Schicht trennt erste Kernelreferenzen von rohen ObjectIDs.
+Geschlossene Handles werden als inaktiv markiert und können vom frühen Kernel
+wiederverwendet werden, ohne unbegrenzt neue Slots zu belegen. Der Build wurde
+als UEFI-Image `build/nova-uefi.img` neu erzeugt.
