@@ -8,6 +8,7 @@
 
 #define NOVA_VFS_FLAG_BOOTSTRAP_ROOT 0x00000001u
 #define NOVA_VFS_FLAG_READ_ONLY      0x00000002u
+#define NOVA_VFS_FLAG_NOVAFS_ROOT    0x00000004u
 
 typedef struct NovaVfsStateV1 {
     uint32_t Initialized;

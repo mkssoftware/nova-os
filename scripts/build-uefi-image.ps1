@@ -6,7 +6,9 @@ param([Parameter(Mandatory=$true)][string]$EfiApplication,
       [string]$BackupKernelImage,
       [string]$RecoveryKernelImage,
       [string]$BootBackground,
-      [string]$BootLogo)
+      [string]$BootLogo,
+      [string]$NovaFsImage,
+      [switch]$ResetNovaFs)
 $ErrorActionPreference='Stop'
 $efi=[IO.File]::ReadAllBytes([IO.Path]::GetFullPath($EfiApplication))
 $payloadFiles=@(
@@ -48,6 +50,46 @@ if($BootLogo){
     $payloadFiles+=@{Name='LOGO';Ext='NBS';Data=[IO.File]::ReadAllBytes($logoPath);Cluster=0}
 }
 $ss=512;$total=131072L;$partFirst=2048L;$partLast=$total-34;$partSectors=$partLast-$partFirst+1
+# Optionale zweite GPT-Partition mit dem persistenten NovaFS-Systemvolume
+# (NPSPEC-NOVAFS-ONDISK-0001, Abschnitt 2). Die ESP-Geometrie bleibt unveraendert; das
+# Volume beginnt an der naechsten 1-MiB-Grenze hinter der ESP.
+$novaFsTypeGuid=[Guid]'4E4F5641-4653-5359-5354-454D30303031'
+$novaFsData=$null;$novaFsFirst=0L;$novaFsLast=0L;$novaFsSource=''
+if($NovaFsImage){
+    $novaFsPath=[IO.Path]::GetFullPath($NovaFsImage)
+    if(!(Test-Path -LiteralPath $novaFsPath)){throw "NovaFS-Image fehlt: $novaFsPath"}
+    $novaFsData=[IO.File]::ReadAllBytes($novaFsPath);$novaFsSource=$novaFsPath
+    if($novaFsData.Length-lt(64*4096)-or($novaFsData.Length%4096)-ne0){throw "NovaFS-Image hat keine gueltige Groesse: $($novaFsData.Length)"}
+    $magic=[Text.Encoding]::ASCII.GetString($novaFsData,4096,6)
+    if($magic-ne'NOVAFS'-or$novaFsData[4102]-ne1-or$novaFsData[4103]-ne0){throw "NovaFS-Image ohne gueltigen Superblock: $novaFsPath"}
+    $novaFsFirst=$total;$novaFsLast=$novaFsFirst+($novaFsData.Length/$ss)-1
+    # Ein bereits beschriebenes Systemvolume im bestehenden Image bleibt
+    # erhalten, damit Kernel-Neubauten keine persistenten Daten verwerfen.
+    $existing=[IO.Path]::GetFullPath($OutputImage)
+    if(-not$ResetNovaFs-and(Test-Path -LiteralPath $existing)){
+        $stream=[IO.File]::OpenRead($existing)
+        try{
+            $probe=[byte[]]::new(512+16384)
+            $null=$stream.Seek(512,'Begin');$read=$stream.Read($probe,0,$probe.Length)
+            if($read-eq$probe.Length-and[Text.Encoding]::ASCII.GetString($probe,0,8)-eq'EFI PART'){
+                $entryLba=[BitConverter]::ToInt64($probe,72)
+                if($entryLba-eq2){
+                    $type=[Guid]::new([byte[]]$probe[(512+128)..(512+143)])
+                    $oldFirst=[BitConverter]::ToInt64($probe,512+128+32);$oldLast=[BitConverter]::ToInt64($probe,512+128+40)
+                    if($type-eq$novaFsTypeGuid-and$oldFirst-eq$novaFsFirst-and$oldLast-eq$novaFsLast){
+                        $old=[byte[]]::new($novaFsData.Length)
+                        $null=$stream.Seek($oldFirst*$ss,'Begin')
+                        $got=0;while($got-lt$old.Length){$n=$stream.Read($old,$got,$old.Length-$got);if($n-le0){break};$got+=$n}
+                        if($got-eq$old.Length-and[Text.Encoding]::ASCII.GetString($old,4096,6)-eq'NOVAFS'){
+                            $novaFsData=$old;$novaFsSource="$existing (bestehende Partition uebernommen)"
+                        }
+                    }
+                }
+            }
+        } finally {$stream.Dispose()}
+    }
+    $total=$novaFsLast+34
+}
 $image=[byte[]]::new($total*$ss)
 function W16([byte[]]$b,[long]$o,[long]$v){$b[$o]=[byte]($v-band255);$b[$o+1]=[byte](($v-shr8)-band255)}
 function W32([byte[]]$b,[long]$o,[long]$v){for($i=0;$i-lt4;$i++){$b[$o+$i]=[byte](($v-shr(8*$i))-band255)}}
@@ -62,6 +104,14 @@ $entries=[byte[]]::new(16384);[Array]::Copy(([Guid]'C12A7328-F81F-11D2-BA4B-00A0
 [Array]::Copy(([Guid]'4E4F5641-4F53-4546-8020-4E4F56414F53').ToByteArray(),0,$entries,16,16)
 W64 $entries 32 $partFirst;W64 $entries 40 $partLast
 $name=[Text.Encoding]::Unicode.GetBytes('NovaOS EFI');[Array]::Copy($name,0,$entries,56,$name.Length)
+if($novaFsData){
+    [Array]::Copy($novaFsTypeGuid.ToByteArray(),0,$entries,128,16)
+    # Unique Partition GUID = filesystem_uuid (Superblock-Offset 144)
+    [Array]::Copy($novaFsData,4096+144,$entries,128+16,16)
+    W64 $entries (128+32) $novaFsFirst;W64 $entries (128+40) $novaFsLast
+    $name=[Text.Encoding]::Unicode.GetBytes('NovaOS System');[Array]::Copy($name,0,$entries,128+56,$name.Length)
+    [Array]::Copy($novaFsData,0,$image,$novaFsFirst*$ss,$novaFsData.Length)
+}
 $entriesCrc=CRC32 $entries 0 $entries.Length
 [Array]::Copy($entries,0,$image,2*$ss,$entries.Length)
 $backupEntriesLba=$total-33;[Array]::Copy($entries,0,$image,$backupEntriesLba*$ss,$entries.Length)
@@ -119,3 +169,4 @@ try {
 }
 Write-Host "UEFI-IMG: $out";Write-Host "Groesse: $($image.Length) Bytes";Write-Host "ESP: FAT32 / GPT";Write-Host "BOOTX64.EFI: $($efi.Length) Bytes"
 foreach($file in $payloadFiles|Select-Object -Skip 1){Write-Host ("{0}.{1}: {2} Bytes" -f $file.Name,$file.Ext,$file.Data.Length)}
+if($novaFsData){Write-Host ("NovaFS: LBA {0}-{1}, {2} Bytes aus {3}" -f $novaFsFirst,$novaFsLast,$novaFsData.Length,$novaFsSource)}

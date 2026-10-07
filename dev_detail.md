@@ -1,6 +1,6 @@
 # NovaOS – technische Implementierungsdetails
 
-**Stand:** 28. September 2026
+**Stand:** 7. Oktober 2026
 **Projekt:** `C:\recoverboot\nova-os`  
 **Ergänzt:** [ENTWICKLUNGSSTAND.md](ENTWICKLUNGSSTAND.md)
 
@@ -1354,6 +1354,11 @@ NOVA: ACPI MADT, erkannte CPUs (hex): 0x00000004
 | ELF64-Builder | `scripts/build-elf64.ps1` |
 | NKI-Builder | `scripts/build-nki.ps1` |
 | UEFI-Kernelnegativtest | `scripts/test-uefi-kernel-validation.ps1` |
+| Storage (PCI, AHCI, GPT) | `kernel/arch/x86_64/storage32.inc` |
+| NovaFS-Kernel | `kernel/arch/x86_64/novafs32.inc` |
+| NovaFS-On-Disk-ABI (C) | `kernel/include/nova/novafs.h` |
+| NovaFS-Host-Werkzeug | `tools/novafs/novafs.c` |
+| NovaFS-QEMU-Test | `scripts/test-uefi-novafs.ps1` |
 | Hauptbuildsystem | `Makefile` |
 
 ## 57. Pflegehinweis
@@ -2783,3 +2788,199 @@ einem Filesystem-Object-Datensatz auf:
 4. Object-Datensatz zurückgeben.
 
 Der Kernel-Selbsttest prüft `/System`, `/Apps` und einen fehlenden Pfad.
+
+## 95. Storage-Bootstrap: PCI, AHCI, Block-Devices und GPT
+
+`kernel/arch/x86_64/storage32.inc` stellt dem Kernel erstmals echten
+Datenträgerzugriff bereit (NPSPEC-STORAGE-DEVICE-0001,
+NPSPEC-STORAGE-DISCOVERY-0001). Der Aufruf erfolgt in der Bootphase
+Device Discovery direkt nach dem Device Manager.
+
+### PCI und Controller
+
+- PCI-Konfigurationszugriff über Mechanismus #1 (`0xCF8`/`0xCFC`), Scan aller
+  256 Busse mit Multifunction-Erkennung.
+- Der erste Controller mit Klasse `01/06/01` (AHCI 1.0) wird verwendet.
+- BAR5 (ABAR) muss ein 32-Bit-erreichbares Memory-BAR sein; ein 64-Bit-BAR mit
+  gesetztem High-DWORD wird abgewiesen.
+- Memory Space und Bus Master werden aktiviert, INTx abgeschaltet.
+- Die ABAR-Seiten werden identisch und ungecacht (`PCD|PWT`) abgebildet.
+- BIOS/OS-Handoff (falls `CAP2.BOH`), HBA-Reset, danach AHCI-Modus ohne
+  Interrupts.
+
+### Ports und Datenträger
+
+- Alle implementierten Ports erhalten `SUD|POD`; ein gemeinsames
+  100-ms-Linkfenster endet vorzeitig, sobald alle Ports `DET=3` melden.
+- Pro Port liegen Kommandoliste (1 KiB), Received FIS (256 Byte) und
+  Kommandotabelle in einer genullten PMM-Seite unterhalb von 8 MiB.
+- Nur Ports mit ATA-Signatur `0x00000101` werden verwendet.
+- `IDENTIFY DEVICE` verlangt 48-Bit-LBA und 512-Byte-Sektoren.
+- Die stabile **DeviceID** ist `CRC32C(Seriennummer ‖ Modell)` und damit
+  unabhängig von Port, Bus oder Mountpoint.
+- Controller (`DEVICE_CLASS 4`) und Datenträger (`DEVICE_CLASS 5`) werden im
+  Device Manager registriert. Discovery erzeugt keine Authority.
+
+### Block-I/O
+
+`storage_read`, `storage_write` und `storage_flush` arbeiten synchron im
+Polling-Betrieb mit genau einem Kommando in Slot 0:
+
+- `READ DMA EXT` / `WRITE DMA EXT` mit 1–8 Sektoren in eine
+  identitätsabgebildete Seite,
+- `FLUSH CACHE EXT` als Ordnungspunkt für NovaFS,
+- Bereichsprüfung gegen die Kapazität vor jeder Übertragung,
+- Timeout über die 100-Hz-Kernelzeit plus Spin-Grenze,
+- Task-File-Fehler (`PxIS.TFES`, `ERR`, `BSY`, `DRQ`) gelten nie als Erfolg;
+  der Port wird danach kontrolliert neu gestartet.
+
+Der Bootstrap-Treiber nutzt noch nicht die DMA-Mapping-/IOMMU-Schicht; diese
+Anbindung folgt mit dem HAL-Storage-Provider.
+
+### GPT
+
+`storage_find_novafs_partition` prüft GPT-Signatur, Header-CRC32, Eintragsgröße,
+Eintrags-CRC32 (fortlaufend über alle Einträge) und Partitionsgrenzen. Gesucht
+wird die NovaFS-Typ-GUID `4E4F5641-4653-5359-5354-454D30303031`. Die Typ-GUID
+kennzeichnet nur den Inhalt; Identität ist die VolumeID im Superblock.
+
+### Prüfungen
+
+- CRC32C- und CRC32-Prüfwerte für `123456789` beim Start,
+- DMA-Lesetest von LBA 0 und Ablehnung eines Zugriffs jenseits der Kapazität,
+- ohne AHCI-Controller (z. B. i440fx) meldet der Kernel
+  `kein AHCI-Controller gefunden` und bootet mit dem Bootstrap-RAMFS weiter,
+- mit zwei Datenträgern wird das Systemvolume auch auf Port 1 gefunden.
+
+## 96. NovaFS 1.0 Phase 1 im Kernel
+
+`kernel/arch/x86_64/novafs32.inc` implementiert NovaFS Phase 1 gemäß
+NPSPEC-NOVAFS-0001 §60 und dem neuen Byte-Layout
+`docs/NPSPEC/NPSPEC-NOVAFS-ONDISK-0001.md`.
+
+### On-Disk-Format
+
+- 4096-Byte-Blöcke, Little Endian, CRC32C für alle Metadaten,
+- primärer Superblock in Block 1, Backup im letzten Block,
+- Free-Space-Bitmap ab Block 2 mit eigener CRC32C im Superblock,
+- Object Tree (152-Byte-Items = `novafs_object_record_t`), Directory Tree
+  (288-Byte-Items, Schlüssel `(parent_id, CRC32C(name))`) und Extent Tree
+  (72-Byte-Items, Schlüssel `(object_id, logical_offset)`),
+- Copy-on-Write-fähige Knotenstruktur nach §12; Phase 1 schreibt an Ort und
+  Stelle und erzeugt höchstens Baumhöhe 2.
+
+Die C-Strukturen mit statischen Offset-Prüfungen liegen in
+`kernel/include/nova/novafs.h` und sind Teil von `make abi-check`.
+
+### Mount
+
+1. NovaFS-Partition per GPT suchen (alle Datenträger),
+2. Primär- und Backup-Superblock vollständig validieren, höchste Generation
+   wählen,
+3. unbekannte `incompat_flags` → kein Mount; unbekannte
+   `readonly_compat_flags` oder `state ≠ CLEAN` → nur Read-only,
+4. Bitmap laden und gegen `bitmap_crc32c` prüfen,
+5. alle Baumwurzeln laden und Root-Objekt 1 prüfen,
+6. Read-Write: `mount_count` in einer eigenen Generation fortschreiben.
+
+Fehler führen fail-closed zu keinem Mount; das Bootstrap-RAMFS bleibt Root.
+
+### Operationen
+
+| Funktion | Bedeutung |
+|---|---|
+| `novafs_resolve_path` | absoluter Pfad → ObjectID und Typ |
+| `novafs_lookup` | Name in einem Verzeichnis (Hash + Namensvergleich) |
+| `novafs_create` | Datei/Verzeichnis anlegen, ObjectID nie wiederverwendet |
+| `novafs_read` | Lesen mit Löchern als Nullen, gekürzt auf die Dateigröße |
+| `novafs_write` | Schreiben mit Read-Modify-Write für Teilblöcke, Extent-Verlängerung |
+| `novafs_change_begin/commit` | Phase-1-Schreibprotokoll |
+
+Das Schreibprotokoll lautet: Superblock `DIRTY` → Daten → Baumknoten → Bitmap
+→ `FLUSH` → Generation + 1 und `CLEAN` → primärer Superblock → `FLUSH` →
+Backup-Superblock → `FLUSH`. Bricht ein Vorgang ab, bleibt `DIRTY` sichtbar
+und der nächste Start mountet nur Read-only.
+
+Beim Einfügen wird ein volles Blatt hälftig geteilt; eine Blattwurzel wird
+dabei zur inneren Wurzel. Zusätzlich angeforderte Blöcke werden bei Fehlern
+vor dem Schreiben wieder freigegeben.
+
+### Systemintegration
+
+- Die stabilen Wurzel-Namespaces `/System`, `/Benutzer`, `/Apps`, `/Volumes`
+  und `/Boot` müssen die ObjectIDs 2–6 tragen, also dieselben wie
+  `OBJI:2` … `OBJI:6` im Semantic Core.
+- Das Volume wird mit der VolumeID aus der `filesystem_uuid` als gemountetes
+  NovaFS-Volume (`NOVA_VOLUME_FS_NOVAFS`) am Root-Namespace registriert.
+- Der VFS-Zustand wechselt auf `VFS_FLAG_NOVAFS_ROOT` (bei Read-only
+  zusätzlich `VFS_FLAG_READ_ONLY`).
+- Boot Health erhält `SystemRootReady` vom Provider `SystemRoot`; ein
+  Read-only-Mount meldet `Degraded`. Der Gesamtzustand bleibt bis zum
+  Trust-Provider korrekt `Pending`.
+
+### Selbsttest bei jedem Read-Write-Start
+
+- `/System/Diagnose/novafs-bootcount` wird gelesen, erhöht, geschrieben und
+  zurückgelesen (persistent über Neustarts),
+- `/System/Diagnose/novafs-muster.bin` (3 × 4096 + 100 Byte) wird mit einem
+  vom Zähler abhängigen Muster überschrieben, danach folgt ein 16-Byte-
+  Schreibzugriff über eine Blockgrenze; alles wird zurückgelesen und
+  verglichen.
+
+```text
+NOVA: NovaFS 1.0 Systemvolume gemountet, Generation 0x... VolumeID 0x...
+NOVA: NovaFS Root-Layout konsistent mit Semantic-Core-ObjectIDs
+NOVA: NovaFS persistenter Bootzaehler 0x...
+NOVA: NovaFS Lese-/Schreibtest mit Extents, Teilbloecken und Blockgrenze bereit
+NOVA: NovaFS ist persistentes SystemRoot unter /
+NOVA: Boot Health SystemRoot bereit, wartet auf Trust
+```
+
+### Host-Werkzeug und Build
+
+`tools/novafs/novafs.c` ist eine unabhängige Referenzimplementierung desselben
+Formats: `mkfs`, `info`, `ls`, `cat`, `mkdir`, `put`, `fsck`, `tree` und die
+Testhilfe `mark-dirty`. `fsck` prüft alle Prüfsummen, Sortierung und
+Schlüsselgrenzen der Bäume, Verzeichnis-/Objekt-Referenzen, Extent-
+Überlappungen und die exakte Übereinstimmung von Bitmap und tatsächlicher
+Belegung.
+
+`build-uefi-image.ps1 -NovaFsImage` legt hinter der unveränderten ESP eine
+zweite GPT-Partition „NovaOS System“ an. Eine bereits beschriebene Partition
+im bestehenden `build/nova-uefi.img` wird übernommen, damit Kernel-Neubauten
+keine Daten verwerfen; `-ResetNovaFs` bzw. `make novafs-reset` formatiert neu.
+
+| Ziel | Wirkung |
+|---|---|
+| `make novafs-tool` | Host-Werkzeug `build/novafs.exe` |
+| `make novafs-image` | Vorlage `build/novafs-system.img` (nur falls fehlend) |
+| `make uefi-image` | UEFI-Image inkl. Systemvolume (bestehendes bleibt erhalten) |
+| `make novafs-reset` | Systemvolume neu formatieren |
+| `make novafs-fsck` | `info` + `fsck` des Volumes in `build/nova-uefi.img` |
+| `make novafs-check` | Host-Selbsttest des Werkzeugs |
+| `make test-uefi-novafs` | QEMU-End-to-End-Test |
+
+### Nachweis
+
+`make test-uefi-novafs` arbeitet auf temporären Kopien und prüft in 12 Starts:
+
+- frisches Volume über zwei Starts (Bootzähler 1 → 2, Musterdatei 12388 Byte),
+- vom Kernel ausgeführte Wurzel- und Blatt-Splits aller drei Bäume
+  (Vorbelegungen 7, 13, 17, 30, 54 und 82 Dateien) mit anschließendem
+  Host-`fsck`,
+- beschädigten primären Superblock: Backup wird verwendet und der Primär-
+  Superblock beim nächsten Commit repariert,
+- `DIRTY`-Volume: Read-only-Mount, kein Schreibzugriff, Boot Health degradiert,
+- unformatierte Partition: kein Mount, Boot läuft mit Bootstrap-RAMFS weiter.
+
+Der bestehende Displaytest, der NUMA-Test, der Boot-Control-Test und der
+UEFI-Kernelnegativtest bleiben erfolgreich.
+
+### Grenzen der Phase 1
+
+- Baumhöhe ≤ 2, Kernel-Bitmap ≤ 4 Blöcke (Volume ≤ 512 MiB), Dateien < 4 GiB,
+- keine Nutzdatenprüfsummen, keine Zeitstempel, kein Löschen im Kernel,
+- keine Copy-on-Write-Transaktionen und kein Transaction Log (Phase 2),
+- kein Locking und noch keine Syscall-/Userspace-Schnittstelle,
+- Schutzrichtlinie aller Dateien ist das Profil `Unprotected` (Policy-ID 0).
+

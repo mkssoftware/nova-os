@@ -436,6 +436,10 @@ kernel_entry:
     jc panic_device_manager
     mov esi, message_device_manager_ok
     call serial_write_string
+    call storage_initialize
+    jc panic_device_manager
+    call storage_self_test
+    jc panic_device_manager
     call boot_health_mark_kernel_initialized
     jc panic_boot_health
     mov esi, message_boot_health_kernel_initialized
@@ -462,7 +466,17 @@ kernel_entry:
     jc panic_vfs
     mov esi, message_vfs_ok
     call serial_write_string
+    ; Persistentes NovaFS-Systemvolume als Root; ohne Volume bleibt das
+    ; Bootstrap-RAMFS bestehen (NPSPEC-NOVAFS-ONDISK-0001).
+    call novafs_initialize
     mov esi, message_boot_health_root_pending
+    cmp dword [nfs_mounted], 1
+    jne .root_health_message
+    mov esi, message_boot_health_root_degraded
+    cmp dword [nfs_readonly], 0
+    jne .root_health_message
+    mov esi, message_boot_health_root_ready
+.root_health_message:
     call serial_write_string
 
     call network_manager_initialize
@@ -3809,6 +3823,8 @@ interrupt_api:
 %include "arch/x86_64/semantic32.inc"
 %include "arch/x86_64/semantic_core32.inc"
 %include "arch/x86_64/state32.inc"
+%include "arch/x86_64/storage32.inc"
+%include "arch/x86_64/novafs32.inc"
 
 IPC_MESSAGE_SIZE   equ 16
 IPC_QUEUE_CAPACITY equ 16
@@ -21996,7 +22012,7 @@ message_filesystem_object_enumeration_ok:
 message_filesystem_object_projection_ok:
     db "NOVA: Filesystem Object Projection Konsistenz bereit", 13, 10, 0
 message_filesystem_object_path_ok:
-    db "NOVA: Filesystem Object Pfadauflösung bereit", 13, 10, 0
+    db "NOVA: Filesystem Object Pfadaufloesung bereit", 13, 10, 0
 message_filesystem_volume_registry_ok:
     db "NOVA: Filesystem Volume Registry bereit", 13, 10, 0
 message_capability_registry_ok:
@@ -22012,7 +22028,7 @@ message_object_id_lookup_ok:
 message_namespace_lookup_ok:
     db "NOVA: Namespace Lookup bereit", 13, 10, 0
 message_namespace_path_ok:
-    db "NOVA: Namespace Pfadauflösung bereit", 13, 10, 0
+    db "NOVA: Namespace Pfadaufloesung bereit", 13, 10, 0
 message_namespace_introspection_ok:
     db "NOVA: Namespace Introspection bereit", 13, 10, 0
 message_namespace_enumeration_ok:
@@ -22143,6 +22159,52 @@ message_scheduler_ok:
     db "NOVA: Scheduler ABI 1.0 und zwei Threads aktiv", 13, 10, 0
 message_scheduler_error:
     db "NOVA PANIC: praemptiver Scheduler nicht initialisierbar", 13, 10, 0
+message_novafs_mount_failed:
+    db "NOVA: NovaFS Mount fehlgeschlagen, Fehler 0x", 0
+message_novafs_absent:
+    db "NOVA: NovaFS kein Systemvolume gefunden, Bootstrap-RAMFS bleibt Root", 13, 10, 0
+message_novafs_mounted:
+    db "NOVA: NovaFS 1.0 Systemvolume gemountet, Generation 0x", 0
+message_novafs_volume:
+    db " VolumeID 0x", 0
+message_novafs_backup_used:
+    db "NOVA: NovaFS Backup-Superblock verwendet (Primaerkopie ungueltig oder aelter)", 13, 10, 0
+message_novafs_unclean:
+    db "NOVA: NovaFS Volume nicht sauber (DIRTY), nur Read-only gemountet", 13, 10, 0
+message_novafs_layout_ok:
+    db "NOVA: NovaFS Root-Layout konsistent mit Semantic-Core-ObjectIDs", 13, 10, 0
+message_novafs_layout_failed:
+    db "NOVA: NovaFS Root-Layout inkonsistent, Volume nicht als Root verwendet, Fehler 0x", 0
+message_novafs_selftest_failed:
+    db "NOVA: NovaFS Selbsttest fehlgeschlagen, Volume nicht als Root verwendet, Fehler 0x", 0
+message_novafs_publish_failed:
+    db "NOVA: NovaFS Root-Registrierung fehlgeschlagen, Fehler 0x", 0
+message_novafs_bootcount:
+    db "NOVA: NovaFS persistenter Bootzaehler 0x", 0
+message_novafs_rw_ok:
+    db "NOVA: NovaFS Lese-/Schreibtest mit Extents, Teilbloecken und Blockgrenze bereit", 13, 10, 0
+message_novafs_selftest_ro:
+    db "NOVA: NovaFS Read-only, Schreibtest uebersprungen", 13, 10, 0
+message_novafs_root_ok:
+    db "NOVA: NovaFS ist persistentes SystemRoot unter /", 13, 10, 0
+message_boot_health_root_ready:
+    db "NOVA: Boot Health SystemRoot bereit, wartet auf Trust", 13, 10, 0
+message_boot_health_root_degraded:
+    db "NOVA: Boot Health SystemRoot nur Read-only verfuegbar (degradiert)", 13, 10, 0
+message_storage_ahci_ok:
+    db "NOVA: Storage ABI 1.0, AHCI-Controller (Polling) aktiv, Datentraeger 0x", 0
+message_storage_no_ahci:
+    db "NOVA: Storage ABI 1.0, kein AHCI-Controller gefunden", 13, 10, 0
+message_storage_ahci_failed:
+    db "NOVA: Storage ABI 1.0, AHCI-Controller nicht nutzbar", 13, 10, 0
+message_storage_disk:
+    db "NOVA: Storage SATA-Datentraeger Port 0x", 0
+message_storage_disk_id:
+    db " DeviceID 0x", 0
+message_storage_disk_sectors:
+    db " Sektoren 0x", 0
+message_storage_selftest_ok:
+    db "NOVA: Storage DMA-Lesetest und Bereichspruefung bereit", 13, 10, 0
 message_device_manager_ok:
     db "NOVA: Device Manager ABI 1.0 und Bootgeraete aktiv", 13, 10, 0
 message_device_manager_error:

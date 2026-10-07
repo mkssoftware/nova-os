@@ -27,6 +27,8 @@
 #include "../kernel/include/nova/iommu.h"
 #include "../kernel/include/nova/topology.h"
 #include "../kernel/include/nova/cpu.h"
+#include "../kernel/include/nova/storage.h"
+#include "../kernel/include/nova/novafs.h"
 
 _Static_assert(NOVA_BOOT_PHASE_COUNT==12,"Kernel boot phase count changed");
 _Static_assert(NOVA_BOOT_PHASE_OPERATIONAL==11,"Kernel operational phase changed");
@@ -98,5 +100,7 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(nova_boot_health_report_t)==32&&
            sizeof(nova_boot_health_record_t)==64&&
            sizeof(nova_boot_health_evidence_t)==32&&
-           sizeof(nova_boot_health_api_t)==40;
+           sizeof(nova_boot_health_api_t)==40&&
+           sizeof(NovaStorageRecordV1)==64&&sizeof(NovaStorageApiV1)==32&&
+           sizeof(novafs_superblock_t)==NOVAFS_BLOCK_SIZE&&sizeof(NovaFsApiV1)==48;
 }

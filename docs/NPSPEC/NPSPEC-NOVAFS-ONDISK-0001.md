@@ -1,0 +1,330 @@
+# NPSPEC-NOVAFS-ONDISK-0001 – NovaFS 1.0 On-Disk-Format, Phase 1 (Core)
+
+## Status
+
+Angenommen – umgesetzt (Host-Tool `tools/novafs`, Kernel `kernel/arch/x86_64/novafs32.inc`)
+
+## Kategorie
+
+Filesystem / Storage / On-Disk-Format
+
+## Bezug
+
+- `NPSPEC-NOVAFS-0001` (Architektur, §6–§15, §25, §55, §59, §60 Phase 1)
+- `NPSPEC-FILESYSTEM-NAMESPACE-0002`, `NPSPEC-FILESYSTEM-OBJECTID-0001`
+- `NPSPEC-STORAGE-DEVICE-0001`, `NPSPEC-FSSTORAGE-VOLUME-0001`, `NPSPEC-STORAGE-MOUNT-0001`
+
+## Zweck
+
+Diese Spezifikation legt das konkrete Byte-Layout fest, mit dem NovaFS 1.0 in
+Phase 1 („NovaFS Core“) auf einem einzelnen Datenträger gespeichert wird. Sie
+konkretisiert die in NPSPEC-NOVAFS-0001 als Mindestfelder beschriebenen
+Strukturen, ohne deren Bedeutung zu verändern. Host-Werkzeuge und Kernel MÜSSEN
+exakt dieses Layout verwenden.
+
+Phase 1 umfasst: Superblock (primär und Backup), Free-Space-Bitmap, Object Tree,
+Directory Tree, Extent Tree, CRC32C für alle Metadaten sowie lokales Lesen und
+Schreiben. Copy-on-Write, Transaction Log, Checkpoints, Schutzrichtlinien,
+Kompression und Verschlüsselung folgen in späteren Phasen und werden über
+Feature-Flags ergänzt.
+
+---
+
+## 1. Grundregeln
+
+```text
+Byte-Reihenfolge:      Little Endian
+Logische Blockgröße:   4096 Byte
+Blockadressierung:     relativ zum Beginn der NovaFS-Partition
+Block 0:               Reserved Boot Area (Nullen)
+Block 1:               Primary Superblock
+Letzter Block:         Backup Superblock
+Prüfsummen:            CRC32C (Castagnoli, reflektiert, Polynom 0x82F63B78,
+                       Startwert 0xFFFFFFFF, Endwert XOR 0xFFFFFFFF)
+```
+
+Jedes 32-Byte-Prüfsummenfeld enthält in Phase 1 den CRC32C in den ersten vier
+Bytes; die übrigen 28 Bytes MÜSSEN 0 sein. Die Prüfsumme wird immer über die
+gesamte Struktur berechnet, während das Prüfsummenfeld selbst mit Nullen belegt
+ist.
+
+## 2. GPT-Einbindung
+
+Ein NovaFS-Volume liegt in einer eigenen GPT-Partition.
+
+```text
+Partition Type GUID:   4E4F5641-4653-5359-5354-454D30303031   ("NOVA FS SYSTEM0001")
+Unique Partition GUID: identisch mit filesystem_uuid des Superblocks
+Partitionsname:        "NovaOS System"
+Ausrichtung:           Start auf 1-MiB-Grenze (LBA mod 2048 = 0)
+```
+
+Die Typ-GUID kennzeichnet nur den Inhalt. Die stabile Volume-Identität ist
+ausschließlich `filesystem_uuid` (VolumeID). Partitionsnummer, LBA und
+Gerätepfad sind keine Identität.
+
+## 3. Datenträgerlayout Phase 1
+
+```text
+Block 0                         Reserved Boot Area
+Block 1                         Primary Superblock
+Block 2 … 2+B-1                 Free-Space-Bitmap (B Blöcke)
+ab Block 2+B                    Tree-Knoten und Daten-Extents (frei vergeben)
+Block total_blocks-1            Backup Superblock
+```
+
+`B = ceil(total_blocks / 32768)`. Bit `n` (Byte `n/8`, Bit `n%8`) beschreibt
+Block `n`; 1 bedeutet belegt. Blöcke 0, 1, die Bitmap selbst und der
+Backup-Superblock sind immer belegt. Bits jenseits von `total_blocks` MÜSSEN 1
+sein.
+
+## 4. Superblock
+
+Der Superblock belegt einen vollständigen Block. Die Felder 0–383 entsprechen
+`novafs_superblock_t` aus NPSPEC-NOVAFS-0001 §8 in unveränderter Reihenfolge.
+
+| Offset | Typ | Feld | Phase-1-Belegung |
+|---:|---|---|---|
+| 0 | u8[8] | magic | `NOVAFS\x01\x00` |
+| 8 | u16 | version_major | 1 |
+| 10 | u16 | version_minor | 0 |
+| 12 | u32 | block_size | 4096 |
+| 16 | u64 | filesystem_size | total_blocks × 4096 |
+| 24 | u64 | total_blocks | Partitionsgröße in Blöcken |
+| 32 | u64 | available_blocks | freie Blöcke laut Bitmap |
+| 40 | u64 | generation | +1 bei jeder abgeschlossenen Änderung |
+| 48 | u64 | root_tree_block | 0 (Phase 2) |
+| 56 | u64 | object_tree_block | Wurzelknoten Object Tree |
+| 64 | u64 | directory_tree_block | Wurzelknoten Directory Tree |
+| 72 | u64 | extent_tree_block | Wurzelknoten Extent Tree |
+| 80 | u64 | policy_tree_block | 0 (Phase 3) |
+| 88 | u64 | checksum_tree_block | 0 (Phase 2) |
+| 96 | u64 | free_space_tree_block | erster Bitmap-Block (siehe Incompat-Flag) |
+| 104 | u64 | snapshot_tree_block | 0 (Phase 5) |
+| 112 | u64 | transaction_log_block | 0 (Phase 2) |
+| 120 | u64 | feature_flags | 0 |
+| 128 | u64 | incompat_flags | `FREE_SPACE_BITMAP \| FIXED_ITEM_TREES` = 3 |
+| 136 | u64 | readonly_compat_flags | 0 |
+| 144 | u8[16] | filesystem_uuid | VolumeID |
+| 160 | u8[16] | pool_uuid | 0 (Single-Device-Modus) |
+| 176 | u8[16] | device_uuid | 0 (Phase 4) |
+| 192 | u8[128] | volume_name | UTF-8, mit Nullen aufgefüllt |
+| 320 | u8[32] | public_trust_anchor_hash | 0 (Phase 5) |
+| 352 | u8[32] | checksum | CRC32C über den gesamten Block |
+| 384 | u32 | extension_size | 128 |
+| 388 | u32 | state | `novafs_state_t` (CLEAN = 0, DIRTY = 1, …) |
+| 392 | u64 | next_object_id | nächste nie vergebene ObjectID |
+| 400 | u64 | bitmap_blocks | B |
+| 408 | u64 | object_count | Anzahl lebender Objekte |
+| 416 | u64 | backup_superblock_block | total_blocks − 1 |
+| 424 | u32 | bitmap_crc32c | CRC32C über alle B Bitmap-Blöcke |
+| 428 | u32 | checksum_type | 1 = CRC32C |
+| 432 | u64 | mount_count | +1 bei jedem Read-Write-Mount |
+| 440 | – | reserviert | 0 bis Blockende |
+
+### Flags
+
+```text
+incompat_flags
+  bit 0  FREE_SPACE_BITMAP   free_space_tree_block zeigt auf eine Bitmap statt
+                             auf einen Free Space Tree
+  bit 1  FIXED_ITEM_TREES    alle Bäume verwenden Knoten mit festen Itemgrößen
+                             gemäß §5
+```
+
+Unbekannte `incompat_flags` verhindern jedes Mounten. Unbekannte
+`readonly_compat_flags` erlauben ausschließlich Read-only (NPSPEC-NOVAFS-0001 §59).
+
+### Auswahl beim Mounten
+
+1. Primären Superblock (Block 1) und Backup (letzter Partitionsblock) lesen.
+2. Jede Kopie auf Magic, Version 1.x, Blockgröße, CRC32C, `total_blocks` ≤
+   Partitionsgröße und gültige Baumverweise prüfen.
+3. Die gültige Kopie mit der höchsten `generation` gewinnt.
+4. `state ≠ CLEAN` führt zu einem Read-only-Mount mit Zustand `DIRTY`
+   (Crash-Recovery folgt mit dem Transaction Log in Phase 2).
+
+## 5. Baumknoten
+
+Jeder Knoten belegt genau einen Block. Bytes 0–71 entsprechen
+`novafs_tree_node_header_t` (NPSPEC-NOVAFS-0001 §12).
+
+| Offset | Typ | Feld |
+|---:|---|---|
+| 0 | u32 | magic `NTRE` (0x4552544E) |
+| 4 | u16 | level (0 = Blatt) |
+| 6 | u16 | item_count |
+| 8 | u64 | tree_id |
+| 16 | u64 | block_id (eigene Blocknummer) |
+| 24 | u64 | parent_block (0 bei Wurzel) |
+| 32 | u64 | generation |
+| 40 | u8[32] | checksum (CRC32C über den Block) |
+| 72 | u16 | item_size |
+| 74 | u16 | max_items |
+| 76 | u16 | key_size (8 oder 16) |
+| 78 | u16 | reserviert |
+| 80 | … | Items, dicht und aufsteigend nach Schlüssel sortiert |
+
+`tree_id`: 2 = Object Tree, 3 = Directory Tree, 4 = Extent Tree.
+
+Schlüssel bestehen aus `key1 = u64 @ Item+0` und – bei `key_size = 16` –
+`key2 = u64 @ Item+8`; sonst ist `key2 = 0`. Verglichen wird vorzeichenlos,
+zuerst `key1`, dann `key2`. Gleiche Schlüssel sind im Directory Tree zulässig
+(Hash-Kollision) und werden dort über den Namen unterschieden.
+
+### Innere Knoten
+
+`level = 1`, `item_size = 24`, `max_items = 167`.
+
+```text
+Item: u64 key1, u64 key2, u64 child_block
+```
+
+Für jedes Kind `i` gilt: alle Schlüssel in Kind `i` sind ≥ `key(i)` und ≤
+`key(i+1)`. Die Suche nach dem ersten Schlüssel ≥ S beginnt im letzten Kind mit
+`key(i) < S` (sonst Kind 0) und setzt sich bei Bedarf im nächsten Kind fort.
+
+Phase 1 erzeugt höchstens Baumhöhe 2 (Wurzel = Blatt oder innerer Knoten über
+Blättern). Ein volles Blatt wird hälftig geteilt; ist die Wurzel ein Blatt,
+entsteht dabei eine neue innere Wurzel. Leere Blätter bleiben bestehen. Ein
+Leser MUSS Knoten mit `level > 1` ablehnen, bis eine spätere Version sie
+definiert.
+
+### Object Tree (tree_id 2)
+
+`item_size = 152`, `max_items = 26`, `key_size = 8`, Schlüssel = ObjectID.
+Das Item ist exakt `novafs_object_record_t` (NPSPEC-NOVAFS-0001 §11):
+
+| Offset | Typ | Feld |
+|---:|---|---|
+| 0 | u64 | object_id |
+| 8 | u64 | parent_id |
+| 16 | u32 | object_type (1 = Datei, 2 = Verzeichnis) |
+| 20 | u32 | flags |
+| 24 | u64 | logical_size |
+| 32 | u64 | allocated_size |
+| 40 | u64 ×4 | created/modified/accessed/changed_time (Phase 1: 0, keine Uhr) |
+| 72 | u32 | owner_id |
+| 76 | u32 | group_id |
+| 80 | u32 | permissions |
+| 84 | u32 | link_count |
+| 88 | u64 | extent_root (0 = globaler Extent Tree) |
+| 96 | u64 | attribute_root (0) |
+| 104 | u64 | protection_policy_id (0 = Profil „Unprotected“) |
+| 112 | u64 | generation (Superblock-Generation der letzten Änderung) |
+| 120 | u8[32] | checksum (CRC32C über das Item) |
+
+Das entspricht dem natürlichen C-Layout von `novafs_object_record_t`
+(`sizeof = 152`).
+
+Object-Flags:
+
+```text
+bit 0  SYSTEM       Systembereich (/System, /Boot)
+bit 1  NAMESPACE    stabiler Wurzel-Namespace (1–255)
+```
+
+### Directory Tree (tree_id 3)
+
+`item_size = 288`, `max_items = 13`, `key_size = 16`,
+Schlüssel = (parent_id, name_hash).
+
+| Offset | Typ | Feld |
+|---:|---|---|
+| 0 | u64 | parent_id |
+| 8 | u64 | name_hash = CRC32C(name), nullerweitert |
+| 16 | u64 | object_id |
+| 24 | u32 | object_type |
+| 28 | u16 | name_length (1–255) |
+| 30 | u16 | flags |
+| 32 | u8[256] | name, UTF-8, mit Nullen aufgefüllt |
+
+Namen sind case-sensitive, dürfen weder `/` noch NUL enthalten und dürfen nicht
+`.` oder `..` sein. Die NFC-Normalisierung (NPSPEC-NOVAFS-0001 §13) übernimmt der
+schreibende Host- bzw. Userspace-Pfad; der Kernel speichert die Bytes
+unverändert.
+
+### Extent Tree (tree_id 4)
+
+`item_size = 72`, `max_items = 55`, `key_size = 16`,
+Schlüssel = (object_id, logical_offset).
+
+| Offset | Typ | Feld |
+|---:|---|---|
+| 0 | u64 | object_id |
+| 8 | u64 | logical_offset (Vielfaches von 4096) |
+| 16 | u64 | physical_block |
+| 24 | u64 | block_count |
+| 32 | u64 | uncompressed_size |
+| 40 | u64 | stored_size |
+| 48 | u64 | stripe_id (0) |
+| 56 | u64 | generation |
+| 64 | u32 | flags |
+| 68 | u16 | compression_type (0 = NONE) |
+| 70 | u16 | protection_fragment_index (0) |
+
+Bytes 8–71 entsprechen `novafs_extent_record_t` (§14). Nicht abgedeckte
+Bereiche innerhalb von `logical_size` sind Löcher und lesen sich als Nullen.
+
+## 6. Objektidentität und Grundlayout
+
+- ObjectID 0 ist ungültig, ObjectID 1 ist das Root-Verzeichnis `/`.
+- ObjectIDs 1–255 sind für stabile Wurzel-Namespaces reserviert.
+- ObjectIDs werden aus `next_object_id` vergeben und nie wiederverwendet.
+- Ein neu formatiertes Systemvolume enthält:
+
+```text
+1  /            Verzeichnis
+2  /System      Verzeichnis, SYSTEM | NAMESPACE
+3  /Benutzer    Verzeichnis, NAMESPACE
+4  /Apps        Verzeichnis, NAMESPACE
+5  /Volumes     Verzeichnis, NAMESPACE
+6  /Boot        Verzeichnis, SYSTEM | NAMESPACE
+7  /Solutions   Verzeichnis, NAMESPACE
+next_object_id = 256
+```
+
+Die ObjectIDs 1–6 entsprechen den stabilen Objekten des Kernel-Semantic-Core
+(`OBJI:1` … `OBJI:6`); der Kernel prüft diese Zuordnung beim Mount.
+
+## 7. Schreibreihenfolge Phase 1
+
+Phase 1 schreibt ohne Copy-on-Write direkt an Ort und Stelle. Jede
+Änderungsoperation läuft deshalb in dieser Reihenfolge ab:
+
+```text
+1. Superblock state = DIRTY schreiben (nur beim Übergang CLEAN → DIRTY)
+2. Datenblöcke schreiben
+3. geänderte Baumknoten schreiben
+4. Bitmap schreiben, bitmap_crc32c aktualisieren
+5. generation + 1, state = CLEAN, primären Superblock schreiben
+6. Backup-Superblock schreiben
+```
+
+Bricht der Vorgang ab, bleibt `state = DIRTY` sichtbar. Der nächste Mount
+erfolgt dann ausschließlich read-only, bis Phase 2 (Transaction Log,
+Checkpoints, Crash Recovery) eine kontrollierte Reparatur ermöglicht. Ein
+unvollständiger Vorgang darf nie als sauberer Zustand erscheinen.
+
+## 8. Grenzen der Phase-1-Implementierung
+
+- höchstens Baumhöhe 2 (≈ 4.300 Objekte, ≈ 2.100 Verzeichniseinträge,
+  ≈ 9.000 Extents pro Volume),
+- Kernel: höchstens 4 Bitmap-Blöcke (Volumes ≤ 512 MiB) und Dateigrößen
+  < 4 GiB,
+- keine Nutzdatenprüfsummen, keine Zeitstempel, kein Löschen im Kernel,
+- kein Locking: der Kernel ruft NovaFS bislang ausschließlich aus dem
+  Single-Threaded-Bootpfad auf.
+
+## Normative Anforderungen
+
+1. NovaFS 1.0 MUSS 4096-Byte-Blöcke und Little Endian verwenden.
+2. Superblock-Felder 0–383 MÜSSEN der Reihenfolge aus NPSPEC-NOVAFS-0001 §8 entsprechen.
+3. Jeder Superblock und jeder Baumknoten MUSS eine gültige CRC32C-Prüfsumme besitzen.
+4. Ein Mount MUSS die gültige Superblock-Kopie mit der höchsten Generation wählen.
+5. Unbekannte `incompat_flags` MÜSSEN das Mounten verhindern.
+6. Ein Volume mit `state ≠ CLEAN` DARF NICHT read-write gemountet werden.
+7. Dateinamen MÜSSEN ausschließlich im Directory Tree gespeichert werden.
+8. ObjectIDs DÜRFEN NICHT wiederverwendet werden.
+9. Die Partition-Typ-GUID DARF NICHT als Volume-Identität verwendet werden.
+10. Leser MÜSSEN Baumknoten mit unbekanntem Level, falscher Itemgröße oder falscher `tree_id` ablehnen.

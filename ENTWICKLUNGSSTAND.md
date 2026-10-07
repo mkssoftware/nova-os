@@ -1,8 +1,8 @@
 # NovaOS – aktueller Entwicklungsstand
 
-**Stand:** 28. September 2026
+**Stand:** 7. Oktober 2026
 **Projektpfad:** `C:\recoverboot\nova-os`  
-**Aktueller Schwerpunkt:** UEFI-Bootpfad und Kernel-Handoff
+**Aktueller Schwerpunkt:** UEFI-Bootpfad, Kernel-Handoff und persistentes NovaFS-Systemvolume
 
 Diese Datei fasst den bisher implementierten und getesteten Stand zusammen. Die
 ADRs und NPSPECs unter `docs/` bleiben die normative Quelle. Diese Übersicht ist
@@ -15,7 +15,8 @@ Die Namen der Entwicklungsabbilder bleiben dauerhaft unverändert:
 
 | Artefakt | Zweck | Aktueller Stand |
 |---|---|---|
-| `build/nova-uefi.img` | GPT/FAT32-ESP für UEFI | Aktueller Entwicklungsstand |
+| `build/nova-uefi.img` | GPT mit FAT32-ESP und NovaFS-Systempartition | Aktueller Entwicklungsstand |
+| `build/novafs-system.img` | Vorlage für ein frisch formatiertes NovaFS-Systemvolume | nur bei `make novafs-reset` erneut verwendet |
 | `build/nova-bios.img` | Raw-Image für Legacy-BIOS | Letzter BIOS-Entwicklungsstand |
 | `build/kernel.nki` | Bevorzugter Nova-Kernelcontainer | Aktueller Kernel |
 | `kernel/build/kernel.elf` | Direkt ladbares ELF32 | Aktueller Kernel |
@@ -547,7 +548,12 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 - Typed Files und persistente Semantic Metadata
 - Semantic Discovery und Semantic Execution
 - tatsächliche Ausführung registrierter Conversion Capabilities
-- vollständiges NovaFS und persistenter Userspace
+- NovaFS ab Phase 2: Copy-on-Write, Transaction Log, Crash Recovery,
+  Löschen, Zeitstempel, Nutzdatenprüfsummen, Baumhöhe > 2 sowie eine
+  Syscall-/Userspace-Schnittstelle mit Locking (Phase 1 ist umgesetzt, siehe
+  Abschnitt 16)
+- persistenter Userspace und Trust-Provider (Boot Health erreicht derzeit
+  `SystemRootReady`, bleibt ohne Trust aber `Pending`)
 - Tests auf realer UEFI-Hardware
 - erneute End-to-End-Prüfung des aktuellen Images in VirtualBox
 - pixelgenauer visueller Vergleich aller Bootmanagerseiten mit sämtlichen
@@ -558,12 +564,20 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 Für die weitere Arbeit am derzeit priorisierten UEFI-Pfad bietet sich diese
 Reihenfolge an:
 
-1. normativen Kernel-Signaturcontainer sowie Schlüssel- und Revocation-Policy
-   spezifizieren beziehungsweise implementieren,
-2. die capabilitygeschützte Health-Evidence-Brücke und anschließend die
-   autorisierte Candidate-Staging-Schnittstelle anbinden,
-3. VirtualBox-UEFI mit dem aktuellen GPT/FAT32-Image erneut validieren,
-4. danach die nächsten Kernel- und Semantic-Type-Abschnitte umsetzen.
+1. NovaFS an den Userspace anbinden: capabilitygeprüfte VFS-Syscalls
+   (`Open`, `Read`, `Write`, `Create`, `ReadDirectory`) über Object-Handles
+   mit globaler NovaFS-Sperre,
+2. NovaFS Phase 2: Transaction Log, Checkpoints und Copy-on-Write, damit ein
+   abgebrochener Schreibvorgang automatisch repariert statt nur read-only
+   gemountet wird; anschließend Löschen und Zeitstempel,
+3. normativen Kernel-Signaturcontainer sowie Schlüssel- und Revocation-Policy
+   spezifizieren beziehungsweise implementieren (Trust-Provider für Boot
+   Health),
+4. autorisierte Candidate-Staging-Schnittstelle; danach VirtualBox-UEFI und
+   reale Hardware mit dem GPT-Image (ESP + NovaFS) erneut validieren.
+
+Die Health-Evidence-Brücke aus dem früheren Schritt 2 ist inzwischen umgesetzt
+(siehe „UEFI-Runtime-Transport für Boot Health“).
 
 ## 12. Wichtige Quellbereiche
 
@@ -576,6 +590,10 @@ Reihenfolge an:
 | Gemeinsames Bootprotokoll | `boot/include/` |
 | Kernel Entry und Subsysteme | `kernel/arch/x86_64/entry32.asm` |
 | Semantic-Type-Kern | `kernel/arch/x86_64/semantic32.inc` |
+| Storage (PCI, AHCI, GPT) | `kernel/arch/x86_64/storage32.inc` |
+| NovaFS im Kernel | `kernel/arch/x86_64/novafs32.inc` |
+| NovaFS-Format (normativ) | `docs/NPSPEC/NPSPEC-NOVAFS-ONDISK-0001.md` |
+| NovaFS-Host-Werkzeug | `tools/novafs/novafs.c` |
 | Build- und Testskripte | `scripts/` und `tests/` |
 | Erzeugte Artefakte | `build/` und `kernel/build/` |
 
@@ -1291,3 +1309,60 @@ und gibt anschließend den Object-Datensatz zurück. Der Selbsttest prüft
 ```text
 NOVA: Filesystem Object Pfadauflösung bereit
 ```
+
+## 16. Storage und persistentes NovaFS-Systemvolume
+
+Der Kernel besitzt jetzt erstmals einen echten Datenträgerpfad und ein
+persistentes Dateisystem als SystemRoot. Grundlage sind NPSPEC-NOVAFS-0001
+(Phase 1 „NovaFS Core“), die Filesystem-/Storage-NPSPECs unter
+`docs/NPSPEC/sysarchitecture/038-FILESYSTEM/` sowie die neue Byte-Layout-
+Spezifikation `docs/NPSPEC/NPSPEC-NOVAFS-ONDISK-0001.md`.
+
+### Storage-Bootstrap
+
+- **implementiert:** PCI-Scan, AHCI-Controller im Polling-Betrieb mit
+  HBA-Reset, SATA-Datenträgererkennung per `IDENTIFY DEVICE`, stabile
+  DeviceID aus Seriennummer und Modell, `READ/WRITE DMA EXT`,
+  `FLUSH CACHE EXT`, Registrierung im Device Manager und GPT-Suche mit
+  Header- und Eintrags-CRC.
+- **automatisiert getestet:** DMA-Lesetest und Bereichsprüfung beim Start;
+  System ohne AHCI fällt sauber auf das Bootstrap-RAMFS zurück; zwei
+  Datenträger mit Systemvolume auf Port 1.
+- **offen:** Interrupt-Betrieb, NCQ, Anbindung an DMA-Mapping/IOMMU, NVMe.
+
+### NovaFS 1.0 Phase 1
+
+- **spezifiziert:** On-Disk-Format mit Superblock (primär und Backup),
+  Bitmap, Object/Directory/Extent Tree, CRC32C und GPT-Typ-GUID
+  `4E4F5641-4653-5359-5354-454D30303031`.
+- **implementiert:** Mount mit Auswahl der höchsten gültigen Generation,
+  Feature-Flag-Regeln, DIRTY → Read-only, Pfadauflösung, Lookup, Create,
+  Read und Write mit Extents, Teilblöcken und Blatt-Splits; Schreibprotokoll
+  DIRTY → Daten → Knoten → Bitmap → Flush → CLEAN → Backup.
+- **integriert:** Root-Namespaces mit den Semantic-Core-ObjectIDs 2–6
+  abgeglichen, Volume im Semantic Core registriert, VFS-Root auf
+  `VFS_FLAG_NOVAFS_ROOT`, Boot Health `SystemRootReady`.
+- **automatisiert getestet:** `make test-uefi-novafs` (12 QEMU-Starts:
+  Persistenz über Neustarts, Wurzel- und Blatt-Splits aller Bäume durch den
+  Kernel, Backup-Superblock mit Reparatur, DIRTY-Volume, unformatierte
+  Partition) und `make novafs-check` (Host-Werkzeug mit `fsck`).
+- **offen:** Phase 2 und folgende, Syscall-Schnittstelle, Löschen,
+  Zeitstempel, Nutzdatenprüfsummen, Locking.
+
+Das Systemvolume bleibt über Kernel-Neubauten erhalten: `make uefi-image`
+übernimmt die bestehende NovaFS-Partition aus `build/nova-uefi.img`.
+`make novafs-reset` formatiert es neu, `make novafs-fsck` prüft es vom Host.
+
+Der aktuelle UEFI-Start meldet unter anderem:
+
+```text
+NOVA: Storage ABI 1.0, AHCI-Controller (Polling) aktiv, Datentraeger 0x00000001
+NOVA: NovaFS 1.0 Systemvolume gemountet, Generation 0x... VolumeID 0x...
+NOVA: NovaFS Root-Layout konsistent mit Semantic-Core-ObjectIDs
+NOVA: NovaFS persistenter Bootzaehler 0x...
+NOVA: NovaFS ist persistentes SystemRoot unter /
+NOVA: Boot Health SystemRoot bereit, wartet auf Trust
+```
+
+Technische Details stehen in `dev_detail.md`, Abschnitte 95 und 96.
+
