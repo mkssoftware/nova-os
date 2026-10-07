@@ -1,7 +1,7 @@
 /*
  * NovaFS 1.0 Host-Werkzeug (Phase 1, NPSPEC-NOVAFS-ONDISK-0001)
  *
- *   novafs mkfs  <image> [--size-mib N] [--label NAME] [--uuid HEX32]
+ *   novafs mkfs  <image> [--size-mib N] [--label NAME] [--uuid HEX32] [--user NAME|--no-user]
  *   novafs info  <image> [--gpt|--offset BYTES]
  *   novafs ls    <image> [--gpt|--offset BYTES] <path>
  *   novafs cat   <image> [--gpt|--offset BYTES] <path>
@@ -772,7 +772,7 @@ static void random_uuid(uint8_t *out) {
     out[8] = (uint8_t)((out[8] & 0x3F) | 0x80);
 }
 
-static void cmd_mkfs(const char *path, uint64_t size_mib, const char *label, const char *uuid) {
+static void cmd_mkfs(const char *path, uint64_t size_mib, const char *label, const char *uuid, const char *user) {
     uint64_t total = size_mib * 1024 * 1024 / BLOCK_SIZE;
     if (total < 64) die("Volume zu klein");
     FILE *f = fopen(path, "w+b");
@@ -844,6 +844,18 @@ static void cmd_mkfs(const char *path, uint64_t size_mib, const char *label, con
     };
     for (size_t i = 0; i < sizeof layout / sizeof layout[0]; ++i)
         create_object(&v, 1, layout[i].name, strlen(layout[i].name), TYPE_DIRECTORY, layout[i].flags, layout[i].id);
+    /* Persoenlicher Bereich /Benutzer/<User>/ (NPSPEC-USERSPACE-LAYOUT-0001) */
+    if (user && *user) {
+        static const char *folders[] = {"Desktop", "Dokumente", "Downloads", "Bilder", "Musik", "Videos"};
+        uint64_t home = r64(v.sb + SB_NEXT_OBJECT);
+        w64(v.sb + SB_NEXT_OBJECT, home + 1);
+        create_object(&v, 3, user, strlen(user), TYPE_DIRECTORY, 0, home);
+        for (size_t i = 0; i < sizeof folders / sizeof folders[0]; ++i) {
+            uint64_t id = r64(v.sb + SB_NEXT_OBJECT);
+            w64(v.sb + SB_NEXT_OBJECT, id + 1);
+            create_object(&v, home, folders[i], strlen(folders[i]), TYPE_DIRECTORY, 0, id);
+        }
+    }
     v.dirty_bitmap = 1;
     volume_commit(&v);
     printf("NovaFS-Volume erstellt: %s (%llu Bloecke, %llu MiB)\n", path, (unsigned long long)total,
@@ -1070,7 +1082,7 @@ int main(int argc, char **argv) {
     const char *command = argv[1], *image = argv[2];
     int gpt = 0;
     uint64_t offset = 0, size_mib = 32;
-    const char *label = "NovaOS System", *uuid = NULL;
+    const char *label = "NovaOS System", *uuid = NULL, *user = "Matthias";
     const char *args[4];
     int nargs = 0;
     for (int i = 3; i < argc; ++i) {
@@ -1079,10 +1091,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--size-mib") && i + 1 < argc) size_mib = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--label") && i + 1 < argc) label = argv[++i];
         else if (!strcmp(argv[i], "--uuid") && i + 1 < argc) uuid = argv[++i];
+        else if (!strcmp(argv[i], "--user") && i + 1 < argc) user = argv[++i];
+        else if (!strcmp(argv[i], "--no-user")) user = NULL;
         else if (nargs < 4) args[nargs++] = argv[i];
         else die("zu viele Argumente");
     }
-    if (!strcmp(command, "mkfs")) { cmd_mkfs(image, size_mib, label, uuid); return 0; }
+    if (!strcmp(command, "mkfs")) { cmd_mkfs(image, size_mib, label, uuid, user); return 0; }
     Volume v;
     if (!strcmp(command, "mark-dirty")) {
         /* Testhilfe: simuliert einen abgebrochenen Schreibvorgang */

@@ -1359,10 +1359,26 @@ Spezifikation `docs/NPSPEC/NPSPEC-NOVAFS-ONDISK-0001.md`.
 - **automatisiert getestet:** Das Ring-3-Bootstrap-Programm liest die vom
   Kernel geschriebene Systemdatei, scheitert erwartungsgemäß beim Schreiben
   ohne Recht, mit veraltetem Handle und im Systembereich, legt
-  `/Benutzer/Willkommen.txt` an, schreibt, liest zurück und findet sie per
+  `Willkommen.txt` im Profilordner `Dokumente` an, schreibt, liest zurück und findet sie per
   `ReadDirectory`. `make test-uefi-novafs` prüft das Ergebnis vom Host.
 - **offen:** Delete/Rename, größere Benutzerpuffer mit allgemeinem
   Prozessspeicher, objektbezogene Capabilities und deklarative Policies.
+
+### Explorer mit echten NovaFS-Inhalten
+
+- **implementiert:** `make novafs-image` legt das Benutzerprofil
+  `/Benutzer/<NOVAFS_USER>/{Desktop,Dokumente,Downloads,Bilder,Musik,Videos}`
+  an (Standard `Matthias`). Das Ring-3-Programm öffnet das erste Profil unter
+  `/Benutzer`, legt dort `Dokumente/Willkommen.txt` an, liest das Verzeichnis
+  per `ReadDirectory` und übergibt dem Display-Dienst eine
+  `NovaExplorerViewV1` (Display-Operation 4). Der Explorer zeigt daraus
+  Breadcrumb, Ordnerkacheln, Dateiliste mit Typ und Größe, markiert
+  „Dokumente“ im Schnellzugriff und zählt in der Fußzeile Ordner, Dateien und
+  freien NovaFS-Platz.
+- **Grenzen:** höchstens 8 Einträge pro Ansicht (je 4 Ordner und Dateien),
+  nur ASCII-Namen in der Anzeige, keine Navigation per Klick, kein Datum.
+- **offen:** Klick-Navigation im Explorer, `Delete`/`Rename`, danach NovaFS
+  Phase 2 (Transaction Log/CoW).
 
 Das Systemvolume bleibt über Kernel-Neubauten erhalten: `make uefi-image`
 übernimmt die bestehende NovaFS-Partition aus `build/nova-uefi.img`.
@@ -1379,5 +1395,5 @@ NOVA: NovaFS ist persistentes SystemRoot unter /
 NOVA: Boot Health SystemRoot bereit, wartet auf Trust
 ```
 
-Technische Details stehen in `dev_detail.md`, Abschnitte 95 und 96.
+Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 98.
 

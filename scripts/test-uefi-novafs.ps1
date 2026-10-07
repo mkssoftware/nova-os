@@ -47,7 +47,10 @@ function New-ScenarioImage([string]$Name,[int]$Prefill,[string]$Mode){
     $dir=[IO.Path]::Combine($runDir,$Name);[IO.Directory]::CreateDirectory($dir)|Out-Null
     $disk=[IO.Path]::Combine($dir,'disk.img');$part=[IO.Path]::Combine($dir,'part.img')
     [IO.File]::Copy($baseImage,$disk,$true)
-    $null=Invoke-NovaFs @('mkfs',$part,'--size-mib',"$sizeMib",'--label','NovaOS Test')
+    # Split-Vorbelegungen sind auf das Grundlayout ohne Benutzerordner berechnet.
+    $mkfs=@('mkfs',$part,'--size-mib',"$sizeMib",'--label','NovaOS Test')
+    if($Prefill-gt0){$mkfs+='--no-user'}
+    $null=Invoke-NovaFs $mkfs
     if($Prefill-gt0){
         $one=[IO.Path]::Combine($dir,'one.bin');[IO.File]::WriteAllBytes($one,[byte[]]@(0x78))
         for($i=1;$i-le$Prefill;$i++){$null=Invoke-NovaFs @('put',$part,$one,('/Benutzer/f-{0:D3}' -f $i))}
@@ -109,7 +112,7 @@ function Assert-BootCount([string]$Disk,[int]$Expected,[string]$Tag){
 $mounted=@('NOVA: NovaFS 1.0 Systemvolume gemountet','NOVA: NovaFS Root-Layout konsistent mit Semantic-Core-ObjectIDs',
     'NOVA: NovaFS ist persistentes SystemRoot unter /')
 $vfsRead=@('NOVA: Userspace VFS.Lookup auf NovaFS erfolgreich','NOVA: Userspace VFS.Query erfolgreich',
-    'NOVA: Userspace VFS.Read erfolgreich')
+    'NOVA: Userspace VFS.Read erfolgreich','NOVA: Explorer zeigt NovaFS-Verzeichnis aus Ring 3')
 $vfsWrite=@('NOVA: VFS Schreibzugriff ausserhalb /Benutzer ohne System-Write-Authority abgewiesen',
     'NOVA: Userspace VFS.Write erfolgreich','NOVA: Userspace VFS.ReadDirectory erfolgreich',
     'NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert')
@@ -127,8 +130,8 @@ try {
         Assert-Fsck $disk "fresh/$boot"
         Assert-BootCount $disk $boot "fresh/$boot"
     }
-    $welcome=Invoke-NovaFs @('cat',$disk,'--gpt','/Benutzer/Willkommen.txt')
-    if($welcome.Trim()-ne'Willkommen bei NovaOS.'){throw "Ring-3-Datei /Benutzer/Willkommen.txt fehlerhaft: '$welcome'"}
+    $welcome=Invoke-NovaFs @('cat',$disk,'--gpt','/Benutzer/Matthias/Dokumente/Willkommen.txt')
+    if($welcome.Trim()-ne'Willkommen bei NovaOS.'){throw "Ring-3-Datei /Benutzer/Matthias/Dokumente/Willkommen.txt fehlerhaft: '$welcome'"}
     $pattern=Invoke-NovaFs @('ls',$disk,'--gpt','/System/Diagnose')
     if($pattern-notmatch'12388\s+\d+\s+novafs-muster\.bin'){throw "Musterdatei hat falsche Groesse: $pattern"}
 

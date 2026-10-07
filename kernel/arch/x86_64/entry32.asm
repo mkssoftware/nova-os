@@ -3826,6 +3826,7 @@ interrupt_api:
 %include "arch/x86_64/storage32.inc"
 %include "arch/x86_64/novafs32.inc"
 %include "arch/x86_64/vfs32.inc"
+%include "arch/x86_64/explorer32.inc"
 
 IPC_MESSAGE_SIZE   equ 16
 IPC_QUEUE_CAPACITY equ 16
@@ -12351,6 +12352,10 @@ UFS_INDEX   equ USER_STACK_ADDRESS - 1312
 UFS_ARGS    equ USER_STACK_ADDRESS - 1408
 UFS_DATA    equ USER_STACK_ADDRESS - 1536
 UFS_ENTRY   equ USER_STACK_ADDRESS - 1856
+UFS_H_BASE  equ USER_STACK_ADDRESS - 1316
+UFS_FLAGS   equ USER_STACK_ADDRESS - 1320
+UFS_PATH    equ USER_STACK_ADDRESS - 2176
+UFS_VIEW    equ USER_STACK_ADDRESS - 2688
 
 userspace_program_start:
     ; Process.QuerySelf -> Ergebnis auf dem beschreibbaren Userstack.
@@ -12568,8 +12573,12 @@ userspace_program_start:
     jne .failed
     ; Ein read-only gemountetes Volume (z. B. DIRTY) wird nur gelesen.
 .fs_write_part:
+    ; Arbeitsverzeichnis: /Benutzer/<erster Benutzer>/Dokumente, sonst /Benutzer
+    call ufs_select_home
+    test eax, eax
+    jnz .failed
     test dword [SHARED_SERVICE_ADDRESS + 12], SHARED_FEATURE_FILESYSTEM_WRITABLE
-    jz .fs_done
+    jz .fs_view
     ; Schreibzugriff im Systembereich verweigert die Policy
     mov edx, [USER_STACK_ADDRESS - 152]
     mov esi, UFS_ADDR(ufs_path_bootcount)
@@ -12579,16 +12588,8 @@ userspace_program_start:
     cmp eax, SYSCALL_STATUS_ACCESS
     jne .failed
 
-    ; B) /Benutzer schreibbar oeffnen, Datei suchen oder anlegen
-    mov edx, [USER_STACK_ADDRESS - 152]
-    mov esi, UFS_ADDR(ufs_path_benutzer)
-    mov ecx, ufs_path_benutzer_end - ufs_path_benutzer
-    mov edi, VFS_LOOKUP_FLAG_WRITE
-    call ufs_lookup
-    test eax, eax
-    jnz .failed
-    mov [UFS_H_DIR], ebx
-    mov edx, ebx
+    ; B) Im Arbeitsverzeichnis Datei suchen oder anlegen
+    mov edx, [UFS_H_DIR]
     mov esi, UFS_ADDR(ufs_name_welcome)
     mov ecx, ufs_name_welcome_end - ufs_name_welcome
     mov edi, VFS_LOOKUP_FLAG_WRITE
@@ -12639,7 +12640,7 @@ userspace_program_start:
     mov edi, UFS_ADDR(ufs_welcome_text)
     repe cmpsb
     jne .failed
-    ; C) /Benutzer enumerieren und die Datei samt Groesse finden
+    ; C) Arbeitsverzeichnis enumerieren und die Datei samt Groesse finden
     mov dword [UFS_INDEX], 0
 .fs_dir_next:
     mov edx, [UFS_H_DIR]
@@ -12668,6 +12669,23 @@ userspace_program_start:
     call ufs_close
     test eax, eax
     jnz .failed
+.fs_view:
+    ; D) Explorer-Ansicht aus dem Arbeitsverzeichnis an den Display Server
+    mov edx, [UFS_H_DIR]
+    call ufs_build_view
+    test eax, eax
+    jnz .failed
+    mov eax, SYSCALL_SERVICE_DISPLAY
+    mov ebx, SYSCALL_DISPLAY_SUBMIT_EXPLORER_VIEW
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, UFS_VIEW
+    mov esi, EXPLORER_VIEW_SIZE
+    int 0x80
+    test eax, eax
+    jz .fs_view_done
+    cmp eax, SYSCALL_STATUS_SERVICE  ; ohne Display Server nur ueberspringen
+    jne .failed
+.fs_view_done:
     mov edx, [UFS_H_DIR]
     call ufs_close
     test eax, eax
@@ -13416,6 +13434,169 @@ ufs_invoke32:
     int 0x80
     ret
 
+; Waehlt das Arbeitsverzeichnis und setzt UFS_H_DIR sowie den Breadcrumb in
+; UFS_VIEW. Schreibrecht nur bei beschreibbarem Volume. EAX=Status.
+ufs_select_home:
+    xor eax, eax
+    test dword [SHARED_SERVICE_ADDRESS + 12], SHARED_FEATURE_FILESYSTEM_WRITABLE
+    jz .flags
+    mov eax, VFS_LOOKUP_FLAG_WRITE
+.flags:
+    mov [UFS_FLAGS], eax
+    mov edi, UFS_VIEW
+    xor eax, eax
+    mov ecx, EXPLORER_VIEW_SIZE / 4
+    rep stosd
+    mov esi, UFS_ADDR(ufs_crumb_users)
+    mov edi, UFS_VIEW + 40
+    mov ecx, ufs_crumb_users_end - ufs_crumb_users
+    rep movsb
+    mov dword [UFS_VIEW + 28], ufs_crumb_users_end - ufs_crumb_users
+    mov edx, [USER_STACK_ADDRESS - 152]
+    mov esi, UFS_ADDR(ufs_path_benutzer)
+    mov ecx, ufs_path_benutzer_end - ufs_path_benutzer
+    mov edi, [UFS_FLAGS]
+    call ufs_lookup
+    test eax, eax
+    jnz .return
+    mov [UFS_H_BASE], ebx
+    mov [UFS_H_DIR], ebx
+    mov dword [UFS_INDEX], 0
+.scan:
+    mov edx, [UFS_H_BASE]
+    mov ecx, [UFS_INDEX]
+    call ufs_read_directory
+    test eax, eax
+    jnz .base_only
+    cmp dword [UFS_ENTRY + 16], NOVAFS_TYPE_DIRECTORY
+    jne .next
+    cmp dword [UFS_ENTRY + 20], 29
+    ja .next
+    ; "<Benutzer>/Dokumente" relativ zu /Benutzer
+    mov esi, UFS_ENTRY + 32
+    mov edi, UFS_PATH
+    mov ecx, [UFS_ENTRY + 20]
+    rep movsb
+    mov esi, UFS_ADDR(ufs_suffix_documents)
+    mov ecx, ufs_suffix_documents_end - ufs_suffix_documents
+    rep movsb
+    mov ecx, [UFS_ENTRY + 20]
+    add ecx, ufs_suffix_documents_end - ufs_suffix_documents
+    mov edx, [UFS_H_BASE]
+    mov esi, UFS_PATH
+    mov edi, [UFS_FLAGS]
+    call ufs_lookup
+    test eax, eax
+    jnz .next
+    mov [UFS_H_DIR], ebx
+    ; Breadcrumb "Benutzer  >  <Name>  >  Dokumente"
+    mov edi, UFS_VIEW + 40 + (ufs_crumb_users_end - ufs_crumb_users)
+    mov esi, UFS_ADDR(ufs_crumb_separator)
+    mov ecx, ufs_crumb_separator_end - ufs_crumb_separator
+    rep movsb
+    mov esi, UFS_ENTRY + 32
+    mov ecx, [UFS_ENTRY + 20]
+    rep movsb
+    mov esi, UFS_ADDR(ufs_crumb_separator)
+    mov ecx, ufs_crumb_separator_end - ufs_crumb_separator
+    rep movsb
+    mov esi, UFS_ADDR(ufs_crumb_documents)
+    mov ecx, ufs_crumb_documents_end - ufs_crumb_documents
+    rep movsb
+    sub edi, UFS_VIEW + 40
+    mov [UFS_VIEW + 28], edi
+    mov dword [UFS_VIEW + 24], 3     ; Schnellzugriff "Dokumente"
+    mov edx, [UFS_H_BASE]
+    call ufs_close
+    ret
+.next:
+    inc dword [UFS_INDEX]
+    cmp dword [UFS_INDEX], 64
+    jb .scan
+.base_only:
+    xor eax, eax
+.return:
+    ret
+
+; EDX=Verzeichnis-Handle. Fuellt UFS_VIEW (Breadcrumb bereits gesetzt) mit
+; hoechstens vier Ordnern und vier Dateien sowie den Gesamtzahlen. Zu lange
+; Namen enden mit "..". EAX=Status.
+ufs_build_view:
+    mov [UFS_H_BASE], edx
+    mov dword [UFS_VIEW + 0], EXPLORER_VIEW_SIZE
+    mov dword [UFS_VIEW + 4], SYSCALL_ABI_VERSION
+    mov dword [UFS_VIEW + 8], 1
+    mov dword [UFS_VIEW + 12], 0
+    mov dword [UFS_VIEW + 16], 0
+    mov dword [UFS_VIEW + 20], 0
+    mov dword [UFS_VIEW + 32], 0
+    mov dword [UFS_VIEW + 36], 0
+    mov dword [UFS_INDEX], 0
+.entry:
+    mov edx, [UFS_H_BASE]
+    mov ecx, [UFS_INDEX]
+    call ufs_read_directory
+    cmp eax, SYSCALL_STATUS_NOT_FOUND
+    je .done
+    test eax, eax
+    jnz .return
+    inc dword [UFS_VIEW + 20]
+    ; Typzaehler: +32 Ordner, +36 Dateien; je Typ hoechstens vier sichtbar
+    mov ebx, UFS_VIEW + 36
+    cmp dword [UFS_ENTRY + 16], NOVAFS_TYPE_DIRECTORY
+    jne .counted
+    mov ebx, UFS_VIEW + 32
+.counted:
+    inc dword [ebx]
+    cmp dword [ebx], 4
+    ja .next
+    mov eax, [UFS_VIEW + 16]
+    cmp eax, EXPLORER_MAX_ENTRIES
+    jae .next
+    imul edi, eax, EXPLORER_ENTRY_SIZE
+    add edi, UFS_VIEW + EXPLORER_VIEW_HEADER
+    mov eax, [UFS_ENTRY + 16]
+    mov [edi + 0], eax
+    mov eax, [UFS_ENTRY + 24]
+    cmp dword [UFS_ENTRY + 28], 0
+    je .size_ok
+    mov eax, 0xFFFFFFFF
+.size_ok:
+    mov [edi + 4], eax
+    mov ecx, [UFS_ENTRY + 20]
+    mov dword [UFS_FLAGS], 0
+    cmp ecx, EXPLORER_NAME_MAX
+    jbe .name_ok
+    mov ecx, EXPLORER_NAME_MAX
+    mov dword [UFS_FLAGS], 1
+.name_ok:
+    mov [edi + 8], ecx
+    mov dword [edi + 12], 0
+    add edi, 16
+    mov esi, UFS_ENTRY + 32
+    rep movsb
+    cmp dword [UFS_FLAGS], 0
+    je .stored
+    mov word [edi - 2], '..'
+.stored:
+    inc dword [UFS_VIEW + 16]
+.next:
+    inc dword [UFS_INDEX]
+    cmp dword [UFS_INDEX], 256
+    jb .entry
+.done:
+    xor eax, eax
+.return:
+    ret
+
+ufs_crumb_users:     db "Benutzer"
+ufs_crumb_users_end:
+ufs_crumb_separator: db "  /  "
+ufs_crumb_separator_end:
+ufs_crumb_documents: db "Dokumente"
+ufs_crumb_documents_end:
+ufs_suffix_documents: db "/Dokumente"
+ufs_suffix_documents_end:
 ufs_path_bootcount: db "/System/Diagnose/novafs-bootcount"
 ufs_path_bootcount_end:
 ufs_path_benutzer:  db "/Benutzer"
@@ -13681,7 +13862,16 @@ syscall_dispatch:
     je .display_submit
     cmp dword [edx + 32], SYSCALL_DISPLAY_POLL_INPUT
     je .display_poll_input
-    jmp .unknown_operation
+    cmp dword [edx + 32], SYSCALL_DISPLAY_SUBMIT_EXPLORER_VIEW
+    jne .unknown_operation
+    call explorer_submit_view
+    mov edx, [syscall_frame]
+    mov [edx + 44], eax
+    test eax, eax
+    jz .explorer_done
+    inc dword [syscall_rejected]
+.explorer_done:
+    ret
 .display_query:
     cmp dword [edx + 20], DISPLAY_INFO_SIZE
     jb .bad_size
@@ -19318,7 +19508,7 @@ draw_shell_explorer:
     mov edx, NOVA_COLOR_MUTED
     mov ebp, 1
     call draw_text
-    mov esi, text_explorer_breadcrumb
+    call explorer_breadcrumb_text
     mov ebx, [shell_window_x]
     add ebx, 210
     mov ecx, [shell_window_y]
@@ -19372,11 +19562,11 @@ draw_shell_explorer:
     mov edx, NOVA_COLOR_MUTED
     mov ebp, 1
     call draw_text
+    call explorer_sidebar_highlight_y
+    add ecx, [shell_window_y]
     mov eax, NOVA_COLOR_SELECTION
     mov ebx, [shell_window_x]
     add ebx, 12
-    mov ecx, [shell_window_y]
-    add ecx, 184
     mov edx, 152
     mov esi, 30
     call fill_rounded_rectangle
@@ -19403,6 +19593,21 @@ draw_shell_explorer:
 .folder_loop:
     cmp edi, 4
     jae .files
+    call explorer_folder_label
+    test esi, esi
+    jnz .folder_card
+    test edi, edi
+    jnz .files
+    mov esi, text_explorer_no_folders
+    mov ebx, [shell_card_x]
+    mov ecx, [shell_window_y]
+    add ecx, 198
+    mov edx, NOVA_COLOR_MUTED
+    mov ebp, 1
+    call draw_text
+    jmp .files
+.folder_card:
+    mov [explorer_card_label], esi
     mov eax, NOVA_COLOR_CARD_BORDER
     mov ebx, [shell_card_x]
     mov ecx, [shell_window_y]
@@ -19416,7 +19621,7 @@ draw_shell_explorer:
     mov edx, 130
     mov esi, 54
     call fill_rounded_rectangle
-    mov esi, [shell_folder_labels + edi * 4]
+    mov esi, [explorer_card_label]
     mov ebx, [shell_card_x]
     add ebx, 14
     mov ecx, [shell_window_y]
@@ -19452,6 +19657,13 @@ draw_shell_explorer:
     sub edx, 208
     mov esi, 30
     call fill_rounded_rectangle
+    cmp dword [explorer_view_valid], 1
+    jne .static_columns
+    call explorer_draw_file_selection
+    call explorer_draw_files
+    popad
+    ret
+.static_columns:
     mov esi, text_explorer_columns
     mov ebx, [shell_window_x]
     add ebx, 204

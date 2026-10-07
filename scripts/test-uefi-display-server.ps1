@@ -102,6 +102,7 @@ try {
         'NOVA: Userspace VFS.Read erfolgreich',
         'NOVA: Userspace VFS.Write erfolgreich',
         'NOVA: Userspace VFS.ReadDirectory erfolgreich',
+        'NOVA: Explorer zeigt NovaFS-Verzeichnis aus Ring 3',
         'NOVA: Thread Manager ABI 1.0 bereit',
         'NOVA: Display Server ABI 1.0, Firmware-Framebuffer uebernommen',
         'NOVA: Userspace Display.QueryPrimary ohne MMIO-Adresse erfolgreich',

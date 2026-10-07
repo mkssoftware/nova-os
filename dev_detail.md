@@ -3058,7 +3058,7 @@ Das Bootstrap-Programm prüft bei jedem Start aus Ring 3:
 
 Ist das Volume read-only (z. B. `DIRTY`), läuft nur der Leseteil; der Desktop
 startet in jedem Fall. `make test-uefi-novafs` prüft die Datei anschließend vom
-Host aus (`/Benutzer/Willkommen.txt` = „Willkommen bei NovaOS.“).
+Host aus (`/Benutzer/Matthias/Dokumente/Willkommen.txt` = „Willkommen bei NovaOS.“; siehe Abschnitt 98).
 
 ```text
 NOVA: Userspace VFS.Lookup auf NovaFS erfolgreich
@@ -3079,3 +3079,63 @@ NOVA: Userspace VFS.ReadDirectory erfolgreich
 - Policy ist eine feste Phase-1-Regel; deklarative Policies und
   objektbezogene Capabilities aus dem Semantic Core folgen.
 
+## 98. Explorer-Ansicht aus NovaFS (Display-Operation 4)
+
+### Benutzerprofil im Image
+
+`novafs mkfs` legt standardmäßig `/Benutzer/Matthias` mit den Unterordnern
+`Desktop`, `Dokumente`, `Downloads`, `Bilder`, `Musik` und `Videos` an.
+`--user NAME` wählt den Namen, `--no-user` lässt das Profil weg (genutzt von
+den Split-Szenarien in `test-uefi-novafs.ps1`, damit die Vorbelegung exakt
+bleibt). Im Makefile steuert `NOVAFS_USER` den Namen.
+
+### Ablauf in Ring 3
+
+1. `ufs_select_home` öffnet `/Benutzer`, nimmt den ersten Unterordner und
+   öffnet relativ `<name>/Dokumente`. Breadcrumb `Benutzer  /  <name>  /
+   Dokumente`, Highlight-Index 3. Ohne Profil fällt es auf `/Benutzer` zurück.
+2. Ist das Volume schreibbar, wird `Willkommen.txt` (24 Bytes) dort angelegt
+   bzw. gefunden, geschrieben, zurückgelesen und per `ReadDirectory` gesucht.
+3. `ufs_build_view` liest alle Einträge, übernimmt höchstens 4 Ordner und
+   4 Dateien und trägt die Gesamtzahlen ein.
+4. `Display.SubmitExplorerView` (Service 12, Operation 4) mit 480 Bytes.
+   `-8 SERVICE` (kein Display) wird toleriert.
+
+### ABI `NovaExplorerViewV1` (480 Bytes, `syscall.h`)
+
+| Offset | Feld | Regel |
+|---|---|---|
+| 0 | Size | 480 |
+| 4 | Version | 1 |
+| 8 | Generation (u64) | > 0 |
+| 16 | EntryCount | ≤ 8 |
+| 20 | TotalEntries | = TotalDirectories + TotalFiles |
+| 24 | Flags | Bits 0–2: Schnellzugriff-Zeile 1..7 |
+| 28 | PathLength | ≤ 56 |
+| 32 | TotalDirectories | |
+| 36 | TotalFiles | |
+| 40 | Path[56] | Breadcrumb-Text |
+| 96 | Entries[8] × 48 | Type, Size, NameLength (1..32), Reserved, Name[32] |
+
+Der Kernel (`explorer32.inc`) kopiert die Ansicht, prüft alle Felder und
+ersetzt Bytes außerhalb 0x20..0x7E durch `-`, weil die Bootschrift nur einen
+ASCII-Teilsatz plus Umlaute enthält.
+
+### Darstellung
+
+- Ordner erscheinen als Kacheln (wie bisher), Dateien als Zeilen mit den
+  Spalten Name / Typ / Größe / Geändert (45/65/85 % der Breite),
+- Typ nach Endung: `.txt` Textdatei, `.bin` Binärdatei, `.png` PNG-Bild,
+  `.md` Markdown, sonst Datei; Größe in B/KB/MB; Datum vorerst `-`,
+- Fußzeile `N Elemente  D Ordner  F Dateien  NovaFS: X MB frei`,
+- leere Liste: „Keine Dateien in diesem Ordner“.
+
+```text
+NOVA: Explorer zeigt NovaFS-Verzeichnis aus Ring 3, Eintraege 0x...
+```
+
+### Grenzen
+
+- keine Navigation (die Ansicht wird einmal beim Start übergeben),
+- keine Zeitstempel in der Anzeige,
+- Namen außerhalb ASCII werden als `-` dargestellt.

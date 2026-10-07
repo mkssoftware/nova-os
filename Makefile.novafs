@@ -69,6 +69,7 @@ ELF64_TEST_DEBUG := $(BUILD_DIR)/qemu-elf64-debug.log
 NOVAFS_TOOL := $(BUILD_DIR)/novafs.exe
 NOVAFS_IMAGE := $(BUILD_DIR)/novafs-system.img
 NOVAFS_SIZE_MIB ?= 32
+NOVAFS_USER ?= Matthias
 NOVAFS_RESET ?=
 
 IMAGE_SECTORS := 2880
@@ -359,7 +360,7 @@ novafs-tool: $(NOVAFS_TOOL)
 
 # Vorlage fuer ein frisch formatiertes Systemvolume (nur falls nicht vorhanden).
 $(NOVAFS_IMAGE): | $(NOVAFS_TOOL)
-	$(NOVAFS_TOOL) mkfs $(NOVAFS_IMAGE) --size-mib $(NOVAFS_SIZE_MIB) --label "NovaOS System"
+	$(NOVAFS_TOOL) mkfs $(NOVAFS_IMAGE) --size-mib $(NOVAFS_SIZE_MIB) --label "NovaOS System" --user "$(NOVAFS_USER)"
 
 novafs-image: $(NOVAFS_IMAGE)
 

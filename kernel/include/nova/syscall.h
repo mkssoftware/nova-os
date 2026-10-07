@@ -76,7 +76,8 @@ enum NovaVfsOperationId {
 enum NovaDisplayOperationId {
     NOVA_DISPLAY_OPERATION_QUERY_PRIMARY = 1,
     NOVA_DISPLAY_OPERATION_SUBMIT_SYSTEM_SCENE = 2,
-    NOVA_DISPLAY_OPERATION_POLL_INPUT = 3
+    NOVA_DISPLAY_OPERATION_POLL_INPUT = 3,
+    NOVA_DISPLAY_OPERATION_SUBMIT_EXPLORER_VIEW = 4
 };
 
 enum NovaSystemInputAction {
@@ -353,6 +354,33 @@ typedef struct NovaSystemInputEventV1 {
     uint32_t Reserved;
 } NovaSystemInputEventV1;
 
+#define NOVA_EXPLORER_VIEW_MAX_ENTRIES 8u
+#define NOVA_EXPLORER_VIEW_PATH_MAX    56u
+#define NOVA_EXPLORER_NAME_MAX         32u
+#define NOVA_EXPLORER_FLAG_HIGHLIGHT_MASK 0x7u /* 1..7 = Schnellzugriff-Zeile */
+
+typedef struct NovaExplorerEntryV1 {
+    uint32_t Type;          /* NOVA_VFS_OBJECT_FILE / _DIRECTORY */
+    uint32_t Size;          /* Bytes (Dateien), sonst 0 */
+    uint32_t NameLength;    /* 1..32 */
+    uint32_t Reserved;
+    char Name[NOVA_EXPLORER_NAME_MAX];
+} NovaExplorerEntryV1;
+
+typedef struct NovaExplorerViewV1 {
+    uint32_t Size;              /* 480 */
+    uint32_t Version;           /* 1 */
+    uint64_t Generation;        /* > 0 */
+    uint32_t EntryCount;        /* <= 8 */
+    uint32_t TotalEntries;      /* == TotalDirectories + TotalFiles */
+    uint32_t Flags;
+    uint32_t PathLength;        /* <= 56 */
+    uint32_t TotalDirectories;
+    uint32_t TotalFiles;
+    char Path[NOVA_EXPLORER_VIEW_PATH_MAX];
+    NovaExplorerEntryV1 Entries[NOVA_EXPLORER_VIEW_MAX_ENTRIES];
+} NovaExplorerViewV1;
+
 _Static_assert(sizeof(NovaAbiVersion) == 4,
                "NovaAbiVersion ABI size changed");
 _Static_assert(sizeof(NovaSyscallRequestV1) == 32,
@@ -407,6 +435,14 @@ _Static_assert(sizeof(NovaSystemInputEventV1) == 32,
                "NovaSystemInputEventV1 ABI size changed");
 _Static_assert(offsetof(NovaSystemInputEventV1, MonotonicTick) == 16,
                "NovaSystemInputEventV1 alignment changed");
+_Static_assert(sizeof(NovaExplorerEntryV1) == 48,
+               "NovaExplorerEntryV1 ABI size changed");
+_Static_assert(offsetof(NovaExplorerViewV1, Path) == 40,
+               "NovaExplorerViewV1 path offset changed");
+_Static_assert(offsetof(NovaExplorerViewV1, Entries) == 96,
+               "NovaExplorerViewV1 header size changed");
+_Static_assert(sizeof(NovaExplorerViewV1) == 480,
+               "NovaExplorerViewV1 ABI size changed");
 
 /* x86-32: EAX=Service, EBX=Operation, ECX=Major|Minor<<16,
  * EDX=Argumentzeiger, ESI=Argumentgröße, EAX=Status. */
