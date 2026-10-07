@@ -1714,5 +1714,17 @@ Details in `dev_detail.md`, Abschnitt 102 (Löschen), Abschnitt 103
   validiert und aktiv ist, dass die monotone Domain nicht rückwärts läuft, dass
   die Wall-Clock-Domain nicht fälschlich als monotone/valide Quelle behandelt
   wird und dass Clock-Domains nicht implizit miteinander kompatibel sind.
+- **Deadline-Anbindung:** Task-Deadlines speichern jetzt zusätzlich
+  `ClockDomainID`, Toleranz, effektiven Wakeup-Tick und Miss-Tick. IO-Requests
+  erben den effektiven Deadline-Zeitpunkt, und der Deadline-Selftest prüft die
+  monotone Domain sowie die Miss-Introspection. Damit greifen
+  `NPSPEC-TIME-DEADLINE-0001`, `NPSPEC-TIME-COALESCING-0001` und
+  `NPSPEC-TIME-INTROSPECTION-0001` erstmals in die bestehende
+  Scheduler-/IO-Deadline-Schicht hinein.
+- **Coalescing-Basis:** `task_deadline_set_tolerant` erlaubt jetzt explizite
+  Toleranzen für Firm/Soft/Advisory-Deadlines und berechnet daraus einen
+  `EffectiveTick`. Hard-Deadlines mit Toleranz werden abgewiesen; von einem
+  Hard-Parent geerbte Deadlines verlieren ihre Toleranz automatisch. Der
+  Selftest prüft beide Fälle.
 - **Build:** UEFI-Image neu erstellt und validiert: Kernel Build-ID
-  `B6056B3B736AD93C0E882D07C7649A9C1A1C00A6`, NKI CRC32 `95F37182`.
+  `A7EE8DA708561CA55B3855AA79DC1AC702101540`, NKI CRC32 `BAB3803F`.

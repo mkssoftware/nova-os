@@ -4066,14 +4066,51 @@ Der Boot-Selftest prüft:
 - Monotone Zeit läuft nicht rückwärts.
 - Unterschiedliche Clock Domains werden nicht implizit kompatibel gemacht.
 
+### Deadline-Anbindung
+
+`TASK_DEADLINE_RECORD_SIZE` ist von 16 auf 32 Byte gewachsen. Neben absolutem
+Ziel-Tick, Klasse, Policy und Zustand enthält ein Deadline-Record jetzt:
+
+```text
+ClockDomainID   aktuell immer Monotonic Kernel Time (1)
+Tolerance       erlaubtes Coalescing-Fenster in monotonic ticks
+EffectiveTick   absoluter Ziel-Tick plus zulässige Toleranz
+MissTick        tatsächlicher Tick, an dem ein Miss erkannt wurde
+```
+
+Damit sind Deadline und tatsächliche Ausführung getrennt sichtbar. IO-Requests
+erben nicht mehr blind den rohen Ziel-Tick, sondern den effektiven Wakeup-Tick.
+Der Selftest prüft, dass Child-Deadlines an Parent-Deadlines geklemmt bleiben,
+dass die monotone ClockDomainID erhalten bleibt und dass ein erkannter Miss den
+tatsächlichen `MissTick` setzt.
+
+### Coalescing
+
+`task_deadline_set_tolerant` ergänzt die bisherige `task_deadline_set`-API um
+eine explizite Toleranz. Die Bootstrap-Regel ist absichtlich konservativ:
+
+- Hard Deadlines dürfen keine Toleranz besitzen und werden mit Toleranz
+  abgewiesen.
+- Von einem Hard-Parent geerbte Deadlines werden ebenfalls hart und verlieren
+  ihre Toleranz.
+- Firm, Soft und Advisory Deadlines dürfen einen `EffectiveTick` innerhalb des
+  Fensters `AbsoluteTick + Tolerance` erhalten.
+- `EffectiveTick` ist der Zeitpunkt, den Polling und IO-Vererbung verwenden;
+  `AbsoluteTick` bleibt als ursprüngliche Anforderung erhalten.
+
+Damit ist die erste Grundlage aus `NPSPEC-TIME-COALESCING-0001` umgesetzt,
+ohne schon einen globalen Tickless-Planer oder echte Hardware-One-Shot-Timer
+vorauszusetzen.
+
 Bootausgabe:
 
 ```text
 NOVA: Time Core ABI 1.0, Clock Source, Domains und Monotonic Introspection bereit
+NOVA: Task Deadline ABI 1.0, ClockDomain, Toleranz und Miss-Introspection aktiv
 ```
 
 ### Artefakte
 
-- Kernel Build-ID: `B6056B3B736AD93C0E882D07C7649A9C1A1C00A6`
-- NKI CRC32: `95F37182`
-- IMG SHA256: `3B09F915F47B447254D220165A04998B84229995C23DB349450134048FF0C4AF`
+- Kernel Build-ID: `A7EE8DA708561CA55B3855AA79DC1AC702101540`
+- NKI CRC32: `BAB3803F`
+- IMG SHA256: `0D1B9EF5199291A04BC4882CA46FF1B5366D6903B3E39993377D6115A9C18C3E`

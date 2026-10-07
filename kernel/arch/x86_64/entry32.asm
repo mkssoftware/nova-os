@@ -5257,12 +5257,16 @@ task_create:
     sub edx, task_table
     shr edx, 5
     mov dword [task_group_ids + edx * 4], 0
-    shl edx, 4
+    shl edx, 5
     add edx, task_deadline_table
     mov dword [edx + 0], 0
     mov dword [edx + 4], 0
     mov dword [edx + 8], 0
     mov dword [edx + 12], 0
+    mov dword [edx + 16], 0
+    mov dword [edx + 20], 0
+    mov dword [edx + 24], 0
+    mov dword [edx + 28], 0
     mov eax, [task_next_id]
     mov [edi + TASK_ID], eax
     mov edx, [task_temp_owner]
@@ -5643,11 +5647,13 @@ task_table:
 ; NPSPEC-CONCURRENCY-DEADLINE-0001 / ADR-CONCURRENCY-0004
 ; ---------------------------------------------------------------------------
 
-TASK_DEADLINE_API_SIZE       equ 32
+TASK_DEADLINE_API_SIZE       equ 52
+TASK_DEADLINE_RECORD_SIZE    equ 32
 TASK_DEADLINE_CLOCK_HZ       equ 100
 TASK_DEADLINE_CLASS_HARD     equ 1
 TASK_DEADLINE_CLASS_FIRM     equ 2
 TASK_DEADLINE_CLASS_SOFT     equ 3
+TASK_DEADLINE_CLASS_ADVISORY equ 4
 TASK_DEADLINE_POLICY_CONTINUE equ 1
 TASK_DEADLINE_POLICY_CANCEL  equ 2
 TASK_DEADLINE_POLICY_FAIL    equ 3
@@ -5658,13 +5664,17 @@ TASK_DEADLINE_ABSOLUTE       equ 0
 TASK_DEADLINE_CLASS          equ 4
 TASK_DEADLINE_POLICY         equ 8
 TASK_DEADLINE_STATE          equ 12
-TASK_DEADLINE_CAPABILITIES   equ 0x0000000F
+TASK_DEADLINE_CLOCK_DOMAIN   equ 16
+TASK_DEADLINE_TOLERANCE      equ 20
+TASK_DEADLINE_EFFECTIVE      equ 24
+TASK_DEADLINE_MISS_TICK      equ 28
+TASK_DEADLINE_CAPABILITIES   equ 0x0000001F
 TASK_CANCEL_REASON_DEADLINE  equ 0x444C4E45
 
 task_deadline_manager_initialize:
     mov edi, task_deadline_table
     xor eax, eax
-    mov ecx, (TASK_CAPACITY * 16) / 4
+    mov ecx, (TASK_CAPACITY * TASK_DEADLINE_RECORD_SIZE) / 4
     rep stosd
     mov dword [task_deadline_miss_count], 0
     mov dword [task_deadline_manager_ready], 1
@@ -5674,22 +5684,28 @@ task_deadline_manager_initialize:
 ; EAX=Taskdatensatz. EAX=zugehoeriger Deadline-Datensatz.
 task_deadline_record_for_task:
     sub eax, task_table
-    shr eax, 1                       ; 32 Byte Task -> 16 Byte Deadline
     add eax, task_deadline_table
     ret
 
 ; EAX=Task-ID, EDX=absoluter Tick, EBX=Klasse, ECX=Miss-Policy.
 ; Eine Parent-Deadline wird niemals verlaengert.
 task_deadline_set:
+    xor esi, esi
+
+; EAX=Task-ID, EDX=absoluter Tick, EBX=Klasse, ECX=Miss-Policy, ESI=Toleranz.
+; Coalescing darf nur innerhalb der Toleranz erfolgen und nie Hard Deadlines
+; verschieben.
+task_deadline_set_tolerant:
     pushfd
     cli
     mov [task_deadline_temp_task], eax
     mov [task_deadline_temp_tick], edx
     mov [task_deadline_temp_class], ebx
     mov [task_deadline_temp_policy], ecx
+    mov [task_deadline_temp_tolerance], esi
     cmp ebx, TASK_DEADLINE_CLASS_HARD
     jb .invalid
-    cmp ebx, TASK_DEADLINE_CLASS_SOFT
+    cmp ebx, TASK_DEADLINE_CLASS_ADVISORY
     ja .invalid
     cmp ecx, TASK_DEADLINE_POLICY_CONTINUE
     jb .invalid
@@ -5697,7 +5713,12 @@ task_deadline_set:
     ja .invalid
     test edx, edx
     jz .invalid
+    cmp ebx, TASK_DEADLINE_CLASS_HARD
+    jne .lookup_task
+    test esi, esi
+    jnz .invalid
 
+.lookup_task:
     call task_lookup
     jc .invalid
     mov [task_deadline_temp_record], eax
@@ -5723,6 +5744,7 @@ task_deadline_set:
     cmp dword [eax + TASK_DEADLINE_CLASS], TASK_DEADLINE_CLASS_HARD
     jne .validate_effective
     mov dword [task_deadline_temp_class], TASK_DEADLINE_CLASS_HARD
+    mov dword [task_deadline_temp_tolerance], 0
 
 .validate_effective:
     cmp dword [task_deadline_temp_class], TASK_DEADLINE_CLASS_HARD
@@ -5734,6 +5756,11 @@ task_deadline_set:
     jle .invalid                       ; minimale Bootstrap-Admission-Control
 
 .store:
+    mov eax, TIME_CLOCK_DOMAIN_MONO_ID
+    call time_clock_domain_lookup
+    jc .invalid
+    test dword [eax + 12], TIME_DOMAIN_FLAG_MONOTONIC
+    jz .invalid
     mov eax, [task_deadline_temp_record]
     call task_deadline_record_for_task
     mov edx, [task_deadline_temp_tick]
@@ -5743,6 +5770,16 @@ task_deadline_set:
     mov edx, [task_deadline_temp_policy]
     mov [eax + TASK_DEADLINE_POLICY], edx
     mov dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
+    mov dword [eax + TASK_DEADLINE_CLOCK_DOMAIN], TIME_CLOCK_DOMAIN_MONO_ID
+    mov edx, [task_deadline_temp_tolerance]
+    mov [eax + TASK_DEADLINE_TOLERANCE], edx
+    mov edx, [task_deadline_temp_tick]
+    cmp dword [task_deadline_temp_class], TASK_DEADLINE_CLASS_HARD
+    je .effective_ready
+    add edx, [task_deadline_temp_tolerance]
+.effective_ready:
+    mov [eax + TASK_DEADLINE_EFFECTIVE], edx
+    mov dword [eax + TASK_DEADLINE_MISS_TICK], 0
     mov eax, [task_deadline_temp_tick]
     popfd
     clc
@@ -5772,14 +5809,16 @@ task_deadline_poll:
     cmp dword [edi + TASK_STATE], TASK_STATE_CANCEL_REQUEST
     jae .next
     mov eax, ecx
-    shl eax, 4
+    shl eax, 5
     add eax, task_deadline_table
     cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
     jne .next
     mov edx, [task_deadline_poll_tick]
-    sub edx, [eax + TASK_DEADLINE_ABSOLUTE]
+    sub edx, [eax + TASK_DEADLINE_EFFECTIVE]
     jl .next
     mov dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_MISSED
+    mov edx, [task_deadline_poll_tick]
+    mov [eax + TASK_DEADLINE_MISS_TICK], edx
     inc dword [task_deadline_miss_count]
     mov edx, [eax + TASK_DEADLINE_POLICY]
     cmp edx, TASK_DEADLINE_POLICY_CANCEL
@@ -5857,10 +5896,85 @@ task_deadline_manager_self_test:
     jne .invalid
     cmp dword [eax + TASK_DEADLINE_CLASS], TASK_DEADLINE_CLASS_HARD
     jne .invalid
+    cmp dword [eax + TASK_DEADLINE_CLOCK_DOMAIN], TIME_CLOCK_DOMAIN_MONO_ID
+    jne .invalid
+    cmp dword [eax + TASK_DEADLINE_TOLERANCE], 0
+    jne .invalid
+    cmp [eax + TASK_DEADLINE_EFFECTIVE], edx
+    jne .invalid
     mov eax, [task_deadline_test_child]
     xor edx, edx
     call task_complete
     jc .invalid
+    mov eax, [task_deadline_test_parent]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [task_deadline_test_scope]
+    call task_scope_close
+    jc .invalid
+
+    ; Toleranz-basiertes Coalescing: Soft/Advisory dürfen innerhalb des
+    ; Fensters verschoben werden, Hard Deadlines dagegen nicht.
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [task_deadline_test_scope], eax
+    mov eax, 1
+    mov edx, [task_deadline_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [task_deadline_test_parent], eax
+    mov edx, [timer_ticks]
+    add edx, 20
+    mov [task_deadline_test_parent_tick], edx
+    mov ebx, TASK_DEADLINE_CLASS_ADVISORY
+    mov ecx, TASK_DEADLINE_POLICY_CONTINUE
+    mov esi, 5
+    call task_deadline_set_tolerant
+    jc .invalid
+    mov eax, [task_deadline_test_parent]
+    call task_lookup
+    jc .invalid
+    call task_deadline_record_for_task
+    cmp dword [eax + TASK_DEADLINE_TOLERANCE], 5
+    jne .invalid
+    mov edx, [task_deadline_test_parent_tick]
+    add edx, 5
+    cmp [eax + TASK_DEADLINE_EFFECTIVE], edx
+    jne .invalid
+    mov eax, [task_deadline_test_parent]
+    xor edx, edx
+    call task_complete
+    jc .invalid
+    mov eax, [task_deadline_test_scope]
+    call task_scope_close
+    jc .invalid
+
+    mov eax, 1
+    mov edx, [task_scope_kernel_root_id]
+    xor ebx, ebx
+    call task_scope_create
+    jc .invalid
+    mov [task_deadline_test_scope], eax
+    mov eax, 1
+    mov edx, [task_deadline_test_scope]
+    xor ebx, ebx
+    xor ecx, ecx
+    call task_create
+    jc .invalid
+    mov [task_deadline_test_parent], eax
+    mov edx, [timer_ticks]
+    add edx, 20
+    mov ebx, TASK_DEADLINE_CLASS_HARD
+    mov ecx, TASK_DEADLINE_POLICY_CANCEL
+    mov esi, 1
+    call task_deadline_set_tolerant
+    jnc .invalid
     mov eax, [task_deadline_test_parent]
     xor edx, edx
     call task_complete
@@ -5899,6 +6013,10 @@ task_deadline_manager_self_test:
     call task_deadline_record_for_task
     cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_MISSED
     jne .invalid
+    cmp dword [eax + TASK_DEADLINE_CLOCK_DOMAIN], TIME_CLOCK_DOMAIN_MONO_ID
+    jne .invalid
+    cmp dword [eax + TASK_DEADLINE_MISS_TICK], 0
+    je .invalid
     cmp dword [task_deadline_miss_count], 1
     jne .invalid
     mov eax, [task_deadline_test_parent]
@@ -5923,6 +6041,10 @@ task_deadline_manager_api:
     dd task_deadline_poll
     dd task_deadline_table
     dd task_deadline_miss_count
+    dd TASK_DEADLINE_RECORD_SIZE
+    dd TIME_CLOCK_DOMAIN_MONO_ID
+    dd TASK_DEADLINE_CLASS_ADVISORY
+    dd task_deadline_set_tolerant
 
 task_deadline_manager_ready:    dd 0
 task_deadline_miss_count:       dd 0
@@ -5932,13 +6054,14 @@ task_deadline_temp_tick:        dd 0
 task_deadline_temp_class:       dd 0
 task_deadline_temp_policy:      dd 0
 task_deadline_temp_record:      dd 0
+task_deadline_temp_tolerance:   dd 0
 task_deadline_test_scope:       dd 0
 task_deadline_test_parent:      dd 0
 task_deadline_test_child:       dd 0
 task_deadline_test_parent_tick: dd 0
 align 4
 task_deadline_table:
-    times TASK_CAPACITY * 16 db 0
+    times TASK_CAPACITY * TASK_DEADLINE_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Task Groups mit WaitAll, FailFast, Cancellation und Drain
@@ -6546,7 +6669,7 @@ io_request_submit:
     call task_deadline_record_for_task
     cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
     jne .ready
-    mov edx, [eax + TASK_DEADLINE_ABSOLUTE]
+    mov edx, [eax + TASK_DEADLINE_EFFECTIVE]
     mov [edi + IO_REQUEST_DEADLINE], edx
     or dword [edi + IO_REQUEST_FLAGS], IO_FLAG_DEADLINE_INHERITED
 .ready:
@@ -23565,7 +23688,7 @@ message_task_manager_ok:
 message_task_manager_error:
     db "NOVA PANIC: Task Manager nicht initialisierbar", 13, 10, 0
 message_task_deadline_manager_ok:
-    db "NOVA: Task Deadline ABI 1.0, Parent-Clamp und Miss-Policy aktiv", 13, 10, 0
+    db "NOVA: Task Deadline ABI 1.0, ClockDomain, Toleranz und Miss-Introspection aktiv", 13, 10, 0
 message_task_deadline_manager_error:
     db "NOVA PANIC: Task Deadline Manager nicht initialisierbar", 13, 10, 0
 message_task_group_manager_ok:
