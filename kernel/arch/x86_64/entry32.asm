@@ -3500,10 +3500,32 @@ input_router_handle_scancode:
     je .navigate_back
     cmp al, 0x66                    ; Backspace, Set 2
     je .navigate_back
+    cmp al, 0x3C                    ; F2, Set 1
+    je .rename_key
+    cmp al, 0x06                    ; F2, Set 2
+    je .rename_key
+    ; Alle uebrigen "flachen" Tasten: ueber eine US-QWERTY-Tabelle (nur
+    ; Set 1, Kleinbuchstaben, keine Umschalt-Unterstuetzung) in ein
+    ; druckbares Zeichen fuer die Texteingabe (Umbenennen) uebersetzen.
+    ; Set-2-Tasten und nicht zugeordnete Set-1-Codes bleiben wirkungslos.
+    movzx edx, al
+    mov bl, [keyboard_ascii_table + edx]
+    cmp bl, 0
+    je .ignored
+    mov eax, SYSTEM_INPUT_TEXT_CHAR
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.ignored:
     xor eax, eax
     ret
 .navigate_back:
     mov eax, SYSTEM_INPUT_NAVIGATE_BACK
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.rename_key:
+    mov eax, SYSTEM_INPUT_RENAME_KEY
     call input_router_enqueue
     xor eax, eax
     ret
@@ -12076,7 +12098,9 @@ USER_CODE_SELECTOR equ 0x1B
 USER_DATA_SELECTOR equ 0x23
 TSS_SELECTOR       equ 0x28
 USER_CODE_ADDRESS  equ 0x00400000
-USER_STACK_ADDRESS equ 0x00403000
+; Drei Codeseiten (Explorer/Shell-Programm), direkt gefolgt von einer
+; Stack-Seite ohne Luecke; siehe userspace_initialize.
+USER_STACK_ADDRESS equ 0x00404000
 PROCESS_FLAG_SYSTEM_SERVICE equ 0x00000002
 PROCESS_FLAG_USERSPACE      equ 0x00000004
 SYSCALL_ABI_VERSION         equ 0x00000001
@@ -12146,6 +12170,8 @@ SYSTEM_INPUT_NAVIGATE_RIGHT equ 8
 SYSTEM_INPUT_POINTER_ACTIVATE equ 9
 SYSTEM_INPUT_NAVIGATE_BACK  equ 10
 SYSTEM_INPUT_DELETE         equ 11
+SYSTEM_INPUT_RENAME_KEY     equ 12
+SYSTEM_INPUT_TEXT_CHAR      equ 13
 DISPLAY_SCENE_DESKTOP       equ 0x00000001
 DISPLAY_SCENE_START_MENU    equ 0x00000002
 DISPLAY_SCENE_RIBBON        equ 0x00000004
@@ -12153,7 +12179,9 @@ DISPLAY_SCENE_TASKBAR       equ 0x00000008
 DISPLAY_SCENE_ALLOWED_FLAGS equ DISPLAY_SCENE_DESKTOP | DISPLAY_SCENE_START_MENU | DISPLAY_SCENE_RIBBON | DISPLAY_SCENE_TASKBAR
 USER_ADDRESS_MIN            equ USER_CODE_ADDRESS
 USER_ADDRESS_MAX            equ USER_STACK_ADDRESS
-SHARED_SERVICE_ADDRESS      equ 0x00403000
+; Direkt oberhalb der Stack-Seite (USER_ADDRESS_MAX/USER_STACK_ADDRESS),
+; damit sie nicht mit dieser ueberlappt.
+SHARED_SERVICE_ADDRESS      equ USER_STACK_ADDRESS
 SHARED_SERVICE_SIGNATURE    equ 0x5353564E ; "NVSS"
 SHARED_SERVICE_SIZE         equ 64
 SHARED_FEATURE_INT80        equ 0x00000001
@@ -12205,8 +12233,16 @@ userspace_initialize:
     call paging_map_page
     jc .invalid
 
-    ; Die interaktive System-UI belegt zwei fest begrenzte Codeseiten. Beide
+    ; Die interaktive System-UI belegt drei fest begrenzte Codeseiten. Alle
     ; sind user-lesbar und ausführbar, aber weiterhin nicht beschreibbar.
+    ; Jede Seite wird unabhängig von der tatsächlichen Programmlänge mit
+    ; einer vollen Seite aus dem Kernel-Abbild kopiert (nicht nur dem Rest,
+    ; der laut userspace_program_end tatsächlich zum Programm gehört) –
+    ; das vermeidet eine von der Programmlänge abhängige, möglicherweise
+    ; über die Zielseite hinauslaufende Kopierlänge. Bytes hinter
+    ; userspace_program_end liegen innerhalb des geladenen Kernel-Abbilds
+    ; (der %error-Codebudget-Check weiter unten garantiert das) und werden
+    ; nie ausgeführt.
     call pmm_alloc_page
     test eax, eax
     jz .invalid
@@ -12217,10 +12253,28 @@ userspace_initialize:
     rep stosd
     mov esi, userspace_program_start + PMM_PAGE_SIZE
     mov edi, [userspace_code_page_2]
-    mov ecx, userspace_program_end - userspace_program_start - PMM_PAGE_SIZE
+    mov ecx, PMM_PAGE_SIZE
     rep movsb
     mov eax, USER_CODE_ADDRESS + PMM_PAGE_SIZE
     mov edx, [userspace_code_page_2]
+    mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_USER
+    call paging_map_page
+    jc .invalid
+
+    call pmm_alloc_page
+    test eax, eax
+    jz .invalid
+    mov [userspace_code_page_3], eax
+    mov edi, eax
+    xor eax, eax
+    mov ecx, PMM_PAGE_SIZE / 4
+    rep stosd
+    mov esi, userspace_program_start + PMM_PAGE_SIZE * 2
+    mov edi, [userspace_code_page_3]
+    mov ecx, PMM_PAGE_SIZE
+    rep movsb
+    mov eax, USER_CODE_ADDRESS + PMM_PAGE_SIZE * 2
+    mov edx, [userspace_code_page_3]
     mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_USER
     call paging_map_page
     jc .invalid
@@ -12384,6 +12438,15 @@ UFS_H_TRASH equ USER_STACK_ADDRESS - 2708
 UFS_CWD     equ USER_STACK_ADDRESS - 2968
 UFS_HOME    equ USER_STACK_ADDRESS - 3032
 UFS_H_ROOT  equ USER_STACK_ADDRESS - 3040
+; Umbenennen (F2): Zustand des Editierpuffers. ACTIVE/TYPE/INDEX/LEN/OLDLEN
+; sind je ein Dword, BUF und OLDNAME je EXPLORER_NAME_MAX (32) Byte lang.
+UFS_RENAME_ACTIVE  equ USER_STACK_ADDRESS - 3044
+UFS_RENAME_TYPE    equ USER_STACK_ADDRESS - 3048
+UFS_RENAME_INDEX   equ USER_STACK_ADDRESS - 3052
+UFS_RENAME_LEN     equ USER_STACK_ADDRESS - 3056
+UFS_RENAME_OLDLEN  equ USER_STACK_ADDRESS - 3060
+UFS_RENAME_BUF     equ USER_STACK_ADDRESS - 3092
+UFS_RENAME_OLDNAME equ USER_STACK_ADDRESS - 3124
 
 userspace_program_start:
     ; Process.QuerySelf -> Ergebnis auf dem beschreibbaren Userstack.
@@ -13357,6 +13420,10 @@ userspace_program_start:
     je .navigate_back
     cmp eax, SYSTEM_INPUT_DELETE
     je .delete_entry
+    cmp eax, SYSTEM_INPUT_RENAME_KEY
+    je .rename_key
+    cmp eax, SYSTEM_INPUT_TEXT_CHAR
+    je .text_char
     jmp .failed
 .toggle_start:
     xor dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
@@ -13442,13 +13509,15 @@ userspace_program_start:
     cmp eax, 24                      ; Explorer-Ordner, Zurueck, Schnellzugriff
     jb .present_input_scene
 .activate:
+    cmp dword [UFS_RENAME_ACTIVE], 0
+    jne .rename_commit
     mov eax, [USER_STACK_ADDRESS - 1092]
     test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
     jnz .activate_menu
     cmp dword [USER_STACK_ADDRESS - 1096], 0
     jne .activate_menu
     cmp eax, 24
-    jb .activate_menu
+    jb .open_file
     ; Explorer: 24..27 Ordnerkarte, 28 Zurueck, 30..36 Schnellzugriff
     cmp eax, 28
     je .navigate_back
@@ -13462,6 +13531,13 @@ userspace_program_start:
     sub eax, 24
     call ufs_enter_child
     jmp .explorer_moved
+.open_file:
+    cmp eax, 20
+    jb .activate_menu
+    sub eax, 20
+    mov ebx, eax
+    call ufs_preview_nth
+    jmp .present_input_scene
 .delete_entry:
     ; Entf: 20..23 Dateizeile, 24..27 Ordnerkarte (nur im Explorer-Arbeitsbereich).
     test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
@@ -13489,7 +13565,105 @@ userspace_program_start:
     jnz .present_input_scene
     call ufs_present
     jmp .present_input_scene
+.rename_key:
+    ; F2: startet die Umbenennung der fokussierten Datei-/Ordnerzeile (nur
+    ; im Explorer-Arbeitsbereich, nicht im Startmenue). Ein zweites F2
+    ; waehrend des Editierens bricht ohne Speichern ab.
+    cmp dword [UFS_RENAME_ACTIVE], 0
+    jne .rename_cancel
+    test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    jnz .present_input_scene
+    cmp dword [USER_STACK_ADDRESS - 1096], 0
+    jne .present_input_scene
+    mov eax, [USER_STACK_ADDRESS - 1092]
+    cmp eax, 20
+    jb .present_input_scene
+    cmp eax, 28
+    jae .present_input_scene
+    cmp eax, 24
+    jb .rename_start_file
+    sub eax, 24
+    mov ebx, eax
+    mov eax, NOVAFS_TYPE_DIRECTORY
+    jmp .rename_start
+.rename_start_file:
+    sub eax, 20
+    mov ebx, eax
+    mov eax, NOVAFS_TYPE_FILE
+.rename_start:
+    call ufs_find_nth
+    test eax, eax
+    jnz .present_input_scene
+    mov ecx, [UFS_ENTRY + 20]
+    cmp ecx, EXPLORER_NAME_MAX
+    jbe .rename_len_ok
+    mov ecx, EXPLORER_NAME_MAX
+.rename_len_ok:
+    mov [UFS_RENAME_OLDLEN], ecx
+    mov [UFS_RENAME_LEN], ecx
+    mov esi, UFS_ENTRY + 32
+    mov edi, UFS_RENAME_OLDNAME
+    push ecx
+    rep movsb
+    pop ecx
+    mov esi, UFS_ENTRY + 32
+    mov edi, UFS_RENAME_BUF
+    rep movsb
+    mov dword [UFS_RENAME_ACTIVE], 1
+    call ufs_rename_redraw
+    jmp .present_input_scene
+.rename_cancel:
+    mov dword [UFS_RENAME_ACTIVE], 0
+    call ufs_present
+    jmp .present_input_scene
+.text_char:
+    ; Druckbares Zeichen (vom Kernel bereits in ASCII uebersetzt, siehe
+    ; keyboard_ascii_table) nur waehrend aktiver Umbenennung anhaengen.
+    cmp dword [UFS_RENAME_ACTIVE], 0
+    je .present_input_scene
+    mov eax, [UFS_RENAME_LEN]
+    cmp eax, EXPLORER_NAME_MAX
+    jae .present_input_scene
+    mov edx, [USER_STACK_ADDRESS - 1172] ; Zeichen-Feld des Eingabeereignisses
+    mov edi, UFS_RENAME_BUF
+    add edi, eax
+    mov [edi], dl
+    inc dword [UFS_RENAME_LEN]
+    call ufs_rename_redraw
+    jmp .present_input_scene
+.rename_backspace:
+    cmp dword [UFS_RENAME_LEN], 0
+    je .present_input_scene
+    dec dword [UFS_RENAME_LEN]
+    call ufs_rename_redraw
+    jmp .present_input_scene
+.rename_commit:
+    mov dword [UFS_RENAME_ACTIVE], 0
+    mov edx, [USER_STACK_ADDRESS - 152]
+    mov esi, UFS_CWD
+    mov ecx, [UFS_CWD_LEN]
+    mov edi, VFS_LOOKUP_FLAG_WRITE
+    call ufs_lookup
+    test eax, eax
+    jnz .rename_failed
+    mov [UFS_H_NEW], ebx
+    mov edx, [UFS_H_NEW]
+    mov esi, UFS_RENAME_OLDNAME
+    mov ecx, [UFS_RENAME_OLDLEN]
+    mov edi, [UFS_H_NEW]
+    mov ebx, UFS_RENAME_BUF
+    mov ebp, [UFS_RENAME_LEN]
+    call ufs_rename
+    push eax
+    mov edx, [UFS_H_NEW]
+    call ufs_close
+    pop eax
+.rename_failed:
+    call ufs_present
+    jmp .present_input_scene
 .navigate_back:
+    cmp dword [UFS_RENAME_ACTIVE], 0
+    jne .rename_backspace
     test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
     jnz .present_input_scene
     cmp dword [USER_STACK_ADDRESS - 1096], 0
@@ -13981,13 +14155,38 @@ ufs_rename:
     int 0x80
     ret
 
-; EAX=NovaFS-Typ, EBX=Index (n-ter Eintrag dieses Typs im aktuellen
-; Verzeichnis UFS_CWD) -> EAX=Status. Die Explorer-Navigation oeffnet
-; Verzeichnisse nur lesend (UFS_H_DIR); fuer Entf wird UFS_CWD daher kurz
-; mit Schreibrecht erneut geoeffnet (UFS_H_NEW, zu diesem Zeitpunkt frei).
-ufs_delete_nth:
+; EAX=NovaFS-Typ, EBX=Index -> EAX=Status (0 gefunden, Eintrag in UFS_ENTRY).
+; Durchsucht UFS_H_DIR (bereits offen, nur lesend) nach dem n-ten Eintrag
+; dieses Typs. Gemeinsame Suche fuer ufs_delete_nth und ufs_preview_nth.
+ufs_find_nth:
     mov [UFS_FLAGS], eax
     mov [UFS_NTH], ebx
+    mov dword [UFS_INDEX], 0
+.scan:
+    mov edx, [UFS_H_DIR]
+    mov ecx, [UFS_INDEX]
+    call ufs_read_directory
+    test eax, eax
+    jnz .return
+    inc dword [UFS_INDEX]
+    mov eax, [UFS_FLAGS]
+    cmp [UFS_ENTRY + 16], eax
+    jne .scan
+    dec dword [UFS_NTH]
+    jns .scan
+    xor eax, eax
+.return:
+    ret
+
+; EAX=NovaFS-Typ, EBX=Index (n-ter Eintrag dieses Typs im aktuellen
+; Verzeichnis) -> EAX=Status. Die Explorer-Navigation oeffnet Verzeichnisse
+; nur lesend (UFS_H_DIR); fuer Entf wird das Arbeitsverzeichnis (UFS_CWD)
+; daher kurz mit Schreibrecht erneut geoeffnet (UFS_H_NEW, zu diesem
+; Zeitpunkt frei), um den per ufs_find_nth gefundenen Namen zu loeschen.
+ufs_delete_nth:
+    call ufs_find_nth
+    test eax, eax
+    jnz .return
     mov edx, [USER_STACK_ADDRESS - 152]
     mov esi, UFS_CWD
     mov ecx, [UFS_CWD_LEN]
@@ -13996,29 +14195,74 @@ ufs_delete_nth:
     test eax, eax
     jnz .return
     mov [UFS_H_NEW], ebx
-    mov dword [UFS_INDEX], 0
-.scan:
-    mov edx, [UFS_H_NEW]
-    mov ecx, [UFS_INDEX]
-    call ufs_read_directory
-    test eax, eax
-    jnz .close
-    inc dword [UFS_INDEX]
-    mov eax, [UFS_FLAGS]
-    cmp [UFS_ENTRY + 16], eax
-    jne .scan
-    dec dword [UFS_NTH]
-    jns .scan
     mov edx, [UFS_H_NEW]
     mov esi, UFS_ENTRY + 32
     mov ecx, [UFS_ENTRY + 20]
     call ufs_delete
-.close:
     push eax
     mov edx, [UFS_H_NEW]
     call ufs_close
     pop eax
 .return:
+    ret
+
+; EBX=Index (n-te Datei im aktuellen Verzeichnis) -> EAX=Status. Liest bis
+; zu EXPLORER_PATH_MAX Bytes ihres Inhalts und zeigt sie anstelle des
+; Breadcrumbs an (einfache Dateivorschau, kein eigenes Anzeigeelement).
+ufs_preview_nth:
+    mov eax, NOVAFS_TYPE_FILE
+    call ufs_find_nth
+    test eax, eax
+    jnz .return
+    mov edx, [UFS_H_DIR]
+    mov esi, UFS_ENTRY + 32
+    mov ecx, [UFS_ENTRY + 20]
+    xor edi, edi
+    call ufs_lookup
+    test eax, eax
+    jnz .return
+    mov [UFS_H_NEW], ebx
+    mov ebx, SYSCALL_VFS_READ
+    mov edx, [UFS_H_NEW]
+    mov esi, UFS_VIEW + 40
+    mov ecx, EXPLORER_PATH_MAX
+    xor edi, edi
+    call ufs_io
+    push eax
+    push ecx
+    mov edx, [UFS_H_NEW]
+    call ufs_close
+    pop ecx
+    pop eax
+    test eax, eax
+    jnz .return
+    mov [UFS_VIEW + 28], ecx
+    mov eax, SYSCALL_SERVICE_DISPLAY
+    mov ebx, SYSCALL_DISPLAY_SUBMIT_EXPLORER_VIEW
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, UFS_VIEW
+    mov esi, EXPLORER_VIEW_SIZE
+    int 0x80
+    xor eax, eax
+.return:
+    ret
+
+; Zeichnet den aktuellen Umbenennen-Puffer (UFS_RENAME_BUF/_LEN) anstelle
+; des Breadcrumbs, analog zu ufs_preview_nth oben. Wird nach jeder
+; Aenderung des Puffers (Start, Zeichen, Backspace) erneut aufgerufen.
+ufs_rename_redraw:
+    mov esi, UFS_RENAME_BUF
+    mov edi, UFS_VIEW + 40
+    mov ecx, [UFS_RENAME_LEN]
+    rep movsb
+    mov eax, [UFS_RENAME_LEN]
+    mov [UFS_VIEW + 28], eax
+    mov eax, SYSCALL_SERVICE_DISPLAY
+    mov ebx, SYSCALL_DISPLAY_SUBMIT_EXPLORER_VIEW
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, UFS_VIEW
+    mov esi, EXPLORER_VIEW_SIZE
+    int 0x80
     ret
 
 ; EDX=Verzeichnis-Handle. Fuellt UFS_VIEW (Breadcrumb bereits gesetzt) mit
@@ -14145,11 +14389,16 @@ userspace_system_scene:
     dd 2                            ; Startmenü-Suche besitzt Fokus
     dd 0                            ; Surface.Primary
     dd 6                            ; Accent.Primary
-    times 5 dd 0
+    ; Sechs Reserve-Dwords (Offset 40..63), damit die Struktur exakt
+    ; SYSTEM_SCENE_SIZE (64 Byte) erreicht. Fuenf davon (Offset 44..60)
+    ; werden von SYSCALL_DISPLAY_SUBMIT_SCENE als Reserved==0 geprueft; mit
+    ; nur fuenf Fuell-Dwords endete die Struktur bei Byte 60 und der letzte
+    ; Reserved-Check (Offset 60) las bereits den naechsten Kernel-Bytewert.
+    times 6 dd 0
 userspace_program_end:
 
-%if (userspace_program_end - userspace_program_start) > (PMM_PAGE_SIZE * 2)
-    %error "Initialer Userspace-Code überschreitet seine zwei 4-KiB-Seiten"
+%if (userspace_program_end - userspace_program_start) > (PMM_PAGE_SIZE * 3)
+    %error "Initialer Userspace-Code überschreitet seine drei 4-KiB-Seiten"
 %endif
 
 ; ESI=Userspace-Adresse, ECX=Länge. CF=0 nur für vollständig enthaltene
@@ -15663,6 +15912,7 @@ userspace_process_handle: dd 0
 userspace_thread_handle:  dd 0
 userspace_code_page:  dd 0
 userspace_code_page_2: dd 0
+userspace_code_page_3: dd 0
 userspace_stack_page: dd 0
 userspace_exit_seen:  dd 0
 userspace_exit_code:  dd 0
@@ -15744,14 +15994,17 @@ userspace_ipc_initialize:
     call handle_create
     jc .invalid
     mov [userspace_ipc_receive_handle], eax
-    ; Das Paket kann je nach Programmgroesse in der ersten oder zweiten
-    ; Codeseite liegen.
+    ; Das Paket kann je nach Programmgroesse in der ersten, zweiten oder
+    ; dritten Codeseite liegen.
 %if (userspace_ipc_packet - userspace_program_start + 8) < PMM_PAGE_SIZE
     mov edi, [userspace_code_page]
     add edi, userspace_ipc_packet - userspace_program_start + 8
-%else
+%elif (userspace_ipc_packet - userspace_program_start + 8) < (PMM_PAGE_SIZE * 2)
     mov edi, [userspace_code_page_2]
     add edi, userspace_ipc_packet - userspace_program_start + 8 - PMM_PAGE_SIZE
+%else
+    mov edi, [userspace_code_page_3]
+    add edi, userspace_ipc_packet - userspace_program_start + 8 - (PMM_PAGE_SIZE * 2)
 %endif
     mov eax, [userspace_ipc_send_handle]
     mov [edi], eax
@@ -16238,6 +16491,21 @@ display_input_target:     dd 0
 display_input_dropped:    dd 0
 keyboard_extended:        db 0
 keyboard_break_pending:   db 0
+; US-QWERTY-Tabelle (Set 1, Make-Codes, nur Kleinbuchstaben) fuer die
+; Texteingabe beim Umbenennen (F2). 0 = kein druckbares Zeichen zugeordnet.
+keyboard_ascii_table:
+    db 0, 0                             ; 0x00-0x01
+    db '1234567890-='                   ; 0x02-0x0D
+    db 0, 0                             ; 0x0E-0x0F (Backspace, Tab)
+    db 'qwertyuiop'                     ; 0x10-0x19
+    db 0, 0, 0, 0                       ; 0x1A-0x1D ([, ], Enter, Ctrl)
+    db 'asdfghjkl'                      ; 0x1E-0x26
+    db 0, 0, 0, 0, 0                    ; 0x27-0x2B (;, ', `, Shift, \)
+    db 'zxcvbnm'                        ; 0x2C-0x32
+    db ',./'                            ; 0x33-0x35
+    db 0, 0, 0                          ; 0x36-0x38 (Shift, *, Alt)
+    db ' '                              ; 0x39 (Leertaste)
+    times (256 - ($ - keyboard_ascii_table)) db 0
 mouse_ready:              db 0
 mouse_packet_index:       db 0
 mouse_buttons:            db 0

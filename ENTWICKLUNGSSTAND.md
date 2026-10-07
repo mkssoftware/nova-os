@@ -1503,23 +1503,143 @@ Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 101.
   das Löschen fehl (z. B. nicht-leerer Ordner), bleibt die bisherige Ansicht
   unverändert bestehen.
 - **Ressourcengrenze:** Der Ring-3-Userspace-Code ist weiterhin hart auf
-  zwei 4-KiB-Seiten begrenzt (`%error`-Prüfung beim Assemblieren). Nach
-  dieser Erweiterung sind noch rund 170 Byte frei (zuvor 453 Byte); die
+  zwei 4-KiB-Seiten begrenzt (`%error`-Prüfung beim Assemblieren). Die
   Tastatur-Zuordnung selbst liegt dagegen im Kernel (Ring 0) und unterliegt
   dieser Grenze nicht.
 - **automatisiert getestet:** `test-uefi-display-server.ps1` öffnet den
   Explorer deterministisch über das Startmenü (Fokus wird dabei fest auf
   20 gesetzt), bewegt den Fokus mit vier Tab-Tastendrücken auf die erste
-  Ordnerkarte (im Testabbild ein leerer Ordner im Profilverzeichnis),
-  sendet Entf und prüft anhand der geloggten Eintragszahl, dass genau ein
-  Eintrag verschwunden ist und das Verzeichnis dabei unverändert bleibt.
-  Bei dieser Gelegenheit wurde auch ein spezifischer Fehler des
-  Testskripts auf Linux/pwsh behoben (`-WindowStyle Hidden` ist unter
-  PowerShell Core auf Linux nicht unterstützt).
-- **offen:** Umbenennen (F2) aus dem Explorer heraus sowie das Öffnen von
-  Dateien aus dem Explorer heraus; beides ist durch die sehr enge
-  Ring-3-Codegrenze (siehe oben) voraussichtlich nur mit einer strukturellen
-  Änderung (z. B. Verschieben von `USER_STACK_ADDRESS`, um den Codebereich
-  zu vergrößern) oder durch weiteres Einsparen an anderer Stelle machbar.
+  Ordnerkarte, sendet Entf und prüft anhand der geloggten Eintragszahl,
+  dass genau ein Eintrag verschwunden ist und das Verzeichnis dabei
+  unverändert bleibt. Bei dieser Gelegenheit wurde auch ein spezifischer
+  Fehler des Testskripts auf Linux/pwsh behoben (`-WindowStyle Hidden` ist
+  unter PowerShell Core auf Linux nicht unterstützt), und ein Fehler im
+  eigenen Testaufbau: `build-uefi-image.ps1` übernimmt ohne `-ResetNovaFs`
+  eine bereits im Ziel-Image vorhandene NovaFS-Partition unverändert, statt
+  sie durch das frisch formatierte `-NovaFsImage` zu ersetzen – wiederholte
+  Testläufe mutierten so stillschweigend dasselbe persistente Testvolume
+  weiter (z. B. eine zuvor gelöschte Testordner-Annahme des Skripts traf
+  beim nächsten Lauf nicht mehr zu). Für reproduzierbare Testläufe daher
+  `-ResetNovaFs` setzen.
+- **später ergänzt (siehe nächster Abschnitt):** `ufs_delete_nth` wurde
+  umgebaut, um die Suche nach dem n-ten Eintrag eines Typs in eine
+  gemeinsame Routine `ufs_find_nth` auszulagern (auch von
+  `ufs_preview_nth` genutzt) und dabei einen überflüssigen zweiten
+  Verzeichnis-Scan unter dem Schreibrecht-Handle zu entfernen (der
+  gefundene Name wird jetzt direkt per `ufs_delete` auf dem neu geöffneten
+  Schreibrecht-Handle gelöscht, ohne ihn dort erneut zu suchen).
+- **offen:** Umbenennen (F2) aus dem Explorer heraus; durch die sehr enge
+  Ring-3-Codegrenze (siehe nächster Abschnitt: nur noch 13 Byte frei)
+  voraussichtlich nur mit einer strukturellen Änderung (z. B. Verschieben
+  von `USER_STACK_ADDRESS`, um den Codebereich zu vergrößern) machbar.
 
-Details in `dev_detail.md`, Abschnitt 102.
+### Explorer: Enter öffnet eine Datei (einfache Inhaltsvorschau)
+
+- **implementiert:** Enter/Aktivieren auf einer fokussierten Dateizeile
+  (Fokus 20..23) tat bisher nichts (fiel wirkungslos in die
+  Startmenü-Aktivierungslogik). Jetzt ruft es `ufs_preview_nth` auf: liest
+  bis zu 56 Byte (`EXPLORER_PATH_MAX`) des Dateiinhalts und zeigt sie
+  anstelle des Breadcrumbs (Pfadzeile) an. Es gibt noch kein eigenes
+  Anzeigeelement für Dateiinhalte – die Vorschau missbraucht bewusst das
+  vorhandene Pfadfeld, da ein neues UI-Element das Codebudget (siehe unten)
+  nicht mehr zulässt. Nicht darstellbare Bytes werden wie beim Breadcrumb
+  vom Kernel automatisch durch `-` ersetzt. Navigiert man danach weiter
+  (Backspace, Enter auf einer Ordnerkarte, …), baut `ufs_present` den
+  Breadcrumb wie gewohnt neu auf; die Vorschau ist also rein transient.
+- **Refactoring für Platz:** `ufs_delete_nth` und das neue
+  `ufs_preview_nth` teilen sich jetzt `ufs_find_nth` (EAX=NovaFS-Typ,
+  EBX=Index -> Eintrag in `UFS_ENTRY`), statt den Verzeichnis-Scan doppelt
+  zu implementieren. `ufs_preview_nth` öffnet die gefundene Datei readonly
+  über `ufs_lookup`/`ufs_io` (Lesen reicht das vorhandene `HANDLE_RIGHT_READ`
+  aus einem Lookup ohne `VFS_LOOKUP_FLAG_WRITE`), schreibt die gelesenen
+  Bytes direkt in `UFS_VIEW + 40` und ruft `SYSCALL_DISPLAY_SUBMIT_EXPLORER_VIEW`
+  erneut auf, ohne `ufs_build_view` (das den Breadcrumb wieder überschreiben
+  würde) erneut zu durchlaufen.
+- **Ressourcengrenze:** Nach diesem Feature plus dem oben beschriebenen
+  Refactoring sind nur noch **13 von 8192 Byte** des Ring-3-Codebudgets
+  frei – praktisch ausgeschöpft. Jede weitere Erweiterung (insbesondere
+  Umbenennen/F2, das zusätzlich eine Texteingabe bräuchte) wird ohne eine
+  strukturelle Änderung (zusätzliche Codeseite, verschobene
+  `USER_STACK_ADDRESS`-Konstanten) nicht mehr hineinpassen.
+- **automatisiert getestet:** `test-uefi-display-server.ps1` öffnet den
+  Explorer über denselben Startmenü-Trick (Fokus fest auf 20, Verzeichnis
+  bleibt dabei unverändert – beim Boot `Matthias/Dokumente` mit der
+  einzigen Datei `Willkommen.txt`), sendet Enter und prüft, dass die
+  nächste protokollierte Explorer-Ansicht den Dateiinhalt
+  ("Willkommen bei NovaOS.") an Stelle des Pfads zeigt.
+- **offen:** Es gibt keine echte Dateiinhalts-Anzeige (eigenes Fenster/
+  Textfeld, Scrollen, mehr als 56 Byte); das ist ebenfalls erst nach einer
+  strukturellen Erweiterung des Ring-3-Codebudgets sinnvoll umsetzbar.
+
+### Ring-3-Codebudget: dritte Codeseite (strukturelle Erweiterung)
+
+- **implementiert:** Das Ring-3-Codebudget wurde von zwei auf drei
+  4-KiB-Seiten erweitert (`USER_STACK_ADDRESS` von `0x00403000` auf
+  `0x00404000`; alle `UFS_*`-Scratch-Offsets sind relativ dazu definiert
+  und verschieben sich automatisch korrekt mit). `userspace_initialize`
+  kopiert jetzt drei statt zwei Codeseiten, jede unbedingt mit voller
+  `PMM_PAGE_SIZE` (nicht längenabhängig, da NASMs `%if` nicht auf
+  `userspace_program_end` vorwärtsverweisen kann).
+- **zwei Fehler dabei gefunden und behoben:**
+  1. `SHARED_SERVICE_ADDRESS` war hart auf den *alten*
+     `USER_STACK_ADDRESS`-Wert codiert und kollidierte nach der
+     Verschiebung mit der neuen Stackseite (sofortiger Seitenfehler-Crash
+     beim ersten Stack-Zugriff). Behoben durch
+     `SHARED_SERVICE_ADDRESS equ USER_STACK_ADDRESS` statt eines Literals.
+  2. `userspace_system_scene` (die beim Boot einmalig gesendete
+     Desktop-Szene) deklarierte nur 60 statt der von
+     `SYSTEM_SCENE_SIZE`/dem Kernel erwarteten 64 Byte. Mit der alten,
+     längenabhängigen Seitenkopie blieb das fehlende Byte zufällig immer
+     `0` (die Seite wurde vorher genullt) und der Fehler blieb unsichtbar;
+     mit der neuen, unbedingten Vollseitenkopie wurde dort echter
+     Kernel-Bytewert sichtbar, die Reserviert-Prüfung schlug fehl und die
+     Desktop-Szene wurde nie präsentiert (kein Absturz, nur ein
+     stillschweigend übersprungener Darstellungsschritt). Behoben durch
+     ein zusätzliches Reserve-Dword (`times 6 dd 0` statt `times 5`).
+- **automatisiert getestet:** Nach beiden Fixes liefen
+  `test-uefi-display-server.ps1` (alle drei Szenarien) und die
+  vollständige `test-uefi-novafs.ps1`-Regressionssuite fehlerfrei durch,
+  jeweils auf einem mit `-ResetNovaFs` frisch aufgesetzten Image.
+- **Ergebnis:** **4099 von 12288 Byte** des Ring-3-Codebudgets sind jetzt
+  frei – genug für Umbenennen (F2) samt einer einfachen Texteingabe.
+- **offen:** Umbenennen (F2) selbst ist noch nicht implementiert.
+
+### Explorer: Umbenennen (F2) mit einfacher Texteingabe
+
+- **implementiert:** F2 auf einer fokussierten Datei-/Ordnerzeile startet
+  die Umbenennung (vorbefüllt mit dem alten Namen); Tippen hängt Zeichen
+  an, Backspace löscht das letzte Zeichen, Enter bestätigt (ruft
+  `ufs_rename` auf), ein zweites F2 bricht ohne Speichern ab. Dafür
+  wurde der Kernel-Tastatur-Handler um eine echte Texteingabe erweitert:
+  eine neue 256-Byte-Tabelle (`keyboard_ascii_table`, Set 1,
+  Kleinbuchstaben) übersetzt Tastendrücke in ASCII-Zeichen, die als neue
+  semantische Aktion `SYSTEM_INPUT_TEXT_CHAR` an Ring 3 weitergereicht
+  werden; `SYSTEM_INPUT_RENAME_KEY` ist die neue F2-Aktion. Backspace und
+  Enter werden dabei kontextabhängig umgedeutet (normalerweise
+  "Ordner hoch"/"öffnen", während der Umbenennung "Zeichen löschen"/
+  "bestätigen") statt neue Tasten zu belegen; Escape bricht bewusst
+  **nicht** ab, da es außerhalb des Startmenüs sonst sofort herunterfährt.
+  Die Live-Anzeige nutzt wie die Dateivorschau (Abschnitt 103) das
+  Pfadfeld zweckentfremdet, da es kein eigenes Eingabefeld gibt.
+- **Ressourcengrenze:** Danach sind **3611 von 12288 Byte** des
+  Ring-3-Codebudgets frei (vorher 4099).
+- **automatisiert getestet:** `test-uefi-display-server.ps1` tippt nach
+  dem Dateivorschau-Test (Fokus 20, `Willkommen.txt`) F2, 14x Backspace,
+  dann `hallo`, und prüft nach jedem Tastendruck die protokollierte
+  Zwischenansicht; ein abschließendes Enter muss wieder eine Ansicht mit
+  normalem Breadcrumb liefern. Die tatsächliche Umbenennung auf der
+  Platte wurde zusätzlich manuell mit dem Host-Werkzeug geprüft (Eintrag
+  heißt danach `hallo`, gleiche Inode und Dateigröße wie vorher
+  `Willkommen.txt` – echte Umbenennung, kein Löschen-und-Neuanlegen).
+  Anschließend liefen die übrigen Display-Server-Szenarien und die
+  vollständige `test-uefi-novafs.ps1`-Regressionssuite fehlerfrei durch.
+- **offen:** kein eigenes Eingabefeld-UI-Element; keine
+  Umschalt-Großschreibung/Sonderzeichen/Set-2-Texteingabe; Escape bricht
+  nicht ab (nur zweites F2); Wechsel ins Startmenü während der
+  Umbenennung nicht gezielt getestet; keine automatisierte
+  Platten-Verifikation innerhalb des Testskripts selbst (nur manuell
+  geprüft).
+
+Details in `dev_detail.md`, Abschnitt 102 (Löschen), Abschnitt 103
+(Öffnen), Abschnitt 104 (Codebudget-Erweiterung) und Abschnitt 105
+(Umbenennen).

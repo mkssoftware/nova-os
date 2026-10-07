@@ -3572,4 +3572,256 @@ vom Selbsttest angelegte `Willkommen.txt`). Ein weiteres Enter löst
   ebenfalls erst nach einer strukturellen Erweiterung des
   Ring-3-Codebudgets sinnvoll umsetzbar.
 - Umbenennen (F2) bleibt offen (siehe Abschnitt 102) – bei 13 freien Byte
-  endgültig nicht mehr ohne Strukturänderung machbar.
+  endgültig nicht mehr ohne Strukturänderung machbar (siehe Abschnitt 104,
+  das diese Strukturänderung durchführt).
+
+## 104. Ring-3-Codebudget: dritte Codeseite für das System-UI-Programm
+
+Bei nur noch 13 von 8192 freien Byte (Abschnitt 103) passt keine weitere
+Erweiterung – insbesondere Umbenennen (F2) mit der dafür nötigen
+Texteingabemöglichkeit – mehr in das bisherige Zwei-Seiten-Codebudget.
+Diese Änderung erweitert es auf drei Seiten (12 KiB) und behebt zwei
+Fehler, die dabei sichtbar wurden.
+
+### Layoutänderung
+
+`USER_STACK_ADDRESS` wandert von `0x00403000` auf `0x00404000`, womit
+zwischen `USER_CODE_ADDRESS` (`0x00400000`, unverändert) und der
+Stack-Seite drei volle 4-KiB-Codeseiten liegen statt bisher zwei. Alle
+`UFS_*`-Scratch-Variablen sind als `USER_STACK_ADDRESS - N` definiert und
+verschieben sich dadurch automatisch korrekt mit; keiner dieser Offsets
+musste einzeln angepasst werden. `userspace_initialize` erhält einen
+dritten Alloziere-Nullen-Kopiere-Mappe-Block (dritte physische Seite,
+`userspace_code_page_3`), der – wie die zweite Seite schon zuvor – pro
+Seite eine volle `PMM_PAGE_SIZE` unbedingt kopiert statt einer von der
+tatsächlichen Programmlänge abhängigen Länge. Das ist bewusst so: NASMs
+`%if`-Präprozessor kann (anders als gewöhnliche Operanden, die über
+mehrere Pässe hinweg vorwärts auflösen) nicht auf `userspace_program_end`
+vorwärtsverweisen, eine längenabhängige `%if`-Kopiergröße scheidet also
+aus, und Byte hinter `userspace_program_end` innerhalb einer Seite galten
+als harmlos, weil sie laut `%error`-Budgetprüfung nie ausgeführt werden.
+Der `%error`-Schwellenwert selbst steigt von `PMM_PAGE_SIZE * 2` auf
+`PMM_PAGE_SIZE * 3`, und der IPC-Paket-Seitenpatch (Sprung zwischen
+`userspace_code_page`/`_2`/`_3` je nach Lage von `userspace_ipc_packet`)
+wächst von einer zweiseitigen auf eine dreiseitige `%if`/`%elif`/`%else`-
+Fallunterscheidung.
+
+### Fehler 1: `SHARED_SERVICE_ADDRESS` kollidierte mit der neuen Stackseite
+
+`SHARED_SERVICE_ADDRESS` war bislang hart auf `0x00403000` codiert – ein
+Wert, der zufällig mit dem *alten* `USER_STACK_ADDRESS` übereinstimmte
+und dadurch direkt oberhalb der alten (einseitigen) Stackseite lag, ohne
+sie zu überlappen. Beim Verschieben von `USER_STACK_ADDRESS` auf
+`0x00404000` blieb dieser hartcodierte Wert unverändert und lag damit
+plötzlich *innerhalb* der neuen Stackseite (`0x00403000`-`0x00403FFF`):
+`shared_service_page_initialize` überschrieb die beschreibbare PTE der
+Stackseite mit einer nicht beschreibbaren Abbildung auf eine andere
+physische Seite. Ergebnis: ein sofortiger Seitenfehler
+(`NOVA PANIC: CPU-Ausnahme Vektor 0x0000000E bei Adresse 0x00403FC0`),
+sobald der Userspace-Prozess seinen eigenen Stack beschrieb. Behoben
+durch eine selbstnachführende Definition statt eines Literals:
+`SHARED_SERVICE_ADDRESS equ USER_STACK_ADDRESS`. `USER_ADDRESS_MIN`/
+`USER_ADDRESS_MAX` (für `syscall_validate_user_range`) brauchten keine
+Anpassung – sie sind bereits relativ zu `USER_CODE_ADDRESS`/
+`USER_STACK_ADDRESS` definiert und schließen die Shared-Service-Seite
+weiterhin korrekt als ungültiges Nutzerpuffer-Ziel aus.
+
+### Fehler 2: zu kurz deklarierte `userspace_system_scene`-Struktur
+
+Nach der Behebung von Fehler 1 bootete der Kernel zwar ohne Absturz,
+aber `test-uefi-display-server.ps1` schlug fehl: Die Markierung
+„Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene
+praesentiert" erschien nie. Eine gezielte Diagnoseausgabe im
+`SYSCALL_DISPLAY_SUBMIT_SCENE`-Handler (temporär, wieder entfernt) zeigte,
+dass das letzte der fünf vom Kernel geprüften Reserviert-Felder
+(`syscall_display_scene + 60`, erwartet `0`) einen zufälligen Wert
+(`0x1B74C985`) enthielt, worauf `.bad_reserved` die Szene ablehnte, ohne
+dass irgendeine Fehlermeldung protokolliert wird – der Prozess lief
+danach einfach regulär zu Ende (`SYSCALL_CORE_EXIT`), ohne die Desktop-
+Szene je präsentiert zu haben. Ursache: `userspace_system_scene` deklarierte
+nur **60 Byte** Nutzlast (`times 5 dd 0` als Füllfelder), während sowohl
+`SYSTEM_SCENE_SIZE` als auch der Ring-0-Prüfcode 64 Byte (5 Reserviert-
+Dwords bei Offset 44..60) erwarten. Mit der *alten*, längenabhängigen
+Seitenkopie (Abschnitt „Layoutänderung") endete die kopierte Seite exakt
+bei `userspace_program_end`, und alles danach blieb beim vorherigen
+Nullen der Seite auf `0` stehen – der fehlende 64. Byte las deshalb
+zufällig immer `0` und der Fehler blieb unsichtbar. Die neue, unbedingte
+Vollseitenkopie kopiert dagegen die tatsächlichen (nicht genullten) Byte
+des Kernel-Abbilds hinter `userspace_program_end`, wodurch dieser
+vorher verdeckte Strukturfehler sichtbar wurde. Behoben durch
+`times 6 dd 0` (6 statt 5 Reserve-Dwords), womit die Struktur die vollen
+64 Byte erreicht.
+
+### Test
+
+Nach beiden Fixes liefen sowohl `test-uefi-display-server.ps1` (alle drei
+Szenarien: Enter öffnet Datei, Entf löscht Eintrag, Tab/Pfeiltasten-
+Navigation mit Shutdown) als auch die vollständige
+`test-uefi-novafs.ps1`-Regressionssuite (frisches Volume, alle
+Split-Fälle, beschädigter Superblock, DIRTY-Journal-Reparatur,
+DIRTY-ohne-Journal-Rückfall, unformatierte Partition) fehlerfrei durch,
+jeweils auf einem mit `-ResetNovaFs` frisch aufgesetzten Image.
+
+### Ergebnis
+
+Das Ring-3-Codebudget liegt jetzt bei **4099 von 12288 Byte frei**
+(eine volle zusätzliche Seite abzüglich der schon vorher fehlenden 3
+Byte). Das reicht für Umbenennen (F2) inklusive einer einfachen
+Texteingabemöglichkeit.
+
+### Offen
+
+- Umbenennen (F2) selbst ist noch nicht implementiert – nur das dafür
+  nötige Codebudget steht jetzt bereit (siehe Abschnitt 105, das dies
+  umsetzt).
+
+## 105. Explorer: Umbenennen (F2) mit einfacher Texteingabe
+
+Baut auf dem in Abschnitt 104 freigemachten Codebudget auf und
+implementiert sowohl F2/Umbenennen selbst als auch die dafür nötige,
+bisher nicht existierende Texteingabemöglichkeit.
+
+### Texteingabe im Kernel (Ring 0): `keyboard_ascii_table`
+
+Bisher kannte der Tastatur-Interrupt-Handler (`input_router_handle_scancode`)
+nur eine feste Liste semantischer Aktionen (Pfeiltasten, Enter, Escape,
+Tab, Backspace, Entf, die Windows/Nova-Taste); jede andere Taste fiel in
+`xor eax, eax / ret` und wurde stillschweigend ignoriert. Für Umbenennen
+reicht das nicht – ein Dateiname braucht echte Buchstaben. Eine neue
+256-Byte-Tabelle `keyboard_ascii_table` übersetzt PS/2-Set-1-Make-Codes
+in Kleinbuchstaben (US-QWERTY: Ziffern, Buchstaben, Leertaste, `,./-=`;
+alles andere bleibt `0` = kein druckbares Zeichen). Im `.plain:`-Zweig des
+Handlers wird nach den bestehenden Spezialtasten-Vergleichen zuerst F2
+abgefragt (Set 1 `0x3C`, Set 2 `0x06`) und erst danach die Tabelle
+konsultiert; nicht zugeordnete Codes (einschließlich aller Set-2-Tasten,
+für die es keinen eigenen Tabelleneintrag gibt) bleiben wie zuvor
+wirkungslos. Ein Treffer wird als neue semantische Aktion
+`SYSTEM_INPUT_TEXT_CHAR` mit dem übersetzten ASCII-Byte im
+Scancode-Feld des Eingabeereignisses an Ring 3 weitergereicht – die
+Übersetzung geschieht bewusst in Ring 0 (unbegrenztes Codebudget), damit
+Ring 3 keine eigene Tabelle braucht. `SYSTEM_INPUT_RENAME_KEY` (F2
+selbst) ist eine zweite neue Aktion. Beide Erweiterungen sind rein
+additiv zum bestehenden `SYSTEM_INPUT_*`-Schema und betreffen nur Ring 0,
+nicht das knappe Ring-3-Codebudget.
+
+Bewusst nicht gelöst: Umschalt-Großschreibung, Sonderzeichen über
+Tottasten, Set-2-Tastaturen für Text (nur Set 1 ist abgedeckt) – für
+Dateinamen in diesem Entwicklungsstand ausreichend.
+
+### Wiederverwendung bestehender Tasten statt Konflikten
+
+Statt neue Tastenbelegungen für "Zeichen löschen" oder "abbrechen"
+einzuführen, interpretiert der zentrale Ring-3-Dispatch zwei ohnehin
+vorhandene Aktionen kontextabhängig um, solange `UFS_RENAME_ACTIVE`
+gesetzt ist:
+- `SYSTEM_INPUT_NAVIGATE_BACK` (Backspace) bedeutet normalerweise
+  "Explorer: einen Ordner nach oben". Während der Umbenennung löscht es
+  statt dessen das letzte Zeichen des Editierpuffers
+  (`.navigate_back` prüft `UFS_RENAME_ACTIVE` als erstes und springt bei
+  gesetztem Flag zu `.rename_backspace`, statt `ufs_enter_parent`
+  aufzurufen).
+- `SYSTEM_INPUT_ACTIVATE` (Enter) bedeutet normalerweise "Startmenü-
+  Eintrag aktivieren" bzw. "Datei öffnen"/"Ordner betreten". Während der
+  Umbenennung bestätigt es statt dessen die Eingabe (`.activate` prüft
+  `UFS_RENAME_ACTIVE` ebenfalls zuerst und springt zu `.rename_commit`).
+
+Escape wird bewusst **nicht** zum Abbrechen verwendet: Im Kernel löst
+Escape außerhalb des Startmenüs einen sofortigen, ungeordneten
+Shutdown-Pfad aus (`input_router_handle_scancode` kennt keinen
+Ring-3-Zustand und wüsste nicht, dass gerade umbenannt wird). Abbrechen
+geschieht daher über ein zweites F2 (`.rename_key` prüft
+`UFS_RENAME_ACTIVE`; ist es bereits gesetzt, springt es zu
+`.rename_cancel`, das den Puffer verwirft und über `ufs_present` die
+normale Ansicht wiederherstellt, ohne `ufs_rename` aufzurufen).
+
+### Ring-3-Zustand und -Ablauf
+
+Sieben neue, selbstnachführende `UFS_RENAME_*`-Scratch-Variablen (nach
+dem gleichen `USER_STACK_ADDRESS - N`-Schema wie alle `UFS_*`-Variablen)
+halten den Editierzustand: `ACTIVE` (Flag), `TYPE`/`INDEX` (welcher
+Eintrag), `LEN`/`OLDLEN` (aktuelle/urspüngliche Namenslänge) sowie die
+beiden `EXPLORER_NAME_MAX` (32) Byte großen Puffer `BUF` (neuer Name,
+wird live editiert) und `OLDNAME` (Schnappschuss des alten Namens, für
+den späteren `ufs_rename`-Aufruf).
+
+- **F2 (`.rename_key`):** nur im Explorer-Arbeitsbereich (nicht
+  Startmenü) und nur auf einer Datei-/Ordnerzeile (Fokus 20..27) aktiv.
+  Ruft `ufs_find_nth` auf dem fokussierten Eintrag auf, kopiert dessen
+  Namen sowohl nach `OLDNAME` (unveränderliche Kopie) als auch nach
+  `BUF` (Startzustand des Editierpuffers, damit man einen Namen auch nur
+  teilweise ändern kann statt ihn komplett neu eintippen zu müssen),
+  setzt `ACTIVE=1` und zeichnet den Puffer sofort.
+- **Zeichen tippen (`.text_char`):** nur bei `ACTIVE=1` und solange
+  `LEN < EXPLORER_NAME_MAX`; hängt das vom Kernel übersetzte Zeichen an
+  `BUF` an und zeichnet neu.
+- **Backspace (`.rename_backspace`):** nur bei `LEN > 0`; verkürzt `LEN`
+  um 1 und zeichnet neu.
+- **Enter (`.rename_commit`):** öffnet `UFS_CWD` kurz mit Schreibrecht
+  (wie bei Löschen/Entf), ruft `ufs_rename` mit `OLDNAME`/`OLDLEN` als
+  Quelle und `BUF`/`LEN` als Ziel auf (dasselbe Verzeichnis als Quelle
+  und Ziel, da nur innerhalb des aktuellen Ordners umbenannt wird),
+  schließt das Handle wieder, setzt `ACTIVE=0` und baut die Ansicht über
+  `ufs_present` neu auf NovaFS auf – unabhängig davon, ob `ufs_rename`
+  erfolgreich war (ein Fehler lässt den alten Namen unverändert bestehen,
+  es gibt aber keine Fehleranzeige).
+- **Zweites F2 (`.rename_cancel`):** setzt `ACTIVE=0` und stellt über
+  `ufs_present` die normale Ansicht wieder her, ohne `ufs_rename`
+  aufzurufen.
+
+Die Live-Anzeige des Editierpuffers (`ufs_rename_redraw`) funktioniert
+exakt wie die Dateivorschau in Abschnitt 103: Sie schreibt `BUF`/`LEN`
+direkt in `UFS_VIEW + 40`/`+ 28` (das Breadcrumb-Feld) und ruft
+`SYSCALL_DISPLAY_SUBMIT_EXPLORER_VIEW` direkt auf, ohne über
+`ufs_present`/`ufs_build_view` zu gehen (das würde den Breadcrumb aus
+`UFS_CWD` überschreiben). Es gibt also weiterhin kein eigenes
+Eingabefeld-UI-Element – der Editierzustand wird, wie schon die
+Dateivorschau, im vorhandenen Pfadfeld dargestellt.
+
+### Ring-3-Codebudget
+
+Nach F2/Text-Dispatch, den sieben neuen `UFS_RENAME_*`-Variablen und
+`ufs_rename_redraw` sind **3611 von 12288 Byte** frei (vorher 4099) –
+die dritte Codeseite aus Abschnitt 104 hatte also reichlich Platz für
+dieses Feature gelassen.
+
+### Test
+
+`test-uefi-display-server.ps1` ergänzt ein neues Szenario direkt nach
+dem Dateivorschau-Test (Fokus weiterhin fest auf 20, Verzeichnis
+weiterhin `Matthias/Dokumente`, Datei `Willkommen.txt`, 14 Zeichen): F2,
+14x Backspace (Puffer leeren), dann `h`,`a`,`l`,`l`,`o` eintippen. Nach
+jedem Tastendruck wird anhand der protokollierten
+`Explorer zeigt NovaFS-Verzeichnis...`-Zeilen geprüft, dass eine neue
+Ansicht mit dem erwarteten Zwischenstand im Pfadfeld erscheint (zuletzt
+`Pfad hallo`). Ein abschließendes Enter bestätigt die Umbenennung; das
+Skript prüft nur, dass danach wieder eine Ansicht mit dem normalen
+Breadcrumb (`Dokumente`) erscheint, nicht aber den Namen auf der
+Platte. Die tatsächliche Umbenennung wurde zusätzlich manuell mit dem
+Host-Werkzeug (`novafs ls <image> --gpt /Benutzer/Matthias/Dokumente`)
+gegen das von diesem Testlauf erzeugte Image geprüft: Der Eintrag heißt
+danach `hallo` statt `Willkommen.txt`, bei unveränderter Inode (24) und
+Dateigröße (266 Byte) – also eine echte Umbenennung, kein
+Löschen-und-Neuanlegen. Anschließend liefen sowohl die restlichen
+Display-Server-Szenarien (Entf, Navigation mit Shutdown) als auch die
+vollständige `test-uefi-novafs.ps1`-Regressionssuite fehlerfrei durch,
+jeweils auf einem mit `-ResetNovaFs` frisch aufgesetzten Image.
+
+### Offen
+
+- Kein eigenes Eingabefeld-UI-Element (wie bei der Dateivorschau wird
+  das Pfadfeld zweckentfremdet).
+- Keine Umschalt-Großschreibung, keine Sonderzeichen über Tottasten,
+  keine Set-2-Texteingabe (siehe oben).
+- Escape bricht die Umbenennung nicht ab (löst statt dessen weiterhin
+  den Shutdown-Pfad aus, sofern das Startmenü geschlossen ist) – man
+  muss ein zweites F2 drücken.
+- Wechselt man während der Umbenennung über die Windows/Nova-Taste ins
+  Startmenü (`SYSTEM_INPUT_TOGGLE_START` wird nicht abgefangen), bleibt
+  `UFS_RENAME_ACTIVE` gesetzt; kehrt man in den Explorer zurück, wird
+  die Umbenennung dort fortgesetzt. Funktional unbedenklich, aber nicht
+  gezielt getestet.
+- Keine automatisierte, auf der Platte verifizierte Prüfung der
+  Umbenennung innerhalb von `test-uefi-display-server.ps1` selbst (nur
+  manuell mit dem Host-Werkzeug nachvollzogen); eine solche Prüfung
+  bräuchte entweder ein `-NovaFsTool`-Parameter für dieses Skript oder
+  einen Abgleich über eine erneute Dateivorschau.

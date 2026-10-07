@@ -159,6 +159,76 @@ try {
     if($inputCount-le$initialInputCount){throw 'Escape wurde nicht als geschuetztes Input-Router-Ereignis zugestellt'}
     if($presentCount-le$initialPresentCount){throw 'Ring-3-System-UI hat nach Escape keine neue Szene praesentiert'}
 
+    # Datei oeffnen: Startmenü (Fokus 2) -> Tab (Fokus 3, "Explorer") -> Enter
+    # oeffnet den Explorer-Arbeitsbereich mit garantiertem Fokus 20 (erste
+    # Dateizeile), ohne das aktuelle Verzeichnis zu aendern (beim Boot steht
+    # der Explorer in Matthias/Dokumente, 1 Datei: Willkommen.txt). Ein
+    # weiteres Enter auf der fokussierten Dateizeile muss ufs_preview_nth
+    # ausloesen, das den Dateiinhalt an Stelle des Breadcrumbs anzeigt.
+    Send-QmpKey -Port $qmpPort -Key 'meta_l'
+    Start-Sleep -Milliseconds 200
+    Send-QmpKey -Port $qmpPort -Key 'tab'
+    Start-Sleep -Milliseconds 200
+    Send-QmpKey -Port $qmpPort -Key 'ret'
+    Start-Sleep -Milliseconds 200
+    $serialText=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+    $debugText=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+    $content=$debugText+$serialText
+    $viewPattern='NOVA: Explorer zeigt NovaFS-Verzeichnis aus Ring 3, Eintraege 0x([0-9A-Fa-f]{8}), Pfad[^\r\n]*'
+    $views=[regex]::Matches($content,$viewPattern)
+    if($views.Count-eq0){throw 'Keine Explorer-Ansicht vor dem Oeffnen-Test gefunden'}
+    if($views[$views.Count-1].Value-notmatch'Dokumente$'){throw "Oeffnen-Test erwartet Matthias/Dokumente, war aber: $($views[$views.Count-1].Value)"}
+    $beforeViews=$views.Count
+    Send-QmpKey -Port $qmpPort -Key 'ret'
+    do {
+        Start-Sleep -Milliseconds 100
+        $serialText=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+        $debugText=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+        $content=$debugText+$serialText
+        $views=[regex]::Matches($content,$viewPattern)
+    } while($views.Count-le$beforeViews-and[DateTime]::UtcNow-lt$deadline)
+    if($views.Count-le$beforeViews){throw 'Enter auf der Dateizeile hat keine neue Explorer-Ansicht ausgeloest'}
+    $opened=$views[$views.Count-1].Value
+    if($opened-notmatch'Willkommen bei NovaOS'){throw "Enter auf der Dateizeile hat den Dateiinhalt nicht angezeigt ($opened)"}
+    Write-Host 'UEFI Display Server: Enter auf der fokussierten Dateizeile zeigt den Dateiinhalt (Willkommen.txt) ueber NovaFS'
+
+    # Umbenennen (F2): Fokus steht weiterhin auf 20 (erste Dateizeile,
+    # "Willkommen.txt", 14 Zeichen). F2 startet die Umbenennung mit dem
+    # vorbefuellten alten Namen; 14x Backspace leert den Puffer, danach wird
+    # "hallo" eingetippt. Jede Pufferaenderung loest eine neue, ueber das
+    # Pfadfeld dargestellte Explorer-Ansicht aus (wie bei der Dateivorschau).
+    $beforeRenameViews=([regex]::Matches($content,'NOVA: Explorer zeigt NovaFS-Verzeichnis')).Count
+    Send-QmpKey -Port $qmpPort -Key 'f2'
+    Start-Sleep -Milliseconds 200
+    1..14 | ForEach-Object {
+        Send-QmpKey -Port $qmpPort -Key 'backspace'
+        Start-Sleep -Milliseconds 80
+    }
+    foreach($letter in @('h','a','l','l','o')){
+        Send-QmpKey -Port $qmpPort -Key $letter
+        Start-Sleep -Milliseconds 80
+    }
+    $serialText=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+    $debugText=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+    $content=$debugText+$serialText
+    $renameViews=[regex]::Matches($content,$viewPattern)
+    if($renameViews.Count-le$beforeRenameViews){throw 'F2/Texteingabe hat keine neue Explorer-Ansicht ausgeloest'}
+    $typed=$renameViews[$renameViews.Count-1].Value
+    if($typed-notmatch'Pfad hallo$'){throw "Umbenennen-Puffer zeigt nicht den erwarteten Zwischenstand (war: $typed)"}
+    $beforeCommitViews=$renameViews.Count
+    Send-QmpKey -Port $qmpPort -Key 'ret'
+    do {
+        Start-Sleep -Milliseconds 100
+        $serialText=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+        $debugText=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+        $content=$debugText+$serialText
+        $renameViews=[regex]::Matches($content,$viewPattern)
+    } while($renameViews.Count-le$beforeCommitViews-and[DateTime]::UtcNow-lt$deadline)
+    if($renameViews.Count-le$beforeCommitViews){throw 'Enter (Umbenennen bestaetigen) hat keine aktualisierte Explorer-Ansicht ausgeloest'}
+    $afterCommit=$renameViews[$renameViews.Count-1].Value
+    if($afterCommit-notmatch'Dokumente$'){throw "Nach dem Umbenennen zeigt der Explorer nicht mehr den Breadcrumb: $afterCommit"}
+    Write-Host 'UEFI Display Server: F2 benennt die fokussierte Datei um (Willkommen.txt -> hallo) ueber NovaFS'
+
     # Explorer-Navigation: Backspace -> uebergeordneter Ordner, Enter -> erste
     # Ordnerkarte, Backspace -> zurueck. Jede Ansicht stammt aus NovaFS (Ring 3).
     function Wait-ExplorerView([string]$Key,[string]$Pattern,[string]$Message){
