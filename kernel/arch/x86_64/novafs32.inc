@@ -2437,7 +2437,7 @@ novafs_check_root:
 ; ---------------------------------------------------------------------------
 
 ; Prueft, dass die stabilen Wurzel-Namespaces dieselben ObjectIDs tragen wie
-; der Semantic Core (OBJI:1 ... OBJI:6). CF bei Abweichung.
+; der Semantic Core (OBJI:1 ... OBJI:7). CF bei Abweichung.
 novafs_check_root_layout:
     pushad
     mov ebx, novafs_layout_table
@@ -2921,6 +2921,7 @@ novafs_layout_table:
     db 4, 4, "Apps"
     db 7, 5, "Volumes"
     db 4, 6, "Boot"
+    db 9, 7, "Solutions"
     db 0
 
 align 4

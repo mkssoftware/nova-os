@@ -91,6 +91,7 @@ NOVA_NAMESPACE_BENUTZER    equ 2
 NOVA_NAMESPACE_APPS        equ 3
 NOVA_NAMESPACE_VOLUMES     equ 4
 NOVA_NAMESPACE_BOOT        equ 5
+NOVA_NAMESPACE_SOLUTIONS   equ 6
 
 NOVA_NS_FLAG_STABLE        equ 1
 NOVA_NS_FLAG_SYSTEM        equ 2
@@ -314,6 +315,25 @@ semantic_core_initialize:
     call semantic_core_projection_add
     jc .bad
 
+    mov eax, NOVA_ID_NAMESPACE_HIGH
+    mov edx, 7
+    mov ebx, NOVA_NAMESPACE_ROOT
+    mov esi, nova_ns_name_solutions
+    mov ecx, NOVA_ID_OBJECT_HIGH
+    mov edi, 7
+    push dword (NOVA_NS_FLAG_STABLE | NOVA_NS_FLAG_USER_VISIBLE)
+    call semantic_core_namespace_add
+    jc .bad
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 7
+    mov ebx, NOVA_NAMESPACE_SOLUTIONS
+    mov esi, nova_ns_name_solutions
+    mov ecx, NOVA_ID_NAMESPACE_HIGH
+    mov edi, 7
+    push dword (NOVA_PROJ_FLAG_PRIMARY | NOVA_PROJ_FLAG_STABLE)
+    call semantic_core_projection_add
+    jc .bad
+
     ; Fruehe Filesystem-Object-Registry fuer stabile Namespace-Objekte.
     mov eax, NOVA_ID_OBJECT_HIGH
     mov edx, 1
@@ -360,6 +380,14 @@ semantic_core_initialize:
     mov ebx, NOVA_NAMESPACE_BOOT
     mov esi, nova_ns_name_boot
     mov ecx, (NOVA_OBJECT_FLAG_STABLE | NOVA_OBJECT_FLAG_SYSTEM | NOVA_OBJECT_FLAG_NAMESPACE)
+    call semantic_core_object_add
+    jc .bad
+
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 7
+    mov ebx, NOVA_NAMESPACE_SOLUTIONS
+    mov esi, nova_ns_name_solutions
+    mov ecx, (NOVA_OBJECT_FLAG_STABLE | NOVA_OBJECT_FLAG_USER_VISIBLE | NOVA_OBJECT_FLAG_NAMESPACE)
     call semantic_core_object_add
     jc .bad
 
@@ -412,6 +440,16 @@ semantic_core_initialize:
     mov ecx, 5
     mov esi, NOVA_NAMESPACE_VOLUMES
     mov edi, NOVA_HANDLE_RIGHT_READ
+    push dword NOVA_CAP_FLAG_ACTIVE
+    call semantic_core_capability_add
+    jc .bad
+
+    mov eax, NOVA_ID_CAPABILITY_HIGH
+    mov edx, 5
+    mov ebx, NOVA_ID_OBJECT_HIGH
+    mov ecx, 7
+    mov esi, NOVA_NAMESPACE_SOLUTIONS
+    mov edi, (NOVA_HANDLE_RIGHT_READ | NOVA_HANDLE_RIGHT_EXECUTE)
     push dword NOVA_CAP_FLAG_ACTIVE
     call semantic_core_capability_add
     jc .bad
@@ -1250,7 +1288,7 @@ semantic_core_handle_close:
 
 ; ESI=absoluter Pfad, EDI=namespace record oder CF=1.
 ; Fruehe Bootstrap-Variante: "/", "/System", "/Benutzer", "/Apps",
-; "/Volumes" und "/Boot" als ein Segment unter Root.
+; "/Volumes", "/Boot" und "/Solutions" als ein Segment unter Root.
 semantic_core_namespace_resolve_path:
     test esi, esi
     jz .bad
@@ -1413,13 +1451,13 @@ semantic_core_handle_open_by_path:
 semantic_core_self_test:
     cmp dword [nova_registry_count], 5
     jne .bad
-    cmp dword [nova_object_count], 6
+    cmp dword [nova_object_count], 7
     jne .bad
-    cmp dword [nova_namespace_count], 6
+    cmp dword [nova_namespace_count], 7
     jne .bad
-    cmp dword [nova_projection_count], 6
+    cmp dword [nova_projection_count], 7
     jne .bad
-    cmp dword [nova_capability_count], 4
+    cmp dword [nova_capability_count], 5
     jne .bad
     cmp dword [nova_handle_count], 0
     jne .bad
@@ -1457,7 +1495,7 @@ semantic_core_self_test:
     mov ecx, NOVA_OBJECT_FLAG_USER_VISIBLE
     call semantic_core_object_count_by_flags
     jc .bad
-    cmp eax, 3
+    cmp eax, 4
     jne .bad
     mov ecx, NOVA_OBJECT_FLAG_USER_VISIBLE
     xor edx, edx
@@ -1470,6 +1508,12 @@ semantic_core_self_test:
     call semantic_core_object_at_by_flags
     jc .bad
     cmp dword [edi + NOVA_OBJECT_ID_LOW], 5
+    jne .bad
+    mov ecx, NOVA_OBJECT_FLAG_USER_VISIBLE
+    mov edx, 3
+    call semantic_core_object_at_by_flags
+    jc .bad
+    cmp dword [edi + NOVA_OBJECT_ID_LOW], 7
     jne .bad
     mov ecx, NOVA_OBJECT_FLAG_SYSTEM
     mov edx, 2
@@ -1506,6 +1550,13 @@ semantic_core_self_test:
     call semantic_core_object_resolve_path
     jc .bad
     cmp dword [edi + NOVA_OBJECT_ID_LOW], 4
+    jne .bad
+    test dword [edi + NOVA_OBJECT_FLAGS], NOVA_OBJECT_FLAG_USER_VISIBLE
+    jz .bad
+    mov esi, nova_ns_path_solutions
+    call semantic_core_object_resolve_path
+    jc .bad
+    cmp dword [edi + NOVA_OBJECT_ID_LOW], 7
     jne .bad
     test dword [edi + NOVA_OBJECT_FLAGS], NOVA_OBJECT_FLAG_USER_VISIBLE
     jz .bad
@@ -1570,6 +1621,11 @@ semantic_core_self_test:
     jc .bad
     cmp dword [edi + NOVA_NAMESPACE_OBJECT_LOW], 4
     jne .bad
+    mov esi, nova_ns_path_solutions
+    call semantic_core_namespace_resolve_path
+    jc .bad
+    cmp dword [edi + NOVA_NAMESPACE_OBJECT_LOW], 7
+    jne .bad
     mov esi, nova_ns_path_missing
     call semantic_core_namespace_resolve_path
     jnc .bad
@@ -1577,13 +1633,13 @@ semantic_core_self_test:
     xor ecx, ecx
     call semantic_core_namespace_count_children
     jc .bad
-    cmp eax, 5
+    cmp eax, 6
     jne .bad
     mov ebx, NOVA_NAMESPACE_ROOT
     mov ecx, NOVA_NS_FLAG_USER_VISIBLE
     call semantic_core_namespace_count_children
     jc .bad
-    cmp eax, 3
+    cmp eax, 4
     jne .bad
     mov ebx, NOVA_NAMESPACE_ROOT
     mov ecx, NOVA_NS_FLAG_SYSTEM
@@ -1609,6 +1665,13 @@ semantic_core_self_test:
     mov ecx, NOVA_NS_FLAG_USER_VISIBLE
     mov edx, 3
     call semantic_core_namespace_child_at
+    jc .bad
+    cmp dword [edi + NOVA_NAMESPACE_OBJECT_LOW], 7
+    jne .bad
+    mov ebx, NOVA_NAMESPACE_ROOT
+    mov ecx, NOVA_NS_FLAG_USER_VISIBLE
+    mov edx, 4
+    call semantic_core_namespace_child_at
     jnc .bad
     mov ebx, NOVA_NAMESPACE_ROOT
     xor ecx, ecx
@@ -1616,6 +1679,13 @@ semantic_core_self_test:
     call semantic_core_namespace_child_at
     jc .bad
     cmp dword [edi + NOVA_NAMESPACE_OBJECT_LOW], 6
+    jne .bad
+    mov ebx, NOVA_NAMESPACE_ROOT
+    xor ecx, ecx
+    mov edx, 5
+    call semantic_core_namespace_child_at
+    jc .bad
+    cmp dword [edi + NOVA_NAMESPACE_OBJECT_LOW], 7
     jne .bad
     mov esi, nova_ns_path_system
     mov ebx, NOVA_HANDLE_RIGHT_READ
@@ -1659,6 +1729,13 @@ semantic_core_self_test:
     jc .bad
     cmp dword [edi + NOVA_NAMESPACE_ID_LOW], 6
     jne .bad
+    mov esi, NOVA_NAMESPACE_SOLUTIONS
+    call semantic_core_namespace_record
+    jc .bad
+    cmp dword [edi + NOVA_NAMESPACE_ID_LOW], 7
+    jne .bad
+    test dword [edi + NOVA_NAMESPACE_FLAGS], NOVA_NS_FLAG_USER_VISIBLE
+    jz .bad
     mov eax, NOVA_ID_OBJECT_HIGH
     mov edx, 4
     call semantic_core_projection_lookup_by_object
@@ -1687,6 +1764,12 @@ semantic_core_self_test:
     mov edx, 1
     call semantic_core_projection_at_namespace
     jnc .bad
+    mov ebx, NOVA_NAMESPACE_SOLUTIONS
+    xor edx, edx
+    call semantic_core_projection_at_namespace
+    jc .bad
+    cmp dword [edi + NOVA_PROJECTION_OBJECT_LOW], 7
+    jne .bad
     mov eax, NOVA_ID_OBJECT_HIGH
     mov edx, 0x7000
     call semantic_core_projection_lookup_by_object
@@ -1712,6 +1795,11 @@ semantic_core_self_test:
     mov eax, NOVA_ID_OBJECT_HIGH
     mov edx, 5
     mov ebx, NOVA_HANDLE_RIGHT_READ
+    call semantic_core_capability_check_object_rights
+    jc .bad
+    mov eax, NOVA_ID_OBJECT_HIGH
+    mov edx, 7
+    mov ebx, NOVA_HANDLE_RIGHT_EXECUTE
     call semantic_core_capability_check_object_rights
     jc .bad
     mov eax, NOVA_ID_OBJECT_HIGH
@@ -1923,11 +2011,15 @@ nova_ns_name_volumes:
     db 'Volumes', 0
 nova_ns_name_boot:
     db 'Boot', 0
+nova_ns_name_solutions:
+    db 'Solutions', 0
 nova_ns_path_root:
     db '/', 0
 nova_ns_path_system:
     db '/System', 0
 nova_ns_path_apps:
     db '/Apps', 0
+nova_ns_path_solutions:
+    db '/Solutions', 0
 nova_ns_path_missing:
     db '/NichtVorhanden', 0

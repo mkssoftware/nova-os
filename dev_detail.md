@@ -3220,3 +3220,56 @@ Fokus-Elemente im Explorer:
 - Ein offenes Handle verhindert das Löschen nicht (keine Referenzzählung auf
   NovaFS-Objekten).
 - Kein Zusammenlegen leerer Blätter; die Baumhöhe sinkt nicht.
+
+## 100. Stable Root Namespace `/Solutions`
+
+Die neue `NPSPEC-NOVAFS-ONDISK-0001` konkretisiert das NovaFS-Rootlayout für
+Phase 1 und ergänzt `/Solutions` als stabilen Rootbereich:
+
+```text
+7  /Solutions   Verzeichnis, NAMESPACE
+```
+
+### Semantic-Core
+
+- `NOVA_NAMESPACE_SOLUTIONS` ist der siebte stabile Namespace-Slot.
+- `semantic_core_initialize` legt NamespaceID 7, ObjectID 7 und die primäre
+  Projection an.
+- ObjectID 7 ist `STABLE | USER_VISIBLE | NAMESPACE`.
+- Eine Capability `CAPI:5` gibt `READ | EXECUTE` auf `/Solutions`.
+- Der Selbsttest prüft:
+  - Gesamtzahlen: 7 Objects, 7 Namespaces, 7 Projections, 5 Capabilities,
+  - `/Solutions` über Namespace- und Object-Pfadauflösung,
+  - Root-Kind-Aufzählung und Projection-Introspection,
+  - Execute-Authority für ObjectID 7.
+
+### NovaFS
+
+`novafs_layout_table` enthält jetzt zusätzlich:
+
+```text
+Solutions -> ObjectID 7
+```
+
+`novafs_check_root_layout` lehnt ein NovaFS-Systemvolume ab, wenn `/Solutions`
+fehlt oder eine andere ObjectID besitzt. Damit bleibt das On-Disk-Layout
+konsistent mit dem Kernel-Semantic-Core.
+
+### Userspace-VFS
+
+Der Ring-3-VFS-Test öffnet das Root-Verzeichnis `/`, liest dessen Einträge mit
+`VFS.ReadDirectory` und sucht explizit nach `Solutions` mit dem Typ
+`NOVAFS_TYPE_DIRECTORY`. Fehlt dieser Eintrag, schlägt der Bootstrap-Test fehl.
+Damit ist `/Solutions` nicht nur ein interner Kernel- und NovaFS-Begriff,
+sondern durch die spätere Userspace-Schicht sichtbar.
+
+### Bootausgabe
+
+```text
+NOVA: Namespace Core bereit: / System Benutzer Apps Volumes Boot Solutions
+```
+
+### Artefakte
+
+- Kernel Build-ID: `AA18D312460BC36F9C29DD530979316949681F16`
+- NKI CRC32: `B3A36CCE`

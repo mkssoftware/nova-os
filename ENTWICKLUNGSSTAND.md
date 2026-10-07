@@ -1420,3 +1420,21 @@ NOVA: Boot Health SystemRoot bereit, wartet auf Trust
 
 Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 99.
 
+### NovaFS-/Semantic-Core-Abgleich `/Solutions`
+
+- **neu eingelesen:** `NPSPEC-NOVAFS-ONDISK-0001` definiert `/Solutions` als
+  stabiles Root-Objekt mit ObjectID 7 und `NAMESPACE`-Flag.
+- **implementiert:** Der Kernel-Semantic-Core kennt jetzt
+  `NOVA_NAMESPACE_SOLUTIONS`, legt Namespace, Projection, Object Registry und
+  eine Read/Execute-Capability für ObjectID 7 an. Pfadauflösung und
+  Selbsttest prüfen `/Solutions`.
+- **NovaFS:** `novafs_check_root_layout` validiert jetzt zusätzlich
+  `/Solutions → ObjectID 7`, damit das Systemvolume nicht als konsistent gilt,
+  wenn der neue stabile Rootbereich fehlt.
+- **Userspace-VFS:** Das Ring-3-Testprogramm öffnet `/`, enumeriert das
+  Root-Verzeichnis per `ReadDirectory` und bricht ab, falls `/Solutions` nicht
+  als Verzeichnis sichtbar ist. Damit ist der neue Namespace nicht nur im
+  On-Disk-Layout und Semantic-Core vorhanden, sondern auch über die
+  Userspace-Dateisystem-ABI erreichbar.
+- **Build:** UEFI-Image neu erstellt: Kernel Build-ID
+  `AA18D312460BC36F9C29DD530979316949681F16`, NKI CRC32 `B3A36CCE`.

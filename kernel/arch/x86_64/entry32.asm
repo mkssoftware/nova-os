@@ -12373,6 +12373,7 @@ UFS_NTH     equ USER_STACK_ADDRESS - 2704
 UFS_H_TRASH equ USER_STACK_ADDRESS - 2708
 UFS_CWD     equ USER_STACK_ADDRESS - 2968
 UFS_HOME    equ USER_STACK_ADDRESS - 3032
+UFS_H_ROOT  equ USER_STACK_ADDRESS - 3040
 
 userspace_program_start:
     ; Process.QuerySelf -> Ergebnis auf dem beschreibbaren Userstack.
@@ -12592,6 +12593,42 @@ userspace_program_start:
 .fs_write_part:
     ; Arbeitsverzeichnis: /Benutzer/<erster Benutzer>/Dokumente, sonst /Benutzer
     call ufs_select_home
+    test eax, eax
+    jnz .failed
+    ; Rootlayout aus Ring 3 pruefen: /Solutions muss als stabiler
+    ; Root-Namespace auch ueber die VFS-Directory-Sicht sichtbar sein.
+    mov edx, [USER_STACK_ADDRESS - 152]
+    mov esi, UFS_ADDR(ufs_path_root)
+    mov ecx, ufs_path_root_end - ufs_path_root
+    xor edi, edi
+    call ufs_lookup
+    test eax, eax
+    jnz .failed
+    mov [UFS_H_ROOT], ebx
+    mov dword [UFS_INDEX], 0
+.fs_root_next:
+    mov edx, [UFS_H_ROOT]
+    mov ecx, [UFS_INDEX]
+    call ufs_read_directory
+    test eax, eax
+    jnz .failed
+    cmp dword [UFS_ENTRY + 20], ufs_name_solutions_end - ufs_name_solutions
+    jne .fs_root_skip
+    cmp dword [UFS_ENTRY + 16], NOVAFS_TYPE_DIRECTORY
+    jne .failed
+    mov esi, UFS_ENTRY + 32
+    mov edi, UFS_ADDR(ufs_name_solutions)
+    mov ecx, ufs_name_solutions_end - ufs_name_solutions
+    repe cmpsb
+    je .fs_root_found
+.fs_root_skip:
+    inc dword [UFS_INDEX]
+    cmp dword [UFS_INDEX], 256
+    jb .fs_root_next
+    jmp .failed
+.fs_root_found:
+    mov edx, [UFS_H_ROOT]
+    call ufs_close
     test eax, eax
     jnz .failed
     test dword [SHARED_SERVICE_ADDRESS + 12], SHARED_FEATURE_FILESYSTEM_WRITABLE
@@ -13988,8 +14025,12 @@ ufs_suffix_documents: db "/Dokumente"
 ufs_suffix_documents_end:
 ufs_path_bootcount: db "/System/Diagnose/novafs-bootcount"
 ufs_path_bootcount_end:
+ufs_path_root:      db "/"
+ufs_path_root_end:
 ufs_path_benutzer:  db "/Benutzer"
 ufs_path_benutzer_end:
+ufs_name_solutions: db "Solutions"
+ufs_name_solutions_end:
 ufs_name_welcome:   db "Willkommen.txt"
 ufs_name_welcome_end:
 ufs_welcome_text:   db "Willkommen bei NovaOS.", 13, 10
@@ -22895,7 +22936,7 @@ message_capability_authority_ok:
 message_capability_lifecycle_ok:
     db "NOVA: Capability Lifecycle Lookup und Revoke bereit", 13, 10, 0
 message_namespace_core_ok:
-    db "NOVA: Namespace Core bereit: / System Benutzer Apps Volumes Boot", 13, 10, 0
+    db "NOVA: Namespace Core bereit: / System Benutzer Apps Volumes Boot Solutions", 13, 10, 0
 message_object_id_lookup_ok:
     db "NOVA: ObjectID Registry Lookup bereit", 13, 10, 0
 message_namespace_lookup_ok:
