@@ -1482,3 +1482,44 @@ Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 101.
   Superblock-Schreibzugriff in `mark-dirty`, nicht einzelne
   Knoten/Bitmap-Schreibzugriffe. Details in `dev_detail.md`, Abschnitt
   101.
+
+### Explorer: Entf löscht den fokussierten Eintrag
+
+- **implementiert:** Die Entf-Taste (Set 1 `0x53`, Set 2 `0x71`, jeweils
+  erweitert) wird kernelseitig auf eine neue semantische Eingabeaktion
+  `SYSTEM_INPUT_DELETE` abgebildet und wie alle anderen Eingaben über den
+  Input-Router an das Ring-3-System-UI zugestellt. Im Explorer-Arbeitsbereich
+  löscht sie den fokussierten Eintrag: Dateizeile (Fokus 20..23) oder
+  Ordnerkarte (Fokus 24..27), je nach Fokuswert als `NOVAFS_TYPE_FILE` oder
+  `NOVAFS_TYPE_DIRECTORY`. Eine neue Ring-3-Routine `ufs_delete_nth`
+  durchsucht das aktuelle Arbeitsverzeichnis nach dem n-ten Eintrag dieses
+  Typs (gleiches Scan-Muster wie `ufs_enter_child`) und löscht ihn über das
+  bereits vorhandene `ufs_delete`. Da die Explorer-Navigation ihre
+  Verzeichnis-Handles nur lesend öffnet, öffnet `ufs_delete_nth` den
+  aktuellen Pfad (`UFS_CWD`) dafür kurz zusätzlich mit Schreibrecht und
+  schließt dieses Handle danach wieder. Nach erfolgreichem Löschen wird die
+  Ansicht sofort über `ufs_present` neu aus NovaFS aufgebaut und an den
+  Display Server übergeben, sodass der Eintrag sofort verschwindet; schlägt
+  das Löschen fehl (z. B. nicht-leerer Ordner), bleibt die bisherige Ansicht
+  unverändert bestehen.
+- **Ressourcengrenze:** Der Ring-3-Userspace-Code ist weiterhin hart auf
+  zwei 4-KiB-Seiten begrenzt (`%error`-Prüfung beim Assemblieren). Nach
+  dieser Erweiterung sind noch rund 170 Byte frei (zuvor 453 Byte); die
+  Tastatur-Zuordnung selbst liegt dagegen im Kernel (Ring 0) und unterliegt
+  dieser Grenze nicht.
+- **automatisiert getestet:** `test-uefi-display-server.ps1` öffnet den
+  Explorer deterministisch über das Startmenü (Fokus wird dabei fest auf
+  20 gesetzt), bewegt den Fokus mit vier Tab-Tastendrücken auf die erste
+  Ordnerkarte (im Testabbild ein leerer Ordner im Profilverzeichnis),
+  sendet Entf und prüft anhand der geloggten Eintragszahl, dass genau ein
+  Eintrag verschwunden ist und das Verzeichnis dabei unverändert bleibt.
+  Bei dieser Gelegenheit wurde auch ein spezifischer Fehler des
+  Testskripts auf Linux/pwsh behoben (`-WindowStyle Hidden` ist unter
+  PowerShell Core auf Linux nicht unterstützt).
+- **offen:** Umbenennen (F2) aus dem Explorer heraus sowie das Öffnen von
+  Dateien aus dem Explorer heraus; beides ist durch die sehr enge
+  Ring-3-Codegrenze (siehe oben) voraussichtlich nur mit einer strukturellen
+  Änderung (z. B. Verschieben von `USER_STACK_ADDRESS`, um den Codebereich
+  zu vergrößern) oder durch weiteres Einsparen an anderer Stelle machbar.
+
+Details in `dev_detail.md`, Abschnitt 102.

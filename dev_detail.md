@@ -3368,3 +3368,208 @@ danach weiterhin fehlerfrei.
   Kompromiss zugunsten der Einfachheit,
 - kein Schutz gegen gleichzeitige Änderungen (weiterhin Single-Threaded-
   Bootpfad, siehe §8).
+
+## 102. Explorer: Entf löscht den fokussierten Eintrag
+
+Bislang existierten `ufs_delete`/`ufs_rename` nur als von Ring 3 aus
+aufrufbare VFS-Wrapper (getestet im Ring-3-Selbsttest beim Boot), ohne an
+eine Explorer-Bedienhandlung angebunden zu sein. Dieser Abschnitt verdrahtet
+die Entf-Taste als erste solche Aktion.
+
+### Tastaturpfad (Kernel, Ring 0 – keine Codegrenze)
+
+Die Entf-Taste ist auf PC-Tastaturen eine erweiterte Taste (Scancode Set 1
+`0xE0 0x53`, Set 2 `0xE0 0x71`). Der bestehende Tastatur-Treiber
+(`keyboard_scancode_translate` o. ä., im erweiterten Zweig neben den
+Pfeiltasten) erkennt sie jetzt zusätzlich und reicht eine neue semantische
+Aktion `SYSTEM_INPUT_DELETE equ 11` über `input_router_enqueue` an das
+Ring-3-System-UI weiter – exakt derselbe Mechanismus wie für Tab, Enter,
+Backspace und die Pfeiltasten. Da dieser Übersetzungscode im Kernel (Ring 0)
+liegt, unterliegt er nicht der Ring-3-Codegrenze.
+
+### Dispatch und Löschen (Ring 3, `userspace_program_start`..`_end`)
+
+Im zentralen Eingabe-Dispatch des Ring-3-System-UI (`SYSTEM_INPUT_*`-
+Vergleichskette) wird `SYSTEM_INPUT_DELETE` auf einen neuen `.delete_entry`-
+Zweig geleitet. Dieser ist nur im Explorer-Arbeitsbereich (Workspace 0)
+aktiv und wertet den aktuellen Fokuswert aus:
+
+- Fokus 20..23 (Dateizeile 0..3) → `NOVAFS_TYPE_FILE`, Index = Fokus − 20
+- Fokus 24..27 (Ordnerkarte 0..3) → `NOVAFS_TYPE_DIRECTORY`, Index = Fokus − 24
+- außerhalb 20..27 → keine Wirkung (Szene wird unverändert erneut
+  präsentiert)
+
+Eine neue, gemeinsam genutzte Routine `ufs_find_nth` (EAX = NovaFS-Typ,
+EBX = Index) sucht den n-ten Verzeichniseintrag dieses Typs im aktuellen
+Arbeitsverzeichnis (`UFS_H_DIR`, bereits offen, nur lesend) und liefert ihn
+in `UFS_ENTRY` zurück – dasselbe Scan-Muster (Index hochzählen, Typ
+vergleichen, Nth herunterzählen) wie das bereits vorhandene
+`ufs_enter_child` für Ordnerkarten, jetzt aber einmal implementiert statt
+in jeder Aktion neu. `ufs_delete_nth` ruft `ufs_find_nth` auf und löscht
+dann den gefundenen Namen. Eine Besonderheit dabei: Die Explorer-Navigation
+(`ufs_open_path`, aufgerufen von `ufs_enter_child`/`ufs_enter_quick`/
+`ufs_enter_parent`) öffnet Verzeichnisse stets mit `EDI = 0`, also ohne
+Schreibrecht – ausreichend zum Anzeigen, aber `VFS.Delete` verlangt ein
+Handle mit `HANDLE_RIGHT_WRITE` (`vfs_check_write` in `vfs_op_delete`).
+`ufs_delete_nth` öffnet deshalb den aktuellen Pfad (`UFS_CWD`/
+`UFS_CWD_LEN`) zusätzlich kurz mit `VFS_LOOKUP_FLAG_WRITE` (Handle in
+`UFS_H_NEW` zwischengespeichert – zu diesem Zeitpunkt im Programmlauf
+frei, da nur während des einmaligen Boot-Selbsttests benutzt) und löscht
+den von `ufs_find_nth` gefundenen Namen (`UFS_ENTRY + 32`/`+ 20`) über
+dieses neue Handle – ohne das Verzeichnis dafür ein zweites Mal zu
+durchsuchen, da der Name bereits bekannt ist und `VFS.Delete` ihn über das
+Verzeichnis-Handle plus Namen auflöst, nicht über einen bestimmten
+Scan-Index. Das Schreibrecht-Handle wird anschließend wieder geschlossen,
+unabhängig vom Ergebnis. Schlägt schon das Öffnen mit Schreibrecht fehl
+(z. B. außerhalb `/Benutzer` ohne `SECURITY_CAP_FS_SYSTEM_WRITE`), wird
+dieser Fehler unverändert zurückgegeben.
+
+Nach einem erfolgreichen Löschen ruft `.delete_entry` `ufs_present` auf,
+das die Ansicht unverändert aus `UFS_H_DIR`/`UFS_CWD` neu aufbaut (gleicher
+Verzeichnis-Lesehandle wie zuvor, jetzt mit einem Eintrag weniger) und an
+den Display Server übergibt. Schlägt das Löschen fehl (z. B.
+`NOVAFS_ERR_NOT_EMPTY` bei einem nicht-leeren Ordner, oder kein Eintrag an
+dieser Fokusposition), bleibt die zuletzt übergebene Ansicht unverändert
+bestehen – es gibt keine Fehleranzeige im UI, nur das Fehlen einer neuen
+`Explorer zeigt...`-Protokollzeile.
+
+### Ring-3-Codebudget
+
+Der anfängliche Userspace-Prozess ist hart auf zwei 4-KiB-Seiten begrenzt
+(`%error`-Prüfung zwischen `userspace_program_start`/`_end`; Code- und
+Stack-Seite liegen ohne Lücke aneinander, siehe `userspace_initialize`).
+Vor dieser Änderung waren 453 von 8192 Byte frei. Die erste Fassung von
+`ufs_delete_nth` (mit einem zweiten, überflüssigen Verzeichnis-Scan unter
+dem Schreibrecht-Handle, siehe Abschnitt 103 zur Begründung des späteren
+Refactorings) belegte davon rund 280 Byte, sodass 173 Byte frei blieben.
+Nach dem Refactoring auf das gemeinsame `ufs_find_nth` (Abschnitt 103)
+sind es **13 von 8192 Byte** – siehe dort für die genaue Aufschlüsselung
+und was dieses Restbudget für weitere Erweiterungen bedeutet.
+
+### Test
+
+`test-uefi-display-server.ps1` erzeugt einen deterministischen
+Ausgangszustand für den Fokus, ohne das aktuelle Verzeichnis zu verändern:
+Startmenü öffnen (setzt Fokus fest auf 2), einmal Tab (Fokus 3, Eintrag
+"Explorer"), Enter (öffnet den Explorer-Arbeitsbereich mit Fokus fest auf
+20, Startmenü schließt). Von dort vier weitere Tab verschieben den Fokus
+auf 24 (erste Ordnerkarte). Entf wird gesendet, und das Skript prüft
+anhand der zuletzt protokollierten `Explorer zeigt NovaFS-Verzeichnis...`-
+Zeile, dass die Eintragszahl um genau eins gesunken ist und der Pfad
+unverändert geblieben ist. Nebenbei behoben: `Start-Process -WindowStyle
+Hidden` wird von PowerShell Core auf Linux nicht unterstützt und ließ das
+Testskript bisher dort grundsätzlich fehlschlagen (`$IsWindows`-Weiche
+ergänzt); QEMU läuft ohnehin mit `-display none`, sodass kein Fenster
+entsteht.
+
+Beim Entwickeln dieses Tests zeigte sich ein zweiter, subtilerer Fehler
+im eigenen Testaufbau: `build-uefi-image.ps1` übernimmt ohne
+`-ResetNovaFs` eine im Ziel-Image bereits vorhandene NovaFS-Partition
+unverändert (`"bestehende Partition uebernommen"`), statt sie durch das
+frisch per `-NovaFsImage` übergebene Abbild zu ersetzen. Da
+`build/nova-uefi.img` zwischen Testläufen auf der Festplatte liegen
+bleibt, mutierten wiederholte Testläufe so stillschweigend dasselbe
+persistente Volume weiter – eine Annahme des Tests ("die erste
+Ordnerkarte in Matthias ist ein leerer Ordner") traf nach einem
+vorherigen erfolgreichen Löschlauf (der genau diesen leeren Ordner
+entfernt hatte) beim nächsten Lauf nicht mehr zu, und der nächste
+Ordner an dieser Position war nicht mehr leer (`NOVAFS_ERR_NOT_EMPTY`).
+Für reproduzierbare, von vorherigen Läufen unabhängige Testläufe muss
+`build-uefi-image.ps1` daher mit `-ResetNovaFs` aufgerufen werden.
+
+### Offen
+
+- Umbenennen (F2) aus dem Explorer heraus: `ufs_rename` existiert bereits
+  als Wrapper, eine analoge `.rename_entry`-Verdrahtung bräuchte zusätzlich
+  eine Texteingabemöglichkeit (es gibt noch keine) und passt bei nur noch
+  13 freien Byte (Abschnitt 103) ohnehin nicht mehr ohne eine strukturelle
+  Erweiterung des Codebudgets.
+- Löschen über die Schnellzugriff-Einträge (Fokus 30..36) ist nicht
+  verdrahtet; diese sind über Tastatur ohnehin nicht fokussierbar (nur per
+  Maus über `explorer_hit_test`).
+
+## 103. Explorer: Enter öffnet eine Datei (einfache Inhaltsvorschau)
+
+Enter/Aktivieren auf einer fokussierten Dateizeile (Fokus 20..23) tat
+bisher nichts: Der zentrale `.activate`-Dispatch prüfte nur
+`cmp eax, 24 / jb .activate_menu` – ein Fokus unter 24 im
+Explorer-Arbeitsbereich fiel also ungenutzt in die für den Startmenü-
+Fokus (2..10) gedachte `.activate_menu`-Vergleichskette, wo er garantiert
+auf keinen der Fälle `eax == 3/6/9` passt und folgenlos verpufft.
+
+### Gemeinsame Suche: `ufs_find_nth`
+
+Bevor dieses Feature dazukam, hatte `ufs_delete_nth` seinen eigenen
+Verzeichnis-Scan (Index hochzählen, Typ vergleichen, Nth herunterzählen)
+inline – und brauchte für die neue Dateivorschau eine zweite, fast
+identische Kopie desselben Scans. Beide wurden daher in eine gemeinsame
+Routine `ufs_find_nth` (EAX = NovaFS-Typ, EBX = Index -> EAX = Status,
+Treffer in `UFS_ENTRY`) ausgelagert. Dabei fiel zusätzlich auf, dass die
+ursprüngliche `ufs_delete_nth` den gefundenen Eintrag ein zweites Mal
+suchte – diesmal unter dem frisch mit Schreibrecht geöffneten Handle
+(`UFS_H_NEW`) – obwohl das gar nicht nötig ist: `VFS.Delete` identifiziert
+den zu löschenden Eintrag über Verzeichnis-Handle plus Name, nicht über
+einen bestimmten Scan-Index, sodass der bereits über `UFS_H_DIR` (lesend)
+gefundene Name direkt auf dem neuen Schreibrecht-Handle gelöscht werden
+kann. Dieses Refactoring sparte selbst Platz, noch bevor die neue
+Dateivorschau überhaupt etwas hinzufügte – ohne diese beiden
+Einsparungen hätte das Codebudget (siehe unten) das neue Feature gar
+nicht mehr aufgenommen.
+
+### `ufs_preview_nth`
+
+Eine neue Routine `ufs_preview_nth` (EBX = Index der n-ten Datei im
+aktuellen Verzeichnis) ruft `ufs_find_nth` mit `NOVAFS_TYPE_FILE` auf,
+öffnet den gefundenen Namen readonly über `ufs_lookup` (ohne
+`VFS_LOOKUP_FLAG_WRITE` – `VFS.Read` verlangt nur `HANDLE_RIGHT_READ`,
+das ein Lookup auch ohne Schreibrecht-Flag immer mitvergibt, siehe
+`vfs_op_lookup`/`.resolve` in `vfs32.inc`), liest bis zu
+`EXPLORER_PATH_MAX` (56) Byte direkt in `UFS_VIEW + 40` – also genau das
+Feld, das sonst den Breadcrumb-Pfad trägt – setzt `UFS_VIEW + 28`
+(PathLength) auf die tatsächlich gelesene Byteanzahl und ruft
+`SYSCALL_DISPLAY_SUBMIT_EXPLORER_VIEW` direkt erneut auf. Bewusst wird
+dabei *nicht* `ufs_present`/`ufs_build_view` aufgerufen, da das den
+Breadcrumb wieder aus `UFS_CWD` neu aufbauen und die Vorschau sofort
+überschreiben würde. Nicht darstellbare Bytes im Dateiinhalt werden vom
+Kernel beim Entgegennehmen der Ansicht automatisch wie jeder andere
+Pfadtext behandelt (`explorer_sanitize`, Ersetzung durch `-`), es gibt
+also keinen Absturzpfad für binäre oder mehrzeilige Inhalte – nur
+unleserliche Darstellung. Das Dateihandle wird danach wieder geschlossen.
+Es gibt noch kein eigenes Anzeigeelement für Dateiinhalte; die Vorschau
+missbraucht bewusst das vorhandene Pfadfeld, weil für ein neues
+UI-Element (siehe Ring-3-Codebudget unten) kein Platz mehr ist. Navigiert
+man danach weiter, baut `ufs_present` den Breadcrumb normal neu auf –
+die Vorschau ist rein transient und hinterlässt keinen Zustand.
+
+### Ring-3-Codebudget
+
+Nach `SYSTEM_INPUT_DELETE`-Dispatch, dem `ufs_find_nth`-Refactoring, dem
+schlankeren `ufs_delete_nth` und dem neuen `ufs_preview_nth` plus
+`.open_file`-Dispatch sind nur noch **13 von 8192 Byte** des
+Ring-3-Codebudgets frei (`%error`-Prüfung zwischen
+`userspace_program_start`/`_end` schlägt erst beim Überschreiten fehl –
+bei diesem Stand kompiliert es gerade noch). Jede weitere Erweiterung,
+insbesondere Umbenennen (F2), das zusätzlich eine Texteingabemöglichkeit
+bräuchte, passt ohne eine strukturelle Änderung (zusätzliche Codeseite,
+verschobene `USER_STACK_ADDRESS`-Konstanten und alle davon abhängigen
+`UFS_*`-Offsets) nicht mehr in dieses Budget.
+
+### Test
+
+`test-uefi-display-server.ps1` nutzt denselben Startmenü-Trick wie beim
+Entf-Test (Fokus fest auf 20), diesmal direkt nach dem Boot-Selbsttest
+und vor jeder Explorer-Navigation, damit das Arbeitsverzeichnis
+unverändert `Matthias/Dokumente` bleibt (die einzige Datei dort ist die
+vom Selbsttest angelegte `Willkommen.txt`). Ein weiteres Enter löst
+`ufs_preview_nth` aus; das Skript prüft, dass die nächste protokollierte
+`Explorer zeigt NovaFS-Verzeichnis...`-Zeile den Dateiinhalt
+("Willkommen bei NovaOS.") statt des Pfads enthält.
+
+### Offen
+
+- Es gibt keine echte Dateiinhalts-Anzeige (eigenes Fenster/Textfeld,
+  Scrollen, mehr als 56 Byte, binäre Dateien lesbar machen); das ist
+  ebenfalls erst nach einer strukturellen Erweiterung des
+  Ring-3-Codebudgets sinnvoll umsetzbar.
+- Umbenennen (F2) bleibt offen (siehe Abschnitt 102) – bei 13 freien Byte
+  endgültig nicht mehr ohne Strukturänderung machbar.
