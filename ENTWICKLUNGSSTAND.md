@@ -549,9 +549,8 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 - Semantic Discovery und Semantic Execution
 - tatsächliche Ausführung registrierter Conversion Capabilities
 - NovaFS ab Phase 2: Copy-on-Write, Transaction Log, Crash Recovery,
-  Löschen, Zeitstempel, Nutzdatenprüfsummen, Baumhöhe > 2 sowie eine
-  Syscall-/Userspace-Schnittstelle mit Locking (Phase 1 ist umgesetzt, siehe
-  Abschnitt 16)
+  Löschen, Umbenennen, Zeitstempel, Nutzdatenprüfsummen und Baumhöhe > 2
+  (Phase 1 und die VFS-Syscalls sind umgesetzt, siehe Abschnitt 16)
 - persistenter Userspace und Trust-Provider (Boot Health erreicht derzeit
   `SystemRootReady`, bleibt ohne Trust aber `Pending`)
 - Tests auf realer UEFI-Hardware
@@ -564,9 +563,8 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 Für die weitere Arbeit am derzeit priorisierten UEFI-Pfad bietet sich diese
 Reihenfolge an:
 
-1. NovaFS an den Userspace anbinden: capabilitygeprüfte VFS-Syscalls
-   (`Open`, `Read`, `Write`, `Create`, `ReadDirectory`) über Object-Handles
-   mit globaler NovaFS-Sperre,
+1. Dateien in der System-UI nutzen (Explorer zeigt echte Inhalte aus
+   `/Benutzer` über `VFS.ReadDirectory`), danach `Delete` und `Rename`,
 2. NovaFS Phase 2: Transaction Log, Checkpoints und Copy-on-Write, damit ein
    abgebrochener Schreibvorgang automatisch repariert statt nur read-only
    gemountet wird; anschließend Löschen und Zeitstempel,
@@ -1346,8 +1344,25 @@ Spezifikation `docs/NPSPEC/NPSPEC-NOVAFS-ONDISK-0001.md`.
   Persistenz über Neustarts, Wurzel- und Blatt-Splits aller Bäume durch den
   Kernel, Backup-Superblock mit Reparatur, DIRTY-Volume, unformatierte
   Partition) und `make novafs-check` (Host-Werkzeug mit `fsck`).
-- **offen:** Phase 2 und folgende, Syscall-Schnittstelle, Löschen,
-  Zeitstempel, Nutzdatenprüfsummen, Locking.
+- **offen:** Phase 2 und folgende, Löschen, Umbenennen, Zeitstempel,
+  Nutzdatenprüfsummen.
+
+### VFS-Syscalls auf NovaFS (VFS ABI 1.1)
+
+- **implementiert:** `VFS.Lookup` (absolute und relative Pfade, optional mit
+  Schreibrecht), `Read`, `Write`, `Create`, `ReadDirectory` und `Query` über
+  prozesslokale Handles mit den Rechten `READ`/`WRITE`; neue Capabilities
+  `FS_READ`, `FS_WRITE` und getrennt `FS_SYSTEM_WRITE`. Ohne
+  System-Write-Authority darf nur unterhalb von `/Benutzer` geschrieben
+  werden; Capability und Policy werden bei jedem Schreibzugriff erneut
+  geprüft.
+- **automatisiert getestet:** Das Ring-3-Bootstrap-Programm liest die vom
+  Kernel geschriebene Systemdatei, scheitert erwartungsgemäß beim Schreiben
+  ohne Recht, mit veraltetem Handle und im Systembereich, legt
+  `/Benutzer/Willkommen.txt` an, schreibt, liest zurück und findet sie per
+  `ReadDirectory`. `make test-uefi-novafs` prüft das Ergebnis vom Host.
+- **offen:** Delete/Rename, größere Benutzerpuffer mit allgemeinem
+  Prozessspeicher, objektbezogene Capabilities und deklarative Policies.
 
 Das Systemvolume bleibt über Kernel-Neubauten erhalten: `make uefi-image`
 übernimmt die bestehende NovaFS-Partition aus `build/nova-uefi.img`.

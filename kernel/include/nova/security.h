@@ -10,6 +10,9 @@
 #define NOVA_CAP_IPC     (1u << 4)
 #define NOVA_CAP_BOOT_HEALTH_REPORT (1u << 15)
 #define NOVA_CAP_BOOT_HEALTH_COMMIT (1u << 16)
+#define NOVA_CAP_FS_READ            (1u << 17)
+#define NOVA_CAP_FS_WRITE           (1u << 18)
+#define NOVA_CAP_FS_SYSTEM_WRITE    (1u << 19)
 typedef struct nova_security_record {
     uint32_t ProcessId;
     uint32_t Capabilities;

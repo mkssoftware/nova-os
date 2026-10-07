@@ -3825,6 +3825,7 @@ interrupt_api:
 %include "arch/x86_64/state32.inc"
 %include "arch/x86_64/storage32.inc"
 %include "arch/x86_64/novafs32.inc"
+%include "arch/x86_64/vfs32.inc"
 
 IPC_MESSAGE_SIZE   equ 16
 IPC_QUEUE_CAPACITY equ 16
@@ -12138,6 +12139,8 @@ SHARED_FEATURE_INT80        equ 0x00000001
 SHARED_FEATURE_COPY_IO      equ 0x00000002
 SHARED_FEATURE_PREEMPT      equ 0x00000004
 SHARED_FEATURE_DISPLAY      equ 0x00000008
+SHARED_FEATURE_FILESYSTEM   equ 0x00000100
+SHARED_FEATURE_FILESYSTEM_WRITABLE equ 0x00000200
 SHARED_SERVICE_BITMAP       equ 0x000008F7 ; Core, Process, Thread, IPC, VFS, Power, Network, Display
 
 userspace_initialize:
@@ -12246,6 +12249,11 @@ userspace_initialize:
     mov edx, SECURITY_CAP_DISPLAY_SYSTEM_UI
     call security_grant
     jc .invalid
+    ; Dateisystem: Lesen und Schreiben, aber keine System-Write-Authority.
+    mov eax, 2
+    mov edx, SECURITY_CAP_FS_READ | SECURITY_CAP_FS_WRITE
+    call security_grant
+    jc .invalid
 
     ; Der Bootstrap-Kernelthread (TID 1 / Scheduler-Slot 0) wird atomar zum
     ; ersten Userspace-Thread des neuen Prozesses weitergeführt.
@@ -12333,6 +12341,16 @@ userspace_enter:
     push dword USER_CODE_SELECTOR
     push dword USER_CODE_ADDRESS
     iretd
+
+; Feste Stackbereiche des Ring-3-VFS-Tests (unterhalb der bisherigen Nutzung)
+%define UFS_ADDR(x) (USER_CODE_ADDRESS + (x) - userspace_program_start)
+UFS_H_FILE  equ USER_STACK_ADDRESS - 1300
+UFS_H_DIR   equ USER_STACK_ADDRESS - 1304
+UFS_H_NEW   equ USER_STACK_ADDRESS - 1308
+UFS_INDEX   equ USER_STACK_ADDRESS - 1312
+UFS_ARGS    equ USER_STACK_ADDRESS - 1408
+UFS_DATA    equ USER_STACK_ADDRESS - 1536
+UFS_ENTRY   equ USER_STACK_ADDRESS - 1856
 
 userspace_program_start:
     ; Process.QuerySelf -> Ergebnis auf dem beschreibbaren Userstack.
@@ -12486,6 +12504,175 @@ userspace_program_start:
     int 0x80
     test eax, eax
     jnz .failed
+
+    ; NovaFS ueber die VFS-Syscalls: nur bei gemountetem Systemvolume.
+    ; Handles mit Rechten, Systembereichs-Policy und Persistenz werden aus
+    ; Ring 3 geprueft; alle geoeffneten Handles werden wieder geschlossen.
+    test dword [SHARED_SERVICE_ADDRESS + 12], SHARED_FEATURE_FILESYSTEM
+    jz .fs_done
+    ; A) Vom Kernel geschriebene Systemdatei nur lesend oeffnen
+    mov edx, [USER_STACK_ADDRESS - 152]
+    mov esi, UFS_ADDR(ufs_path_bootcount)
+    mov ecx, ufs_path_bootcount_end - ufs_path_bootcount
+    xor edi, edi
+    call ufs_lookup
+    test eax, eax
+    jz .fs_have_system_file
+    ; Ein noch nie beschreibbar gestartetes Volume besitzt die Datei nicht.
+    cmp eax, SYSCALL_STATUS_NOT_FOUND
+    jne .failed
+    jmp .fs_write_part
+.fs_have_system_file:
+    mov [UFS_H_FILE], ebx
+    mov edx, ebx
+    call ufs_query
+    test eax, eax
+    jnz .failed
+    cmp dword [UFS_ARGS + 24], NOVAFS_TYPE_FILE
+    jne .failed
+    cmp dword [UFS_ARGS + 32], 27
+    jne .failed
+    test dword [UFS_ARGS + 12], HANDLE_RIGHT_WRITE
+    jnz .failed
+    mov ebx, SYSCALL_VFS_READ
+    mov edx, [UFS_H_FILE]
+    mov esi, UFS_DATA
+    mov ecx, 16
+    xor edi, edi
+    call ufs_io
+    test eax, eax
+    jnz .failed
+    cmp ecx, 16
+    jne .failed
+    cmp dword [UFS_DATA], 'NOVA'
+    jne .failed
+    cmp dword [UFS_DATA + 4], 'FS-B'
+    jne .failed
+    ; Schreiben ohne WRITE-Recht muss scheitern
+    mov ebx, SYSCALL_VFS_WRITE
+    mov edx, [UFS_H_FILE]
+    mov esi, UFS_DATA
+    mov ecx, 4
+    xor edi, edi
+    call ufs_io
+    cmp eax, SYSCALL_STATUS_ACCESS
+    jne .failed
+    mov edx, [UFS_H_FILE]
+    call ufs_close
+    test eax, eax
+    jnz .failed
+    ; Ein geschlossenes (veraltetes) Handle verleiht keinen Zugriff mehr
+    mov edx, [UFS_H_FILE]
+    call ufs_query
+    cmp eax, SYSCALL_STATUS_ACCESS
+    jne .failed
+    ; Ein read-only gemountetes Volume (z. B. DIRTY) wird nur gelesen.
+.fs_write_part:
+    test dword [SHARED_SERVICE_ADDRESS + 12], SHARED_FEATURE_FILESYSTEM_WRITABLE
+    jz .fs_done
+    ; Schreibzugriff im Systembereich verweigert die Policy
+    mov edx, [USER_STACK_ADDRESS - 152]
+    mov esi, UFS_ADDR(ufs_path_bootcount)
+    mov ecx, ufs_path_bootcount_end - ufs_path_bootcount
+    mov edi, VFS_LOOKUP_FLAG_WRITE
+    call ufs_lookup
+    cmp eax, SYSCALL_STATUS_ACCESS
+    jne .failed
+
+    ; B) /Benutzer schreibbar oeffnen, Datei suchen oder anlegen
+    mov edx, [USER_STACK_ADDRESS - 152]
+    mov esi, UFS_ADDR(ufs_path_benutzer)
+    mov ecx, ufs_path_benutzer_end - ufs_path_benutzer
+    mov edi, VFS_LOOKUP_FLAG_WRITE
+    call ufs_lookup
+    test eax, eax
+    jnz .failed
+    mov [UFS_H_DIR], ebx
+    mov edx, ebx
+    mov esi, UFS_ADDR(ufs_name_welcome)
+    mov ecx, ufs_name_welcome_end - ufs_name_welcome
+    mov edi, VFS_LOOKUP_FLAG_WRITE
+    call ufs_lookup
+    test eax, eax
+    jz .fs_have_file
+    cmp eax, SYSCALL_STATUS_NOT_FOUND
+    jne .failed
+    mov edx, [UFS_H_DIR]
+    mov esi, UFS_ADDR(ufs_name_welcome)
+    mov ecx, ufs_name_welcome_end - ufs_name_welcome
+    mov edi, NOVAFS_TYPE_FILE
+    call ufs_create
+    test eax, eax
+    jnz .failed
+.fs_have_file:
+    mov [UFS_H_NEW], ebx
+    ; doppelter Name wird abgewiesen
+    mov edx, [UFS_H_DIR]
+    mov esi, UFS_ADDR(ufs_name_welcome)
+    mov ecx, ufs_name_welcome_end - ufs_name_welcome
+    mov edi, NOVAFS_TYPE_FILE
+    call ufs_create
+    cmp eax, SYSCALL_STATUS_EXISTS
+    jne .failed
+    ; schreiben und zuruecklesen
+    mov ebx, SYSCALL_VFS_WRITE
+    mov edx, [UFS_H_NEW]
+    mov esi, UFS_ADDR(ufs_welcome_text)
+    mov ecx, ufs_welcome_text_end - ufs_welcome_text
+    xor edi, edi
+    call ufs_io
+    test eax, eax
+    jnz .failed
+    cmp ecx, ufs_welcome_text_end - ufs_welcome_text
+    jne .failed
+    mov ebx, SYSCALL_VFS_READ
+    mov edx, [UFS_H_NEW]
+    mov esi, UFS_DATA
+    mov ecx, 64
+    xor edi, edi
+    call ufs_io
+    test eax, eax
+    jnz .failed
+    cmp ecx, ufs_welcome_text_end - ufs_welcome_text
+    jne .failed
+    mov esi, UFS_DATA
+    mov edi, UFS_ADDR(ufs_welcome_text)
+    repe cmpsb
+    jne .failed
+    ; C) /Benutzer enumerieren und die Datei samt Groesse finden
+    mov dword [UFS_INDEX], 0
+.fs_dir_next:
+    mov edx, [UFS_H_DIR]
+    mov ecx, [UFS_INDEX]
+    call ufs_read_directory
+    test eax, eax
+    jnz .failed
+    cmp dword [UFS_ENTRY + 20], ufs_name_welcome_end - ufs_name_welcome
+    jne .fs_dir_skip
+    mov esi, UFS_ENTRY + 32
+    mov edi, UFS_ADDR(ufs_name_welcome)
+    mov ecx, ufs_name_welcome_end - ufs_name_welcome
+    repe cmpsb
+    je .fs_dir_found
+.fs_dir_skip:
+    inc dword [UFS_INDEX]
+    cmp dword [UFS_INDEX], 256
+    jb .fs_dir_next
+    jmp .failed
+.fs_dir_found:
+    cmp dword [UFS_ENTRY + 24], ufs_welcome_text_end - ufs_welcome_text
+    jne .failed
+    cmp dword [UFS_ENTRY + 16], NOVAFS_TYPE_FILE
+    jne .failed
+    mov edx, [UFS_H_NEW]
+    call ufs_close
+    test eax, eax
+    jnz .failed
+    mov edx, [UFS_H_DIR]
+    call ufs_close
+    test eax, eax
+    jnz .failed
+.fs_done:
 
     ; Power.QuerySystem liefert ausschließlich capability-geschützte,
     ; aggregierte Kernelzustände an den Bootstrap-Prozess.
@@ -13128,6 +13315,116 @@ userspace_exit_probe:
     mov esi, 16
     int 0x80
     ud2                             ; eine erfolgreiche Exit-Operation kehrt nie zurück
+;---------------------------------------------------------------------------
+; Ring-3-Hilfsroutinen fuer den VFS-Test (Teil des Userspace-Abbilds)
+;---------------------------------------------------------------------------
+; EDX=Verzeichnis-Handle, ESI=Pfad, ECX=Laenge, EDI=Flags -> EAX=Status, EBX=Handle
+ufs_lookup:
+    mov dword [UFS_ARGS + 0], 32
+    mov dword [UFS_ARGS + 4], SYSCALL_ABI_VERSION
+    mov [UFS_ARGS + 8], edx
+    mov [UFS_ARGS + 12], esi
+    mov [UFS_ARGS + 16], ecx
+    mov [UFS_ARGS + 20], edi
+    mov dword [UFS_ARGS + 24], 0
+    mov dword [UFS_ARGS + 28], 0
+    mov ebx, SYSCALL_VFS_LOOKUP
+    call ufs_invoke32
+    mov ebx, [UFS_ARGS + 24]
+    ret
+
+; EBX=Read/Write, EDX=Handle, ESI=Puffer, ECX=Laenge, EDI=Offset
+; -> EAX=Status, ECX=uebertragene Bytes
+ufs_io:
+    mov dword [UFS_ARGS + 0], 32
+    mov dword [UFS_ARGS + 4], SYSCALL_ABI_VERSION
+    mov [UFS_ARGS + 8], edx
+    mov [UFS_ARGS + 12], esi
+    mov [UFS_ARGS + 16], edi
+    mov [UFS_ARGS + 20], ecx
+    mov dword [UFS_ARGS + 24], 0
+    mov dword [UFS_ARGS + 28], 0
+    call ufs_invoke32
+    mov ecx, [UFS_ARGS + 24]
+    ret
+
+; EDX=Verzeichnis-Handle, ESI=Name, ECX=Laenge, EDI=Typ -> EAX=Status, EBX=Handle
+ufs_create:
+    mov dword [UFS_ARGS + 0], 32
+    mov dword [UFS_ARGS + 4], SYSCALL_ABI_VERSION
+    mov [UFS_ARGS + 8], edx
+    mov [UFS_ARGS + 12], esi
+    mov [UFS_ARGS + 16], ecx
+    mov [UFS_ARGS + 20], edi
+    mov dword [UFS_ARGS + 24], 0
+    mov dword [UFS_ARGS + 28], 0
+    mov ebx, SYSCALL_VFS_CREATE
+    call ufs_invoke32
+    mov ebx, [UFS_ARGS + 24]
+    ret
+
+; EDX=Verzeichnis-Handle, ECX=Index -> EAX=Status, Eintrag in UFS_ENTRY
+ufs_read_directory:
+    mov dword [UFS_ARGS + 0], 32
+    mov dword [UFS_ARGS + 4], SYSCALL_ABI_VERSION
+    mov [UFS_ARGS + 8], edx
+    mov [UFS_ARGS + 12], ecx
+    mov dword [UFS_ARGS + 16], UFS_ENTRY
+    mov dword [UFS_ARGS + 20], VFS_ENTRY_SIZE
+    mov dword [UFS_ARGS + 24], 0
+    mov dword [UFS_ARGS + 28], 0
+    mov ebx, SYSCALL_VFS_READ_DIRECTORY
+    jmp ufs_invoke32
+
+; EDX=Handle -> EAX=Status, Ergebnis in UFS_ARGS (48 Byte)
+ufs_query:
+    mov edi, UFS_ARGS
+    xor eax, eax
+    mov ecx, VFS_INFO_SIZE / 4
+    rep stosd
+    mov dword [UFS_ARGS + 0], VFS_INFO_SIZE
+    mov dword [UFS_ARGS + 4], SYSCALL_ABI_VERSION
+    mov [UFS_ARGS + 8], edx
+    mov eax, SYSCALL_SERVICE_VFS
+    mov ebx, SYSCALL_VFS_QUERY
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, UFS_ARGS
+    mov esi, VFS_INFO_SIZE
+    int 0x80
+    ret
+
+; EDX=Handle -> EAX=Status
+ufs_close:
+    mov dword [UFS_ARGS + 0], 16
+    mov dword [UFS_ARGS + 4], SYSCALL_ABI_VERSION
+    mov [UFS_ARGS + 8], edx
+    mov dword [UFS_ARGS + 12], 0
+    mov eax, SYSCALL_SERVICE_CORE
+    mov ebx, SYSCALL_CORE_CLOSE_HANDLE
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, UFS_ARGS
+    mov esi, 16
+    int 0x80
+    ret
+
+; EBX=VFS-Operation mit 32-Byte-Argumenten in UFS_ARGS -> EAX=Status
+ufs_invoke32:
+    mov eax, SYSCALL_SERVICE_VFS
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, UFS_ARGS
+    mov esi, 32
+    int 0x80
+    ret
+
+ufs_path_bootcount: db "/System/Diagnose/novafs-bootcount"
+ufs_path_bootcount_end:
+ufs_path_benutzer:  db "/Benutzer"
+ufs_path_benutzer_end:
+ufs_name_welcome:   db "Willkommen.txt"
+ufs_name_welcome_end:
+ufs_welcome_text:   db "Willkommen bei NovaOS.", 13, 10
+ufs_welcome_text_end:
+
 align 4
 userspace_exit_arguments:
     dd 16
@@ -13783,10 +14080,18 @@ syscall_dispatch:
     mov eax, -19
     jmp .reject
 .vfs:
-    cmp dword [edx + 32], SYSCALL_VFS_LOOKUP
-    je .vfs_lookup
     cmp dword [edx + 32], SYSCALL_VFS_OPEN_ROOT
-    jne .unknown_operation
+    je .vfs_open_root
+    ; Lookup, Read, Write, Create, ReadDirectory und Query (vfs32.inc)
+    call vfs_syscall
+    mov edx, [syscall_frame]
+    mov [edx + 44], eax
+    test eax, eax
+    jz .vfs_done
+    inc dword [syscall_rejected]
+.vfs_done:
+    ret
+.vfs_open_root:
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
     jne .bad_abi
     cmp dword [edx + 20], 16
@@ -14619,61 +14924,6 @@ syscall_dispatch:
     mov esi, message_power_shutdown_denied
     call serial_write_string
     jmp .access_denied
-.vfs_lookup:
-    cmp dword [edx + 40], SYSCALL_ABI_VERSION
-    jne .bad_abi
-    cmp dword [edx + 20], 32
-    jb .bad_size
-    mov esi, [edx + 36]
-    mov ecx, 32
-    mov edi, syscall_vfs_buffer
-    call syscall_copy_from_user
-    jc .bad_pointer
-    cmp dword [syscall_vfs_buffer + 0], 32
-    jne .bad_size
-    cmp dword [syscall_vfs_buffer + 4], SYSCALL_ABI_VERSION
-    jne .bad_abi
-    cmp dword [syscall_vfs_buffer + 16], 1
-    jne .bad_size
-    cmp dword [syscall_vfs_buffer + 20], 0
-    jne .bad_reserved
-    cmp dword [syscall_vfs_buffer + 28], 0
-    jne .bad_reserved
-    mov eax, [userspace_pid]
-    mov edx, [syscall_vfs_buffer + 8]
-    mov ebx, OBJECT_TYPE_VFS_NODE
-    mov ecx, HANDLE_RIGHT_QUERY
-    call handle_resolve
-    jc .access_denied
-    mov eax, [syscall_vfs_buffer + 12]
-    mov esi, eax
-    mov ecx, 1
-    mov edi, syscall_vfs_path
-    call syscall_copy_from_user
-    jc .bad_pointer
-    mov esi, syscall_vfs_path
-    mov ecx, 1
-    call vfs_lookup_root
-    jc .unknown_operation
-    mov edx, eax
-    mov eax, [userspace_pid]
-    mov ebx, OBJECT_TYPE_VFS_NODE
-    mov ecx, HANDLE_RIGHT_QUERY
-    xor esi, esi
-    call handle_create
-    jc .access_denied
-    mov [syscall_vfs_buffer + 24], eax
-    mov edx, [syscall_frame]
-    mov edi, [edx + 36]
-    mov esi, syscall_vfs_buffer
-    mov ecx, 32
-    call syscall_copy_buffer_to_user
-    jc .bad_pointer
-    mov esi, message_vfs_lookup_ok
-    call serial_write_string
-    mov edx, [syscall_frame]
-    mov dword [edx + 44], SYSCALL_STATUS_OK
-    ret
 .unknown_service:
     mov eax, SYSCALL_STATUS_SERVICE
     jmp .reject
@@ -14795,8 +15045,15 @@ userspace_ipc_initialize:
     call handle_create
     jc .invalid
     mov [userspace_ipc_receive_handle], eax
+    ; Das Paket kann je nach Programmgroesse in der ersten oder zweiten
+    ; Codeseite liegen.
+%if (userspace_ipc_packet - userspace_program_start + 8) < PMM_PAGE_SIZE
     mov edi, [userspace_code_page]
     add edi, userspace_ipc_packet - userspace_program_start + 8
+%else
+    mov edi, [userspace_code_page_2]
+    add edi, userspace_ipc_packet - userspace_program_start + 8 - PMM_PAGE_SIZE
+%endif
     mov eax, [userspace_ipc_send_handle]
     mov [edi], eax
     cmp dword [handle_active_count], 4
@@ -14864,6 +15121,13 @@ shared_service_page_initialize:
     mov dword [edi + 4], SHARED_SERVICE_SIZE
     mov dword [edi + 8], SYSCALL_ABI_VERSION
     mov dword [edi + 12], SHARED_FEATURE_INT80 | SHARED_FEATURE_COPY_IO | SHARED_FEATURE_PREEMPT | SHARED_FEATURE_DISPLAY
+    cmp dword [nfs_mounted], 1
+    jne .features_done
+    or dword [edi + 12], SHARED_FEATURE_FILESYSTEM
+    cmp dword [nfs_readonly], 0
+    jne .features_done
+    or dword [edi + 12], SHARED_FEATURE_FILESYSTEM_WRITABLE
+.features_done:
     mov dword [edi + 16], SHARED_SERVICE_BITMAP
     mov dword [edi + 20], PMM_PAGE_SIZE
     mov dword [edi + 24], 100
@@ -15317,7 +15581,10 @@ SECURITY_CAP_LOG_READ   equ 0x00002000
 SECURITY_CAP_DISPLAY_SYSTEM_UI equ 0x00004000
 SECURITY_CAP_BOOT_HEALTH_REPORT equ 0x00008000
 SECURITY_CAP_BOOT_HEALTH_COMMIT equ 0x00010000
-SECURITY_KERNEL_CAPS    equ 0x0001FFFF
+SECURITY_CAP_FS_READ     equ 0x00020000
+SECURITY_CAP_FS_WRITE    equ 0x00040000
+SECURITY_CAP_FS_SYSTEM_WRITE equ 0x00080000
+SECURITY_KERNEL_CAPS    equ 0x000FFFFF
 
 security_initialize:
     mov edi, security_table

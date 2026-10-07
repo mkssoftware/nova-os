@@ -1359,6 +1359,7 @@ NOVA: ACPI MADT, erkannte CPUs (hex): 0x00000004
 | NovaFS-On-Disk-ABI (C) | `kernel/include/nova/novafs.h` |
 | NovaFS-Host-Werkzeug | `tools/novafs/novafs.c` |
 | NovaFS-QEMU-Test | `scripts/test-uefi-novafs.ps1` |
+| VFS-Syscalls auf NovaFS | `kernel/arch/x86_64/vfs32.inc` |
 | Hauptbuildsystem | `Makefile` |
 
 ## 57. Pflegehinweis
@@ -2981,6 +2982,100 @@ UEFI-Kernelnegativtest bleiben erfolgreich.
 - Baumhöhe ≤ 2, Kernel-Bitmap ≤ 4 Blöcke (Volume ≤ 512 MiB), Dateien < 4 GiB,
 - keine Nutzdatenprüfsummen, keine Zeitstempel, kein Löschen im Kernel,
 - keine Copy-on-Write-Transaktionen und kein Transaction Log (Phase 2),
-- kein Locking und noch keine Syscall-/Userspace-Schnittstelle,
+- kein feingranulares Locking (Syscalls laufen exklusiv, siehe Abschnitt 97),
 - Schutzrichtlinie aller Dateien ist das Profil `Unprotected` (Policy-ID 0).
+
+## 97. VFS-Syscalls auf NovaFS (VFS ABI 1.1)
+
+`kernel/arch/x86_64/vfs32.inc` macht NovaFS für Ring 3 nutzbar. Die Syscalls
+folgen dem bestehenden `int 0x80`-Vertrag (Service 6 = VFS, versionierte
+Argumentstrukturen mit expliziter Größe) und sind in
+`kernel/include/nova/syscall.h` als C-ABI mit statischen Größenprüfungen
+beschrieben.
+
+| Op | Name | Argumente | Recht am Handle | Capability |
+|---:|---|---|---|---|
+| 1 | `OpenRoot` | unverändert | – | `SERVICE` |
+| 2 | `Lookup` | `NovaVfsLookupArgumentsV1` (Pfad absolut oder relativ, 1–255 Byte, Flag `WRITE`) | `QUERY` am Startverzeichnis | `FS_READ` (+ `FS_WRITE` bei Flag) |
+| 3 | `Read` | `NovaVfsIoArgumentsV1` (≤ 4096 Byte) | `READ` | `FS_READ` |
+| 4 | `Write` | `NovaVfsIoArgumentsV1` (≤ 4096 Byte) | `WRITE` | `FS_WRITE` |
+| 5 | `Create` | `NovaVfsCreateArgumentsV1` (Datei/Verzeichnis) | `WRITE` am Verzeichnis | `FS_WRITE` |
+| 6 | `ReadDirectory` | `NovaVfsDirectoryArgumentsV1` → `NovaVfsDirectoryEntryV1` (288 Byte) | `READ` | `FS_READ` |
+| 7 | `Query` | `NovaVfsObjectInfoV1` (ObjectID, Typ, Größe, Generation, Rechte) | `QUERY` | – |
+
+### Sicherheitsmodell
+
+```text
+Path -> Resolve -> ObjectID -> Capability + Policy -> Handle(Rechte) -> Operation
+```
+
+- Pfad- oder ObjectID-Kenntnis allein erzeugt keinen Zugriff; jede Operation
+  verlangt ein prozesslokales, generationsgeschütztes Handle mit dem nötigen
+  Recht (`HANDLE_RIGHT_READ 0x40`, `HANDLE_RIGHT_WRITE 0x80`) und die
+  Prozess-Capability (`SECURITY_CAP_FS_READ`, `SECURITY_CAP_FS_WRITE`).
+- Ein geschlossenes Handle ist durch die Generation sofort ungültig.
+- Schreib-Authority für Systembereiche ist getrennt
+  (`SECURITY_CAP_FS_SYSTEM_WRITE`, NPSPEC-POLICY-SYSTEMWRITE-0001 Nr. 1, 4, 6).
+  Phase-1-Policy: ohne diese Authority ist Schreiben nur unterhalb von
+  `/Benutzer` erlaubt; `/`, `/System`, `/Boot`, `/Apps`, `/Volumes` und
+  `/Solutions` bleiben geschützt. Die Zugehörigkeit wird über die stabile
+  Parent-Kette der ObjectIDs bestimmt, nicht über den Pfad.
+- Capability, Mountzustand und Policy werden bei jedem `Write` und `Create`
+  erneut geprüft, nicht nur beim Öffnen (Revalidierung vor Commit).
+- Der System-UI-Prozess erhält `FS_READ | FS_WRITE`, aber keine
+  System-Write-Authority.
+
+### Konsistenz
+
+- Syscalls laufen über ein Interrupt-Gate und damit exklusiv; `nfs_busy`
+  verhindert zusätzlich Wiedereintritt.
+- Jede schreibende Operation bildet eine eigene NovaFS-Änderung
+  (DIRTY → Änderung → CLEAN). Scheitert sie, bevor etwas geschrieben wurde,
+  wird sauber abgeschlossen. Scheitert sie nach einer Teiländerung, bleibt das
+  Volume `DIRTY` und wird bis zum Neustart read-only (kein Rollback in
+  Phase 1).
+- Der Kernel kopiert Benutzerdaten erst nach vollständiger Bereichsprüfung in
+  eine eigene Bounce-Seite.
+
+Das Shared Service Page meldet `NOVA_SYSCALL_FEATURE_FILESYSTEM (0x100)` bei
+gemountetem Systemvolume und zusätzlich `..._FILESYSTEM_WRITABLE (0x200)`,
+wenn es beschreibbar ist.
+
+### Ring-3-Nachweis
+
+Das Bootstrap-Programm prüft bei jedem Start aus Ring 3:
+
+1. `/System/Diagnose/novafs-bootcount` lesend öffnen, `Query` (Typ, 27 Byte,
+   kein Schreibrecht) und `Read` des Inhalts,
+2. `Write` ohne Schreibrecht → `ACCESS_DENIED`, Zugriff über das geschlossene
+   Handle → `ACCESS_DENIED`,
+3. Schreib-Lookup auf eine Systemdatei → Policy-Ablehnung,
+4. `/Benutzer` schreibbar öffnen, `Willkommen.txt` relativ suchen oder anlegen,
+   doppelte Anlage → `ALREADY_EXISTS`,
+5. Text schreiben, zurücklesen und vergleichen,
+6. `/Benutzer` per `ReadDirectory` durchlaufen und die Datei mit korrekter
+   Größe finden, alle Handles schließen.
+
+Ist das Volume read-only (z. B. `DIRTY`), läuft nur der Leseteil; der Desktop
+startet in jedem Fall. `make test-uefi-novafs` prüft die Datei anschließend vom
+Host aus (`/Benutzer/Willkommen.txt` = „Willkommen bei NovaOS.“).
+
+```text
+NOVA: Userspace VFS.Lookup auf NovaFS erfolgreich
+NOVA: Userspace VFS.Query erfolgreich
+NOVA: Userspace VFS.Read erfolgreich
+NOVA: VFS Schreibzugriff ausserhalb /Benutzer ohne System-Write-Authority abgewiesen
+NOVA: Userspace VFS.Create erfolgreich
+NOVA: Userspace VFS.Write erfolgreich
+NOVA: Userspace VFS.ReadDirectory erfolgreich
+```
+
+### Grenzen
+
+- Benutzerpuffer liegen im Bootstrap-Prozess auf seiner einzigen Stackseite;
+  ein allgemeiner Userspace-Speicher folgt mit dem Prozessmodell,
+- höchstens 16 Handles systemweit (bestehende Handle-Tabelle),
+- kein `Delete`, `Rename`/`Move` und kein Ändern von Rechten,
+- Policy ist eine feste Phase-1-Regel; deklarative Policies und
+  objektbezogene Capabilities aus dem Semantic Core folgen.
 

@@ -17,6 +17,8 @@
 #define NOVA_SYSCALL_FEATURE_TYPED_IPC      0x00000020u
 #define NOVA_SYSCALL_FEATURE_STATE_VERSION  0x00000040u
 #define NOVA_SYSCALL_FEATURE_TRANSACTIONS   0x00000080u
+#define NOVA_SYSCALL_FEATURE_FILESYSTEM     0x00000100u
+#define NOVA_SYSCALL_FEATURE_FILESYSTEM_WRITABLE 0x00000200u
 
 enum NovaServiceId {
     NOVA_SERVICE_CORE = 1,
@@ -58,8 +60,18 @@ enum NovaIpcOperationId {
 
 enum NovaVfsOperationId {
     NOVA_VFS_OPERATION_OPEN_ROOT = 1,
-    NOVA_VFS_OPERATION_LOOKUP = 2
+    NOVA_VFS_OPERATION_LOOKUP = 2,
+    NOVA_VFS_OPERATION_READ = 3,
+    NOVA_VFS_OPERATION_WRITE = 4,
+    NOVA_VFS_OPERATION_CREATE = 5,
+    NOVA_VFS_OPERATION_READ_DIRECTORY = 6,
+    NOVA_VFS_OPERATION_QUERY = 7
 };
+
+#define NOVA_VFS_LOOKUP_FLAG_WRITE 0x00000001u
+#define NOVA_VFS_IO_MAX_BYTES 4096u
+#define NOVA_VFS_OBJECT_FILE 1u
+#define NOVA_VFS_OBJECT_DIRECTORY 2u
 
 enum NovaDisplayOperationId {
     NOVA_DISPLAY_OPERATION_QUERY_PRIMARY = 1,
@@ -89,14 +101,22 @@ enum NovaDisplaySceneFlags {
 enum NovaStatus {
     NOVA_STATUS_OK = 0,
     NOVA_STATUS_ABI_INCOMPATIBLE = -1,
+    NOVA_STATUS_NOT_FOUND = -2,
     NOVA_STATUS_ABI_STRUCTURE_SIZE = -4,
     NOVA_STATUS_ABI_RESERVED_FIELD = -5,
+    NOVA_STATUS_ALREADY_EXISTS = -6,
+    NOVA_STATUS_IO_ERROR = -7,
     NOVA_STATUS_SERVICE_UNKNOWN = -8,
     NOVA_STATUS_OPERATION_UNKNOWN = -9,
+    NOVA_STATUS_NO_SPACE = -11,
+    NOVA_STATUS_READ_ONLY = -12,
     NOVA_STATUS_ACCESS_DENIED = -13,
     NOVA_STATUS_INVALID_USER_POINTER = -15,
     NOVA_STATUS_WOULD_BLOCK = -19,
-    NOVA_STATUS_VALIDATION_FAILED = -23
+    NOVA_STATUS_NOT_DIRECTORY = -20,
+    NOVA_STATUS_NOT_FILE = -21,
+    NOVA_STATUS_VALIDATION_FAILED = -23,
+    NOVA_STATUS_RESOURCE_LIMIT = -24
 };
 
 typedef struct NovaAbiVersion {
@@ -240,6 +260,62 @@ typedef struct NovaVfsLookupArgumentsV1 {
     uint32_t Reserved;
 } NovaVfsLookupArgumentsV1;
 
+/* VFS.Read / VFS.Write: höchstens NOVA_VFS_IO_MAX_BYTES je Aufruf. */
+typedef struct NovaVfsIoArgumentsV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t Handle;
+    uint32_t BufferAddress;
+    uint32_t Offset;
+    uint32_t Length;
+    uint32_t Transferred;
+    uint32_t Reserved;
+} NovaVfsIoArgumentsV1;
+
+/* VFS.Create: das Verzeichnis-Handle benötigt das Recht WRITE. */
+typedef struct NovaVfsCreateArgumentsV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t DirectoryHandle;
+    uint32_t NameAddress;
+    uint32_t NameLength;
+    uint32_t ObjectType;
+    uint32_t ResultHandle;
+    uint32_t Reserved;
+} NovaVfsCreateArgumentsV1;
+
+typedef struct NovaVfsDirectoryArgumentsV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t DirectoryHandle;
+    uint32_t Index;
+    uint32_t EntryAddress;
+    uint32_t EntrySize;
+    uint32_t Reserved[2];
+} NovaVfsDirectoryArgumentsV1;
+
+typedef struct NovaVfsDirectoryEntryV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint64_t ObjectId;
+    uint32_t ObjectType;
+    uint32_t NameLength;
+    uint64_t Size;
+    uint8_t Name[256];
+} NovaVfsDirectoryEntryV1;
+
+typedef struct NovaVfsObjectInfoV1 {
+    uint32_t StructSize;
+    NovaAbiVersion Version;
+    uint32_t Handle;
+    uint32_t Rights;
+    uint64_t ObjectId;
+    uint32_t ObjectType;
+    uint32_t Flags;
+    uint64_t Size;
+    uint64_t Generation;
+} NovaVfsObjectInfoV1;
+
 /* Die physische Framebufferadresse bleibt ausschließlich im Kernel. */
 typedef struct NovaDisplayInfoV1 {
     uint32_t StructSize;
@@ -305,6 +381,20 @@ _Static_assert(sizeof(NovaIpcPacketV1) == 48,
                "NovaIpcPacketV1 ABI size changed");
 _Static_assert(sizeof(NovaVfsLookupArgumentsV1) == 32,
                "NovaVfsLookupArgumentsV1 ABI size changed");
+_Static_assert(sizeof(NovaVfsIoArgumentsV1) == 32,
+               "NovaVfsIoArgumentsV1 ABI size changed");
+_Static_assert(sizeof(NovaVfsCreateArgumentsV1) == 32,
+               "NovaVfsCreateArgumentsV1 ABI size changed");
+_Static_assert(sizeof(NovaVfsDirectoryArgumentsV1) == 32,
+               "NovaVfsDirectoryArgumentsV1 ABI size changed");
+_Static_assert(sizeof(NovaVfsDirectoryEntryV1) == 288,
+               "NovaVfsDirectoryEntryV1 ABI size changed");
+_Static_assert(offsetof(NovaVfsDirectoryEntryV1, Name) == 32,
+               "NovaVfsDirectoryEntryV1 name offset changed");
+_Static_assert(sizeof(NovaVfsObjectInfoV1) == 48,
+               "NovaVfsObjectInfoV1 ABI size changed");
+_Static_assert(offsetof(NovaVfsObjectInfoV1, Size) == 32,
+               "NovaVfsObjectInfoV1 size offset changed");
 _Static_assert(sizeof(NovaDisplayInfoV1) == 40,
                "NovaDisplayInfoV1 ABI size changed");
 _Static_assert(offsetof(NovaDisplayInfoV1, Generation) == 32,

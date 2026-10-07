@@ -159,6 +159,7 @@ novafs_write_block:
     mov esi, edi
     call storage_write
     jc .io
+    inc dword [nfs_write_count]
     popad
     clc
     ret
@@ -1264,16 +1265,30 @@ novafs_lookup:
 
 ; ESI=absoluter Pfad, ECX=Laenge. EAX=ObjectID, EDX=Typ, CF wenn nicht gefunden.
 novafs_resolve_path:
+    test ecx, ecx
+    jz novafs_resolve_missing
+    cmp byte [esi], '/'
+    jne novafs_resolve_missing
+    mov eax, 1
+; EAX=Start-Verzeichnis, ESI=Pfad, ECX=Laenge. Ein fuehrendes '/' beginnt bei
+; der Wurzel. Leere Segmente werden ignoriert; "." und ".." existieren nicht.
+novafs_resolve_from:
     pushad
+    mov dword [nfs_error], NOVAFS_ERR_NOT_FOUND
     cmp dword [nfs_mounted], 1
     jne .missing
     test ecx, ecx
     jz .missing
     cmp byte [esi], '/'
-    jne .missing
-    lea ebp, [esi + ecx]             ; Ende
+    jne .relative
     mov eax, 1
-    mov edx, NOVAFS_TYPE_DIRECTORY
+.relative:
+    lea ebp, [esi + ecx]             ; Ende
+    push esi
+    call novafs_object_find
+    pop esi
+    jc .missing
+    mov edx, [nfs_object + NFS_O_TYPE]
 .segment:
     cmp esi, ebp
     jae .done
@@ -1311,7 +1326,74 @@ novafs_resolve_path:
     ret
 .missing:
     popad
+novafs_resolve_missing:
     stc
+    ret
+
+; EAX=Verzeichnis-ObjectID, EDX=Index. Kopiert den Index-ten Eintrag des
+; Verzeichnisses nach nfs_item. CF am Ende oder bei Fehler.
+novafs_dir_entry_at:
+    pushad
+    mov [nfs_dir_index], edx
+    mov ebx, eax
+    xor edx, edx
+    call novafs_key_set
+    mov eax, ebx
+    mov ebx, nfs_tree_directory
+    call novafs_cursor_seek
+    jc .invalid
+.entry:
+    call novafs_cursor_item
+    jc .end
+    cmp [esi + NFS_D_PARENT], eax
+    jne .end
+    cmp dword [esi + NFS_D_PARENT + 4], 0
+    jne .end
+    cmp dword [nfs_dir_index], 0
+    je .found
+    dec dword [nfs_dir_index]
+    inc dword [nfs_cur_index]
+    jmp .entry
+.found:
+    mov edi, nfs_item
+    mov ecx, NFS_D_ITEM / 4
+    rep movsd
+    popad
+    clc
+    ret
+.end:
+    mov dword [nfs_error], NOVAFS_ERR_NOT_FOUND
+.invalid:
+    popad
+    stc
+    ret
+
+; EAX=ObjectID. CF=1, wenn das Objekt nicht unterhalb von /Benutzer (3) liegt
+; und Aenderungen deshalb System-Write-Authority erfordern
+; (NPSPEC-POLICY-SYSTEMWRITE-0001, Phase-1-Policy).
+novafs_requires_system_write:
+    pushad
+    mov ecx, 64                      ; Tiefenbegrenzung gegen Zyklen
+.walk:
+    cmp eax, 3
+    je .user_area
+    cmp eax, 1
+    jbe .protected
+    push ecx
+    call novafs_object_find
+    pop ecx
+    jc .protected
+    cmp dword [nfs_object + NFS_O_PARENT + 4], 0
+    jne .protected
+    mov eax, [nfs_object + NFS_O_PARENT]
+    loop .walk
+.protected:
+    popad
+    stc
+    ret
+.user_area:
+    popad
+    clc
     ret
 
 ; EAX=Eltern-ObjectID, ESI=Name, ECX=Laenge, EDX=Typ (Datei/Verzeichnis).
@@ -2577,6 +2659,8 @@ nfs_bitmap_dirty:     dd 0
 nfs_bitmap_pages:     times NOVAFS_MAX_BITMAP_BLOCKS dd 0
 nfs_alloc_start:      dd 0
 nfs_alloc_result:     dd 0
+nfs_write_count:      dd 0
+nfs_dir_index:        dd 0
 nfs_volume_id_low:    dd 0
 ; PMM-Seiten (identitaetsabgebildet, DMA-tauglich)
 nfs_page_slots:

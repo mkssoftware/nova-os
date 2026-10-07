@@ -78,7 +78,7 @@ function Invoke-Boot([string]$Disk,[string]$Tag){
             Start-Sleep -Milliseconds 250
             $text=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
             if($process.HasExited){throw "QEMU wurde vorzeitig beendet ($Tag)"}
-        }while($text-notlike'*NOVA_KERNEL_READY*'-and$text-notlike'*NOVA PANIC REPORT*'-and[DateTime]::UtcNow-lt$deadline)
+        }while($text-notlike'*Ring-3-Szene praesentiert*'-and$text-notlike'*NOVA PANIC REPORT*'-and[DateTime]::UtcNow-lt$deadline)
         Start-Sleep -Milliseconds 300
         $text=[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)
     } finally {
@@ -108,7 +108,12 @@ function Assert-BootCount([string]$Disk,[int]$Expected,[string]$Tag){
 
 $mounted=@('NOVA: NovaFS 1.0 Systemvolume gemountet','NOVA: NovaFS Root-Layout konsistent mit Semantic-Core-ObjectIDs',
     'NOVA: NovaFS ist persistentes SystemRoot unter /')
-$writable=$mounted+@('NOVA: NovaFS Lese-/Schreibtest mit Extents, Teilbloecken und Blockgrenze bereit',
+$vfsRead=@('NOVA: Userspace VFS.Lookup auf NovaFS erfolgreich','NOVA: Userspace VFS.Query erfolgreich',
+    'NOVA: Userspace VFS.Read erfolgreich')
+$vfsWrite=@('NOVA: VFS Schreibzugriff ausserhalb /Benutzer ohne System-Write-Authority abgewiesen',
+    'NOVA: Userspace VFS.Write erfolgreich','NOVA: Userspace VFS.ReadDirectory erfolgreich',
+    'NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert')
+$writable=$mounted+$vfsRead+$vfsWrite+@('NOVA: NovaFS Lese-/Schreibtest mit Extents, Teilbloecken und Blockgrenze bereit',
     'NOVA: Boot Health SystemRoot bereit, wartet auf Trust')
 $failures=@('Selbsttest fehlgeschlagen','Root-Layout inkonsistent','Mount fehlgeschlagen','Root-Registrierung fehlgeschlagen')
 
@@ -122,6 +127,8 @@ try {
         Assert-Fsck $disk "fresh/$boot"
         Assert-BootCount $disk $boot "fresh/$boot"
     }
+    $welcome=Invoke-NovaFs @('cat',$disk,'--gpt','/Benutzer/Willkommen.txt')
+    if($welcome.Trim()-ne'Willkommen bei NovaOS.'){throw "Ring-3-Datei /Benutzer/Willkommen.txt fehlerhaft: '$welcome'"}
     $pattern=Invoke-NovaFs @('ls',$disk,'--gpt','/System/Diagnose')
     if($pattern-notmatch'12388\s+\d+\s+novafs-muster\.bin'){throw "Musterdatei hat falsche Groesse: $pattern"}
 
@@ -149,14 +156,18 @@ try {
     $info=Invoke-NovaFs @('info',$disk,'--gpt')
     if($info-like'*Backup verwendet*'){throw 'Primaerer Superblock wurde nicht repariert'}
 
-    Write-Host 'NovaFS: unsauberes Volume (DIRTY)'
-    $disk=New-ScenarioImage 'dirty' 0 'dirty'
-    $text=Invoke-Boot $disk 'boot1'
-    Assert-Contains $text ($mounted+@('NOVA: NovaFS Volume nicht sauber (DIRTY), nur Read-only gemountet',
+    Write-Host 'NovaFS: unsauberes Volume (DIRTY) nach einem normalen Start'
+    $disk=New-ScenarioImage 'dirty' 0 ''
+    $null=Invoke-Boot $disk 'boot1'
+    $null=Invoke-NovaFs @('mark-dirty',$disk,'--gpt')
+    $text=Invoke-Boot $disk 'boot2'
+    Assert-Contains $text ($mounted+$vfsRead+@('NOVA: NovaFS Volume nicht sauber (DIRTY), nur Read-only gemountet',
+        'NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert',
         'NOVA: NovaFS Read-only, Schreibtest uebersprungen','NOVA: Boot Health SystemRoot nur Read-only verfuegbar')) 'dirty'
-    Assert-Missing $text @('Bootzaehler','SystemRoot bereit, wartet auf Trust') 'dirty'
+    Assert-Missing $text @('Bootzaehler','SystemRoot bereit, wartet auf Trust','VFS.Write erfolgreich','VFS.Create erfolgreich') 'dirty'
     $info=Invoke-NovaFs @('info',$disk,'--gpt')
     if($info-notlike'*DIRTY*'){throw 'DIRTY-Volume wurde vom Kernel veraendert'}
+    Assert-BootCount $disk 1 'dirty'
 
     Write-Host 'NovaFS: unformatierte Partition'
     $disk=New-ScenarioImage 'empty' 0 'empty'
