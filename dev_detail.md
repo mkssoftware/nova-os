@@ -3825,3 +3825,190 @@ jeweils auf einem mit `-ResetNovaFs` frisch aufgesetzten Image.
   manuell mit dem Host-Werkzeug nachvollzogen); eine solche Prüfung
   bräuchte entweder ein `-NovaFsTool`-Parameter für dieses Skript oder
   einen Abgleich über eine erneute Dateivorschau.
+
+## 106. NovaFS: Zeitstempel (created/modified/accessed/changed_time)
+
+### Ausgangslage
+
+`NPSPEC-NOVAFS-ONDISK-0001` §4 definiert im Object-Tree-Item vier u64-Felder
+bei den Offsets 40/48/56/64 (`created_time`, `modified_time`,
+`accessed_time`, `changed_time`), die §8 als Phase-1-Grenze explizit nennt:
+„keine Nutzdatenprüfsummen, keine Zeitstempel". Weder der Kernel
+(`novafs32.inc`) noch das Host-Werkzeug (`tools/novafs/novafs.c`) hatten
+dafür bislang Offset-Konstanten; die Felder lagen als ungenutzte Nullbytes
+innerhalb des bereits CRC32C-geschützten 152-Byte-Items, weil der
+Objekt-Erzeugungscode den gesamten Puffer vorab mit `rep stosd` nullt und
+die Felder nie explizit beschrieb. Eine Suche im Kernel ergab außerdem,
+dass es überhaupt keine Uhr gab: keine CMOS-RTC-Portzugriffe (0x70/0x71),
+kein PIT-/APIC-Tick-Zähler, keine 64-Bit-Arithmetik-Hilfsroutinen für eine
+Epoch-Umrechnung.
+
+### Entwurfsentscheidungen
+
+- **Zeitquelle:** Die batteriegepufferte CMOS-Echtzeituhr, gelesen über die
+  klassischen Ports 0x70 (Index)/0x71 (Daten). Das ist nach dem
+  UEFI-Kernel-Handoff (`ExitBootServices` ist zu diesem Zeitpunkt bereits
+  erfolgt) ebenso sicher direkt ansprechbar wie die bereits verwendeten
+  Tastatur-Controller-Ports 0x60/0x64. Keine Zeitzonenkorrektur: Die RTC
+  wird als UTC behandelt, wie in den meisten PC-Firmwares üblich.
+- **Format:** Sekunden seit der Unix-Epoche (1970-01-01T00:00:00 UTC), als
+  echter 64-Bit-Wert (EDX:EAX) berechnet – nicht nur ein 32-Bit-Wert mit
+  angenommener Nullerweiterung. Damit ist die Umrechnung auch für
+  Jahrhundert-Werte jenseits von 2038/2106 arithmetisch korrekt, auch wenn
+  das Jahrhundert-Register praktisch auf 19–21 beschränkt bleibt (siehe
+  unten).
+- **Kein Kernel-seitiges 64-Bit-Divisionsproblem:** Die Tage-seit-1970-
+  Berechnung läuft als einfache Schleife über die Jahre (höchstens rund
+  230 Iterationen bei Jahrhundert 21/Jahr 99) statt über eine
+  divisionsbasierte Kalenderformel (Håward-Hinnant-„days_from_civil" o.ä.);
+  das ist in Assembler leichter nachvollziehbar und korrekt zu
+  verifizieren als eine Formel mit mehreren vorzeichenbehafteten
+  Ganzzahldivisionen, und die Laufzeit (keine Hunderte Mikrosekunden) ist
+  für einen Schreibvorgang irrelevant.
+- **Welche Operationen welche Felder berühren** (POSIX-nahe Semantik):
+  - **Erzeugen** (`novafs_create`, `create_object`): `created`,
+    `modified`, `accessed` und `changed` werden alle auf denselben
+    Zeitpunkt gesetzt.
+  - **Inhalt schreiben** (`novafs_write`, `file_write`): `modified`,
+    `accessed` und `changed` werden aktualisiert, `created` bleibt.
+  - **Umbenennen/Verschieben** (`novafs_rename`, `object_rename`): nur
+    `changed` wird aktualisiert (reine Metadatenänderung, der Inhalt
+    ändert sich nicht). Das gilt bewusst auch für einen reinen
+    Namenswechsel innerhalb desselben Verzeichnisses – der bestehende
+    Code aktualisierte `NFS_O_PARENT`/rief `novafs_object_store` bisher
+    nur auf, wenn sich das Elternverzeichnis änderte, und ließ einen
+    reinen Namenswechsel am Objekt-Item komplett unberührt. Das wurde im
+    Zuge dieser Änderung korrigiert (Kernel und Host-Werkzeug): Das
+    Objekt wird jetzt in jedem erfolgreichen Rename-Fall einmal
+    nachgeladen, `changed` gesetzt und zurückgeschrieben.
+  - **Lesen:** `accessed_time` wird bewusst **nicht** bei jedem Lesezugriff
+    aktualisiert (kein „echtes" atime-Verhalten). Das würde bedeuten, dass
+    jedes `VFS.Read`/jede Dateivorschau im Explorer eine journalisierte
+    Schreibtransaktion auf einem sonst nur lesend geöffneten Volume
+    auslöst – ein unverhältnismäßiger Preis für ein Feld, das in der
+    Praxis kaum ausgewertet wird. `accessed_time` verhält sich damit wie
+    `modified_time` plus den Erzeugungszeitpunkt.
+
+### Kernel-Implementierung (`novafs32.inc`)
+
+- Neue Offset-Konstanten `NFS_O_CREATED`/`NFS_O_MODIFIED`/
+  `NFS_O_ACCESSED`/`NFS_O_CHANGED` (40/48/56/64) neben den bestehenden
+  `NFS_O_*`-Konstanten.
+- Neuer Abschnitt „Echtzeituhr (CMOS RTC) und Unix-Epoch" vor
+  `novafs_create`:
+  - `novafs_cmos_read` (AL=Registerindex → EAX=Rohwert) und
+    `novafs_bcd_to_bin` (AL=BCD-Byte → EAX=Binärwert) als kleine
+    Hilfsroutinen.
+  - `novafs_rtc_sample` liest Status Register B (0x0B) sowie Sekunden,
+    Minuten, Stunden, Tag, Monat, Jahr und Jahrhundert (Register 0x32,
+    nicht auf jeder Firmware belegt) roh aus, wandelt bei Bedarf von BCD
+    nach Binär (Stunden-PM-Bit wird dabei um die BCD-Wandlung
+    herumgeführt), löst 12-Stunden-AM/PM-Kodierung in echte
+    24-Stunden-Werte auf (inklusive der Sonderfälle 12 AM → 0 und
+    12 PM → 12) und bildet aus dem Jahrhundert-Register (plausibel nur
+    19–21, sonst wird 20 angenommen) das volle vierstellige Jahr.
+  - `novafs_rtc_is_leap` (ECX=Jahr → EAX=1/0) nach der Standardregel
+    (durch 4, aber nicht durch 100, außer durch 400).
+  - `novafs_now_epoch` liest zweimal hintereinander (nach Warten auf
+    „kein Registerupdate läuft", Status-Register-A-Bit 7) und verwirft
+    die Lesung, falls sich zwischen beiden Lesungen etwas geändert hat
+    (Schutz gegen einen während des Lesens laufenden
+    RTC-Registerupdate-Übergang). Danach: Tage seit 1970-01-01 (Jahre
+    einzeln aufsummiert plus Tabelle `novafs_days_before_month` für den
+    Monat plus Schalttagskorrektur plus Tag im Monat), anschließend
+    `Tage*86400 + Stunden*3600 + Minuten*60 + Sekunden` als volle
+    64-Bit-Summe (EBX:ESI akkumuliert über drei `mul`-Schritte mit
+    `adc`-Übertrag). Rückgabe in EDX:EAX.
+  - Keine NMI-Maskierung während des CMOS-Zugriffs (Port 0x70 Bit 7
+    würde das NMI deaktivieren) – bewusste Vereinfachung, siehe „Offen".
+- Aufrufstellen: `novafs_create` setzt nach dem Belegen von
+  `NFS_O_LINKS` alle vier Felder über einen Aufruf von
+  `novafs_now_epoch`. `novafs_write` (`.metadata`-Zweig, vor
+  `novafs_object_store`) aktualisiert `modified`/`accessed`/`changed`.
+  `novafs_rename` lädt das verschobene/umbenannte Objekt jetzt
+  bedingungslos (vorher nur bei Elternwechsel), setzt `changed`, und
+  aktualisiert `NFS_O_PARENT` nur noch bedingt – `novafs_object_store`
+  wird in jedem Erfolgsfall genau einmal aufgerufen.
+- Neue Skalar-Variablen `nfs_rtc_regb/sec/min/hour/day/month/year/
+  century`, ein 6-Dword-Vergleichspuffer `nfs_rtc_check` für die
+  Doppellesung und `nfs_rtc_days` als Zwischenergebnis, neben den
+  übrigen `nfs_*`-Arbeitsvariablen.
+- Das 152-Byte-CRC32C-Siegel (`novafs_seal`/`novafs_verify` über
+  `NFS_O_ITEM`) deckte die vier Felder schon vorher ab, da sie innerhalb
+  der Item-Größe lagen; an der Prüfsummenbildung ändert sich nichts.
+
+### Host-Werkzeug (`tools/novafs/novafs.c`)
+
+- Neue Makros `O_CREATED`/`O_MODIFIED`/`O_ACCESSED`/`O_CHANGED` (40/48/56/
+  64).
+- `create_object()` setzt alle vier Felder über ein gemeinsames
+  `time(NULL)`.
+- Das direkt (nicht über `create_object()`) angelegte Root-Objekt
+  (ObjectID 1) in `cmd_mkfs()` bekommt dieselben vier Felder zum
+  Formatierungszeitpunkt.
+- `file_write()` (Befehl `put`) aktualisiert `modified`/`accessed`/
+  `changed` zusätzlich zu `size`/`allocated`.
+- `object_rename()` (Befehl `mv`) wurde wie die Kernel-Seite korrigiert:
+  Das Objekt wird jetzt immer (nicht nur bei Verzeichniswechsel)
+  nachgeladen, `changed` gesetzt und zurückgeschrieben; `parent_id`
+  wird weiterhin nur bei tatsächlichem Verzeichniswechsel geändert.
+- Neuer Befehl `novafs stat <image> <pfad>` zeigt ObjectID, Typ, Größe,
+  Rechte und alle vier Zeitstempel (als `%Y-%m-%d %H:%M:%S (UTC)`, `-`
+  bei 0) eines Objekts. Bewusst ein **neuer** Befehl statt einer
+  Erweiterung der bestehenden `ls`-Ausgabe: Ein erster Versuch, die
+  Zeitstempelspalte direkt in `cmd_ls` einzufügen, brach die feste
+  Spaltenregex in `test-uefi-novafs.ps1` (Zeile 143,
+  `'12388\s+\d+\s+novafs-muster\.bin'`), die auf das bisherige,
+  stabile `ls`-Format angewiesen ist. Ein separater `stat`-Befehl
+  erweitert die Diagnosemöglichkeiten, ohne bestehende, textbasiert
+  parsende Tests zu gefährden.
+
+### Test
+
+- Mit dem neu gebauten Host-Werkzeug wurde `build/novafs-system.img`
+  komplett neu per `mkfs` erzeugt (damit auch die mkfs-Zeitstempel aus
+  dem neuen Code stammen), anschließend über `build.sh -ResetNovaFs` neu
+  in `build/nova-uefi.img` eingebettet.
+- `test-uefi-novafs.ps1` (vollständige Regressionssuite: frisches Volume,
+  alle sechs Baum-Split-Szenarien, beschädigter primärer Superblock,
+  DIRTY mit und ohne gültiges Journal, unformatierte Partition) lief
+  fehlerfrei durch.
+- `test-uefi-display-server.ps1` (alle Szenarien inklusive des
+  F2-Umbenennen-Tests aus Abschnitt 105) lief ebenfalls fehlerfrei durch
+  – ein wichtiger Beleg, dass die neuen CMOS-Portzugriffe das bestehende
+  Verhalten nicht stören.
+- Manuelle Verifikation mit `novafs stat` am von diesem Testlauf
+  erzeugten Image: Die im Test umbenannte Datei (`hallo`, ehemals
+  `Willkommen.txt`) zeigt `created`/`modified`/`accessed` auf denselben
+  Zeitpunkt (Objekterzeugung während des `VFS.Create`/`VFS.Write`-Tests)
+  und ein rund vier Sekunden späteres `changed` (der F2-Umbenennen-Test
+  lief kurz danach) – exakt die erwartete Reihenfolge, und die
+  gelesenen Uhrzeiten stimmten sichtbar mit der tatsächlichen
+  Wanduhrzeit des QEMU-Laufs überein (die Kernel-RTC lieferte also
+  nicht nur intern konsistente, sondern tatsächlich reale Zeitwerte).
+  Zusätzlich wurde das Host-Werkzeug isoliert geprüft (`mkdir`, `put`,
+  `stat`, zwei Sekunden warten, `mv`, `stat`): `created`/`modified`/
+  `accessed` blieben nach dem `mv` unverändert, nur `changed` sprang um
+  die gewartete Zeit vor – `novafs fsck` akzeptierte das Ergebnis ohne
+  Beanstandung.
+
+### Offen
+
+- Keine Zeitzonenkorrektur; die RTC wird ungeprüft als UTC behandelt.
+  Läuft eine reale Firmware mit lokaler Zeit in der RTC, wären die
+  gespeicherten Zeitstempel entsprechend verschoben.
+- Keine NMI-Maskierung während des CMOS-Zugriffs (bewusste
+  Vereinfachung, siehe oben).
+- `accessed_time` wird nicht bei jedem Lesezugriff aktualisiert (siehe
+  Entwurfsentscheidungen) – kein vollständiges atime-Verhalten.
+- Das Jahrhundert-Register (CMOS 0x32) ist nicht auf jeder Firmware/in
+  jeder QEMU-Konfiguration sinnvoll belegt; außerhalb des plausiblen
+  Bereichs 19–21 wird pauschal 20 angenommen. Für den praktisch
+  relevanten Zeitraum (hier: 2026) unproblematisch.
+- Nutzdatenprüfsummen (die andere in `NPSPEC-NOVAFS-ONDISK-0001` §8
+  genannte Phase-1-Grenze) bleiben weiterhin offen.
+- Kein automatisierter Test prüft die Zeitstempel innerhalb der
+  PowerShell-Testskripte selbst (nur manuell mit `novafs stat`
+  nachvollzogen, siehe oben); eine Automatisierung bräuchte entweder
+  einen `-NovaFsTool`-Parameter für `test-uefi-display-server.ps1` oder
+  eine Zeitfenster-Toleranzprüfung in `test-uefi-novafs.ps1`.

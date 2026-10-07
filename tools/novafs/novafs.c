@@ -132,6 +132,10 @@ static const uint8_t NOVAFS_JOURNAL_MAGIC[4] = {'N', 'J', 'R', 'N'};
 #define O_FLAGS 20
 #define O_SIZE 24
 #define O_ALLOCATED 32
+#define O_CREATED 40
+#define O_MODIFIED 48
+#define O_ACCESSED 56
+#define O_CHANGED 64
 #define O_PERMISSIONS 80
 #define O_LINKS 84
 #define O_GENERATION 112
@@ -711,6 +715,11 @@ static uint64_t create_object(Volume *v, uint64_t parent, const char *name, size
     w32(object + O_FLAGS, flags);
     w32(object + O_PERMISSIONS, type == TYPE_DIRECTORY ? 0755 : 0644);
     w32(object + O_LINKS, 1);
+    uint64_t created_now = (uint64_t)time(NULL);
+    w64(object + O_CREATED, created_now);
+    w64(object + O_MODIFIED, created_now);
+    w64(object + O_ACCESSED, created_now);
+    w64(object + O_CHANGED, created_now);
     w64(object + O_GENERATION, r64(v->sb + SB_GENERATION) + 1);
     seal(object, OBJ_ITEM, O_CHECKSUM);
     tree_insert(v, tree_info(TREE_OBJECT), object);
@@ -777,6 +786,10 @@ static void file_write(Volume *v, uint64_t id, const uint8_t *data, uint64_t len
     }
     w64(object + O_SIZE, length);
     w64(object + O_ALLOCATED, blocks * BLOCK_SIZE);
+    uint64_t written_now = (uint64_t)time(NULL);
+    w64(object + O_MODIFIED, written_now);
+    w64(object + O_ACCESSED, written_now);
+    w64(object + O_CHANGED, written_now);
     object_put(v, object);
 }
 
@@ -869,11 +882,10 @@ static void object_rename(Volume *v, uint64_t src_parent, const char *src_name, 
     Cursor c;
     if (!dir_seek_entry(v, src_parent, src_name, src_length, &c)) die("Quelleintrag verschwunden");
     cursor_remove(v, &c);
-    if (dst_parent != src_parent) {
-        if (!object_get(v, id, object)) die("Objekt %llu fehlt", (unsigned long long)id);
-        w64(object + O_PARENT, dst_parent);
-        object_put(v, object);
-    }
+    if (!object_get(v, id, object)) die("Objekt %llu fehlt", (unsigned long long)id);
+    w64(object + O_CHANGED, (uint64_t)time(NULL));
+    if (dst_parent != src_parent) w64(object + O_PARENT, dst_parent);
+    object_put(v, object);
 }
 
 static void split_path(const char *path, char *parent, const char **name) {
@@ -992,6 +1004,11 @@ static void cmd_mkfs(const char *path, uint64_t size_mib, const char *label, con
     w32(root + O_FLAGS, OBJ_FLAG_SYSTEM | OBJ_FLAG_NAMESPACE);
     w32(root + O_PERMISSIONS, 0755);
     w32(root + O_LINKS, 1);
+    uint64_t mkfs_now = (uint64_t)time(NULL);
+    w64(root + O_CREATED, mkfs_now);
+    w64(root + O_MODIFIED, mkfs_now);
+    w64(root + O_ACCESSED, mkfs_now);
+    w64(root + O_CHANGED, mkfs_now);
     w64(root + O_GENERATION, 1);
     seal(root, OBJ_ITEM, O_CHECKSUM);
     tree_insert(&v, tree_info(TREE_OBJECT), root);
@@ -1226,6 +1243,36 @@ static void cmd_ls(Volume *v, const char *path) {
     }
 }
 
+/* Formatiert einen Unix-Epoch-Zeitstempel als UTC-Zeitstring, oder "-" bei 0
+   (Alt-Objekt ohne Zeitstempel, siehe NPSPEC-NOVAFS-ONDISK-0001 Abschnitt 6). */
+static void format_timestamp(uint64_t epoch, char *out, size_t out_size) {
+    if (!epoch) { snprintf(out, out_size, "-"); return; }
+    time_t t = (time_t)epoch;
+    struct tm tmv;
+    gmtime_r(&t, &tmv);
+    strftime(out, out_size, "%Y-%m-%d %H:%M:%S", &tmv);
+}
+
+/* Zeigt Groesse, Rechte und die vier Zeitstempel eines Objekts (Abschnitt 106). */
+static void cmd_stat(Volume *v, const char *path) {
+    uint64_t id = resolve(v, path);
+    if (!id) die("nicht gefunden: %s", path);
+    uint8_t object[OBJ_ITEM];
+    if (!object_get(v, id, object)) die("Objekt %llu fehlt", (unsigned long long)id);
+    char created[32], modified[32], accessed[32], changed[32];
+    format_timestamp(r64(object + O_CREATED), created, sizeof created);
+    format_timestamp(r64(object + O_MODIFIED), modified, sizeof modified);
+    format_timestamp(r64(object + O_ACCESSED), accessed, sizeof accessed);
+    format_timestamp(r64(object + O_CHANGED), changed, sizeof changed);
+    printf("ObjectID %llu  Typ %s  Groesse %llu  Rechte %o\n", (unsigned long long)id,
+           r32(object + O_TYPE) == TYPE_DIRECTORY ? "Verzeichnis" : "Datei",
+           (unsigned long long)r64(object + O_SIZE), r32(object + O_PERMISSIONS));
+    printf("Erzeugt   %s (UTC)\n", created);
+    printf("Geaendert (Inhalt)   %s (UTC)\n", modified);
+    printf("Zugegriffen          %s (UTC)\n", accessed);
+    printf("Geaendert (Metadaten) %s (UTC)\n", changed);
+}
+
 static void cmd_tree(Volume *v) {
     static const char *names[3] = {"Object", "Directory", "Extent"};
     for (int i = 0; i < 3; ++i) {
@@ -1246,7 +1293,7 @@ static void cmd_tree(Volume *v) {
 int main(int argc, char **argv) {
     crc32c_init();
     if (argc < 3) {
-        fprintf(stderr, "Verwendung: novafs mkfs|info|ls|cat|mkdir|put|rm|mv|fsck|tree|mark-dirty <image> [Optionen] [Argumente]\n");
+        fprintf(stderr, "Verwendung: novafs mkfs|info|ls|stat|cat|mkdir|put|rm|mv|fsck|tree|mark-dirty <image> [Optionen] [Argumente]\n");
         return 2;
     }
     const char *command = argv[1], *image = argv[2];
@@ -1283,6 +1330,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(command, "fsck")) cmd_fsck(&v);
     else if (!strcmp(command, "tree")) cmd_tree(&v);
     else if (!strcmp(command, "ls")) { if (nargs != 1) die("ls <pfad>"); cmd_ls(&v, args[0]); }
+    else if (!strcmp(command, "stat")) { if (nargs != 1) die("stat <pfad>"); cmd_stat(&v, args[0]); }
     else if (!strcmp(command, "cat")) {
         if (nargs != 1) die("cat <pfad>");
         uint64_t id = resolve(&v, args[0]), length;

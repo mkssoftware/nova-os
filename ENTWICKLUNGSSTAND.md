@@ -548,9 +548,10 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 - Typed Files und persistente Semantic Metadata
 - Semantic Discovery und Semantic Execution
 - tatsächliche Ausführung registrierter Conversion Capabilities
-- NovaFS ab Phase 2: Copy-on-Write, Transaction Log, Crash Recovery,
-  Löschen, Umbenennen, Zeitstempel, Nutzdatenprüfsummen und Baumhöhe > 2
-  (Phase 1 und die VFS-Syscalls sind umgesetzt, siehe Abschnitt 16)
+- NovaFS: echtes Copy-on-Write, Checkpoints/Snapshots, Nutzdatenprüfsummen,
+  Zusammenlegen leerer Blätter und Baumhöhe > 2 (Transaction Log/Crash
+  Recovery, Löschen, Umbenennen und Zeitstempel sind umgesetzt, siehe
+  Abschnitt 16, `dev_detail.md` Abschnitte 101–106)
 - persistenter Userspace und Trust-Provider (Boot Health erreicht derzeit
   `SystemRootReady`, bleibt ohne Trust aber `Pending`)
 - Tests auf realer UEFI-Hardware
@@ -563,11 +564,14 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 Für die weitere Arbeit am derzeit priorisierten UEFI-Pfad bietet sich diese
 Reihenfolge an:
 
-1. Dateien in der System-UI nutzen (Explorer zeigt echte Inhalte aus
-   `/Benutzer` über `VFS.ReadDirectory`), danach `Delete` und `Rename`,
-2. NovaFS Phase 2: Transaction Log, Checkpoints und Copy-on-Write, damit ein
+1. ~~Dateien in der System-UI nutzen (Explorer zeigt echte Inhalte aus
+   `/Benutzer` über `VFS.ReadDirectory`), danach `Delete` und `Rename`~~ —
+   umgesetzt (Abschnitte 102–105),
+2. ~~NovaFS Phase 2: Transaction Log und Crash Recovery, damit ein
    abgebrochener Schreibvorgang automatisch repariert statt nur read-only
-   gemountet wird; anschließend Löschen und Zeitstempel,
+   gemountet wird; anschließend Zeitstempel~~ — umgesetzt (`dev_detail.md`
+   Abschnitte 101 und 106). Echtes Copy-on-Write und Checkpoints/Snapshots
+   bleiben offen,
 3. normativen Kernel-Signaturcontainer sowie Schlüssel- und Revocation-Policy
    spezifizieren beziehungsweise implementieren (Trust-Provider für Boot
    Health),
@@ -1344,8 +1348,11 @@ Spezifikation `docs/NPSPEC/NPSPEC-NOVAFS-ONDISK-0001.md`.
   Persistenz über Neustarts, Wurzel- und Blatt-Splits aller Bäume durch den
   Kernel, Backup-Superblock mit Reparatur, DIRTY-Volume, unformatierte
   Partition) und `make novafs-check` (Host-Werkzeug mit `fsck`).
-- **offen:** Phase 2 und folgende, Löschen, Umbenennen, Zeitstempel,
-  Nutzdatenprüfsummen.
+- **offen:** echtes Copy-on-Write, Checkpoints/Snapshots,
+  Nutzdatenprüfsummen, Zusammenlegen leerer Blätter, Baumhöhe > 2.
+  Transaction Log/Crash Recovery (Phase 2, `dev_detail.md` Abschnitt 101),
+  Löschen und Umbenennen (Abschnitte 102–105) sowie Zeitstempel
+  (Abschnitt 106) sind inzwischen umgesetzt.
 
 ### VFS-Syscalls auf NovaFS (VFS ABI 1.1)
 
@@ -1399,9 +1406,11 @@ Spezifikation `docs/NPSPEC/NPSPEC-NOVAFS-ONDISK-0001.md`.
   dass ein offenes Handle danach `NOT_FOUND` liefert. Das Host-`fsck` prüft
   jetzt zusätzlich `parent_id` gegen den Verzeichniseintrag; der Host-Test
   leert einen geteilten Baum bis auf leere Blätter und befüllt ihn neu.
-- **offen:** NovaFS Phase 2 (Transaction Log/CoW, Crash-Recovery statt
-  Read-only bei DIRTY), Dateien im Explorer öffnen, Kontextaktionen
-  (Löschen/Umbenennen) in der Explorer-Oberfläche.
+- **offen:** echtes Copy-on-Write (die hier gemeinte Phase-2-Crash-Recovery
+  per Transaction Log ist inzwischen umgesetzt, siehe unten). Dateien im
+  Explorer öffnen sowie Kontextaktionen (Löschen/Umbenennen) in der
+  Explorer-Oberfläche sind ebenfalls umgesetzt (`dev_detail.md`
+  Abschnitte 102–105).
 
 Das Systemvolume bleibt über Kernel-Neubauten erhalten: `make uefi-image`
 übernimmt die bestehende NovaFS-Partition aus `build/nova-uefi.img`.
@@ -1418,7 +1427,7 @@ NOVA: NovaFS ist persistentes SystemRoot unter /
 NOVA: Boot Health SystemRoot bereit, wartet auf Trust
 ```
 
-Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 101.
+Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 106.
 
 ### NovaFS-/Semantic-Core-Abgleich `/Solutions`
 
@@ -1640,6 +1649,51 @@ Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 101.
   Platten-Verifikation innerhalb des Testskripts selbst (nur manuell
   geprüft).
 
+### NovaFS: Zeitstempel (created/modified/accessed/changed_time)
+
+- **implementiert:** Die vier u64-Zeitstempelfelder im Object-Tree-Item
+  (Offsets 40/48/56/64, bislang laut Spec „Phase 1: 0, keine Uhr") werden
+  jetzt mit echter Unixzeit befüllt. Der Kernel liest dafür erstmals die
+  batteriegepufferte CMOS-Echtzeituhr direkt über die Ports 0x70/0x71
+  (`novafs_now_epoch`/`novafs_rtc_sample` in `novafs32.inc`), wertet BCD-
+  und 12/24-Stunden-Kodierung über Status Register B aus und wandelt das
+  Ergebnis über eine klassische Tage-seit-1970-Berechnung (mit
+  Schaltjahrprüfung) in Sekunden seit der Unix-Epoche um; zwei
+  aufeinanderfolgende Lesungen müssen übereinstimmen, sonst wird verworfen
+  (Schutz gegen einen laufenden Registerupdate-Übergang). `created`,
+  `modified`, `accessed` und `changed` werden beim Anlegen eines Objekts
+  gleich gesetzt; ein Inhaltsschreiben (`novafs_write`) aktualisiert
+  `modified`/`accessed`/`changed`; ein Umbenennen/Verschieben
+  (`novafs_rename`) aktualisiert nur `changed` – auch bei einem reinen
+  Namenswechsel innerhalb desselben Verzeichnisses, was vorher (für das
+  Verschieben von `parent_id`) übersprungen wurde. Das Host-Werkzeug
+  (`tools/novafs/novafs.c`) spiegelt dasselbe Verhalten mit `time(NULL)`
+  an den entsprechenden Stellen (`create_object`, Root-Objekt-Init in
+  `mkfs`, `file_write`, `object_rename`) und bekommt dafür einen neuen
+  `stat <image> <pfad>`-Befehl, der alle vier Zeitstempel menschenlesbar
+  anzeigt (bewusst als eigener Befehl statt einer Änderung an `ls`, damit
+  bestehende Testskripte, die `ls`-Ausgabe zeilenweise parsen, unverändert
+  funktionieren).
+- **automatisiert getestet:** Nach einem mit dem neuen Host-Werkzeug frisch
+  per `mkfs` erzeugten Systemvolume liefen `test-uefi-novafs.ps1`
+  (vollständige Regressionssuite) und `test-uefi-display-server.ps1` (alle
+  Szenarien, einschließlich des F2-Umbenennen-Tests aus Abschnitt 105)
+  fehlerfrei durch. Mit `novafs stat` wurde anschließend am realen
+  Testabbild geprüft, dass die umbenannte Datei einen späteren
+  `changed`- als `created`/`modified`-Zeitstempel trägt (die
+  Kernel-RTC-Uhrzeit stimmt dabei sichtbar mit der Wanduhrzeit des
+  QEMU-Laufs überein) und dass ein reines Host-Tool-`mv` ebenfalls nur
+  `changed` weiterschiebt. `novafs fsck` akzeptiert die neuen Felder ohne
+  Änderung, da sie innerhalb des bereits durch CRC32C geschützten
+  152-Byte-Objekt-Items lagen und vorher nur ungenutzte Nullbytes waren.
+- **offen:** keine Zeitzonenkorrektur (die RTC wird als UTC behandelt);
+  keine NMI-Maskierung während des CMOS-Zugriffs; `accessed_time` wird
+  nur bei Erzeugung und Inhaltsschreiben aktualisiert, nicht bei jedem
+  lesenden Zugriff (bewusste Vereinfachung, um nicht bei jedem Lesen eine
+  journalisierte Schreibtransaktion auszulösen); Jahrhundert-Register
+  0x32 wird nur im Bereich 19–21 akzeptiert (sonst wird 20 angenommen);
+  Nutzdatenprüfsummen bleiben weiterhin offen (siehe Abschnitt 10).
+
 Details in `dev_detail.md`, Abschnitt 102 (Löschen), Abschnitt 103
-(Öffnen), Abschnitt 104 (Codebudget-Erweiterung) und Abschnitt 105
-(Umbenennen).
+(Öffnen), Abschnitt 104 (Codebudget-Erweiterung), Abschnitt 105
+(Umbenennen) und Abschnitt 106 (Zeitstempel).
