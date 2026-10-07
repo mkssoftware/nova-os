@@ -1251,3 +1251,43 @@ System-/UserVisible-Flagzählung und die Ablehnung unbekannter ObjectIDs.
 ```text
 NOVA: Filesystem Object Registry bereit
 ```
+
+Die Filesystem Object Registry kann jetzt auch nach Flags enumerieren.
+`semantic_core_object_at_by_flags` liefert ein Objekt nach Ordinal innerhalb
+eines Flag-Filters. Der Selbsttest prüft benutzersichtbare Objekte,
+Systemobjekte und die Out-of-range-Ablehnung.
+
+```text
+NOVA: Filesystem Object Enumeration bereit
+```
+
+Object Registry und Projection Map besitzen nun eine frühe Konsistenzprüfung.
+`semantic_core_object_validate_projection` prüft, ob eine ObjectID in der
+Object Registry existiert, ob eine Projection dafür vorhanden ist und ob
+Namespace-Slot sowie semantisches Ziel übereinstimmen. Der Selbsttest bestätigt
+die gültige Apps-Projektion und weist eine unbekannte ObjectID ab.
+
+```text
+NOVA: Filesystem Object Projection Konsistenz bereit
+```
+
+Der Handle-Open-Pfad ist jetzt ebenfalls an diese Konsistenzprüfung gebunden.
+`semantic_core_handle_open_by_object` validiert vor der Capability-Prüfung, dass
+die angeforderte ObjectID in Object Registry und Projection Map konsistent
+bekannt ist. Erst danach kann aus Capability und Projection ein Handle entstehen.
+Der Selbsttest weist zusätzlich einen Handle-Open-Versuch auf eine unbekannte
+ObjectID ab.
+
+```text
+NOVA: Handle Object-Registry Bindung bereit
+```
+
+Zusätzlich kann der Kernel Filesystem-Objekte jetzt direkt über Namespace-Pfade
+auflösen. `semantic_core_object_resolve_path` löst den Pfad über den Namespace-
+Core auf, übernimmt die ObjectID, validiert Object Registry und Projection Map
+und gibt anschließend den Object-Datensatz zurück. Der Selbsttest prüft
+`/System`, `/Apps` und einen fehlenden Pfad.
+
+```text
+NOVA: Filesystem Object Pfadauflösung bereit
+```

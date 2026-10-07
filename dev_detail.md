@@ -2604,7 +2604,11 @@ NOVA: Namespace Enumeration bereit
 NOVA: ObjectID Projection Map bereit
 NOVA: Projection Introspection bereit
 NOVA: Filesystem Object Registry bereit
+NOVA: Filesystem Object Enumeration bereit
+NOVA: Filesystem Object Projection Konsistenz bereit
+NOVA: Filesystem Object Pfadauflösung bereit
 NOVA: Kernel Object Handle ABI bereit
+NOVA: Handle Object-Registry Bindung bereit
 NOVA: Handle Rechtevalidierung gegen Capabilities bereit
 NOVA: Namespace Pfad zu Handle bereit
 ```
@@ -2731,3 +2735,51 @@ Filesystem-Objekte geführt. Jeder Datensatz enthält:
 
 Der Kernel-Selbsttest prüft den Lookup von `Apps`, die Flagzählung für System-
 und benutzersichtbare Objekte sowie die Ablehnung einer unbekannten ObjectID.
+
+### Filesystem Object Enumeration
+
+`semantic_core_object_at_by_flags` liest ein Objekt nach Ordinal innerhalb eines
+Flag-Filters. Dadurch können spätere Dienste sichtbare oder systeminterne
+Objektlisten aufbauen, ohne die Registry-Tabelle direkt zu kennen.
+
+Der Kernel-Selbsttest prüft:
+
+- erstes benutzersichtbares Objekt,
+- drittes benutzersichtbares Objekt,
+- drittes Systemobjekt,
+- Out-of-range-Ablehnung.
+
+### Object-Projection-Konsistenz
+
+`semantic_core_object_validate_projection` verbindet die Object Registry mit der
+Projection Map. Die Prüfung stellt sicher, dass:
+
+- die ObjectID als Objekt existiert,
+- eine Projection für diese ObjectID existiert,
+- der Namespace-Slot der Projection zum Object-Datensatz passt,
+- das semantische Ziel der Projection zum Object-Datensatz passt.
+
+Der Kernel-Selbsttest bestätigt die gültige `Apps`-Projektion und lehnt eine
+unbekannte ObjectID ab.
+
+### Handle-Bindung an Object Registry
+
+`semantic_core_handle_open_by_object` prüft jetzt vor der Capability-Prüfung,
+ob die ObjectID in Object Registry und Projection Map konsistent bekannt ist.
+Ein Handle kann dadurch nicht mehr allein durch eine zufällig passende
+Projection oder Capability entstehen.
+
+Der Kernel-Selbsttest lehnt einen Handle-Open-Versuch für eine unbekannte
+ObjectID ab.
+
+### Filesystem Object Pfadauflösung
+
+`semantic_core_object_resolve_path` löst einen absoluten Namespace-Pfad zu
+einem Filesystem-Object-Datensatz auf:
+
+1. Pfad über den Namespace-Core auflösen,
+2. ObjectID aus dem Namespace-Datensatz übernehmen,
+3. Object-/Projection-Konsistenz prüfen,
+4. Object-Datensatz zurückgeben.
+
+Der Kernel-Selbsttest prüft `/System`, `/Apps` und einen fehlenden Pfad.

@@ -179,6 +179,14 @@ kernel_entry:
     call serial_write_string
     mov esi, message_filesystem_object_registry_ok
     call serial_write_string
+    mov esi, message_filesystem_object_enumeration_ok
+    call serial_write_string
+    mov esi, message_filesystem_object_projection_ok
+    call serial_write_string
+    mov esi, message_filesystem_object_path_ok
+    call serial_write_string
+    mov esi, message_filesystem_volume_registry_ok
+    call serial_write_string
     mov esi, message_capability_registry_ok
     call serial_write_string
     mov esi, message_capability_authority_ok
@@ -202,6 +210,8 @@ kernel_entry:
     mov esi, message_projection_introspection_ok
     call serial_write_string
     mov esi, message_object_handle_ok
+    call serial_write_string
+    mov esi, message_handle_object_binding_ok
     call serial_write_string
     mov esi, message_handle_validation_ok
     call serial_write_string
@@ -21981,6 +21991,14 @@ message_object_id_abi_ok:
     db "NOVA: ObjectID ABI bereit", 13, 10, 0
 message_filesystem_object_registry_ok:
     db "NOVA: Filesystem Object Registry bereit", 13, 10, 0
+message_filesystem_object_enumeration_ok:
+    db "NOVA: Filesystem Object Enumeration bereit", 13, 10, 0
+message_filesystem_object_projection_ok:
+    db "NOVA: Filesystem Object Projection Konsistenz bereit", 13, 10, 0
+message_filesystem_object_path_ok:
+    db "NOVA: Filesystem Object Pfadauflösung bereit", 13, 10, 0
+message_filesystem_volume_registry_ok:
+    db "NOVA: Filesystem Volume Registry bereit", 13, 10, 0
 message_capability_registry_ok:
     db "NOVA: Capability Registry bereit", 13, 10, 0
 message_capability_authority_ok:
@@ -22005,6 +22023,8 @@ message_projection_introspection_ok:
     db "NOVA: Projection Introspection bereit", 13, 10, 0
 message_object_handle_ok:
     db "NOVA: Kernel Object Handle ABI bereit", 13, 10, 0
+message_handle_object_binding_ok:
+    db "NOVA: Handle Object-Registry Bindung bereit", 13, 10, 0
 message_handle_validation_ok:
     db "NOVA: Handle Rechtevalidierung gegen Capabilities bereit", 13, 10, 0
 message_handle_path_ok:
