@@ -3075,7 +3075,7 @@ NOVA: Userspace VFS.ReadDirectory erfolgreich
 - Benutzerpuffer liegen im Bootstrap-Prozess auf seiner einzigen Stackseite;
   ein allgemeiner Userspace-Speicher folgt mit dem Prozessmodell,
 - höchstens 16 Handles systemweit (bestehende Handle-Tabelle),
-- kein `Delete`, `Rename`/`Move` und kein Ändern von Rechten,
+- kein Ändern von Rechten (Delete/Rename siehe Abschnitt 99),
 - Policy ist eine feste Phase-1-Regel; deklarative Policies und
   objektbezogene Capabilities aus dem Semantic Core folgen.
 
@@ -3136,6 +3136,87 @@ NOVA: Explorer zeigt NovaFS-Verzeichnis aus Ring 3, Eintraege 0x...
 
 ### Grenzen
 
-- keine Navigation (die Ansicht wird einmal beim Start übergeben),
+- Navigation siehe Abschnitt 99,
 - keine Zeitstempel in der Anzeige,
 - Namen außerhalb ASCII werden als `-` dargestellt.
+
+## 99. VFS.Delete, VFS.Rename und Explorer-Navigation
+
+### NovaFS-Kernel (`novafs32.inc`)
+
+- `novafs_cursor_remove` entfernt das Item an der Cursorposition und schreibt
+  das Blatt. Blätter werden nicht zusammengelegt; leere Blätter bleiben
+  bestehen, die inneren Schlüssel bleiben gültige Untergrenzen
+  (NPSPEC-NOVAFS-ONDISK-0001 §5, §7a).
+- `novafs_delete` (EAX Eltern, ESI/ECX Name): ObjectID < 256 → `PROTECTED`,
+  Verzeichnis mit Einträgen → `NOT_EMPTY`. Für jedes Extent wird erst das Item
+  entfernt (Knoten geschrieben), danach werden die Blöcke in der Bitmap
+  freigegeben. Scheitert das Schreiben eines Knotens, bleibt die Bitmap
+  unverändert, sodass ein sauberer Abschluss nie freie, aber referenzierte
+  Blöcke erzeugt. Danach folgen Objekt-Item, Verzeichniseintrag und
+  `object_count − 1`.
+- `novafs_rename` (Parameter in `nfs_mv_*`): Zielname nach §5 prüfen,
+  Zyklusschutz über die `parent_id`-Kette (≤ 64 Ebenen), vorhandenes Ziel →
+  `EXISTS` (gleiches Objekt → nichts zu tun), neuen Eintrag einfügen, alten
+  entfernen, bei anderem Elternverzeichnis `parent_id` aktualisieren.
+- `novafs_name_check` ist aus `novafs_create` herausgelöst.
+
+### VFS-Operationen (ABI 1.2)
+
+| Op | Struktur | Felder |
+|---:|---|---|
+| 8 Delete | `NovaVfsDeleteArgumentsV1` (32 B) | +8 DirectoryHandle (WRITE), +12 NameAddress, +16 NameLength, +20 Flags = 0, +24/+28 reserviert |
+| 9 Rename | `NovaVfsRenameArgumentsV1` (40 B) | +8 SourceDirectoryHandle, +12/+16 Quellname, +20 TargetDirectoryHandle, +24/+28 Zielname, +32 Flags = 0, +36 reserviert |
+
+Status: `NOT_FOUND`, `EXISTS`, `ACCESS_DENIED` (fehlendes Recht, Policy oder
+stabiler Namespace), `VALIDATION_FAILED` (ungültiger Zielname, Zyklus),
+`DIRECTORY_NOT_EMPTY` (−25, neu), `READ_ONLY`, `IO_ERROR`. Beide Operationen
+prüfen Capability und `/Benutzer`-Policy für Quelle und Ziel bei jedem Aufruf.
+Offene Handles auf gelöschte Objekte bleiben gültige Handles, jede Operation
+darauf liefert `NOT_FOUND`.
+
+```text
+NOVA: Userspace VFS.Rename erfolgreich
+NOVA: Userspace VFS.Delete erfolgreich
+```
+
+### Host-Werkzeug
+
+`novafs rm <image> <pfad>` und `novafs mv <image> <alt> <neu>` folgen derselben
+Reihenfolge. `fsck` prüft zusätzlich, dass `parent_id` jedes Objekts zu seinem
+Verzeichniseintrag passt. `scripts/test-novafs-tool.sh` benennt um, verschiebt,
+prüft die Fehlerfälle, löscht 120 Dateien bis auf leere Blätter, kontrolliert
+die freigegebenen Blöcke (147 für eine 600-KB-Datei) und befüllt den Baum neu.
+
+### Explorer-Navigation
+
+Fokus-Elemente im Explorer:
+
+| Element | Bedeutung | Maus-Trefferbereich (relativ zum Fenster) |
+|---:|---|---|
+| 20–23 | Dateizeile | y 324 + n·24 |
+| 24–27 | Ordnerkarte | x 202 + n·142 (Breite 132), y 178–233 |
+| 28 | Zurück | x 16–109, y 56–93 |
+| 30–36 | Schnellzugriff | x 12–163, y 160 + k·24 |
+
+- Neue Eingabeaktion `NOVA_SYSTEM_INPUT_NAVIGATE_BACK` (10) für Backspace
+  (Set 1 0x0E, Set 2 0x66).
+- Ring 3 hält `UFS_H_DIR` offen und den absoluten Pfad in `UFS_CWD`. Ein
+  Ordnerwechsel baut den Kandidatenpfad, öffnet ihn lesend relativ zum
+  Root-Handle und ersetzt erst bei Erfolg Handle und Pfad; sonst bleibt die
+  bisherige Ansicht. Nach oben endet bei `/Benutzer`.
+- Breadcrumb und Schnellzugriff-Markierung entstehen aus `UFS_CWD`
+  (zu lange Pfade: `..` plus Ende des Pfads).
+- Die Explorer-Meldung enthält jetzt den Pfad:
+  `NOVA: Explorer zeigt NovaFS-Verzeichnis aus Ring 3, Eintraege 0x…, Pfad Benutzer  /  Matthias  /  Dokumente`.
+- `test-uefi-display-server.ps1` fährt Backspace → Enter → Backspace und
+  prüft die Pfade.
+- Die unsichtbaren Pfeile `<`/`>` (fehlen in der Bootschrift) sind durch
+  „Zurück“ ersetzt; damit überlappt die Navigation den Breadcrumb nicht mehr.
+
+### Grenzen
+
+- Bootstrap-Code belegt jetzt etwa 7,4 von 8 KiB der beiden Codeseiten.
+- Ein offenes Handle verhindert das Löschen nicht (keine Referenzzählung auf
+  NovaFS-Objekten).
+- Kein Zusammenlegen leerer Blätter; die Baumhöhe sinkt nicht.

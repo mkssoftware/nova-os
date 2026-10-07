@@ -3492,6 +3492,15 @@ input_router_handle_scancode:
     je .activate
     cmp al, 0x5A                    ; Enter, Set 2
     je .activate
+    cmp al, 0x0E                    ; Backspace, Set 1
+    je .navigate_back
+    cmp al, 0x66                    ; Backspace, Set 2
+    je .navigate_back
+    xor eax, eax
+    ret
+.navigate_back:
+    mov eax, SYSTEM_INPUT_NAVIGATE_BACK
+    call input_router_enqueue
     xor eax, eax
     ret
 .toggle_start:
@@ -12126,6 +12135,7 @@ SYSTEM_INPUT_NAVIGATE_DOWN  equ 6
 SYSTEM_INPUT_NAVIGATE_LEFT  equ 7
 SYSTEM_INPUT_NAVIGATE_RIGHT equ 8
 SYSTEM_INPUT_POINTER_ACTIVATE equ 9
+SYSTEM_INPUT_NAVIGATE_BACK  equ 10
 DISPLAY_SCENE_DESKTOP       equ 0x00000001
 DISPLAY_SCENE_START_MENU    equ 0x00000002
 DISPLAY_SCENE_RIBBON        equ 0x00000004
@@ -12356,6 +12366,13 @@ UFS_H_BASE  equ USER_STACK_ADDRESS - 1316
 UFS_FLAGS   equ USER_STACK_ADDRESS - 1320
 UFS_PATH    equ USER_STACK_ADDRESS - 2176
 UFS_VIEW    equ USER_STACK_ADDRESS - 2688
+UFS_CWD_LEN equ USER_STACK_ADDRESS - 2692
+UFS_HOME_LEN equ USER_STACK_ADDRESS - 2696
+UFS_NEW_LEN equ USER_STACK_ADDRESS - 2700
+UFS_NTH     equ USER_STACK_ADDRESS - 2704
+UFS_H_TRASH equ USER_STACK_ADDRESS - 2708
+UFS_CWD     equ USER_STACK_ADDRESS - 2968
+UFS_HOME    equ USER_STACK_ADDRESS - 3032
 
 userspace_program_start:
     ; Process.QuerySelf -> Ergebnis auf dem beschreibbaren Userstack.
@@ -12669,25 +12686,111 @@ userspace_program_start:
     call ufs_close
     test eax, eax
     jnz .failed
-.fs_view:
-    ; D) Explorer-Ansicht aus dem Arbeitsverzeichnis an den Display Server
+    ; E) Umbenennen, Verschieben und Loeschen samt Fehlerfaellen
     mov edx, [UFS_H_DIR]
-    call ufs_build_view
+    mov esi, UFS_ADDR(ufs_name_temp)
+    mov ecx, ufs_name_temp_end - ufs_name_temp
+    mov edi, NOVAFS_TYPE_FILE
+    call ufs_create
     test eax, eax
     jnz .failed
-    mov eax, SYSCALL_SERVICE_DISPLAY
-    mov ebx, SYSCALL_DISPLAY_SUBMIT_EXPLORER_VIEW
-    mov ecx, SYSCALL_ABI_VERSION
-    mov edx, UFS_VIEW
-    mov esi, EXPLORER_VIEW_SIZE
-    int 0x80
+    mov [UFS_H_NEW], ebx
+    mov ebx, SYSCALL_VFS_WRITE
+    mov edx, [UFS_H_NEW]
+    mov esi, UFS_ADDR(ufs_welcome_text)
+    mov ecx, ufs_welcome_text_end - ufs_welcome_text
+    xor edi, edi
+    call ufs_io
     test eax, eax
-    jz .fs_view_done
-    cmp eax, SYSCALL_STATUS_SERVICE  ; ohne Display Server nur ueberspringen
-    jne .failed
-.fs_view_done:
+    jnz .failed
+    ; Umbenennen im selben Verzeichnis
     mov edx, [UFS_H_DIR]
+    mov esi, UFS_ADDR(ufs_name_temp)
+    mov ecx, ufs_name_temp_end - ufs_name_temp
+    mov edi, edx
+    mov ebx, UFS_ADDR(ufs_name_temp2)
+    mov ebp, ufs_name_temp2_end - ufs_name_temp2
+    call ufs_rename
+    test eax, eax
+    jnz .failed
+    ; ein vorhandenes Ziel wird nicht ueberschrieben
+    mov edx, [UFS_H_DIR]
+    mov esi, UFS_ADDR(ufs_name_temp2)
+    mov ecx, ufs_name_temp2_end - ufs_name_temp2
+    mov edi, edx
+    mov ebx, UFS_ADDR(ufs_name_welcome)
+    mov ebp, ufs_name_welcome_end - ufs_name_welcome
+    call ufs_rename
+    cmp eax, SYSCALL_STATUS_EXISTS
+    jne .failed
+    ; in ein neues Unterverzeichnis verschieben
+    mov edx, [UFS_H_DIR]
+    mov esi, UFS_ADDR(ufs_name_trash)
+    mov ecx, ufs_name_trash_end - ufs_name_trash
+    mov edi, NOVAFS_TYPE_DIRECTORY
+    call ufs_create
+    test eax, eax
+    jnz .failed
+    mov [UFS_H_TRASH], ebx
+    mov edx, [UFS_H_DIR]
+    mov esi, UFS_ADDR(ufs_name_temp2)
+    mov ecx, ufs_name_temp2_end - ufs_name_temp2
+    mov edi, [UFS_H_TRASH]
+    mov ebx, UFS_ADDR(ufs_name_temp)
+    mov ebp, ufs_name_temp_end - ufs_name_temp
+    call ufs_rename
+    test eax, eax
+    jnz .failed
+    ; ein Verzeichnis kann nicht in sich selbst wandern
+    mov edx, [UFS_H_DIR]
+    mov esi, UFS_ADDR(ufs_name_trash)
+    mov ecx, ufs_name_trash_end - ufs_name_trash
+    mov edi, [UFS_H_TRASH]
+    mov ebx, esi
+    mov ebp, ecx
+    call ufs_rename
+    cmp eax, SYSCALL_STATUS_VALIDATION
+    jne .failed
+    ; nicht leeres Verzeichnis bleibt bestehen
+    mov edx, [UFS_H_DIR]
+    mov esi, UFS_ADDR(ufs_name_trash)
+    mov ecx, ufs_name_trash_end - ufs_name_trash
+    call ufs_delete
+    cmp eax, SYSCALL_STATUS_NOT_EMPTY
+    jne .failed
+    mov edx, [UFS_H_TRASH]
+    mov esi, UFS_ADDR(ufs_name_temp)
+    mov ecx, ufs_name_temp_end - ufs_name_temp
+    call ufs_delete
+    test eax, eax
+    jnz .failed
+    ; das offene Handle auf die geloeschte Datei findet nichts mehr
+    mov ebx, SYSCALL_VFS_READ
+    mov edx, [UFS_H_NEW]
+    mov esi, UFS_DATA
+    mov ecx, 16
+    xor edi, edi
+    call ufs_io
+    cmp eax, SYSCALL_STATUS_NOT_FOUND
+    jne .failed
+    mov edx, [UFS_H_DIR]
+    mov esi, UFS_ADDR(ufs_name_trash)
+    mov ecx, ufs_name_trash_end - ufs_name_trash
+    call ufs_delete
+    test eax, eax
+    jnz .failed
+    mov edx, [UFS_H_NEW]
     call ufs_close
+    test eax, eax
+    jnz .failed
+    mov edx, [UFS_H_TRASH]
+    call ufs_close
+    test eax, eax
+    jnz .failed
+.fs_view:
+    ; D) Explorer-Ansicht aus dem Arbeitsverzeichnis an den Display Server.
+    ; UFS_H_DIR bleibt als aktuelles Explorer-Verzeichnis geoeffnet.
+    call ufs_present
     test eax, eax
     jnz .failed
 .fs_done:
@@ -13203,6 +13306,8 @@ userspace_program_start:
     je .navigate_next
     cmp eax, SYSTEM_INPUT_POINTER_ACTIVATE
     je .pointer_activate
+    cmp eax, SYSTEM_INPUT_NAVIGATE_BACK
+    je .navigate_back
     jmp .failed
 .toggle_start:
     xor dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
@@ -13234,10 +13339,13 @@ userspace_program_start:
     je .sheet_previous
     cmp dword [USER_STACK_ADDRESS - 1096], 2
     je .studio_previous
+    ; Explorer: Dateizeilen 20..23, Ordnerkarten 24..27
     dec dword [USER_STACK_ADDRESS - 1092]
-    cmp dword [USER_STACK_ADDRESS - 1092], 20
-    jae .present_input_scene
-    mov dword [USER_STACK_ADDRESS - 1092], 23
+    mov eax, [USER_STACK_ADDRESS - 1092]
+    sub eax, 20
+    cmp eax, 7
+    jbe .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 27
     jmp .present_input_scene
 .sheet_previous:
     dec dword [USER_STACK_ADDRESS - 1092]
@@ -13259,7 +13367,9 @@ userspace_program_start:
     cmp dword [USER_STACK_ADDRESS - 1096], 2
     je .studio_next
     inc dword [USER_STACK_ADDRESS - 1092]
-    cmp dword [USER_STACK_ADDRESS - 1092], 23
+    mov eax, [USER_STACK_ADDRESS - 1092]
+    sub eax, 20
+    cmp eax, 7
     jbe .present_input_scene
     mov dword [USER_STACK_ADDRESS - 1092], 20
     jmp .present_input_scene
@@ -13280,9 +13390,42 @@ userspace_program_start:
     mov [USER_STACK_ADDRESS - 1092], eax
     test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
     jnz .activate
-    jmp .present_input_scene
+    cmp eax, 24                      ; Explorer-Ordner, Zurueck, Schnellzugriff
+    jb .present_input_scene
 .activate:
     mov eax, [USER_STACK_ADDRESS - 1092]
+    test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    jnz .activate_menu
+    cmp dword [USER_STACK_ADDRESS - 1096], 0
+    jne .activate_menu
+    cmp eax, 24
+    jb .activate_menu
+    ; Explorer: 24..27 Ordnerkarte, 28 Zurueck, 30..36 Schnellzugriff
+    cmp eax, 28
+    je .navigate_back
+    jb .explorer_child
+    sub eax, 30
+    cmp eax, 6
+    ja .present_input_scene
+    call ufs_enter_quick
+    jmp .explorer_moved
+.explorer_child:
+    sub eax, 24
+    call ufs_enter_child
+    jmp .explorer_moved
+.navigate_back:
+    test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    jnz .present_input_scene
+    cmp dword [USER_STACK_ADDRESS - 1096], 0
+    jne .present_input_scene
+    call ufs_enter_parent
+.explorer_moved:
+    ; Fehler (z. B. fehlender Ordner) lassen die bisherige Ansicht bestehen.
+    test eax, eax
+    jnz .present_input_scene
+    mov dword [USER_STACK_ADDRESS - 1092], 24
+    jmp .present_input_scene
+.activate_menu:
     cmp eax, 3
     je .open_explorer
     cmp eax, 6
@@ -13434,8 +13577,9 @@ ufs_invoke32:
     int 0x80
     ret
 
-; Waehlt das Arbeitsverzeichnis und setzt UFS_H_DIR sowie den Breadcrumb in
-; UFS_VIEW. Schreibrecht nur bei beschreibbarem Volume. EAX=Status.
+; Waehlt das Arbeitsverzeichnis (UFS_H_DIR, UFS_CWD) und das Benutzerprofil
+; (UFS_HOME): /Benutzer/<erster Benutzer>/Dokumente, sonst /Benutzer.
+; Schreibrecht nur bei beschreibbarem Volume. EAX=Status.
 ufs_select_home:
     xor eax, eax
     test dword [SHARED_SERVICE_ADDRESS + 12], SHARED_FEATURE_FILESYSTEM_WRITABLE
@@ -13447,13 +13591,18 @@ ufs_select_home:
     xor eax, eax
     mov ecx, EXPLORER_VIEW_SIZE / 4
     rep stosd
-    mov esi, UFS_ADDR(ufs_crumb_users)
-    mov edi, UFS_VIEW + 40
-    mov ecx, ufs_crumb_users_end - ufs_crumb_users
-    rep movsb
-    mov dword [UFS_VIEW + 28], ufs_crumb_users_end - ufs_crumb_users
-    mov edx, [USER_STACK_ADDRESS - 152]
     mov esi, UFS_ADDR(ufs_path_benutzer)
+    mov edi, UFS_CWD
+    mov ecx, ufs_path_benutzer_end - ufs_path_benutzer
+    mov [UFS_CWD_LEN], ecx
+    mov [UFS_HOME_LEN], ecx
+    rep movsb
+    mov esi, UFS_CWD
+    mov edi, UFS_HOME
+    mov ecx, ufs_path_benutzer_end - ufs_path_benutzer
+    rep movsb
+    mov edx, [USER_STACK_ADDRESS - 152]
+    mov esi, UFS_CWD
     mov ecx, ufs_path_benutzer_end - ufs_path_benutzer
     mov edi, [UFS_FLAGS]
     call ufs_lookup
@@ -13489,23 +13638,25 @@ ufs_select_home:
     test eax, eax
     jnz .next
     mov [UFS_H_DIR], ebx
-    ; Breadcrumb "Benutzer  >  <Name>  >  Dokumente"
-    mov edi, UFS_VIEW + 40 + (ufs_crumb_users_end - ufs_crumb_users)
-    mov esi, UFS_ADDR(ufs_crumb_separator)
-    mov ecx, ufs_crumb_separator_end - ufs_crumb_separator
-    rep movsb
+    ; UFS_CWD = /Benutzer/<Name>/Dokumente, UFS_HOME = /Benutzer/<Name>
+    mov edi, UFS_CWD + (ufs_path_benutzer_end - ufs_path_benutzer)
+    mov al, '/'
+    stosb
     mov esi, UFS_ENTRY + 32
     mov ecx, [UFS_ENTRY + 20]
     rep movsb
-    mov esi, UFS_ADDR(ufs_crumb_separator)
-    mov ecx, ufs_crumb_separator_end - ufs_crumb_separator
+    mov eax, edi
+    sub eax, UFS_CWD
+    mov [UFS_HOME_LEN], eax
+    mov esi, UFS_ADDR(ufs_suffix_documents)
+    mov ecx, ufs_suffix_documents_end - ufs_suffix_documents
     rep movsb
-    mov esi, UFS_ADDR(ufs_crumb_documents)
-    mov ecx, ufs_crumb_documents_end - ufs_crumb_documents
+    sub edi, UFS_CWD
+    mov [UFS_CWD_LEN], edi
+    mov esi, UFS_CWD
+    mov edi, UFS_HOME
+    mov ecx, [UFS_HOME_LEN]
     rep movsb
-    sub edi, UFS_VIEW + 40
-    mov [UFS_VIEW + 28], edi
-    mov dword [UFS_VIEW + 24], 3     ; Schnellzugriff "Dokumente"
     mov edx, [UFS_H_BASE]
     call ufs_close
     ret
@@ -13516,6 +13667,242 @@ ufs_select_home:
 .base_only:
     xor eax, eax
 .return:
+    ret
+
+; Kandidat in UFS_PATH (ECX Bytes, absolut). Oeffnet ihn lesend; bei Erfolg
+; wird er zu UFS_CWD, ersetzt UFS_H_DIR und wird angezeigt. Bei Fehlern bleibt
+; die bisherige Ansicht bestehen. EAX=Status.
+ufs_open_path:
+    mov [UFS_NEW_LEN], ecx
+    mov edx, [USER_STACK_ADDRESS - 152]
+    mov esi, UFS_PATH
+    xor edi, edi
+    call ufs_lookup
+    test eax, eax
+    jnz ufs_present.return
+    mov [UFS_H_NEW], ebx
+    mov edx, [UFS_H_DIR]
+    call ufs_close
+    mov eax, [UFS_H_NEW]
+    mov [UFS_H_DIR], eax
+    mov esi, UFS_PATH
+    mov edi, UFS_CWD
+    mov ecx, [UFS_NEW_LEN]
+    mov [UFS_CWD_LEN], ecx
+    rep movsb
+; Beschreibt UFS_CWD in UFS_VIEW (Breadcrumb, Schnellzugriff), liest UFS_H_DIR
+; und uebergibt die Ansicht. Ohne Display Server wird nur uebersprungen.
+ufs_present:
+    ; Breadcrumb: fuehrendes '/' weglassen, '/' -> "  /  "
+    mov esi, UFS_CWD + 1
+    mov ecx, [UFS_CWD_LEN]
+    dec ecx
+    mov edi, UFS_PATH
+.crumb:
+    test ecx, ecx
+    jle .crumb_done
+    lodsb
+    cmp al, '/'
+    jne .crumb_store
+    mov eax, '  / '
+    stosd
+    mov al, ' '
+.crumb_store:
+    stosb
+    dec ecx
+    jmp .crumb
+.crumb_done:
+    mov ecx, edi
+    sub ecx, UFS_PATH
+    mov esi, UFS_PATH
+    mov edi, UFS_VIEW + 40
+    cmp ecx, EXPLORER_PATH_MAX
+    jbe .crumb_copy
+    ; zu lang: ".." und das Ende des Pfads
+    lea esi, [esi + ecx - (EXPLORER_PATH_MAX - 2)]
+    mov ecx, EXPLORER_PATH_MAX - 2
+    mov ax, '..'
+    stosw
+.crumb_copy:
+    lea eax, [edi + ecx]
+    sub eax, UFS_VIEW + 40
+    mov [UFS_VIEW + 28], eax
+    rep movsb
+    ; Schnellzugriff: 1 = Profil, 2..7 = Profil/<Eintrag aus ufs_quick_names>
+    mov dword [UFS_VIEW + 24], 0
+    mov ecx, [UFS_HOME_LEN]
+    cmp ecx, ufs_path_benutzer_end - ufs_path_benutzer
+    jbe .view
+    cmp [UFS_CWD_LEN], ecx
+    jb .view
+    mov esi, UFS_CWD
+    mov edi, UFS_HOME
+    repe cmpsb
+    jne .view
+    mov ecx, [UFS_CWD_LEN]
+    sub ecx, [UFS_HOME_LEN]
+    jnz .quick_child
+    mov dword [UFS_VIEW + 24], 1
+    jmp .view
+.quick_child:
+    cmp byte [esi], '/'
+    jne .view
+    inc esi
+    dec ecx
+    mov edi, UFS_ADDR(ufs_quick_names)
+    mov ebx, 2
+.quick:
+    movzx edx, byte [edi]
+    test edx, edx
+    jz .view
+    cmp edx, ecx
+    jne .quick_next
+    push esi
+    push edi
+    push ecx
+    inc edi
+    repe cmpsb
+    pop ecx
+    pop edi
+    pop esi
+    je .quick_found
+.quick_next:
+    lea edi, [edi + edx + 1]
+    inc ebx
+    jmp .quick
+.quick_found:
+    mov [UFS_VIEW + 24], ebx
+.view:
+    mov edx, [UFS_H_DIR]
+    call ufs_build_view
+    test eax, eax
+    jnz .return
+    mov eax, SYSCALL_SERVICE_DISPLAY
+    mov ebx, SYSCALL_DISPLAY_SUBMIT_EXPLORER_VIEW
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, UFS_VIEW
+    mov esi, EXPLORER_VIEW_SIZE
+    int 0x80
+    cmp eax, SYSCALL_STATUS_SERVICE
+    jne .return
+    xor eax, eax
+.return:
+    ret
+
+; Explorer eine Ebene nach oben (nicht ueber /Benutzer hinaus). EAX=Status.
+ufs_enter_parent:
+    mov ecx, [UFS_CWD_LEN]
+    cmp ecx, ufs_path_benutzer_end - ufs_path_benutzer
+    jbe .top
+.find:
+    dec ecx
+    cmp byte [UFS_CWD + ecx], '/'
+    jne .find
+    mov esi, UFS_CWD
+    mov edi, UFS_PATH
+    push ecx
+    rep movsb
+    pop ecx
+    jmp ufs_open_path
+.top:
+    mov eax, SYSCALL_STATUS_NOT_FOUND
+    ret
+
+; EAX=Schnellzugriff 0..6 (Profil, Desktop, Dokumente, ...). EAX=Status.
+ufs_enter_quick:
+    mov ebx, eax
+    mov esi, UFS_HOME
+    mov edi, UFS_PATH
+    mov ecx, [UFS_HOME_LEN]
+    rep movsb
+    test ebx, ebx
+    jz .open
+    mov esi, UFS_ADDR(ufs_quick_names)
+.skip:
+    dec ebx
+    jz .append
+    movzx eax, byte [esi]
+    lea esi, [esi + eax + 1]
+    jmp .skip
+.append:
+    mov al, '/'
+    stosb
+    movzx ecx, byte [esi]
+    inc esi
+    rep movsb
+.open:
+    mov ecx, edi
+    sub ecx, UFS_PATH
+    jmp ufs_open_path
+
+; EAX=n. Oeffnet das n-te Unterverzeichnis von UFS_H_DIR. EAX=Status.
+ufs_enter_child:
+    mov [UFS_NTH], eax
+    mov dword [UFS_INDEX], 0
+.scan:
+    mov edx, [UFS_H_DIR]
+    mov ecx, [UFS_INDEX]
+    call ufs_read_directory
+    test eax, eax
+    jnz .return
+    inc dword [UFS_INDEX]
+    cmp dword [UFS_ENTRY + 16], NOVAFS_TYPE_DIRECTORY
+    jne .scan
+    dec dword [UFS_NTH]
+    jns .scan
+    mov eax, [UFS_CWD_LEN]
+    mov ecx, [UFS_ENTRY + 20]
+    lea edx, [eax + ecx + 1]
+    cmp edx, 255
+    ja .limit
+    mov esi, UFS_CWD
+    mov edi, UFS_PATH
+    mov ecx, eax
+    rep movsb
+    mov al, '/'
+    stosb
+    mov esi, UFS_ENTRY + 32
+    mov ecx, [UFS_ENTRY + 20]
+    rep movsb
+    mov ecx, edx
+    jmp ufs_open_path
+.limit:
+    mov eax, SYSCALL_STATUS_SIZE
+.return:
+    ret
+
+; EDX=Verzeichnis-Handle, ESI=Name, ECX=Laenge -> EAX=Status
+ufs_delete:
+    mov dword [UFS_ARGS + 0], 32
+    mov dword [UFS_ARGS + 4], SYSCALL_ABI_VERSION
+    mov [UFS_ARGS + 8], edx
+    mov [UFS_ARGS + 12], esi
+    mov [UFS_ARGS + 16], ecx
+    mov dword [UFS_ARGS + 20], 0
+    mov dword [UFS_ARGS + 24], 0
+    mov dword [UFS_ARGS + 28], 0
+    mov ebx, SYSCALL_VFS_DELETE
+    jmp ufs_invoke32
+
+; EDX/ESI/ECX = Quellverzeichnis/-name/-laenge,
+; EDI/EBX/EBP = Zielverzeichnis/-name/-laenge -> EAX=Status
+ufs_rename:
+    mov dword [UFS_ARGS + 0], VFS_RENAME_SIZE
+    mov dword [UFS_ARGS + 4], SYSCALL_ABI_VERSION
+    mov [UFS_ARGS + 8], edx
+    mov [UFS_ARGS + 12], esi
+    mov [UFS_ARGS + 16], ecx
+    mov [UFS_ARGS + 20], edi
+    mov [UFS_ARGS + 24], ebx
+    mov [UFS_ARGS + 28], ebp
+    mov dword [UFS_ARGS + 32], 0
+    mov dword [UFS_ARGS + 36], 0
+    mov eax, SYSCALL_SERVICE_VFS
+    mov ebx, SYSCALL_VFS_RENAME
+    mov ecx, SYSCALL_ABI_VERSION
+    mov edx, UFS_ARGS
+    mov esi, VFS_RENAME_SIZE
+    int 0x80
     ret
 
 ; EDX=Verzeichnis-Handle. Fuellt UFS_VIEW (Breadcrumb bereits gesetzt) mit
@@ -13589,12 +13976,14 @@ ufs_build_view:
 .return:
     ret
 
-ufs_crumb_users:     db "Benutzer"
-ufs_crumb_users_end:
-ufs_crumb_separator: db "  /  "
-ufs_crumb_separator_end:
-ufs_crumb_documents: db "Dokumente"
-ufs_crumb_documents_end:
+ufs_quick_names:     db 7, "Desktop", 9, "Dokumente", 9, "Downloads", 6, "Bilder"
+                     db 5, "Musik", 6, "Videos", 0
+ufs_name_temp:       db "NovaOS-Test.tmp"
+ufs_name_temp_end:
+ufs_name_temp2:      db "NovaOS-Umbenannt.tmp"
+ufs_name_temp2_end:
+ufs_name_trash:      db "NovaOS-Testordner"
+ufs_name_trash_end:
 ufs_suffix_documents: db "/Dokumente"
 ufs_suffix_documents_end:
 ufs_path_bootcount: db "/System/Diagnose/novafs-bootcount"
@@ -14272,7 +14661,7 @@ syscall_dispatch:
 .vfs:
     cmp dword [edx + 32], SYSCALL_VFS_OPEN_ROOT
     je .vfs_open_root
-    ; Lookup, Read, Write, Create, ReadDirectory und Query (vfs32.inc)
+    ; Lookup, Read, Write, Create, ReadDirectory, Query, Delete, Rename (vfs32.inc)
     call vfs_syscall
     mov edx, [syscall_frame]
     mov [edx + 44], eax
@@ -15534,16 +15923,9 @@ mouse_dispatch_click:
     je .sheet
     cmp dword [display_scene_workspace], 2
     je .studio
-    mov eax, [mouse_y]
-    sub eax, [shell_window_y]
-    sub eax, 324
-    js .done
-    xor edx, edx
-    mov ecx, 24
-    div ecx
-    cmp eax, 3
-    ja .done
-    add eax, 20
+    call explorer_hit_test
+    test eax, eax
+    jz .done
     jmp .focus
 .sheet:
     mov eax, [mouse_y]
@@ -19608,6 +19990,18 @@ draw_shell_explorer:
     jmp .files
 .folder_card:
     mov [explorer_card_label], esi
+    lea eax, [edi + 24]              ; Fokus 24..27 = Ordnerkarte
+    cmp eax, [display_scene_focus]
+    jne .card_unfocused
+    mov eax, NOVA_COLOR_SELECTION
+    mov ebx, [shell_card_x]
+    sub ebx, 2
+    mov ecx, [shell_window_y]
+    add ecx, 176
+    mov edx, 136
+    mov esi, 60
+    call fill_rounded_rectangle
+.card_unfocused:
     mov eax, NOVA_COLOR_CARD_BORDER
     mov ebx, [shell_card_x]
     mov ecx, [shell_window_y]
@@ -21958,7 +22352,7 @@ text_explorer_title:
 text_window_controls:
     db "-     []     X",0
 text_explorer_navigation:
-    db "<     >     Aktualisieren",0
+    db "Zur",0x81,"ck",0
 text_explorer_breadcrumb:
     db "System  >  Benutzer  >  Matthias  >  Dokumente",0
 text_explorer_search:

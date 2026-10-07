@@ -190,6 +190,13 @@ entsteht dabei eine neue innere Wurzel. Leere Blätter bleiben bestehen. Ein
 Leser MUSS Knoten mit `level > 1` ablehnen, bis eine spätere Version sie
 definiert.
 
+Löschen entfernt ein Item aus seinem Blatt, ohne Blätter zusammenzulegen oder
+die Schlüssel der inneren Wurzel anzupassen: die verbleibenden Items bleiben
+≥ `key(i)`, die Einträge der inneren Wurzel sind damit weiterhin gültige
+Untergrenzen. Ein Blatt mit `item_count = 0` ist zulässig; Leser überspringen
+es, Schreiber dürfen es wieder befüllen. Eine innere Wurzel behält mindestens
+ein Kind, die Baumhöhe sinkt in Phase 1 nicht.
+
 ### Object Tree (tree_id 2)
 
 `item_size = 152`, `max_items = 26`, `key_size = 8`, Schlüssel = ObjectID.
@@ -306,13 +313,43 @@ erfolgt dann ausschließlich read-only, bis Phase 2 (Transaction Log,
 Checkpoints, Crash Recovery) eine kontrollierte Reparatur ermöglicht. Ein
 unvollständiger Vorgang darf nie als sauberer Zustand erscheinen.
 
+## 7a. Löschen und Umbenennen
+
+Löschen einer Datei (Kernel und Host-Werkzeug, gleiche Reihenfolge):
+
+```text
+1. für jedes Extent des Objekts: Extent-Item entfernen, dann dessen Blöcke in
+   der Bitmap freigeben (die Bitmap wird erst beim Abschluss geschrieben)
+2. Objekt-Item entfernen
+3. Verzeichniseintrag entfernen, object_count − 1
+```
+
+- Verzeichnisse lassen sich nur löschen, wenn sie keinen Eintrag mehr haben.
+- Objekte mit ObjectID < 256 (stabile Namespaces) sind weder lösch- noch
+  umbenennbar.
+- Gelöschte ObjectIDs werden nicht wiederverwendet (`next_object_id` bleibt).
+
+Umbenennen bzw. Verschieben:
+
+```text
+1. Zielname prüfen (§5), Ziel muss ein Verzeichnis sein und darf nicht das
+   Objekt selbst oder einer seiner Nachfahren sein
+2. existiert der Zielname bereits, wird abgebrochen (kein Überschreiben)
+3. neuen Verzeichniseintrag einfügen, alten entfernen
+4. bei anderem Elternverzeichnis parent_id im Objekt-Item aktualisieren
+```
+
+Ein Prüfer MUSS verlangen, dass `parent_id` jedes Objekts mit dem `parent_id`
+seines einzigen Verzeichniseintrags übereinstimmt.
+
 ## 8. Grenzen der Phase-1-Implementierung
 
 - höchstens Baumhöhe 2 (≈ 4.300 Objekte, ≈ 2.100 Verzeichniseinträge,
   ≈ 9.000 Extents pro Volume),
 - Kernel: höchstens 4 Bitmap-Blöcke (Volumes ≤ 512 MiB) und Dateigrößen
   < 4 GiB,
-- keine Nutzdatenprüfsummen, keine Zeitstempel, kein Löschen im Kernel,
+- keine Nutzdatenprüfsummen, keine Zeitstempel, kein Zusammenlegen leerer
+  Blätter (siehe §5),
 - kein Locking: der Kernel ruft NovaFS bislang ausschließlich aus dem
   Single-Threaded-Bootpfad auf.
 
@@ -328,3 +365,5 @@ unvollständiger Vorgang darf nie als sauberer Zustand erscheinen.
 8. ObjectIDs DÜRFEN NICHT wiederverwendet werden.
 9. Die Partition-Typ-GUID DARF NICHT als Volume-Identität verwendet werden.
 10. Leser MÜSSEN Baumknoten mit unbekanntem Level, falscher Itemgröße oder falscher `tree_id` ablehnen.
+11. Jedes Objekt außer `/` MUSS genau einen Verzeichniseintrag besitzen, dessen `parent_id` dem `parent_id` des Objekts entspricht.
+12. Leser MÜSSEN Blätter mit `item_count = 0` akzeptieren.

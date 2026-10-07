@@ -1361,7 +1361,7 @@ Spezifikation `docs/NPSPEC/NPSPEC-NOVAFS-ONDISK-0001.md`.
   ohne Recht, mit veraltetem Handle und im Systembereich, legt
   `Willkommen.txt` im Profilordner `Dokumente` an, schreibt, liest zurück und findet sie per
   `ReadDirectory`. `make test-uefi-novafs` prüft das Ergebnis vom Host.
-- **offen:** Delete/Rename, größere Benutzerpuffer mit allgemeinem
+- **offen:** größere Benutzerpuffer mit allgemeinem
   Prozessspeicher, objektbezogene Capabilities und deklarative Policies.
 
 ### Explorer mit echten NovaFS-Inhalten
@@ -1375,10 +1375,33 @@ Spezifikation `docs/NPSPEC/NPSPEC-NOVAFS-ONDISK-0001.md`.
   Breadcrumb, Ordnerkacheln, Dateiliste mit Typ und Größe, markiert
   „Dokumente“ im Schnellzugriff und zählt in der Fußzeile Ordner, Dateien und
   freien NovaFS-Platz.
+- **Navigation:** Ordnerkarten per Klick oder Enter öffnen, „Zurück“ bzw.
+  Backspace führt eine Ebene nach oben (bis `/Benutzer`), der Schnellzugriff
+  (Start, Desktop, Dokumente, Downloads, Bilder, Musik, Videos) springt direkt
+  in das Benutzerprofil. Pfeiltasten wechseln zwischen Dateizeilen und
+  Ordnerkarten; die Seitenleiste markiert den aktuellen Ordner.
 - **Grenzen:** höchstens 8 Einträge pro Ansicht (je 4 Ordner und Dateien),
-  nur ASCII-Namen in der Anzeige, keine Navigation per Klick, kein Datum.
-- **offen:** Klick-Navigation im Explorer, `Delete`/`Rename`, danach NovaFS
-  Phase 2 (Transaction Log/CoW).
+  nur ASCII-Namen in der Anzeige, kein Datum, kein Scrollen, Dateien lassen
+  sich noch nicht öffnen.
+
+### Löschen und Umbenennen (VFS ABI 1.2)
+
+- **implementiert:** `VFS.Delete` (Datei samt Extents oder leeres
+  Verzeichnis) und `VFS.Rename` (Umbenennen und Verschieben zwischen
+  Verzeichnissen) im Kernel und im Host-Werkzeug (`novafs rm`, `novafs mv`).
+  Stabile Namespaces sind geschützt, ein vorhandenes Ziel wird nicht
+  überschrieben, Verzeichnisse können nicht in sich selbst wandern. Beide
+  Operationen verlangen Verzeichnis-Handles mit `WRITE` und unterliegen der
+  `/Benutzer`-Policy.
+- **automatisiert getestet:** Ring 3 legt bei jedem beschreibbaren Start eine
+  Testdatei an, benennt sie um, verschiebt sie in einen Testordner, prüft
+  `EXISTS`, `NOT_EMPTY` und den Zyklusschutz, löscht beides und stellt fest,
+  dass ein offenes Handle danach `NOT_FOUND` liefert. Das Host-`fsck` prüft
+  jetzt zusätzlich `parent_id` gegen den Verzeichniseintrag; der Host-Test
+  leert einen geteilten Baum bis auf leere Blätter und befüllt ihn neu.
+- **offen:** NovaFS Phase 2 (Transaction Log/CoW, Crash-Recovery statt
+  Read-only bei DIRTY), Dateien im Explorer öffnen, Kontextaktionen
+  (Löschen/Umbenennen) in der Explorer-Oberfläche.
 
 Das Systemvolume bleibt über Kernel-Neubauten erhalten: `make uefi-image`
 übernimmt die bestehende NovaFS-Partition aus `build/nova-uefi.img`.
@@ -1395,5 +1418,5 @@ NOVA: NovaFS ist persistentes SystemRoot unter /
 NOVA: Boot Health SystemRoot bereit, wartet auf Trust
 ```
 
-Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 98.
+Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 99.
 

@@ -103,6 +103,10 @@ function Assert-Fsck([string]$Disk,[string]$Tag){
     if($LASTEXITCODE-ne0-or$result-notlike'*fsck: OK*'){throw "fsck fehlgeschlagen ($Tag): $result"}
     Write-Host "  $Tag $result"
 }
+function Assert-NoTestLeftovers([string]$Disk,[string]$Path,[string]$Tag){
+    $listing=Invoke-NovaFs @('ls',$Disk,'--gpt',$Path)
+    if($listing-like'*NovaOS-*'){throw "Ring-3-Testobjekte nicht entfernt ($Tag): $listing"}
+}
 function Assert-BootCount([string]$Disk,[int]$Expected,[string]$Tag){
     $value=(Invoke-NovaFs @('cat',$Disk,'--gpt','/System/Diagnose/novafs-bootcount')).Trim()
     $want='NOVAFS-BOOTCOUNT {0:X8}' -f $Expected
@@ -115,6 +119,7 @@ $vfsRead=@('NOVA: Userspace VFS.Lookup auf NovaFS erfolgreich','NOVA: Userspace 
     'NOVA: Userspace VFS.Read erfolgreich','NOVA: Explorer zeigt NovaFS-Verzeichnis aus Ring 3')
 $vfsWrite=@('NOVA: VFS Schreibzugriff ausserhalb /Benutzer ohne System-Write-Authority abgewiesen',
     'NOVA: Userspace VFS.Write erfolgreich','NOVA: Userspace VFS.ReadDirectory erfolgreich',
+    'NOVA: Userspace VFS.Rename erfolgreich','NOVA: Userspace VFS.Delete erfolgreich',
     'NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert')
 $writable=$mounted+$vfsRead+$vfsWrite+@('NOVA: NovaFS Lese-/Schreibtest mit Extents, Teilbloecken und Blockgrenze bereit',
     'NOVA: Boot Health SystemRoot bereit, wartet auf Trust')
@@ -125,7 +130,9 @@ try {
     $disk=New-ScenarioImage 'fresh' 0 ''
     for($boot=1;$boot-le2;$boot++){
         $text=Invoke-Boot $disk "boot$boot"
-        Assert-Contains $text ($writable+@(('NOVA: NovaFS persistenter Bootzaehler 0x{0:X8}' -f $boot))) "fresh/$boot"
+        Assert-Contains $text ($writable+@(('NOVA: NovaFS persistenter Bootzaehler 0x{0:X8}' -f $boot),
+            'Pfad Benutzer  /  Matthias  /  Dokumente')) "fresh/$boot"
+        Assert-NoTestLeftovers $disk '/Benutzer/Matthias/Dokumente' "fresh/$boot"
         Assert-Missing $text $failures "fresh/$boot"
         Assert-Fsck $disk "fresh/$boot"
         Assert-BootCount $disk $boot "fresh/$boot"
@@ -147,6 +154,7 @@ try {
         Assert-Missing $text $failures $name
         Assert-Fsck $disk $name
         Assert-BootCount $disk 1 $name
+        Assert-NoTestLeftovers $disk '/Benutzer' $name
         $first=Invoke-NovaFs @('cat',$disk,'--gpt','/Benutzer/f-001')
         if($first-ne'x'){throw "Vorbelegte Datei beschaedigt ($name)"}
     }
@@ -167,7 +175,8 @@ try {
     Assert-Contains $text ($mounted+$vfsRead+@('NOVA: NovaFS Volume nicht sauber (DIRTY), nur Read-only gemountet',
         'NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert',
         'NOVA: NovaFS Read-only, Schreibtest uebersprungen','NOVA: Boot Health SystemRoot nur Read-only verfuegbar')) 'dirty'
-    Assert-Missing $text @('Bootzaehler','SystemRoot bereit, wartet auf Trust','VFS.Write erfolgreich','VFS.Create erfolgreich') 'dirty'
+    Assert-Missing $text @('Bootzaehler','SystemRoot bereit, wartet auf Trust','VFS.Write erfolgreich','VFS.Create erfolgreich',
+        'VFS.Delete erfolgreich','VFS.Rename erfolgreich') 'dirty'
     $info=Invoke-NovaFs @('info',$disk,'--gpt')
     if($info-notlike'*DIRTY*'){throw 'DIRTY-Volume wurde vom Kernel veraendert'}
     Assert-BootCount $disk 1 'dirty'

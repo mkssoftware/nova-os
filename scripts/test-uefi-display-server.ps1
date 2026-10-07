@@ -152,6 +152,28 @@ try {
     if($inputCount-le$initialInputCount){throw 'Escape wurde nicht als geschuetztes Input-Router-Ereignis zugestellt'}
     if($presentCount-le$initialPresentCount){throw 'Ring-3-System-UI hat nach Escape keine neue Szene praesentiert'}
 
+    # Explorer-Navigation: Backspace -> uebergeordneter Ordner, Enter -> erste
+    # Ordnerkarte, Backspace -> zurueck. Jede Ansicht stammt aus NovaFS (Ring 3).
+    function Wait-ExplorerView([string]$Key,[string]$Pattern,[string]$Message){
+        $before=([regex]::Matches($script:content,'NOVA: Explorer zeigt NovaFS-Verzeichnis')).Count
+        Send-QmpKey -Port $qmpPort -Key $Key
+        do {
+            Start-Sleep -Milliseconds 100
+            $serialText=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+            $debugText=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+            $script:content=$debugText+$serialText
+            $views=[regex]::Matches($script:content,'NOVA: Explorer zeigt NovaFS-Verzeichnis[^\r\n]*')
+        } while($views.Count-le$before-and[DateTime]::UtcNow-lt$deadline)
+        if($views.Count-le$before){throw $Message}
+        $last=$views[$views.Count-1].Value
+        if($last-notmatch$Pattern){throw "$Message ($last)"}
+    }
+    $script:content=$content
+    Wait-ExplorerView 'backspace' 'Pfad Benutzer  /  Matthias$' 'Backspace hat den Explorer nicht zum Profilordner gefuehrt'
+    Wait-ExplorerView 'ret' 'Pfad Benutzer  /  Matthias  /  \S+$' 'Enter auf der Ordnerkarte hat keinen Unterordner geoeffnet'
+    Wait-ExplorerView 'backspace' 'Pfad Benutzer  /  Matthias$' 'Backspace aus dem Unterordner fehlgeschlagen'
+    $content=$script:content
+
     Send-QmpKey -Port $qmpPort -Key 'esc'
     do {
         Start-Sleep -Milliseconds 100
@@ -162,7 +184,7 @@ try {
     if($content-notlike'*NOVA: Power Shutdown PLATFORM_OFF*'){
         throw 'Escape bei geschlossenem Startmenue hat keinen geordneten Shutdown ausgeloest'
     }
-    Write-Host 'UEFI Display Server: Tab und Pfeiltasten navigieren; Escape schliesst Startmenue und startet danach den geordneten Shutdown'
+    Write-Host 'UEFI Display Server: Tab und Pfeiltasten navigieren; Explorer wechselt Ordner aus NovaFS; Escape schliesst Startmenue und startet danach den geordneten Shutdown'
     $completed=$true
 } finally {
     if(!$process.HasExited){Stop-Process -Id $process.Id -Force}

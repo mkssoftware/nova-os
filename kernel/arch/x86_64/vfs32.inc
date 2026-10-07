@@ -1,5 +1,5 @@
 ; ---------------------------------------------------------------------------
-; VFS-Syscalls ABI 1.1 auf NovaFS (NPSPEC-FILESYSTEM-NAMESPACE-0002,
+; VFS-Syscalls ABI 1.2 auf NovaFS (NPSPEC-FILESYSTEM-NAMESPACE-0002,
 ; NPSPEC-FILESYSTEM-PERMISSION-0001, NPSPEC-POLICY-SYSTEMWRITE-0001)
 ;
 ;   Path -> Resolve -> ObjectID -> Capability-/Policy-Pruefung -> Handle
@@ -19,11 +19,14 @@ SYSCALL_VFS_WRITE           equ 4
 SYSCALL_VFS_CREATE          equ 5
 SYSCALL_VFS_READ_DIRECTORY  equ 6
 SYSCALL_VFS_QUERY           equ 7
+SYSCALL_VFS_DELETE          equ 8
+SYSCALL_VFS_RENAME          equ 9
 
 VFS_LOOKUP_FLAG_WRITE       equ 0x00000001
 VFS_IO_MAX                  equ 4096
 VFS_ENTRY_SIZE              equ 288
 VFS_INFO_SIZE               equ 48
+VFS_RENAME_SIZE             equ 40
 
 HANDLE_RIGHT_READ           equ 0x00000040
 HANDLE_RIGHT_WRITE          equ 0x00000080
@@ -36,6 +39,7 @@ SYSCALL_STATUS_READ_ONLY    equ -12
 SYSCALL_STATUS_NOT_DIRECTORY equ -20
 SYSCALL_STATUS_NOT_FILE     equ -21
 SYSCALL_STATUS_LIMIT        equ -24
+SYSCALL_STATUS_NOT_EMPTY    equ -25
 
 VFS_SEEN_LOOKUP             equ 0x01
 VFS_SEEN_READ               equ 0x02
@@ -45,6 +49,8 @@ VFS_SEEN_DIRECTORY          equ 0x10
 VFS_SEEN_QUERY              equ 0x20
 VFS_SEEN_POLICY             equ 0x40
 VFS_SEEN_RIGHTS             equ 0x80
+VFS_SEEN_DELETE             equ 0x100
+VFS_SEEN_RENAME             equ 0x200
 
 ; EDX=Syscall-Frame. EAX=Status (0 oder negativer NovaStatus).
 vfs_syscall:
@@ -64,6 +70,10 @@ vfs_syscall:
     je vfs_op_read_directory
     cmp eax, SYSCALL_VFS_QUERY
     je vfs_op_query
+    cmp eax, SYSCALL_VFS_DELETE
+    je vfs_op_delete
+    cmp eax, SYSCALL_VFS_RENAME
+    je vfs_op_rename
     mov eax, SYSCALL_STATUS_OPERATION
     ret
 .bad_abi:
@@ -239,7 +249,17 @@ vfs_map_error:
     je .read_only
     cmp eax, NOVAFS_ERR_INVALID
     je .invalid
+    cmp eax, NOVAFS_ERR_NOT_EMPTY
+    je .not_empty
+    cmp eax, NOVAFS_ERR_PROTECTED
+    je .protected
     mov eax, SYSCALL_STATUS_IO
+    ret
+.not_empty:
+    mov eax, SYSCALL_STATUS_NOT_EMPTY
+    ret
+.protected:
+    mov eax, SYSCALL_STATUS_ACCESS
     ret
 .not_found:
     mov eax, SYSCALL_STATUS_NOT_FOUND
@@ -845,12 +865,197 @@ vfs_op_query:
 .return:
     ret
 
+; ---------------------------------------------------------------------------
+; VFS.Delete (8): NovaVfsDeleteArgumentsV1 (32 Byte)
+;   +8 DirectoryHandle (Recht WRITE), +12 NameAddress, +16 NameLength,
+;   +20 Flags (0), +24/+28 Reserved
+; Loescht eine Datei oder ein leeres Verzeichnis. Offene Handles auf das
+; geloeschte Objekt liefern danach NOT_FOUND.
+; ---------------------------------------------------------------------------
+vfs_op_delete:
+    mov ecx, 32
+    call vfs_copy_args
+    jc .return
+    mov eax, [vfs_args + 20]
+    or eax, [vfs_args + 24]
+    or eax, [vfs_args + 28]
+    jnz .reserved
+    mov ecx, [vfs_args + 16]
+    test ecx, ecx
+    jz .size
+    cmp ecx, 255
+    ja .size
+    cmp dword [nfs_mounted], 1
+    jne .not_found
+    mov edx, [vfs_args + 8]
+    mov ecx, HANDLE_RIGHT_WRITE
+    call vfs_resolve_handle
+    jc .return
+    mov [vfs_temp_parent], eax
+    call vfs_check_write
+    jc .return
+    mov eax, [vfs_temp_parent]
+    mov edx, NOVAFS_TYPE_DIRECTORY
+    call vfs_expect_type
+    jc .return
+    mov esi, [vfs_args + 12]
+    mov ecx, [vfs_args + 16]
+    mov edi, vfs_path
+    call syscall_copy_from_user
+    jc .pointer
+    call vfs_change_begin
+    jc .return
+    mov eax, [vfs_temp_parent]
+    mov esi, vfs_path
+    mov ecx, [vfs_args + 16]
+    call novafs_delete
+    jc .failed
+    xor eax, eax
+    clc
+    call vfs_change_end
+    test eax, eax
+    jnz .return
+    test dword [vfs_seen], VFS_SEEN_DELETE
+    jnz .ok
+    or dword [vfs_seen], VFS_SEEN_DELETE
+    mov esi, message_vfs_delete_ok
+    call serial_write_string
+.ok:
+    xor eax, eax
+    ret
+.failed:
+    call vfs_map_error
+    stc
+    call vfs_change_end
+    ret
+.reserved:
+    mov eax, SYSCALL_STATUS_RESERVED
+    ret
+.size:
+    mov eax, SYSCALL_STATUS_SIZE
+    ret
+.not_found:
+    mov eax, SYSCALL_STATUS_NOT_FOUND
+    ret
+.pointer:
+    mov eax, SYSCALL_STATUS_POINTER
+.return:
+    ret
+
+; ---------------------------------------------------------------------------
+; VFS.Rename (9): NovaVfsRenameArgumentsV1 (40 Byte)
+;   +8 SourceDirectoryHandle, +12 SourceNameAddress, +16 SourceNameLength,
+;   +20 TargetDirectoryHandle, +24 TargetNameAddress, +28 TargetNameLength,
+;   +32 Flags (0), +36 Reserved
+; Beide Verzeichnis-Handles brauchen das Recht WRITE; Policy und Capability
+; werden fuer Quelle und Ziel geprueft. Ein vorhandenes Ziel liefert EXISTS.
+; ---------------------------------------------------------------------------
+vfs_op_rename:
+    mov ecx, VFS_RENAME_SIZE
+    call vfs_copy_args
+    jc .return
+    mov eax, [vfs_args + 32]
+    or eax, [vfs_args + 36]
+    jnz .reserved
+    mov ecx, [vfs_args + 16]
+    test ecx, ecx
+    jz .size
+    cmp ecx, 255
+    ja .size
+    mov ecx, [vfs_args + 28]
+    test ecx, ecx
+    jz .size
+    cmp ecx, 255
+    ja .size
+    cmp dword [nfs_mounted], 1
+    jne .not_found
+    mov edx, [vfs_args + 8]
+    mov ecx, HANDLE_RIGHT_WRITE
+    call vfs_resolve_handle
+    jc .return
+    mov [vfs_temp_parent], eax
+    mov edx, [vfs_args + 20]
+    mov ecx, HANDLE_RIGHT_WRITE
+    call vfs_resolve_handle
+    jc .return
+    mov [vfs_temp_target], eax
+    mov eax, [vfs_temp_parent]
+    call vfs_check_write
+    jc .return
+    mov eax, [vfs_temp_target]
+    call vfs_check_write
+    jc .return
+    mov eax, [vfs_temp_parent]
+    mov edx, NOVAFS_TYPE_DIRECTORY
+    call vfs_expect_type
+    jc .return
+    mov eax, [vfs_temp_target]
+    mov edx, NOVAFS_TYPE_DIRECTORY
+    call vfs_expect_type
+    jc .return
+    mov esi, [vfs_args + 12]
+    mov ecx, [vfs_args + 16]
+    mov edi, vfs_path
+    call syscall_copy_from_user
+    jc .pointer
+    mov esi, [vfs_args + 24]
+    mov ecx, [vfs_args + 28]
+    mov edi, vfs_path_target
+    call syscall_copy_from_user
+    jc .pointer
+    mov eax, [vfs_temp_parent]
+    mov [nfs_mv_src_parent], eax
+    mov dword [nfs_mv_src_name], vfs_path
+    mov eax, [vfs_args + 16]
+    mov [nfs_mv_src_length], eax
+    mov eax, [vfs_temp_target]
+    mov [nfs_mv_dst_parent], eax
+    mov dword [nfs_mv_dst_name], vfs_path_target
+    mov eax, [vfs_args + 28]
+    mov [nfs_mv_dst_length], eax
+    call vfs_change_begin
+    jc .return
+    call novafs_rename
+    jc .failed
+    xor eax, eax
+    clc
+    call vfs_change_end
+    test eax, eax
+    jnz .return
+    test dword [vfs_seen], VFS_SEEN_RENAME
+    jnz .ok
+    or dword [vfs_seen], VFS_SEEN_RENAME
+    mov esi, message_vfs_rename_ok
+    call serial_write_string
+.ok:
+    xor eax, eax
+    ret
+.failed:
+    call vfs_map_error
+    stc
+    call vfs_change_end
+    ret
+.reserved:
+    mov eax, SYSCALL_STATUS_RESERVED
+    ret
+.size:
+    mov eax, SYSCALL_STATUS_SIZE
+    ret
+.not_found:
+    mov eax, SYSCALL_STATUS_NOT_FOUND
+    ret
+.pointer:
+    mov eax, SYSCALL_STATUS_POINTER
+.return:
+    ret
+
 align 4
 vfs_frame:        dd 0
 vfs_args_size:    dd 0
 vfs_temp_handle:  dd 0
 vfs_temp_object:  dd 0
 vfs_temp_parent:  dd 0
+vfs_temp_target:  dd 0
 vfs_temp_rights:  dd 0
 vfs_temp_kobject: dd 0
 vfs_temp_type:    dd 0
@@ -860,6 +1065,7 @@ nfs_busy:         dd 0
 vfs_seen:         dd 0
 vfs_args:         times 64 db 0
 vfs_path:         times 256 db 0
+vfs_path_target:  times 256 db 0
 vfs_entry:        times VFS_ENTRY_SIZE db 0
 
 message_vfs_novafs_lookup_ok:
@@ -874,6 +1080,10 @@ message_vfs_directory_ok:
     db "NOVA: Userspace VFS.ReadDirectory erfolgreich", 13, 10, 0
 message_vfs_query_ok:
     db "NOVA: Userspace VFS.Query erfolgreich", 13, 10, 0
+message_vfs_delete_ok:
+    db "NOVA: Userspace VFS.Delete erfolgreich", 13, 10, 0
+message_vfs_rename_ok:
+    db "NOVA: Userspace VFS.Rename erfolgreich", 13, 10, 0
 message_vfs_policy_denied:
     db "NOVA: VFS Schreibzugriff ausserhalb /Benutzer ohne System-Write-Authority abgewiesen", 13, 10, 0
 message_vfs_volume_poisoned:

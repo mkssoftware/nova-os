@@ -7,6 +7,8 @@
  *   novafs cat   <image> [--gpt|--offset BYTES] <path>
  *   novafs mkdir <image> [--gpt|--offset BYTES] <path>
  *   novafs put   <image> [--gpt|--offset BYTES] <hostfile> <path>
+ *   novafs rm    <image> [--gpt|--offset BYTES] <path>      (Datei oder leeres Verzeichnis)
+ *   novafs mv    <image> [--gpt|--offset BYTES] <alt> <neu> (umbenennen/verschieben)
  *   novafs fsck  <image> [--gpt|--offset BYTES]
  *   novafs tree  <image> [--gpt|--offset BYTES]
  *   novafs mark-dirty <image> [--gpt|--offset BYTES]   (Testhilfe: Abbruch simulieren)
@@ -456,6 +458,18 @@ static int tree_find_exact(Volume *v, const TreeInfo *t, Key key, Cursor *c) {
 }
 static void cursor_write_leaf(Volume *v, Cursor *c) { node_write(v, c->leaf); }
 
+/* Item an der Cursorposition entfernen. Blaetter werden nicht zusammengelegt;
+   leere Blaetter bleiben bestehen (NPSPEC-NOVAFS-ONDISK-0001 §5). */
+static void cursor_remove(Volume *v, Cursor *c) {
+    uint32_t count = r16(c->leaf + N_COUNT), size = c->t->item_size;
+    if (c->index >= count) die("Entfernen hinter dem Blattende");
+    uint8_t *at = node_item(c->leaf, size, c->index);
+    memmove(at, at + size, (size_t)(count - c->index - 1) * size);
+    memset(node_item(c->leaf, size, count - 1), 0, size);
+    w16(c->leaf + N_COUNT, (uint16_t)(count - 1));
+    node_write(v, c->leaf);
+}
+
 /* ---------------- Superblock / Mount ---------------- */
 static int superblock_valid(const uint8_t *sb, uint64_t partition_blocks) {
     if (memcmp(sb + SB_MAGIC, NOVAFS_MAGIC, 8) != 0) return 0;
@@ -594,6 +608,16 @@ static uint64_t dir_lookup(Volume *v, uint64_t parent, const char *name, size_t 
     return 0;
 }
 
+/* Positioniert den Cursor auf den Verzeichniseintrag; 0 wenn nicht vorhanden. */
+static int dir_seek_entry(Volume *v, uint64_t parent, const char *name, size_t length, Cursor *c) {
+    Key k = {parent, crc32c((const uint8_t *)name, length)};
+    const TreeInfo *t = tree_info(TREE_DIRECTORY);
+    cursor_seek(v, c, t, k);
+    for (uint8_t *it; (it = cursor_item(v, c)) && key_cmp(item_key(t, it), k) == 0; c->index++)
+        if (r16(it + D_NAME_LENGTH) == length && memcmp(it + D_NAME, name, length) == 0) return 1;
+    return 0;
+}
+
 static uint64_t resolve(Volume *v, const char *path) {
     if (path[0] != '/') die("Pfad muss mit / beginnen: %s", path);
     uint64_t id = 1;
@@ -725,6 +749,83 @@ static uint8_t *file_read(Volume *v, uint64_t id, uint64_t *length_out) {
     }
     *length_out = length;
     return out;
+}
+
+/* Datei samt Extents oder leeres Verzeichnis loeschen. */
+static void object_delete(Volume *v, uint64_t parent, const char *name) {
+    size_t length = strlen(name);
+    uint8_t entry[DIR_ITEM];
+    uint64_t id = dir_lookup(v, parent, name, length, entry);
+    if (!id) die("nicht gefunden: %s", name);
+    if (id < FIRST_DYNAMIC_OBJECT) die("stabiler Namespace %llu kann nicht geloescht werden", (unsigned long long)id);
+    if (r32(entry + D_TYPE) == TYPE_DIRECTORY) {
+        Cursor c;
+        Key k = {id, 0};
+        cursor_seek(v, &c, tree_info(TREE_DIRECTORY), k);
+        uint8_t *it = cursor_item(v, &c);
+        if (it && r64(it + D_PARENT) == id) die("Verzeichnis ist nicht leer: %s", name);
+    }
+    volume_begin(v);
+    const TreeInfo *et = tree_info(TREE_EXTENT);
+    for (;;) {
+        Cursor c;
+        Key k = {id, 0};
+        cursor_seek(v, &c, et, k);
+        uint8_t *it = cursor_item(v, &c);
+        if (!it || r64(it + E_OBJECT) != id) break;
+        uint64_t first = r64(it + E_PHYSICAL), count = r64(it + E_COUNT);
+        cursor_remove(v, &c);
+        for (uint64_t b = 0; b < count; ++b) {
+            if (!bit_get(v, first + b)) die("Extent-Block %llu war frei", (unsigned long long)(first + b));
+            bit_set(v, first + b, 0);
+            w64(v->sb + SB_AVAILABLE, r64(v->sb + SB_AVAILABLE) + 1);
+        }
+    }
+    Cursor c;
+    Key ok = {id, 0};
+    if (!tree_find_exact(v, tree_info(TREE_OBJECT), ok, &c)) die("Objekt %llu fehlt", (unsigned long long)id);
+    cursor_remove(v, &c);
+    if (!dir_seek_entry(v, parent, name, length, &c)) die("Verzeichniseintrag verschwunden");
+    cursor_remove(v, &c);
+    w64(v->sb + SB_OBJECT_COUNT, r64(v->sb + SB_OBJECT_COUNT) - 1);
+}
+
+/* Umbenennen bzw. Verschieben; ein vorhandenes Ziel wird nicht ueberschrieben. */
+static void object_rename(Volume *v, uint64_t src_parent, const char *src_name, uint64_t dst_parent,
+                          const char *dst_name) {
+    size_t src_length = strlen(src_name), dst_length = strlen(dst_name);
+    validate_name(dst_name, dst_length);
+    uint8_t entry[DIR_ITEM], object[OBJ_ITEM];
+    uint64_t id = dir_lookup(v, src_parent, src_name, src_length, entry);
+    if (!id) die("nicht gefunden: %s", src_name);
+    if (id < FIRST_DYNAMIC_OBJECT) die("stabiler Namespace %llu kann nicht umbenannt werden", (unsigned long long)id);
+    if (!object_get(v, dst_parent, object) || r32(object + O_TYPE) != TYPE_DIRECTORY) die("Ziel ist kein Verzeichnis");
+    for (uint64_t walk = dst_parent, depth = 0; walk > 1; ++depth) {
+        if (walk == id || depth > 64) die("Verzeichnis kann nicht in sich selbst verschoben werden");
+        if (!object_get(v, walk, object)) die("Vorfahr %llu fehlt", (unsigned long long)walk);
+        walk = r64(object + O_PARENT);
+    }
+    if (dst_parent == id) die("Verzeichnis kann nicht in sich selbst verschoben werden");
+    uint64_t existing = dir_lookup(v, dst_parent, dst_name, dst_length, NULL);
+    if (existing == id) return;
+    if (existing) die("Ziel existiert bereits: %s", dst_name);
+    volume_begin(v);
+    uint8_t moved[DIR_ITEM] = {0};
+    w64(moved + D_PARENT, dst_parent);
+    w64(moved + D_HASH, crc32c((const uint8_t *)dst_name, dst_length));
+    w64(moved + D_OBJECT, id);
+    w32(moved + D_TYPE, r32(entry + D_TYPE));
+    w16(moved + D_NAME_LENGTH, (uint16_t)dst_length);
+    memcpy(moved + D_NAME, dst_name, dst_length);
+    tree_insert(v, tree_info(TREE_DIRECTORY), moved);
+    Cursor c;
+    if (!dir_seek_entry(v, src_parent, src_name, src_length, &c)) die("Quelleintrag verschwunden");
+    cursor_remove(v, &c);
+    if (dst_parent != src_parent) {
+        if (!object_get(v, id, object)) die("Objekt %llu fehlt", (unsigned long long)id);
+        w64(object + O_PARENT, dst_parent);
+        object_put(v, object);
+    }
 }
 
 static void split_path(const char *path, char *parent, const char **name) {
@@ -928,6 +1029,7 @@ typedef struct FsckState {
     uint64_t *ids;
     uint32_t *types;
     uint32_t *refs;
+    uint64_t *parents;
     size_t capacity;
 } FsckState;
 
@@ -951,7 +1053,9 @@ static void visit_object(Volume *v, const uint8_t *it, void *context) {
         s->ids = realloc(s->ids, s->capacity * sizeof *s->ids);
         s->types = realloc(s->types, s->capacity * sizeof *s->types);
         s->refs = realloc(s->refs, s->capacity * sizeof *s->refs);
+        s->parents = realloc(s->parents, s->capacity * sizeof *s->parents);
     }
+    s->parents[s->objects] = r64(it + O_PARENT);
     s->ids[s->objects] = r64(it);
     s->types[s->objects] = type;
     s->refs[s->objects] = 0;
@@ -969,6 +1073,8 @@ static void visit_directory(Volume *v, const uint8_t *it, void *context) {
     if (parent == (size_t)-1 || s->types[parent] != TYPE_DIRECTORY) die("fsck: Eintrag ohne Elternverzeichnis");
     if (child == (size_t)-1) die("fsck: Eintrag %.*s ohne Objekt", length, it + D_NAME);
     if (s->types[child] != r32(it + D_TYPE)) die("fsck: Eintragstyp passt nicht zum Objekt");
+    if (s->parents[child] != r64(it + D_PARENT))
+        die("fsck: parent_id von Objekt %llu passt nicht zum Verzeichniseintrag", (unsigned long long)r64(it + D_OBJECT));
     s->refs[child]++;
 }
 
@@ -1025,6 +1131,7 @@ static void cmd_fsck(Volume *v) {
     free(state.ids);
     free(state.types);
     free(state.refs);
+    free(state.parents);
 }
 
 static void cmd_info(Volume *v) {
@@ -1076,7 +1183,7 @@ static void cmd_tree(Volume *v) {
 int main(int argc, char **argv) {
     crc32c_init();
     if (argc < 3) {
-        fprintf(stderr, "Verwendung: novafs mkfs|info|ls|cat|mkdir|put|fsck|tree|mark-dirty <image> [Optionen] [Argumente]\n");
+        fprintf(stderr, "Verwendung: novafs mkfs|info|ls|cat|mkdir|put|rm|mv|fsck|tree|mark-dirty <image> [Optionen] [Argumente]\n");
         return 2;
     }
     const char *command = argv[1], *image = argv[2];
@@ -1106,7 +1213,8 @@ int main(int argc, char **argv) {
         volume_close(&v);
         return 0;
     }
-    int writes = !strcmp(command, "put") || !strcmp(command, "mkdir");
+    int writes = !strcmp(command, "put") || !strcmp(command, "mkdir") || !strcmp(command, "rm") ||
+                 !strcmp(command, "mv");
     volume_open(&v, image, writes, gpt, offset);
     if (!strcmp(command, "info")) cmd_info(&v);
     else if (!strcmp(command, "fsck")) cmd_fsck(&v);
@@ -1145,6 +1253,27 @@ int main(int argc, char **argv) {
         if (is_put && length) file_write(&v, id, data, (uint64_t)length);
         volume_commit(&v);
         free(data);
+    } else if (!strcmp(command, "rm")) {
+        if (nargs != 1) die("rm <pfad>");
+        char parent_path[4096];
+        const char *name;
+        if (strlen(args[0]) >= sizeof parent_path) die("Pfad zu lang");
+        split_path(args[0], parent_path, &name);
+        uint64_t parent = resolve(&v, parent_path);
+        if (!parent) die("Elternverzeichnis fehlt: %s", parent_path);
+        object_delete(&v, parent, name);
+        volume_commit(&v);
+    } else if (!strcmp(command, "mv")) {
+        if (nargs != 2) die("mv <alt> <neu>");
+        char src_path[4096], dst_path[4096];
+        const char *src_name, *dst_name;
+        if (strlen(args[0]) >= sizeof src_path || strlen(args[1]) >= sizeof dst_path) die("Pfad zu lang");
+        split_path(args[0], src_path, &src_name);
+        split_path(args[1], dst_path, &dst_name);
+        uint64_t src = resolve(&v, src_path), dst = resolve(&v, dst_path);
+        if (!src || !dst) die("Elternverzeichnis fehlt");
+        object_rename(&v, src, src_name, dst, dst_name);
+        if (r32(v.sb + SB_STATE) == STATE_DIRTY) volume_commit(&v);
     } else die("unbekannter Befehl %s", command);
     volume_close(&v);
     return 0;

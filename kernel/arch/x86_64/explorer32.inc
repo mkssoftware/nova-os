@@ -116,6 +116,10 @@ explorer_submit_view:
     call serial_write_string
     mov eax, [explorer_view + 20]
     call serial_write_hex32
+    mov esi, message_explorer_view_path
+    call serial_write_string
+    call explorer_breadcrumb_text
+    call serial_write_string
     mov esi, message_line_end
     call serial_write_string
     xor eax, eax
@@ -339,6 +343,79 @@ explorer_folder_label:
     mov esi, [shell_folder_labels + edi * 4]
     ret
 
+; Trefferpruefung im Explorer-Fenster (mouse_x/mouse_y, Fenstergeometrie aus
+; dem letzten Zeichnen). EAX = Element oder 0:
+;   20..23 Dateizeile, 24..27 Ordnerkarte, 28 Zurueck, 30..36 Schnellzugriff
+explorer_hit_test:
+    push ebx
+    push ecx
+    push edx
+    mov ebx, [mouse_x]
+    sub ebx, [shell_window_x]
+    mov ecx, [mouse_y]
+    sub ecx, [shell_window_y]
+    ; Schaltflaeche "Zurueck" in der Navigationsleiste
+    cmp ebx, 16
+    jl .sidebar
+    cmp ebx, 110
+    jge .sidebar
+    cmp ecx, 56
+    jl .sidebar
+    cmp ecx, 94
+    jge .sidebar
+    mov eax, 28
+    jmp .done
+.sidebar:
+    cmp ebx, 12
+    jl .none
+    cmp ebx, 164
+    jge .cards
+    mov eax, ecx
+    sub eax, 160
+    jl .none
+    xor edx, edx
+    mov ecx, 24
+    div ecx
+    cmp eax, 6
+    ja .none
+    add eax, 30
+    jmp .done
+.cards:
+    cmp ecx, 178
+    jl .none
+    cmp ecx, 234
+    jge .rows
+    mov eax, ebx
+    sub eax, 202
+    jl .none
+    xor edx, edx
+    mov ecx, 142
+    div ecx
+    cmp edx, 132
+    jae .none
+    cmp eax, 3
+    ja .none
+    add eax, 24
+    jmp .done
+.rows:
+    mov eax, ecx
+    sub eax, 324
+    jl .none
+    xor edx, edx
+    mov ecx, 24
+    div ecx
+    cmp eax, 3
+    ja .none
+    add eax, 20
+    jmp .done
+.none:
+    xor eax, eax
+.done:
+    pop edx
+    pop ecx
+    pop ebx
+    ret
+
 ; Auswahlbalken der fokussierten Dateizeile (Fokus 20..23), nur fuer
 ; vorhandene Zeilen.
 explorer_draw_file_selection:
@@ -347,6 +424,8 @@ explorer_draw_file_selection:
     sub eax, 20
     cmp eax, 3
     jbe .focus_ready
+    cmp dword [display_scene_focus], 24  ; Fokus auf Karte, Zurueck, Sidebar
+    jae .done
     xor eax, eax
 .focus_ready:
     cmp eax, [explorer_view_files]
@@ -566,6 +645,8 @@ explorer_view_incoming: times EXPLORER_VIEW_SIZE db 0
 explorer_line:          times 128 db 0
 explorer_card_names:    times 4 * 32 + 1 db 0
 
+message_explorer_view_path:
+    db ", Pfad ", 0
 message_explorer_view_ok:
     db "NOVA: Explorer zeigt NovaFS-Verzeichnis aus Ring 3, Eintraege 0x", 0
 text_explorer_col_name:   db "NAME", 0

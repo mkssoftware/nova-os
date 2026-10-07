@@ -65,7 +65,9 @@ enum NovaVfsOperationId {
     NOVA_VFS_OPERATION_WRITE = 4,
     NOVA_VFS_OPERATION_CREATE = 5,
     NOVA_VFS_OPERATION_READ_DIRECTORY = 6,
-    NOVA_VFS_OPERATION_QUERY = 7
+    NOVA_VFS_OPERATION_QUERY = 7,
+    NOVA_VFS_OPERATION_DELETE = 8,
+    NOVA_VFS_OPERATION_RENAME = 9
 };
 
 #define NOVA_VFS_LOOKUP_FLAG_WRITE 0x00000001u
@@ -89,7 +91,8 @@ enum NovaSystemInputAction {
     NOVA_SYSTEM_INPUT_NAVIGATE_DOWN = 6,
     NOVA_SYSTEM_INPUT_NAVIGATE_LEFT = 7,
     NOVA_SYSTEM_INPUT_NAVIGATE_RIGHT = 8,
-    NOVA_SYSTEM_INPUT_POINTER_ACTIVATE = 9
+    NOVA_SYSTEM_INPUT_POINTER_ACTIVATE = 9,
+    NOVA_SYSTEM_INPUT_NAVIGATE_BACK = 10
 };
 
 enum NovaDisplaySceneFlags {
@@ -117,7 +120,8 @@ enum NovaStatus {
     NOVA_STATUS_NOT_DIRECTORY = -20,
     NOVA_STATUS_NOT_FILE = -21,
     NOVA_STATUS_VALIDATION_FAILED = -23,
-    NOVA_STATUS_RESOURCE_LIMIT = -24
+    NOVA_STATUS_RESOURCE_LIMIT = -24,
+    NOVA_STATUS_DIRECTORY_NOT_EMPTY = -25
 };
 
 typedef struct NovaAbiVersion {
@@ -317,6 +321,31 @@ typedef struct NovaVfsObjectInfoV1 {
     uint64_t Generation;
 } NovaVfsObjectInfoV1;
 
+/* VFS.Delete: Datei oder leeres Verzeichnis im Verzeichnis-Handle (WRITE). */
+typedef struct NovaVfsDeleteArgumentsV1 {
+    uint32_t StructSize;        /* 32 */
+    NovaAbiVersion Version;
+    uint32_t DirectoryHandle;
+    uint32_t NameAddress;
+    uint32_t NameLength;        /* 1..255 */
+    uint32_t Flags;             /* 0 */
+    uint32_t Reserved[2];
+} NovaVfsDeleteArgumentsV1;
+
+/* VFS.Rename: Umbenennen/Verschieben; beide Handles mit WRITE. */
+typedef struct NovaVfsRenameArgumentsV1 {
+    uint32_t StructSize;        /* 40 */
+    NovaAbiVersion Version;
+    uint32_t SourceDirectoryHandle;
+    uint32_t SourceNameAddress;
+    uint32_t SourceNameLength;  /* 1..255 */
+    uint32_t TargetDirectoryHandle;
+    uint32_t TargetNameAddress;
+    uint32_t TargetNameLength;  /* 1..255 */
+    uint32_t Flags;             /* 0 */
+    uint32_t Reserved;
+} NovaVfsRenameArgumentsV1;
+
 /* Die physische Framebufferadresse bleibt ausschließlich im Kernel. */
 typedef struct NovaDisplayInfoV1 {
     uint32_t StructSize;
@@ -423,6 +452,12 @@ _Static_assert(sizeof(NovaVfsObjectInfoV1) == 48,
                "NovaVfsObjectInfoV1 ABI size changed");
 _Static_assert(offsetof(NovaVfsObjectInfoV1, Size) == 32,
                "NovaVfsObjectInfoV1 size offset changed");
+_Static_assert(sizeof(NovaVfsDeleteArgumentsV1) == 32,
+               "NovaVfsDeleteArgumentsV1 ABI size changed");
+_Static_assert(sizeof(NovaVfsRenameArgumentsV1) == 40,
+               "NovaVfsRenameArgumentsV1 ABI size changed");
+_Static_assert(offsetof(NovaVfsRenameArgumentsV1, TargetDirectoryHandle) == 20,
+               "NovaVfsRenameArgumentsV1 target offset changed");
 _Static_assert(sizeof(NovaDisplayInfoV1) == 40,
                "NovaDisplayInfoV1 ABI size changed");
 _Static_assert(offsetof(NovaDisplayInfoV1, Generation) == 32,

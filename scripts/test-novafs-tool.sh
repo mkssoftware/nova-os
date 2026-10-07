@@ -34,6 +34,35 @@ done
 "$TOOL" cat "$IMG" /Apps/gross.bin | cmp -s - "$WORK/gross" || fail "Inhalt gross.bin"
 if "$TOOL" put "$IMG" "$WORK/f1" /Benutzer/Test/datei-1.bin 2>/dev/null; then fail "doppelter Name akzeptiert"; fi
 
+# Umbenennen, Verschieben und Loeschen (leere Blaetter bleiben bestehen).
+"$TOOL" mv "$IMG" /Benutzer/Test/datei-7.bin /Benutzer/Test/umbenannt.bin
+"$TOOL" cat "$IMG" /Benutzer/Test/umbenannt.bin | cmp -s - "$WORK/f7" || fail "Inhalt nach mv"
+if "$TOOL" cat "$IMG" /Benutzer/Test/datei-7.bin >/dev/null 2>&1; then fail "alter Name nach mv sichtbar"; fi
+"$TOOL" mkdir "$IMG" /Benutzer/Ziel
+"$TOOL" mv "$IMG" /Benutzer/Test/umbenannt.bin /Benutzer/Ziel/verschoben.bin
+"$TOOL" cat "$IMG" /Benutzer/Ziel/verschoben.bin | cmp -s - "$WORK/f7" || fail "Inhalt nach Verschieben"
+if "$TOOL" mv "$IMG" /Benutzer/Test/datei-8.bin /Benutzer/Ziel/verschoben.bin 2>/dev/null; then fail "mv ueberschreibt Ziel"; fi
+if "$TOOL" mv "$IMG" /Benutzer/Ziel /Benutzer/Ziel/innen 2>/dev/null; then fail "Verzeichnis in sich selbst verschoben"; fi
+if "$TOOL" rm "$IMG" /Benutzer 2>/dev/null; then fail "Namespace geloescht"; fi
+if "$TOOL" rm "$IMG" /Benutzer/Ziel 2>/dev/null; then fail "nicht leeres Verzeichnis geloescht"; fi
+"$TOOL" fsck "$IMG" >/dev/null || fail "fsck nach mv"
+FREE_BEFORE=$("$TOOL" info "$IMG" | sed -n 's/.*frei \([0-9]*\).*/\1/p')
+"$TOOL" rm "$IMG" /Apps/gross.bin
+FREE_AFTER=$("$TOOL" info "$IMG" | sed -n 's/.*frei \([0-9]*\).*/\1/p')
+[ $((FREE_AFTER - FREE_BEFORE)) -eq 147 ] || fail "rm gab $((FREE_AFTER - FREE_BEFORE)) statt 147 Bloecke frei"
+for i in $(seq 1 120); do
+    [ "$i" -eq 7 ] && continue
+    "$TOOL" rm "$IMG" "/Benutzer/Test/datei-$i.bin"
+done
+"$TOOL" rm "$IMG" /Benutzer/Test
+"$TOOL" fsck "$IMG" >/dev/null || fail "fsck nach rm"
+"$TOOL" tree "$IMG" | grep -Eq 'Extent    Hoehe 2:.* 0( |$)' || fail "erwartete leere Extent-Blaetter"
+for i in $(seq 1 30); do
+    "$TOOL" put "$IMG" "$WORK/f$i" "/Benutzer/Ziel/neu-$i.bin"
+done
+"$TOOL" cat "$IMG" /Benutzer/Ziel/neu-30.bin | cmp -s - "$WORK/f30" || fail "Inhalt nach Wiederbefuellung"
+"$TOOL" fsck "$IMG" >/dev/null || fail "fsck nach Wiederbefuellung"
+
 # Beschaedigter primaerer Superblock: Backup muss uebernehmen.
 cp "$IMG" "$WORK/corrupt.img"
 printf '\377' | dd of="$WORK/corrupt.img" bs=1 seek=$((4096 + 200)) conv=notrunc status=none
@@ -53,4 +82,4 @@ cp "$IMG" "$WORK/dirty.img"
 if "$TOOL" put "$WORK/dirty.img" "$WORK/f1" /Apps/neu.bin 2>/dev/null; then fail "Schreiben auf DIRTY-Volume erlaubt"; fi
 
 "$TOOL" fsck "$IMG"
-echo "novafs-check: Host-Werkzeug, Baumteilung, Backup-Superblock und Fehlererkennung erfolgreich"
+echo "novafs-check: Host-Werkzeug, Baumteilung, Loeschen/Umbenennen, Backup-Superblock und Fehlererkennung erfolgreich"

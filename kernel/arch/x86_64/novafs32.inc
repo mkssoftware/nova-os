@@ -4,8 +4,8 @@
 ;
 ; Superblock-Auswahl (primaer/Backup, hoechste Generation), CRC32C fuer alle
 ; Metadaten, Free-Space-Bitmap, Object/Directory/Extent Tree als B+-Baeume mit
-; fester Itemgroesse (Hoehe <= 2), Pfadaufloesung, Lesen, Schreiben und
-; Erzeugen. Aenderungen folgen der Phase-1-Schreibreihenfolge
+; fester Itemgroesse (Hoehe <= 2), Pfadaufloesung, Lesen, Schreiben,
+; Erzeugen, Loeschen und Umbenennen. Aenderungen folgen der Phase-1-Schreibreihenfolge
 ; DIRTY -> Daten -> Knoten -> Bitmap -> Superblock CLEAN -> Backup.
 ;
 ; Die Implementierung ist fuer den Single-Threaded-Bootpfad bestimmt; eine
@@ -113,6 +113,8 @@ NOVAFS_ERR_FULL        equ 5
 NOVAFS_ERR_READ_ONLY   equ 6
 NOVAFS_ERR_INVALID     equ 7
 NOVAFS_ERR_TREE_FULL   equ 8
+NOVAFS_ERR_NOT_EMPTY   equ 9
+NOVAFS_ERR_PROTECTED   equ 10
 
 NOVA_VOLUME_FS_NOVAFS  equ 2
 VFS_FLAG_NOVAFS_ROOT   equ 0x00000004
@@ -1412,30 +1414,8 @@ novafs_create:
     mov [nfs_create_type], edx
     mov [nfs_create_name], esi
     mov [nfs_create_length], ecx
-    ; Namensregeln: 1..255 Byte, kein '/', kein NUL, nicht "." oder ".."
-    test ecx, ecx
-    jz .invalid
-    cmp ecx, 255
-    ja .invalid
-    xor ebx, ebx
-.name_check:
-    mov al, [esi + ebx]
-    test al, al
-    jz .invalid
-    cmp al, '/'
-    je .invalid
-    inc ebx
-    cmp ebx, ecx
-    jb .name_check
-    cmp byte [esi], '.'
-    jne .name_ok
-    cmp ecx, 1
-    je .invalid
-    cmp ecx, 2
-    jne .name_ok
-    cmp byte [esi + 1], '.'
-    je .invalid
-.name_ok:
+    call novafs_name_check
+    jc .invalid
     mov eax, [nfs_create_parent]
     call novafs_object_find
     jc .invalid
@@ -1531,6 +1511,308 @@ novafs_create:
 .read_only:
     mov dword [nfs_error], NOVAFS_ERR_READ_ONLY
 .invalid:
+.failed:
+    popad
+    stc
+    ret
+
+; ESI=Name, ECX=Laenge. Namensregeln: 1..255 Byte, kein '/', kein NUL, nicht
+; "." oder "..". CF bei ungueltigem Namen.
+novafs_name_check:
+    pushad
+    test ecx, ecx
+    jz .invalid
+    cmp ecx, 255
+    ja .invalid
+    xor ebx, ebx
+.byte:
+    mov al, [esi + ebx]
+    test al, al
+    jz .invalid
+    cmp al, '/'
+    je .invalid
+    inc ebx
+    cmp ebx, ecx
+    jb .byte
+    cmp byte [esi], '.'
+    jne .valid
+    cmp ecx, 1
+    je .invalid
+    cmp ecx, 2
+    jne .valid
+    cmp byte [esi + 1], '.'
+    je .invalid
+.valid:
+    popad
+    clc
+    ret
+.invalid:
+    popad
+    stc
+    ret
+
+; EBX=Baum. Entfernt das Item an der Cursorposition (nfs_leaf_page,
+; nfs_cur_index) und schreibt das Blatt. Blaetter werden nicht zusammengelegt;
+; leere Blaetter bleiben bestehen (NPSPEC-NOVAFS-ONDISK-0001 §5). Die
+; Schluessel der inneren Wurzel bleiben gueltige Untergrenzen.
+novafs_cursor_remove:
+    pushad
+    mov edi, [nfs_leaf_page]
+    movzx ecx, word [edi + NFS_N_COUNT]
+    mov eax, [nfs_cur_index]
+    cmp eax, ecx
+    jae .invalid
+    mov edx, [ebx + NFS_TD_ITEM]
+    mov ebp, ecx
+    sub ebp, eax
+    dec ebp
+    imul ebp, edx                    ; Bytes hinter dem Item
+    imul eax, edx
+    lea edi, [edi + NOVAFS_NODE_HEADER + eax]
+    lea esi, [edi + edx]
+    mov ecx, ebp
+    rep movsb
+    mov ecx, edx                     ; frei gewordenen letzten Platz nullen
+    xor eax, eax
+    rep stosb
+    mov edi, [nfs_leaf_page]
+    dec word [edi + NFS_N_COUNT]
+    call novafs_node_store
+    jc .failed
+    popad
+    clc
+    ret
+.invalid:
+    mov dword [nfs_error], NOVAFS_ERR_CORRUPT
+.failed:
+    popad
+    stc
+    ret
+
+; EAX=Eltern-ObjectID, ESI=Name, ECX=Laenge. Loescht eine Datei samt Extents
+; oder ein leeres Verzeichnis. Stabile Namespaces (ObjectID < 256) sind
+; geschuetzt. Laufende Aenderung (novafs_change_begin) erforderlich.
+; Reihenfolge: Extent-Item entfernen -> dessen Bloecke freigeben (die Bitmap
+; wird erst im Commit geschrieben) -> Objekt-Item -> Verzeichniseintrag.
+novafs_delete:
+    pushad
+    mov dword [nfs_error], NOVAFS_ERR_INVALID
+    cmp dword [nfs_readonly], 0
+    jne .read_only
+    mov [nfs_del_parent], eax
+    mov [nfs_del_name], esi
+    mov [nfs_del_length], ecx
+    call novafs_lookup
+    jc .failed
+    mov [nfs_del_object], eax
+    mov [nfs_del_type], edx
+    cmp eax, NOVAFS_FIRST_DYNAMIC_ID
+    jb .protected
+    cmp edx, NOVAFS_TYPE_DIRECTORY
+    jne .extents
+    xor edx, edx
+    call novafs_dir_entry_at
+    jnc .not_empty
+    cmp dword [nfs_error], NOVAFS_ERR_NOT_FOUND
+    jne .failed
+.extents:
+    mov eax, [nfs_del_object]
+    xor edx, edx
+    call novafs_key_set
+    mov ebx, nfs_tree_extent
+    call novafs_cursor_seek
+    jc .failed
+    call novafs_cursor_item
+    jc .object
+    mov eax, [nfs_del_object]
+    cmp [esi + NFS_E_OBJECT], eax
+    jne .object
+    cmp dword [esi + NFS_E_OBJECT + 4], 0
+    jne .object
+    cmp dword [esi + NFS_E_PHYSICAL + 4], 0
+    jne .corrupt
+    cmp dword [esi + NFS_E_COUNT + 4], 0
+    jne .corrupt
+    mov eax, [esi + NFS_E_PHYSICAL]
+    mov ecx, [esi + NFS_E_COUNT]
+    test ecx, ecx
+    jz .corrupt
+    mov edx, [nfs_bitmap_blocks]
+    add edx, 2
+    cmp eax, edx
+    jb .corrupt
+    mov edx, eax
+    add edx, ecx
+    jc .corrupt
+    mov edi, [nfs_total_blocks]
+    dec edi
+    cmp edx, edi
+    ja .corrupt
+    mov [nfs_del_physical], eax
+    mov [nfs_del_count], ecx
+    call novafs_cursor_remove
+    jc .failed
+    mov eax, [nfs_del_physical]
+    mov ecx, [nfs_del_count]
+.free:
+    call novafs_free_block
+    inc eax
+    loop .free
+    jmp .extents
+.object:
+    mov eax, [nfs_del_object]
+    call novafs_object_find
+    jc .failed
+    mov ebx, nfs_tree_object
+    call novafs_cursor_remove
+    jc .failed
+    mov eax, [nfs_del_parent]
+    mov esi, [nfs_del_name]
+    mov ecx, [nfs_del_length]
+    call novafs_lookup
+    jc .corrupt
+    mov ebx, nfs_tree_directory
+    call novafs_cursor_remove
+    jc .failed
+    sub dword [nfs_sb + NFS_SB_OBJECT_COUNT], 1
+    sbb dword [nfs_sb + NFS_SB_OBJECT_COUNT + 4], 0
+    popad
+    clc
+    ret
+.protected:
+    mov dword [nfs_error], NOVAFS_ERR_PROTECTED
+    jmp .failed
+.not_empty:
+    mov dword [nfs_error], NOVAFS_ERR_NOT_EMPTY
+    jmp .failed
+.corrupt:
+    mov dword [nfs_error], NOVAFS_ERR_CORRUPT
+    jmp .failed
+.read_only:
+    mov dword [nfs_error], NOVAFS_ERR_READ_ONLY
+.failed:
+    popad
+    stc
+    ret
+
+; Benennt um bzw. verschiebt: nfs_mv_src_parent/_name/_length ->
+; nfs_mv_dst_parent/_name/_length. Ein vorhandenes Ziel wird nicht
+; ueberschrieben; Verzeichnisse duerfen nicht in sich selbst oder ihre
+; Nachfahren wandern. Der neue Verzeichniseintrag wird vor dem Entfernen des
+; alten eingefuegt, danach folgt parent_id. Laufende Aenderung erforderlich.
+novafs_rename:
+    pushad
+    mov dword [nfs_error], NOVAFS_ERR_INVALID
+    cmp dword [nfs_readonly], 0
+    jne .read_only
+    mov esi, [nfs_mv_dst_name]
+    mov ecx, [nfs_mv_dst_length]
+    call novafs_name_check
+    jc .failed
+    mov eax, [nfs_mv_src_parent]
+    mov esi, [nfs_mv_src_name]
+    mov ecx, [nfs_mv_src_length]
+    call novafs_lookup
+    jc .failed
+    mov [nfs_mv_object], eax
+    mov [nfs_mv_type], edx
+    cmp eax, NOVAFS_FIRST_DYNAMIC_ID
+    jb .protected
+    mov eax, [nfs_mv_dst_parent]
+    call novafs_object_find
+    jc .failed
+    cmp dword [nfs_object + NFS_O_TYPE], NOVAFS_TYPE_DIRECTORY
+    jne .invalid
+    ; Zyklusschutz: das Objekt darf kein Vorfahre des Zielverzeichnisses sein.
+    mov eax, [nfs_mv_dst_parent]
+    mov ecx, 64
+.walk:
+    cmp eax, [nfs_mv_object]
+    je .invalid
+    cmp eax, 1
+    jbe .walk_done
+    push ecx
+    call novafs_object_find
+    pop ecx
+    jc .failed
+    cmp dword [nfs_object + NFS_O_PARENT + 4], 0
+    jne .corrupt
+    mov eax, [nfs_object + NFS_O_PARENT]
+    loop .walk
+    jmp .corrupt
+.walk_done:
+    mov eax, [nfs_mv_dst_parent]
+    mov esi, [nfs_mv_dst_name]
+    mov ecx, [nfs_mv_dst_length]
+    call novafs_lookup
+    jc .target_free
+    cmp eax, [nfs_mv_object]
+    je .done                         ; gleicher Name im gleichen Verzeichnis
+    mov dword [nfs_error], NOVAFS_ERR_EXISTS
+    jmp .failed
+.target_free:
+    cmp dword [nfs_error], NOVAFS_ERR_NOT_FOUND
+    jne .failed
+    mov edi, nfs_item
+    xor eax, eax
+    mov ecx, NFS_D_ITEM / 4
+    rep stosd
+    mov eax, [nfs_mv_dst_parent]
+    mov [nfs_item + NFS_D_PARENT], eax
+    mov esi, [nfs_mv_dst_name]
+    mov ecx, [nfs_mv_dst_length]
+    call crc32c_compute
+    mov [nfs_item + NFS_D_HASH], eax
+    mov eax, [nfs_mv_object]
+    mov [nfs_item + NFS_D_OBJECT], eax
+    mov eax, [nfs_mv_type]
+    mov [nfs_item + NFS_D_TYPE], eax
+    mov eax, [nfs_mv_dst_length]
+    mov [nfs_item + NFS_D_NAME_LENGTH], ax
+    mov esi, [nfs_mv_dst_name]
+    mov edi, nfs_item + NFS_D_NAME
+    mov ecx, [nfs_mv_dst_length]
+    rep movsb
+    mov ebx, nfs_tree_directory
+    mov esi, nfs_item
+    call novafs_tree_insert
+    jc .failed
+    mov eax, [nfs_mv_src_parent]
+    mov esi, [nfs_mv_src_name]
+    mov ecx, [nfs_mv_src_length]
+    call novafs_lookup
+    jc .corrupt
+    cmp eax, [nfs_mv_object]
+    jne .corrupt
+    mov ebx, nfs_tree_directory
+    call novafs_cursor_remove
+    jc .failed
+    mov eax, [nfs_mv_dst_parent]
+    cmp eax, [nfs_mv_src_parent]
+    je .done
+    mov eax, [nfs_mv_object]
+    call novafs_object_find
+    jc .failed
+    mov eax, [nfs_mv_dst_parent]
+    mov [nfs_object + NFS_O_PARENT], eax
+    mov dword [nfs_object + NFS_O_PARENT + 4], 0
+    call novafs_object_store
+    jc .failed
+.done:
+    popad
+    clc
+    ret
+.protected:
+    mov dword [nfs_error], NOVAFS_ERR_PROTECTED
+    jmp .failed
+.invalid:
+    mov dword [nfs_error], NOVAFS_ERR_INVALID
+    jmp .failed
+.corrupt:
+    mov dword [nfs_error], NOVAFS_ERR_CORRUPT
+    jmp .failed
+.read_only:
+    mov dword [nfs_error], NOVAFS_ERR_READ_ONLY
 .failed:
     popad
     stc
@@ -2694,6 +2976,21 @@ nfs_create_type:      dd 0
 nfs_create_name:      dd 0
 nfs_create_length:    dd 0
 nfs_create_id:        dd 0
+nfs_del_parent:       dd 0
+nfs_del_name:         dd 0
+nfs_del_length:       dd 0
+nfs_del_object:       dd 0
+nfs_del_type:         dd 0
+nfs_del_physical:     dd 0
+nfs_del_count:        dd 0
+nfs_mv_src_parent:    dd 0
+nfs_mv_src_name:      dd 0
+nfs_mv_src_length:    dd 0
+nfs_mv_dst_parent:    dd 0
+nfs_mv_dst_name:      dd 0
+nfs_mv_dst_length:    dd 0
+nfs_mv_object:        dd 0
+nfs_mv_type:          dd 0
 nfs_map_object:       dd 0
 nfs_map_block:        dd 0
 nfs_map_result:       dd 0
