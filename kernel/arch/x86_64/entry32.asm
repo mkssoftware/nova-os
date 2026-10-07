@@ -3473,6 +3473,10 @@ input_router_handle_scancode:
     je .navigate_right
     cmp al, 0x74                    ; Pfeil rechts, Set 2
     je .navigate_right
+    cmp al, 0x53                    ; Entf, Set 1
+    je .delete_key
+    cmp al, 0x71                    ; Entf, Set 2
+    je .delete_key
     xor eax, eax
     ret
 .plain:
@@ -3532,6 +3536,11 @@ input_router_handle_scancode:
     ret
 .navigate_down:
     mov eax, SYSTEM_INPUT_NAVIGATE_DOWN
+    call input_router_enqueue
+    xor eax, eax
+    ret
+.delete_key:
+    mov eax, SYSTEM_INPUT_DELETE
     call input_router_enqueue
     xor eax, eax
     ret
@@ -12136,6 +12145,7 @@ SYSTEM_INPUT_NAVIGATE_LEFT  equ 7
 SYSTEM_INPUT_NAVIGATE_RIGHT equ 8
 SYSTEM_INPUT_POINTER_ACTIVATE equ 9
 SYSTEM_INPUT_NAVIGATE_BACK  equ 10
+SYSTEM_INPUT_DELETE         equ 11
 DISPLAY_SCENE_DESKTOP       equ 0x00000001
 DISPLAY_SCENE_START_MENU    equ 0x00000002
 DISPLAY_SCENE_RIBBON        equ 0x00000004
@@ -13345,6 +13355,8 @@ userspace_program_start:
     je .pointer_activate
     cmp eax, SYSTEM_INPUT_NAVIGATE_BACK
     je .navigate_back
+    cmp eax, SYSTEM_INPUT_DELETE
+    je .delete_entry
     jmp .failed
 .toggle_start:
     xor dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
@@ -13450,6 +13462,33 @@ userspace_program_start:
     sub eax, 24
     call ufs_enter_child
     jmp .explorer_moved
+.delete_entry:
+    ; Entf: 20..23 Dateizeile, 24..27 Ordnerkarte (nur im Explorer-Arbeitsbereich).
+    test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
+    jnz .present_input_scene
+    cmp dword [USER_STACK_ADDRESS - 1096], 0
+    jne .present_input_scene
+    mov eax, [USER_STACK_ADDRESS - 1092]
+    cmp eax, 20
+    jb .present_input_scene
+    cmp eax, 24
+    jb .delete_file
+    cmp eax, 28
+    jae .present_input_scene
+    sub eax, 24
+    mov ebx, eax
+    mov eax, NOVAFS_TYPE_DIRECTORY
+    jmp .delete_go
+.delete_file:
+    sub eax, 20
+    mov ebx, eax
+    mov eax, NOVAFS_TYPE_FILE
+.delete_go:
+    call ufs_delete_nth
+    test eax, eax
+    jnz .present_input_scene
+    call ufs_present
+    jmp .present_input_scene
 .navigate_back:
     test dword [USER_STACK_ADDRESS - 1104], DISPLAY_SCENE_START_MENU
     jnz .present_input_scene
@@ -13940,6 +13979,46 @@ ufs_rename:
     mov edx, UFS_ARGS
     mov esi, VFS_RENAME_SIZE
     int 0x80
+    ret
+
+; EAX=NovaFS-Typ, EBX=Index (n-ter Eintrag dieses Typs im aktuellen
+; Verzeichnis UFS_CWD) -> EAX=Status. Die Explorer-Navigation oeffnet
+; Verzeichnisse nur lesend (UFS_H_DIR); fuer Entf wird UFS_CWD daher kurz
+; mit Schreibrecht erneut geoeffnet (UFS_H_NEW, zu diesem Zeitpunkt frei).
+ufs_delete_nth:
+    mov [UFS_FLAGS], eax
+    mov [UFS_NTH], ebx
+    mov edx, [USER_STACK_ADDRESS - 152]
+    mov esi, UFS_CWD
+    mov ecx, [UFS_CWD_LEN]
+    mov edi, VFS_LOOKUP_FLAG_WRITE
+    call ufs_lookup
+    test eax, eax
+    jnz .return
+    mov [UFS_H_NEW], ebx
+    mov dword [UFS_INDEX], 0
+.scan:
+    mov edx, [UFS_H_NEW]
+    mov ecx, [UFS_INDEX]
+    call ufs_read_directory
+    test eax, eax
+    jnz .close
+    inc dword [UFS_INDEX]
+    mov eax, [UFS_FLAGS]
+    cmp [UFS_ENTRY + 16], eax
+    jne .scan
+    dec dword [UFS_NTH]
+    jns .scan
+    mov edx, [UFS_H_NEW]
+    mov esi, UFS_ENTRY + 32
+    mov ecx, [UFS_ENTRY + 20]
+    call ufs_delete
+.close:
+    push eax
+    mov edx, [UFS_H_NEW]
+    call ufs_close
+    pop eax
+.return:
     ret
 
 ; EDX=Verzeichnis-Handle. Fuellt UFS_VIEW (Breadcrumb bereits gesetzt) mit
@@ -23085,6 +23164,8 @@ message_novafs_backup_used:
     db "NOVA: NovaFS Backup-Superblock verwendet (Primaerkopie ungueltig oder aelter)", 13, 10, 0
 message_novafs_unclean:
     db "NOVA: NovaFS Volume nicht sauber (DIRTY), nur Read-only gemountet", 13, 10, 0
+message_novafs_journal_recovered:
+    db "NOVA: NovaFS Journal-Wiederherstellung erfolgreich, Volume wieder sauber (CLEAN)", 13, 10, 0
 message_novafs_layout_ok:
     db "NOVA: NovaFS Root-Layout konsistent mit Semantic-Core-ObjectIDs", 13, 10, 0
 message_novafs_layout_failed:

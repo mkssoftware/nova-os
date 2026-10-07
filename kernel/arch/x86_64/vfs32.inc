@@ -299,25 +299,36 @@ vfs_change_begin:
     ret
 
 ; CF=0: Operation erfolgreich -> Commit. CF=1: Operation fehlgeschlagen.
-; Hat ein Fehlschlag bereits geschrieben, bleibt das Volume DIRTY und wird fuer
-; den Rest des Starts read-only (Phase 1 ohne Rollback); sonst wird sauber
-; abgeschlossen. EAX bleibt erhalten, ausser der Commit selbst scheitert.
+; Hat ein Fehlschlag bereits geschrieben (oder scheitert der Commit selbst),
+; rollt novafs_change_abort die Aenderung per Transaction Log zurueck
+; (NPSPEC-NOVAFS-ONDISK-0001 §9); das Volume bleibt dabei beschreibbar.
+; Nur wenn diese Wiederherstellung selbst fehlschlaegt, wird NovaFS fuer den
+; Rest des Starts read-only (Phase-1-Rueckfall). EAX bleibt erhalten, ausser
+; der Commit selbst scheitert.
 vfs_change_end:
     push eax
     jnc .commit
     mov eax, [nfs_write_count]
     cmp eax, [vfs_write_mark]
-    jne .poisoned
+    jne .recover
 .commit:
     call novafs_change_commit
-    jc .poisoned_commit
+    jc .recover_commit
     pop eax
     mov dword [nfs_busy], 0
     ret
-.poisoned_commit:
+.recover_commit:
     pop eax
     mov eax, SYSCALL_STATUS_IO
     push eax
+.recover:
+    call novafs_change_abort
+    jc .poisoned
+    mov esi, message_vfs_volume_recovered
+    call serial_write_string
+    pop eax
+    mov dword [nfs_busy], 0
+    ret
 .poisoned:
     mov dword [nfs_readonly], 1
     mov esi, message_vfs_volume_poisoned
@@ -1088,3 +1099,5 @@ message_vfs_policy_denied:
     db "NOVA: VFS Schreibzugriff ausserhalb /Benutzer ohne System-Write-Authority abgewiesen", 13, 10, 0
 message_vfs_volume_poisoned:
     db "NOVA: VFS Schreibfehler nach Teilaenderung, NovaFS bis zum Neustart Read-only", 13, 10, 0
+message_vfs_volume_recovered:
+    db "NOVA: VFS Teilaenderung per Journal zurueckgerollt, NovaFS bleibt beschreibbar", 13, 10, 0

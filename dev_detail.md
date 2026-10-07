@@ -3273,3 +3273,98 @@ NOVA: Namespace Core bereit: / System Benutzer Apps Volumes Boot Solutions
 
 - Kernel Build-ID: `AA18D312460BC36F9C29DD530979316949681F16`
 - NKI CRC32: `B3A36CCE`
+
+## 101. NovaFS Phase 2: Transaction Log und Crash Recovery
+
+Phase 1 (Abschnitt 99) schreibt in-place: bricht eine Änderung ab, bleibt
+`state = DIRTY` sichtbar, und ohne weitere Vorsorge könnten die Blöcke, auf
+die der (weiterhin DIRTY, aber auf die *alten* Baumwurzeln zeigende)
+Superblock verweist, bereits teilweise überschrieben sein. Bislang blieb das
+Volume dann für den Rest des Boots read-only. Phase 2
+(NPSPEC-NOVAFS-ONDISK-0001 §9) schließt diese Lücke mit einem
+Undo-Journal, sodass eine Änderungsoperation atomar wird: entweder
+vollständig sichtbar oder vollständig unsichtbar.
+
+### Journal-Region
+
+Direkt nach der Free-Space-Bitmap liegt eine feste Transaction-Log-Region
+von `1 + NOVAFS_JOURNAL_SLOTS` (Phase 2: 17) Blöcken: ein Header-Block
+(Magic `NJRN`, Version, `generation`, `entry_count`, CRC32C, bis zu 16
+betroffene Blocknummern) plus 16 Daten-Slots (je ein vollständiges
+4096-Byte-Pre-Image). Ihre Position steht im zuvor für Phase 2 reservierten
+Superblock-Feld `transaction_log_block` (Offset 112); die Größe ist ein
+fester Kernel-Konstantenwert, nicht pro Volume konfigurierbar. `mkfs`
+reserviert und initialisiert die Region mit einem leeren, aber gültigen
+Journal; `fsck` behandelt sie wie die Bitmap als reservierte Metadaten.
+
+### Kernel: Capture-beim-Schreiben, Undo-beim-Wiederherstellen
+
+`novafs_write_block_logged` ersetzt `novafs_write_block` an allen
+Stellen, die Teil einer laufenden Änderung sind (`novafs_node_store`,
+die Bitmap-Schreibschleife in `novafs_change_commit`, der Datenblock in
+`novafs_write`, sowie der DIRTY- und der abschließende CLEAN-Schreibzugriff
+des primären Superblocks selbst in `novafs_change_begin`/`_commit`). Vor
+dem eigentlichen Schreibzugriff sichert `novafs_journal_capture` (sofern
+eine Änderung läuft, `nfs_txn_open = 1`, und der Block in dieser
+Transaktion noch nicht gesichert wurde) dessen bisherigen Inhalt in einen
+freien Journal-Daten-Slot und aktualisiert den Header – inklusive Flush,
+bevor der eigentliche Schreibzugriff erfolgt. Der allererste journalisierte
+Schreibzugriff jeder Transaktion ist damit immer der DIRTY-Schreibzugriff
+des Superblocks selbst: das Journal sichert sich also immer mindestens
+seinen eigenen Zustand vor der Transaktion. Der Backup-Superblock wird
+bewusst nicht journalisiert (siehe §9-Begründung in der Spezifikation).
+
+`novafs_journal_undo` liest den Header, prüft Magic/Version/CRC32C und dass
+`generation` exakt zur `generation` des gelesenen (weiterhin DIRTY)
+Superblocks passt, und schreibt dann alle Pre-Images zurück (in
+beliebiger Reihenfolge, da jeder Slot einen unabhängigen Block
+beschreibt). Zwei Aufrufer nutzen das:
+
+- **`novafs_mount`**: liest `state = DIRTY`, versucht die
+  Wiederherstellung, liest danach den (jetzt wieder CLEAN) primären
+  Superblock neu ein und mountet normal weiter. Schlägt die
+  Wiederherstellung fehl (kein/ungültiges Journal – etwa ein Volume aus
+  der Zeit vor Phase 2), bleibt es beim Phase-1-Verhalten: Read-only,
+  `state = DIRTY` sichtbar.
+- **`novafs_change_abort`** (aufgerufen von `vfs_change_end`, wenn eine
+  VFS-Operation selbst fehlschlägt, ohne dass der Kernel neu startet):
+  rollt die Teiländerung sofort zurück, lädt zusätzlich die im Speicher
+  gehaltene Bitmap-Kopie neu von der (jetzt wiederhergestellten) Platte,
+  und das Volume bleibt beschreibbar – statt wie zuvor für den Rest des
+  Boots read-only zu werden (`message_vfs_volume_poisoned`). Nur wenn die
+  Wiederherstellung selbst scheitert, greift weiterhin dieser alte
+  Rückfall.
+
+### Host-Werkzeug
+
+`novafs.c` kennt dieselbe Journal-Region (Layout, Validierung,
+`fsck`-Reservierung). `volume_begin` journalisiert vor dem Setzen von
+`state = DIRTY` das Pre-Image des primären Superblocks (ein Eintrag,
+Blocknummer 1); `volume_commit` leert das Journal nach dem CLEAN-Schreib-
+zugriff, bevor (unjournalisiert) der Backup-Superblock geschrieben wird.
+Damit erzeugt `novafs mark-dirty` ein Abbild, das der Kernel per Journal
+tatsächlich reparieren kann – getestet über ein echtes QEMU-Boot-Szenario:
+Volume vor `mark-dirty` beschreiben, danach booten, Journal-Wieder-
+herstellung beobachten, Schreibtest/Bootzähler laufen weiter, `fsck`
+danach weiterhin fehlerfrei.
+
+### Grenzen
+
+- das Host-Werkzeug journalisiert nur den einen Schreibzugriff in
+  `volume_begin` (keine Knoten/Bitmap); für `mark-dirty` als Testhilfe
+  reicht das, ein echtes, mitten in einer Baumänderung abgebrochenes
+  Schreiben von Knoten simuliert nur der Kernel selbst (z. B. über
+  `novafs_change_abort`, wenn eine VFS-Operation mitten in einer Änderung
+  fehlschlägt),
+- höchstens 16 gesicherte Blöcke pro Transaktion (`NOVAFS_JOURNAL_SLOTS`);
+  eine Transaktion, die mehr Blöcke als das träfe, würde beim Versuch,
+  einen 17. Block zu sichern, mit `NOVAFS_ERR_FULL` abgebrochen, bevor der
+  ungesicherte Schreibzugriff erfolgt (in der aktuellen Phase-1-Baumhöhe
+  ≤ 2 wird dieses Limit nicht erreicht),
+- die Wiederherstellung rollt eine abgebrochene Transaktion immer
+  vollständig zurück (kein Redo); eine Transaktion, die kurz vor dem
+  letzten Schritt (CLEAN-Schreibzugriff) abbricht, wird dadurch verworfen,
+  statt als abgeschlossen zu gelten – ein bewusster, konservativer
+  Kompromiss zugunsten der Einfachheit,
+- kein Schutz gegen gleichzeitige Änderungen (weiterhin Single-Threaded-
+  Bootpfad, siehe §8).

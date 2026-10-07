@@ -63,6 +63,17 @@
 #define STATE_CLEAN 0u
 #define STATE_DIRTY 1u
 
+/* Transaction Log (Phase 2, NPSPEC-NOVAFS-ONDISK-0001 §9) */
+#define NOVAFS_JOURNAL_SLOTS 16u
+#define NOVAFS_JOURNAL_BLOCKS (1u + NOVAFS_JOURNAL_SLOTS)
+#define J_MAGIC 0
+#define J_VERSION 4
+#define J_GENERATION 8
+#define J_COUNT 16
+#define J_CHECKSUM 24
+#define J_ENTRIES 56
+static const uint8_t NOVAFS_JOURNAL_MAGIC[4] = {'N', 'J', 'R', 'N'};
+
 #define TYPE_FILE 1u
 #define TYPE_DIRECTORY 2u
 
@@ -83,6 +94,7 @@
 #define SB_OBJECT_TREE 56
 #define SB_DIRECTORY_TREE 64
 #define SB_EXTENT_TREE 72
+#define SB_JOURNAL_BLOCK 112
 #define SB_FREE_SPACE 96
 #define SB_FEATURE 120
 #define SB_INCOMPAT 128
@@ -481,9 +493,11 @@ static int superblock_valid(const uint8_t *sb, uint64_t partition_blocks) {
     if (r64(sb + SB_FS_SIZE) != total * BLOCK_SIZE) return 0;
     uint64_t bitmap_blocks = (total + BLOCK_SIZE * 8 - 1) / (BLOCK_SIZE * 8);
     if (r64(sb + SB_BITMAP_BLOCKS) != bitmap_blocks || r64(sb + SB_FREE_SPACE) != 2) return 0;
+    if (r64(sb + SB_JOURNAL_BLOCK) != 2 + bitmap_blocks) return 0;
+    uint64_t data_start = 2 + bitmap_blocks + NOVAFS_JOURNAL_BLOCKS;
     for (int i = 0; i < 3; ++i) {
         uint64_t b = r64(sb + TREES[i].sb_root);
-        if (b < 2 + bitmap_blocks || b >= total - 1) return 0;
+        if (b < data_start || b >= total - 1) return 0;
     }
     return 1;
 }
@@ -547,6 +561,34 @@ static void volume_open(Volume *v, const char *path, int writable, int gpt, uint
     bitmap_load(v);
 }
 
+/* Sichert das Pre-Image des primaeren Superblocks im Journal, bevor er auf
+   DIRTY gesetzt wird (NPSPEC-NOVAFS-ONDISK-0001 §9). Das Host-Werkzeug
+   journalisiert nur diesen einen Schreibzugriff (keine Knoten/Bitmap); fuer
+   mark-dirty reicht das, um dem Kernel eine gueltige, zu seiner eigenen
+   Transaktion passende Journal-Region vorzuspiegeln. */
+static void journal_capture_superblock(Volume *v, const uint8_t *old_sb) {
+    uint64_t journal_block = r64(v->sb + SB_JOURNAL_BLOCK);
+    disk_write(v, journal_block + 1, old_sb);
+    uint8_t hdr[BLOCK_SIZE] = {0};
+    memcpy(hdr + J_MAGIC, NOVAFS_JOURNAL_MAGIC, 4);
+    w32(hdr + J_VERSION, 1);
+    w64(hdr + J_GENERATION, r64(old_sb + SB_GENERATION));
+    w32(hdr + J_COUNT, 1);
+    w32(hdr + J_ENTRIES, 1); /* Blocknummer 1 = primaerer Superblock */
+    seal(hdr, BLOCK_SIZE, J_CHECKSUM);
+    disk_write(v, journal_block, hdr);
+}
+
+static void journal_clear(Volume *v) {
+    uint8_t hdr[BLOCK_SIZE] = {0};
+    memcpy(hdr + J_MAGIC, NOVAFS_JOURNAL_MAGIC, 4);
+    w32(hdr + J_VERSION, 1);
+    w64(hdr + J_GENERATION, r64(v->sb + SB_GENERATION));
+    w32(hdr + J_COUNT, 0);
+    seal(hdr, BLOCK_SIZE, J_CHECKSUM);
+    disk_write(v, r64(v->sb + SB_JOURNAL_BLOCK), hdr);
+}
+
 static void volume_commit(Volume *v) {
     if (v->dirty_bitmap) {
         for (uint64_t i = 0; i < v->bitmap_blocks; ++i) disk_write(v, 2 + i, v->bitmap + i * BLOCK_SIZE);
@@ -557,6 +599,9 @@ static void volume_commit(Volume *v) {
     w32(v->sb + SB_STATE, STATE_CLEAN);
     seal(v->sb, BLOCK_SIZE, SB_CHECKSUM);
     disk_write(v, 1, v->sb);
+    /* Transaktion abgeschlossen: Journal leeren, bevor (unjournalisiert,
+       siehe §9) der Backup-Superblock geschrieben wird. */
+    journal_clear(v);
     disk_write(v, total_blocks(v) - 1, v->sb);
     fflush(v->file);
 }
@@ -568,6 +613,9 @@ static void volume_close(Volume *v) {
 
 static void volume_begin(Volume *v) {
     if (r32(v->sb + SB_STATE) == STATE_DIRTY) return;
+    uint8_t old_sb[BLOCK_SIZE];
+    memcpy(old_sb, v->sb, BLOCK_SIZE);
+    journal_capture_superblock(v, old_sb);
     w32(v->sb + SB_STATE, STATE_DIRTY);
     seal(v->sb, BLOCK_SIZE, SB_CHECKSUM);
     disk_write(v, 1, v->sb);
@@ -911,14 +959,27 @@ static void cmd_mkfs(const char *path, uint64_t size_mib, const char *label, con
     w64(v.sb + SB_BITMAP_BLOCKS, bitmap_blocks);
     w64(v.sb + SB_BACKUP_BLOCK, total - 1);
     w32(v.sb + SB_CHECKSUM_TYPE, 1);
+    w64(v.sb + SB_JOURNAL_BLOCK, 2 + bitmap_blocks);
 
-    /* feste Bereiche reservieren */
-    for (uint64_t b = 0; b < 2 + bitmap_blocks; ++b) { bit_set(&v, b, 1); w64(v.sb + SB_AVAILABLE, r64(v.sb + SB_AVAILABLE) - 1); }
+    /* feste Bereiche reservieren (Superblock, Bitmap, Transaction-Log) */
+    uint64_t data_start = 2 + bitmap_blocks + NOVAFS_JOURNAL_BLOCKS;
+    for (uint64_t b = 0; b < data_start; ++b) { bit_set(&v, b, 1); w64(v.sb + SB_AVAILABLE, r64(v.sb + SB_AVAILABLE) - 1); }
     bit_set(&v, total - 1, 1);
     w64(v.sb + SB_AVAILABLE, r64(v.sb + SB_AVAILABLE) - 1);
 
+    /* leeres, aber gueltiges Journal (NPSPEC-NOVAFS-ONDISK-0001 §9) */
+    {
+        uint8_t hdr[BLOCK_SIZE] = {0};
+        memcpy(hdr + J_MAGIC, NOVAFS_JOURNAL_MAGIC, 4);
+        w32(hdr + J_VERSION, 1);
+        w64(hdr + J_GENERATION, 0);
+        w32(hdr + J_COUNT, 0);
+        seal(hdr, BLOCK_SIZE, J_CHECKSUM);
+        disk_write(&v, 2 + bitmap_blocks, hdr);
+    }
+
     for (int i = 0; i < 3; ++i) {
-        uint64_t block = alloc_block(&v, 2 + bitmap_blocks);
+        uint64_t block = alloc_block(&v, data_start);
         uint8_t node[BLOCK_SIZE];
         node_init(&v, node, &TREES[i], 0, block, 0);
         node_write(&v, node);
@@ -1100,6 +1161,8 @@ static void cmd_fsck(Volume *v) {
     uint64_t total = total_blocks(v);
     fsck_used = calloc(total, 1);
     for (uint64_t b = 0; b < 2 + v->bitmap_blocks; ++b) fsck_mark(v, b, "Metadaten");
+    for (uint64_t b = 0; b < NOVAFS_JOURNAL_BLOCKS; ++b)
+        fsck_mark(v, r64(v->sb + SB_JOURNAL_BLOCK) + b, "Transaction-Log");
     fsck_mark(v, total - 1, "Backup-Superblock");
     FsckState state = {0};
     FsckTree objects = fsck_tree(v, tree_info(TREE_OBJECT), visit_object, &state);

@@ -69,14 +69,17 @@ Gerätepfad sind keine Identität.
 Block 0                         Reserved Boot Area
 Block 1                         Primary Superblock
 Block 2 … 2+B-1                 Free-Space-Bitmap (B Blöcke)
-ab Block 2+B                    Tree-Knoten und Daten-Extents (frei vergeben)
+Block 2+B … 2+B+J-1             Transaction-Log-Region (J Blöcke, siehe §9)
+ab Block 2+B+J                  Tree-Knoten und Daten-Extents (frei vergeben)
 Block total_blocks-1            Backup Superblock
 ```
 
-`B = ceil(total_blocks / 32768)`. Bit `n` (Byte `n/8`, Bit `n%8`) beschreibt
-Block `n`; 1 bedeutet belegt. Blöcke 0, 1, die Bitmap selbst und der
-Backup-Superblock sind immer belegt. Bits jenseits von `total_blocks` MÜSSEN 1
-sein.
+`B = ceil(total_blocks / 32768)`. `J = 1 + NOVAFS_JOURNAL_SLOTS` (Phase 2:
+`J = 17`, siehe §9) ist für alle Volumes fest und hängt nicht von
+`total_blocks` ab. Bit `n` (Byte `n/8`, Bit `n%8`) beschreibt Block `n`; 1
+bedeutet belegt. Blöcke 0, 1, die Bitmap selbst, die Transaction-Log-Region
+und der Backup-Superblock sind immer belegt. Bits jenseits von `total_blocks`
+MÜSSEN 1 sein.
 
 ## 4. Superblock
 
@@ -101,7 +104,7 @@ Der Superblock belegt einen vollständigen Block. Die Felder 0–383 entsprechen
 | 88 | u64 | checksum_tree_block | 0 (Phase 2) |
 | 96 | u64 | free_space_tree_block | erster Bitmap-Block (siehe Incompat-Flag) |
 | 104 | u64 | snapshot_tree_block | 0 (Phase 5) |
-| 112 | u64 | transaction_log_block | 0 (Phase 2) |
+| 112 | u64 | transaction_log_block | Beginn der Journal-Region, `2+B` (§9) |
 | 120 | u64 | feature_flags | 0 |
 | 128 | u64 | incompat_flags | `FREE_SPACE_BITMAP \| FIXED_ITEM_TREES` = 3 |
 | 136 | u64 | readonly_compat_flags | 0 |
@@ -141,8 +144,11 @@ Unbekannte `incompat_flags` verhindern jedes Mounten. Unbekannte
 2. Jede Kopie auf Magic, Version 1.x, Blockgröße, CRC32C, `total_blocks` ≤
    Partitionsgröße und gültige Baumverweise prüfen.
 3. Die gültige Kopie mit der höchsten `generation` gewinnt.
-4. `state ≠ CLEAN` führt zu einem Read-only-Mount mit Zustand `DIRTY`
-   (Crash-Recovery folgt mit dem Transaction Log in Phase 2).
+4. `state ≠ CLEAN` löst eine Journal-Wiederherstellung aus (§9). Gelingt
+   sie, gilt das Volume als `CLEAN` und wird normal (read-write, sofern
+   sonst zulässig) gemountet. Schlägt sie fehl oder fehlt ein gültiges
+   Journal (ältere Volumes ohne Transaction-Log-Region), bleibt es
+   Read-only mit Zustand `DIRTY`.
 
 ## 5. Baumknoten
 
@@ -291,8 +297,8 @@ Bereiche innerhalb von `logical_size` sind Löcher und lesen sich als Nullen.
 next_object_id = 256
 ```
 
-Die ObjectIDs 1–6 entsprechen den stabilen Objekten des Kernel-Semantic-Core
-(`OBJI:1` … `OBJI:6`); der Kernel prüft diese Zuordnung beim Mount.
+Die ObjectIDs 1–7 entsprechen den stabilen Objekten des Kernel-Semantic-Core
+(`OBJI:1` … `OBJI:7`); der Kernel prüft diese Zuordnung beim Mount.
 
 ## 7. Schreibreihenfolge Phase 1
 
@@ -308,10 +314,12 @@ Phase 1 schreibt ohne Copy-on-Write direkt an Ort und Stelle. Jede
 6. Backup-Superblock schreiben
 ```
 
-Bricht der Vorgang ab, bleibt `state = DIRTY` sichtbar. Der nächste Mount
-erfolgt dann ausschließlich read-only, bis Phase 2 (Transaction Log,
-Checkpoints, Crash Recovery) eine kontrollierte Reparatur ermöglicht. Ein
-unvollständiger Vorgang darf nie als sauberer Zustand erscheinen.
+Bricht der Vorgang ab, bleibt `state = DIRTY` sichtbar. Ein unvollständiger
+Vorgang darf nie als sauberer Zustand erscheinen. Seit Phase 2 (§9) wird
+dieser Zustand beim nächsten Mount – oder noch in derselben Sitzung, wenn
+die auslösende Operation selbst fehlschlägt, ohne dass der Kernel neu
+startet – über das Transaction Log kontrolliert zurückgerollt, statt das
+Volume dauerhaft read-only zu belassen.
 
 ## 7a. Löschen und Umbenennen
 
@@ -353,6 +361,101 @@ seines einzigen Verzeichniseintrags übereinstimmt.
 - kein Locking: der Kernel ruft NovaFS bislang ausschließlich aus dem
   Single-Threaded-Bootpfad auf.
 
+## 9. Transaction Log und Crash Recovery (Phase 2)
+
+Phase 1 schreibt in-place (§7); ein Absturz mitten in einer Änderung kann
+Knoten, Bitmap-Blöcke oder den Superblock selbst nur teilweise aktualisiert
+hinterlassen, während die noch gültige On-Disk-Kopie des Superblocks (primär,
+mit `state = DIRTY`) weiterhin auf die *alten* Baumwurzeln zeigt. Ohne
+weitere Vorsorge könnten genau die Blöcke, auf die diese alten Wurzeln
+verweisen, durch den abgebrochenen Vorgang bereits teilweise überschrieben
+worden sein. Phase 2 schließt diese Lücke mit einem Undo-Journal: vor jedem
+Schreiben eines Blocks innerhalb einer laufenden Änderung wird dessen
+*aktueller* Inhalt (das Pre-Image) gesichert. Bricht die Änderung ab, stellt
+die Wiederherstellung exakt den Zustand vor ihrem Beginn wieder her – eine
+Änderungsoperation ist damit atomar: entweder vollständig sichtbar oder
+vollständig unsichtbar, nie halb.
+
+### Journal-Region
+
+Die Journal-Region (§3) beginnt bei `transaction_log_block` (Superblock-Feld,
+Offset 112) und umfasst `J = 1 + NOVAFS_JOURNAL_SLOTS` Blöcke, Phase 2:
+`NOVAFS_JOURNAL_SLOTS = 16`, also `J = 17`. Block 0 der Region ist der
+Journal-Header, Blöcke 1…16 sind Daten-Slots (je ein vollständiges 4096-Byte
+Pre-Image).
+
+Journal-Header (ein Block):
+
+| Offset | Typ | Feld |
+|---:|---|---|
+| 0 | u8[4] | magic `NJRN` |
+| 4 | u32 | version (1) |
+| 8 | u64 | generation (Generation des Primär-Superblocks bei Transaktionsbeginn) |
+| 16 | u32 | entry_count (0…16) |
+| 24 | u8[32] | checksum (CRC32C über den Block) |
+| 56 | u32[16] | entries: betroffene Blocknummern, Index = Slot-Index |
+
+### Schreibreihenfolge mit Journal
+
+Jeder Block, der während einer laufenden Änderung (zwischen
+`novafs_change_begin` und `novafs_change_commit`, siehe §7) zum ersten Mal in
+dieser Transaktion beschrieben wird, wird zuerst journalisiert:
+
+```text
+1. aktuellen (alten) Inhalt des Zielblocks lesen
+2. Inhalt in Journal-Daten-Slot entry_count schreiben
+3. Zielblocknummer in entries[entry_count] eintragen, entry_count + 1,
+   Header versiegeln und schreiben, Flush
+4. erst jetzt den eigentlichen (neuen) Inhalt in den Zielblock schreiben
+```
+
+Ein Block wird pro Transaktion höchstens einmal journalisiert (weitere
+Schreibzugriffe auf denselben Block in derselben Transaktion werden nicht
+erneut gesichert). Damit beschreiben die gesammelten Pre-Images gemeinsam
+genau den Zustand des Volumes unmittelbar vor der Transaktion – einschließlich
+des Superblocks selbst, dessen `state = DIRTY`-Schreiben (§7, Schritt 1) der
+allererste journalisierte Schreibzugriff jeder Transaktion ist. Übersteigt
+eine Transaktion die `NOVAFS_JOURNAL_SLOTS` Slots, MUSS sie abgebrochen
+werden, bevor ein ungesicherter Block geschrieben wird.
+
+Der abschließende Schreibzugriff auf den primären Superblock mit
+`state = CLEAN` (§7, Schritt 5) wird noch journalisiert (dedupliziert sich
+in aller Regel mit dem Eintrag aus Schritt 1); danach ist die Transaktion
+abgeschlossen. Der Backup-Superblock (§7, Schritt 6) wird **nicht**
+journalisiert: wird er bei einem Absturz nicht vollständig geschrieben,
+zeigt der primäre Superblock zu diesem Zeitpunkt bereits `state = CLEAN`,
+sodass eine Wiederherstellung über das Journal gar nicht erst ausgelöst wird.
+
+### Wiederherstellung (Undo)
+
+Liest ein Mount `state = DIRTY`, UND ist eine gültige Journal-Region
+vorhanden (Magic, Version, CRC32C, `generation` identisch mit der
+`generation` des gelesenen – weiterhin `DIRTY` – Superblocks), läuft die
+Wiederherstellung wie folgt:
+
+```text
+1. für i = entry_count-1 … 0: Inhalt von Daten-Slot i unverändert in den
+   Block entries[i] zurückschreiben
+2. Flush
+3. entry_count = 0, Header neu versiegeln und schreiben (Journal leeren)
+4. primären Superblock neu von Platte lesen (jetzt wieder im Zustand vor
+   der abgebrochenen Transaktion, state = CLEAN)
+```
+
+Die Reihenfolge innerhalb der Wiederherstellung selbst ist irrelevant, da
+jeder Slot einen eigenständigen, unabhängigen Block beschreibt. Nach
+erfolgreicher Wiederherstellung ist das Volume exakt in dem Zustand, in dem
+es vor der abgebrochenen Transaktion war, und wird normal weiterverarbeitet
+(§4, Abschnitt „Auswahl beim Mounten“). Schlägt die Wiederherstellung fehl
+(fehlendes oder beschädigtes Journal, falsche `generation` – etwa bei einem
+Volume ohne Transaction-Log-Region aus der Zeit vor Phase 2), bleibt es beim
+Phase-1-Verhalten: Read-only-Mount mit sichtbarem `state = DIRTY`.
+
+Scheitert eine Änderungsoperation, ohne dass der Kernel neu startet (z. B.
+ein ungültiger Pfad mitten in `VFS.Rename`), wird dieselbe
+Wiederherstellung sofort angewendet (`novafs_change_abort`) – das Volume
+bleibt beschreibbar, statt für den Rest des Boots read-only zu werden.
+
 ## Normative Anforderungen
 
 1. NovaFS 1.0 MUSS 4096-Byte-Blöcke und Little Endian verwenden.
@@ -360,10 +463,19 @@ seines einzigen Verzeichniseintrags übereinstimmt.
 3. Jeder Superblock und jeder Baumknoten MUSS eine gültige CRC32C-Prüfsumme besitzen.
 4. Ein Mount MUSS die gültige Superblock-Kopie mit der höchsten Generation wählen.
 5. Unbekannte `incompat_flags` MÜSSEN das Mounten verhindern.
-6. Ein Volume mit `state ≠ CLEAN` DARF NICHT read-write gemountet werden.
+6. Ein Volume mit `state ≠ CLEAN` DARF NICHT read-write gemountet werden,
+   es sei denn, eine Journal-Wiederherstellung (§9) hat es zuvor
+   nachweislich auf `state = CLEAN` zurückgeführt.
 7. Dateinamen MÜSSEN ausschließlich im Directory Tree gespeichert werden.
 8. ObjectIDs DÜRFEN NICHT wiederverwendet werden.
 9. Die Partition-Typ-GUID DARF NICHT als Volume-Identität verwendet werden.
 10. Leser MÜSSEN Baumknoten mit unbekanntem Level, falscher Itemgröße oder falscher `tree_id` ablehnen.
 11. Jedes Objekt außer `/` MUSS genau einen Verzeichniseintrag besitzen, dessen `parent_id` dem `parent_id` des Objekts entspricht.
 12. Leser MÜSSEN Blätter mit `item_count = 0` akzeptieren.
+13. Jeder Block, der innerhalb einer laufenden Änderung zum ersten Mal
+    beschrieben wird, MUSS vorher mit seinem alten Inhalt im Transaction
+    Log (§9) gesichert werden.
+14. Eine Wiederherstellung MUSS entweder den Zustand exakt vor der
+    abgebrochenen Transaktion wiederherstellen oder das Volume read-only
+    mit `state = DIRTY` belassen; ein teilweise wiederhergestelltes Volume
+    DARF NICHT read-write gemountet werden.

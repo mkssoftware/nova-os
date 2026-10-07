@@ -52,8 +52,15 @@ $arguments=@('-machine','q35','-m','256M','-smp','4',
     '-display','none','-monitor','none','-qmp',"tcp:127.0.0.1:$qmpPort,server=on,wait=off",'-serial',"file:$serial",
     '-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
     '-no-reboot','-no-shutdown')
-$process=Start-Process $Qemu -ArgumentList $arguments -WindowStyle Hidden -PassThru `
-    -RedirectStandardError $stderr
+if($IsWindows){
+    $process=Start-Process $Qemu -ArgumentList $arguments -WindowStyle Hidden -PassThru `
+        -RedirectStandardError $stderr
+} else {
+    # -WindowStyle wird nur unter Windows PowerShell unterstuetzt; QEMU laeuft
+    # hier ohnehin ohne Fenster (-display none).
+    $process=Start-Process $Qemu -ArgumentList $arguments -PassThru `
+        -RedirectStandardError $stderr
+}
 try {
     $deadline=[DateTime]::UtcNow.AddSeconds(90)
     $content=''
@@ -173,6 +180,49 @@ try {
     Wait-ExplorerView 'ret' 'Pfad Benutzer  /  Matthias  /  \S+$' 'Enter auf der Ordnerkarte hat keinen Unterordner geoeffnet'
     Wait-ExplorerView 'backspace' 'Pfad Benutzer  /  Matthias$' 'Backspace aus dem Unterordner fehlgeschlagen'
     $content=$script:content
+
+    # Entf im Explorer: Startmenü (Fokus 2) -> Tab (Fokus 3, "Explorer") -> Enter
+    # oeffnet den Explorer-Arbeitsbereich mit garantiertem Fokus 20 (erste
+    # Dateizeile), ohne das aktuelle Verzeichnis zu aendern (Profilordner
+    # Matthias, sechs Unterordner, keine Datei). Vier weitere Tab verschieben
+    # den Fokus von 20 (Dateizeile 0) auf 24 (erste Ordnerkarte, hier "Musik",
+    # leer). Entf muss den fokussierten (leeren) Ordner ueber ufs_delete_nth
+    # entfernen.
+    $deadline=[DateTime]::UtcNow.AddSeconds(20)
+    Send-QmpKey -Port $qmpPort -Key 'meta_l'
+    Start-Sleep -Milliseconds 200
+    Send-QmpKey -Port $qmpPort -Key 'tab'
+    Start-Sleep -Milliseconds 200
+    Send-QmpKey -Port $qmpPort -Key 'ret'
+    Start-Sleep -Milliseconds 200
+    1..4 | ForEach-Object {
+        Send-QmpKey -Port $qmpPort -Key 'tab'
+        Start-Sleep -Milliseconds 150
+    }
+    $serialText=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+    $debugText=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+    $content=$debugText+$serialText
+    $viewPattern='NOVA: Explorer zeigt NovaFS-Verzeichnis aus Ring 3, Eintraege 0x([0-9A-Fa-f]{8}), Pfad[^\r\n]*'
+    $views=[regex]::Matches($content,$viewPattern)
+    if($views.Count-eq0){throw 'Keine Explorer-Ansicht vor dem Entf-Test gefunden'}
+    $before=$views[$views.Count-1]
+    if($before.Value-notmatch'Matthias$'){throw "Entf-Test erwartet den Profilordner, war aber: $($before.Value)"}
+    $beforeCount=[Convert]::ToInt32($before.Groups[1].Value,16)
+    $beforeViews=$views.Count
+    Send-QmpKey -Port $qmpPort -Key 'delete'
+    do {
+        Start-Sleep -Milliseconds 100
+        $serialText=if(Test-Path -LiteralPath $serial){[string](Get-Content -LiteralPath $serial -Raw -ErrorAction SilentlyContinue)}else{''}
+        $debugText=if(Test-Path -LiteralPath $debug){[string](Get-Content -LiteralPath $debug -Raw -ErrorAction SilentlyContinue)}else{''}
+        $content=$debugText+$serialText
+        $views=[regex]::Matches($content,$viewPattern)
+    } while($views.Count-le$beforeViews-and[DateTime]::UtcNow-lt$deadline)
+    if($views.Count-le$beforeViews){throw 'Entf hat keine aktualisierte Explorer-Ansicht ausgeloest'}
+    $after=$views[$views.Count-1]
+    if($after.Value-notmatch'Matthias$'){throw "Entf hat den Ordner gewechselt: $($after.Value)"}
+    $afterCount=[Convert]::ToInt32($after.Groups[1].Value,16)
+    if($afterCount-ne($beforeCount-1)){throw "Entf hat den fokussierten Ordner nicht entfernt (vorher 0x$($beforeCount.ToString('X8')), nachher 0x$($afterCount.ToString('X8')))"}
+    Write-Host 'UEFI Display Server: Entf-Taste loescht den fokussierten Explorer-Eintrag (Ordnerkarte) ueber NovaFS'
 
     Send-QmpKey -Port $qmpPort -Key 'esc'
     do {

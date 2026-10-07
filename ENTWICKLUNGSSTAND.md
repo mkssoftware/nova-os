@@ -1418,7 +1418,7 @@ NOVA: NovaFS ist persistentes SystemRoot unter /
 NOVA: Boot Health SystemRoot bereit, wartet auf Trust
 ```
 
-Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 99.
+Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 101.
 
 ### NovaFS-/Semantic-Core-Abgleich `/Solutions`
 
@@ -1438,3 +1438,47 @@ Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 99.
   Userspace-Dateisystem-ABI erreichbar.
 - **Build:** UEFI-Image neu erstellt: Kernel Build-ID
   `AA18D312460BC36F9C29DD530979316949681F16`, NKI CRC32 `B3A36CCE`.
+
+### NovaFS Phase 2: Transaction Log und Crash Recovery
+
+- **Spezifikation:** `NPSPEC-NOVAFS-ONDISK-0001` §9 (neu) beschreibt eine
+  feste Transaction-Log-Region direkt nach der Bitmap (Header + 16
+  Pre-Image-Slots) und ein Undo-Journal: jeder Block, der innerhalb einer
+  laufenden Änderung zum ersten Mal beschrieben wird, wird vorher mit
+  seinem bisherigen Inhalt gesichert. Normative Anforderung #6 erlaubt
+  jetzt read-write-Mounts eines `DIRTY`-Volumes, wenn eine
+  Journal-Wiederherstellung es zuvor nachweislich auf `CLEAN`
+  zurückgeführt hat; neue Anforderungen #13/#14 schreiben das
+  Capture-vor-Schreiben-Prinzip und die Alles-oder-nichts-Garantie der
+  Wiederherstellung fest.
+- **Kernel:** `novafs_write_block_logged` sichert vor jedem geschützten
+  Schreibzugriff (Baumknoten, Bitmap, Datenblöcke, der Superblock selbst)
+  das Pre-Image im Journal. `novafs_journal_undo` rollt beim Mount ein
+  `DIRTY`-Volume mit gültigem, zur aktuellen Generation passendem Journal
+  vollständig auf den Zustand vor der abgebrochenen Änderung zurück –
+  das Volume wird danach normal (read-write) weitergemountet, statt wie
+  bisher dauerhaft read-only zu bleiben. Scheitert eine VFS-Operation,
+  ohne dass der Kernel neu startet, rollt `novafs_change_abort` sofort
+  zurück (inklusive Neuladen der im Speicher gehaltenen Bitmap-Kopie);
+  das Volume bleibt beschreibbar, statt für den Rest des Boots read-only
+  zu werden. Nur wenn die Wiederherstellung selbst fehlschlägt (kein
+  gültiges Journal, z. B. ein Volume aus der Zeit vor Phase 2), bleibt es
+  beim alten Phase-1-Rückfall.
+- **Host-Werkzeug:** `novafs.c` kennt dieselbe Journal-Region (Layout,
+  Validierung, `fsck`-Reservierung); `mkfs` reserviert und initialisiert
+  sie, `mark-dirty` journalisiert den Superblock-Schreibzugriff selbst,
+  sodass es ein Abbild erzeugt, das der Kernel tatsächlich reparieren
+  kann.
+- **Test:** `test-uefi-novafs.ps1` deckt beide Fälle ab – ein `DIRTY`-Volume
+  mit gültigem Journal wird repariert und bleibt beschreibbar
+  (Bootzähler/Schreibtest laufen weiter, `fsck` danach fehlerfrei,
+  `info` zeigt wieder `CLEAN`); ein `DIRTY`-Volume mit beschädigtem
+  Journal fällt weiterhin auf Read-only zurück. End-to-End per QEMU-Boot
+  gegen das echte UEFI-Image verifiziert.
+- **Grenzen:** höchstens 16 gesicherte Blöcke pro Transaktion; die
+  Wiederherstellung kennt nur Rollback (kein Redo), eine kurz vor dem
+  letzten Schritt abgebrochene Transaktion gilt daher als nicht
+  abgeschlossen; das Host-Werkzeug journalisiert nur den
+  Superblock-Schreibzugriff in `mark-dirty`, nicht einzelne
+  Knoten/Bitmap-Schreibzugriffe. Details in `dev_detail.md`, Abschnitt
+  101.

@@ -27,6 +27,17 @@ NOVAFS_TYPE_FILE           equ 1
 NOVAFS_TYPE_DIRECTORY      equ 2
 NOVAFS_FIRST_DYNAMIC_ID    equ 256
 
+; Transaction Log (Phase 2, NPSPEC-NOVAFS-ONDISK-0001 §9)
+NOVAFS_JOURNAL_SLOTS       equ 16
+NOVAFS_JOURNAL_BLOCKS      equ NOVAFS_JOURNAL_SLOTS + 1
+NOVAFS_JOURNAL_MAGIC       equ 0x4E524A4E   ; "NJRN"
+NFS_J_MAGIC       equ 0
+NFS_J_VERSION     equ 4
+NFS_J_GENERATION  equ 8
+NFS_J_COUNT       equ 16
+NFS_J_CHECKSUM    equ 24
+NFS_J_ENTRIES     equ 56
+
 ; Superblock
 NFS_SB_MAGIC          equ 0
 NFS_SB_VMAJ           equ 8
@@ -38,6 +49,7 @@ NFS_SB_GENERATION     equ 40
 NFS_SB_OBJECT_TREE    equ 56
 NFS_SB_DIRECTORY_TREE equ 64
 NFS_SB_EXTENT_TREE    equ 72
+NFS_SB_JOURNAL_BLOCK  equ 112
 NFS_SB_FREE_SPACE     equ 96
 NFS_SB_INCOMPAT       equ 128
 NFS_SB_ROCOMPAT       equ 136
@@ -168,6 +180,288 @@ novafs_write_block:
 .io:
     mov dword [nfs_error], NOVAFS_ERR_IO
 .invalid:
+    popad
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; Transaction Log (Phase 2, NPSPEC-NOVAFS-ONDISK-0001 §9): Undo-Journal.
+; Jeder Block, der innerhalb einer laufenden Aenderung (novafs_change_begin
+; ... novafs_change_commit) zum ersten Mal geschrieben wird, wird vorher mit
+; seinem bisherigen Inhalt gesichert. Nur novafs_write_block_logged nutzt
+; dies; der Backup-Superblock bleibt bewusst aussen vor (siehe §9).
+; ---------------------------------------------------------------------------
+
+; Schreibt den Journal-Header aus nfs_journal_count/nfs_journal_entries.
+; CF bei E/A-Fehler.
+novafs_journal_write_header:
+    pushad
+    mov edi, [nfs_journal_header_page]
+    xor eax, eax
+    mov ecx, NOVAFS_BLOCK_SIZE / 4
+    push edi
+    rep stosd
+    pop edi
+    mov dword [edi + NFS_J_MAGIC], NOVAFS_JOURNAL_MAGIC
+    mov dword [edi + NFS_J_VERSION], 1
+    mov eax, [nfs_sb + NFS_SB_GENERATION]
+    mov [edi + NFS_J_GENERATION], eax
+    mov eax, [nfs_sb + NFS_SB_GENERATION + 4]
+    mov [edi + NFS_J_GENERATION + 4], eax
+    mov eax, [nfs_journal_count]
+    mov [edi + NFS_J_COUNT], eax
+    xor ecx, ecx
+.copy:
+    cmp ecx, [nfs_journal_count]
+    jae .copied
+    mov eax, [nfs_journal_entries + ecx * 4]
+    mov [edi + NFS_J_ENTRIES + ecx * 4], eax
+    inc ecx
+    jmp .copy
+.copied:
+    mov esi, edi
+    mov ecx, NOVAFS_BLOCK_SIZE
+    mov edx, NFS_J_CHECKSUM
+    call novafs_seal
+    mov eax, [nfs_sb + NFS_SB_JOURNAL_BLOCK]
+    call novafs_write_block
+    popad
+    ret
+
+; EAX=Blocknummer, die vor einem Schreibzugriff gesichert werden soll. Ohne
+; Effekt, wenn keine Aenderung laeuft oder der Block in dieser Transaktion
+; bereits gesichert ist. Erhaelt EAX/EDI des Aufrufers. CF=1 bei Fehler
+; (dann wurde weder das Journal noch der Zielblock durch diesen Aufruf
+; veraendert, ausser der Daten-Slot wurde bereits geschrieben, aber der
+; Header-Schreibzugriff schlug fehl).
+novafs_journal_capture:
+    cmp dword [nfs_txn_open], 0
+    je .ok
+    push eax
+    push ecx
+    push edx
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor ecx, ecx
+.scan:
+    cmp ecx, [nfs_journal_count]
+    jae .not_found
+    cmp [nfs_journal_entries + ecx * 4], ebx
+    je .ok_pop
+    inc ecx
+    jmp .scan
+.not_found:
+    cmp dword [nfs_journal_count], NOVAFS_JOURNAL_SLOTS
+    jae .full
+    mov eax, ebx
+    mov edi, [nfs_journal_slot_page]
+    call novafs_read_block
+    jc .fail
+    mov eax, [nfs_sb + NFS_SB_JOURNAL_BLOCK]
+    add eax, 1
+    add eax, [nfs_journal_count]
+    mov edi, [nfs_journal_slot_page]
+    call novafs_write_block
+    jc .fail
+    mov ecx, [nfs_journal_count]
+    mov [nfs_journal_entries + ecx * 4], ebx
+    inc ecx
+    mov [nfs_journal_count], ecx
+    call novafs_journal_write_header
+    jc .fail
+    mov eax, [nfs_dev]
+    call storage_flush
+    jc .fail
+.ok_pop:
+    pop ebx
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop eax
+.ok:
+    clc
+    ret
+.full:
+    mov dword [nfs_error], NOVAFS_ERR_FULL
+    jmp .fail_pop
+.fail:
+    mov dword [nfs_error], NOVAFS_ERR_IO
+.fail_pop:
+    pop ebx
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop eax
+    stc
+    ret
+
+; EAX=Blocknummer, EDI=Puffer. Wie novafs_write_block, sichert aber zuerst
+; den bisherigen Inhalt im Transaction Log (sofern eine Aenderung laeuft).
+novafs_write_block_logged:
+    call novafs_journal_capture
+    jc .fail
+    jmp novafs_write_block
+.fail:
+    stc
+    ret
+
+; Rollt alle in [nfs_sb+NFS_SB_JOURNAL_BLOCK] gesicherten Pre-Images zurueck.
+; Erwartet, dass [nfs_sb] den aktuellen (DIRTY) Superblock enthaelt. CF=1,
+; wenn keine gueltige, zu dieser Transaktion passende Journal-Region
+; gefunden wurde; dann wurde nichts veraendert.
+novafs_journal_undo:
+    pushad
+    mov eax, [nfs_sb + NFS_SB_JOURNAL_BLOCK]
+    cmp eax, [nfs_total_blocks]
+    jae .invalid
+    mov edi, [nfs_journal_header_page]
+    call novafs_read_block
+    jc .invalid
+    cmp dword [edi + NFS_J_MAGIC], NOVAFS_JOURNAL_MAGIC
+    jne .invalid
+    cmp dword [edi + NFS_J_VERSION], 1
+    jne .invalid
+    push edx
+    mov esi, edi
+    mov ecx, NOVAFS_BLOCK_SIZE
+    mov edx, NFS_J_CHECKSUM
+    call novafs_verify
+    pop edx
+    jc .invalid
+    mov eax, [edi + NFS_J_GENERATION]
+    cmp eax, [nfs_sb + NFS_SB_GENERATION]
+    jne .invalid
+    mov eax, [edi + NFS_J_GENERATION + 4]
+    cmp eax, [nfs_sb + NFS_SB_GENERATION + 4]
+    jne .invalid
+    mov ecx, [edi + NFS_J_COUNT]
+    cmp ecx, NOVAFS_JOURNAL_SLOTS
+    ja .invalid
+    cmp ecx, 1
+    jb .invalid
+    mov [nfs_journal_undo_count], ecx
+    mov esi, edi
+    add esi, NFS_J_ENTRIES
+    mov edi, nfs_journal_undo_entries
+    mov ecx, NOVAFS_JOURNAL_SLOTS
+    rep movsd
+    mov dword [nfs_journal_undo_saved_ro], 0
+    cmp dword [nfs_readonly], 0
+    je .ro_saved
+    mov dword [nfs_journal_undo_saved_ro], 1
+.ro_saved:
+    mov dword [nfs_readonly], 0
+    mov ecx, [nfs_journal_undo_count]
+.replay:
+    test ecx, ecx
+    jz .replay_done
+    dec ecx
+    mov eax, [nfs_sb + NFS_SB_JOURNAL_BLOCK]
+    add eax, 1
+    add eax, ecx
+    mov edi, [nfs_journal_slot_page]
+    call novafs_read_block
+    jc .restore_fail
+    mov eax, [nfs_journal_undo_entries + ecx * 4]
+    mov edi, [nfs_journal_slot_page]
+    call novafs_write_block
+    jc .restore_fail
+    jmp .replay
+.replay_done:
+    mov eax, [nfs_dev]
+    call storage_flush
+    jc .restore_fail
+    mov dword [nfs_journal_count], 0
+    call novafs_journal_write_header
+    jc .restore_fail
+    mov eax, [nfs_dev]
+    call storage_flush
+    jc .restore_fail
+    cmp dword [nfs_journal_undo_saved_ro], 0
+    je .leave_rw
+    mov dword [nfs_readonly], 1
+.leave_rw:
+    popad
+    clc
+    ret
+.restore_fail:
+    cmp dword [nfs_journal_undo_saved_ro], 0
+    je .invalid
+    mov dword [nfs_readonly], 1
+.invalid:
+    popad
+    stc
+    ret
+
+; Bricht die laufende Aenderung ab (z. B. weil die Operation selbst einen
+; Fehler meldet, ohne dass der Kernel neu startet) und stellt per
+; novafs_journal_undo exakt den Zustand vor ihrem Beginn wieder her. Anders
+; als das alte Phase-1-Verhalten bleibt das Volume dabei beschreibbar statt
+; fuer den Rest des Boots read-only zu werden. CF=1, wenn die
+; Wiederherstellung selbst fehlschlaegt; dann bleibt state DIRTY und das
+; Volume wird (vom Aufrufer) read-only belassen.
+novafs_change_abort:
+    pushad
+    cmp dword [nfs_sb + NFS_SB_STATE], NOVAFS_STATE_DIRTY
+    jne .nothing
+    call novafs_journal_undo
+    jc .failed
+    mov eax, 1
+    mov edi, [nfs_leaf_page]
+    call novafs_read_block
+    jc .failed
+    call novafs_superblock_validate
+    jc .failed
+    cmp dword [edi + NFS_SB_STATE], NOVAFS_STATE_CLEAN
+    jne .failed
+    mov esi, edi
+    mov edi, nfs_sb
+    mov ecx, NOVAFS_BLOCK_SIZE / 4
+    rep movsd
+    mov eax, [nfs_sb + NFS_SB_TOTAL]
+    mov [nfs_total_blocks], eax
+    mov [nfs_limit_blocks], eax
+    mov eax, [nfs_sb + NFS_SB_BITMAP_BLOCKS]
+    mov [nfs_bitmap_blocks], eax
+    ; Die im Speicher gehaltene Bitmap-Kopie kann durch die abgebrochene
+    ; Operation veraendert worden sein (Allokationen/Freigaben); von der
+    ; wiederhergestellten Platte neu laden.
+    xor ebx, ebx
+    mov eax, 0xFFFFFFFF
+.bitmap_reload:
+    cmp ebx, [nfs_bitmap_blocks]
+    jae .bitmap_reloaded
+    mov edi, [nfs_bitmap_pages + ebx * 4]
+    push eax
+    lea eax, [ebx + 2]
+    call novafs_read_block
+    pop eax
+    jc .failed
+    mov esi, edi
+    mov ecx, NOVAFS_BLOCK_SIZE
+    call crc32c_update
+    inc ebx
+    jmp .bitmap_reload
+.bitmap_reloaded:
+    not eax
+    cmp eax, [nfs_sb + NFS_SB_BITMAP_CRC]
+    jne .failed
+    mov dword [nfs_bitmap_dirty], 0
+    mov dword [nfs_txn_open], 0
+    popad
+    clc
+    ret
+.nothing:
+    mov dword [nfs_txn_open], 0
+    popad
+    clc
+    ret
+.failed:
+    mov dword [nfs_txn_open], 0
     popad
     stc
     ret
@@ -335,6 +629,8 @@ novafs_change_begin:
     jne .invalid
     cmp dword [nfs_readonly], 0
     jne .read_only
+    mov dword [nfs_journal_count], 0
+    mov dword [nfs_txn_open], 1
     cmp dword [nfs_sb + NFS_SB_STATE], NOVAFS_STATE_DIRTY
     je .ready
     mov dword [nfs_sb + NFS_SB_STATE], NOVAFS_STATE_DIRTY
@@ -349,6 +645,7 @@ novafs_change_begin:
 .read_only:
     mov dword [nfs_error], NOVAFS_ERR_READ_ONLY
 .invalid:
+    mov dword [nfs_txn_open], 0
     stc
     ret
 
@@ -365,7 +662,7 @@ novafs_change_commit:
     mov edi, [nfs_bitmap_pages + ebx * 4]
     push eax
     lea eax, [ebx + 2]
-    call novafs_write_block
+    call novafs_write_block_logged
     pop eax
     jc .invalid
     mov esi, edi
@@ -390,10 +687,27 @@ novafs_change_commit:
     mov eax, [nfs_dev]
     call storage_flush
     jc .invalid
+    ; Ab hier ist die Transaktion unumkehrbar abgeschlossen; das Journal
+    ; wird nicht mehr benoetigt (der Backup-Superblock wird bewusst nicht
+    ; journalisiert, siehe NPSPEC-NOVAFS-ONDISK-0001 §9).
+    mov dword [nfs_txn_open], 0
+    mov dword [nfs_journal_count], 0
+    call novafs_journal_write_header
+    jc .invalid
     mov eax, [nfs_total_blocks]
     dec eax
-    mov edi, nfs_sb
-    call novafs_superblock_write_at
+    push eax
+    mov esi, nfs_sb
+    mov ecx, NOVAFS_BLOCK_SIZE
+    mov edx, NFS_SB_CHECKSUM
+    call novafs_seal
+    pop eax
+    mov esi, nfs_sb
+    mov edi, [nfs_io_page]
+    mov ecx, NOVAFS_BLOCK_SIZE / 4
+    rep movsd
+    mov edi, [nfs_io_page]
+    call novafs_write_block
     jc .invalid
     mov eax, [nfs_dev]
     call storage_flush
@@ -401,6 +715,7 @@ novafs_change_commit:
     clc
     ret
 .invalid:
+    mov dword [nfs_txn_open], 0
     stc
     ret
 
@@ -422,7 +737,7 @@ novafs_superblock_write_at:
     mov ecx, NOVAFS_BLOCK_SIZE / 4
     rep movsd
     mov edi, [nfs_io_page]
-    jmp novafs_write_block
+    jmp novafs_write_block_logged
 
 ; ---------------------------------------------------------------------------
 ; Superblock-Validierung (EDI=Puffer). CF bei ungueltigem Inhalt.
@@ -478,11 +793,17 @@ novafs_superblock_validate:
     jne .invalid
     cmp eax, NOVAFS_MAX_BITMAP_BLOCKS
     ja .invalid
+    ; Transaction-Log-Region direkt nach der Bitmap (NPSPEC-NOVAFS-ONDISK-0001 §9)
+    lea ecx, [eax + 2]
+    cmp dword [esi + NFS_SB_JOURNAL_BLOCK], ecx
+    jne .invalid
+    cmp dword [esi + NFS_SB_JOURNAL_BLOCK + 4], 0
+    jne .invalid
     cmp dword [esi + NFS_SB_FREE_SPACE], 2
     jne .invalid
     cmp dword [esi + NFS_SB_FREE_SPACE + 4], 0
     jne .invalid
-    lea edx, [eax + 2]                ; erster freier Bereich
+    lea edx, [ecx + NOVAFS_JOURNAL_BLOCKS]    ; erster freier Bereich
     ; Baumwurzeln im Datenbereich
     mov ecx, NFS_SB_OBJECT_TREE
 .root:
@@ -596,7 +917,7 @@ novafs_node_store:
     mov edx, NFS_N_CHECKSUM
     call novafs_seal
     mov eax, [edi + NFS_N_BLOCK]
-    call novafs_write_block
+    call novafs_write_block_logged
     popad
     ret
 
@@ -2130,7 +2451,7 @@ novafs_write:
     rep movsb
     mov eax, [nfs_rw_physical]
     mov edi, [nfs_data_page]
-    call novafs_write_block
+    call novafs_write_block_logged
     jc .invalid
     mov ecx, [nfs_rw_chunk]
     add [nfs_rw_buffer], ecx
@@ -2305,17 +2626,43 @@ novafs_mount:
     jz .rocompat_ok
     mov dword [nfs_readonly], 1
 .rocompat_ok:
-    mov dword [nfs_unclean], 0
-    cmp dword [nfs_sb + NFS_SB_STATE], NOVAFS_STATE_CLEAN
-    je .state_ok
-    mov dword [nfs_unclean], 1
-    mov dword [nfs_readonly], 1
-.state_ok:
     mov eax, [nfs_sb + NFS_SB_TOTAL]
     mov [nfs_total_blocks], eax
     mov [nfs_limit_blocks], eax
     mov eax, [nfs_sb + NFS_SB_BITMAP_BLOCKS]
     mov [nfs_bitmap_blocks], eax
+    mov dword [nfs_unclean], 0
+    cmp dword [nfs_sb + NFS_SB_STATE], NOVAFS_STATE_CLEAN
+    je .state_ok
+    ; DIRTY: Journal-Wiederherstellung versuchen (NPSPEC-NOVAFS-ONDISK-0001 §9).
+    ; Gelingt sie, zeigt der primaere Superblock danach wieder genau den
+    ; Zustand vor der abgebrochenen Aenderung (state = CLEAN).
+    call novafs_journal_undo
+    jc .dirty_unrecovered
+    mov eax, 1
+    mov edi, [nfs_leaf_page]
+    call novafs_read_block
+    jc .dirty_unrecovered
+    call novafs_superblock_validate
+    jc .dirty_unrecovered
+    cmp dword [edi + NFS_SB_STATE], NOVAFS_STATE_CLEAN
+    jne .dirty_unrecovered
+    mov esi, edi
+    mov edi, nfs_sb
+    mov ecx, NOVAFS_BLOCK_SIZE / 4
+    rep movsd
+    mov eax, [nfs_sb + NFS_SB_TOTAL]
+    mov [nfs_total_blocks], eax
+    mov [nfs_limit_blocks], eax
+    mov eax, [nfs_sb + NFS_SB_BITMAP_BLOCKS]
+    mov [nfs_bitmap_blocks], eax
+    mov esi, message_novafs_journal_recovered
+    call serial_write_string
+    jmp .state_ok
+.dirty_unrecovered:
+    mov dword [nfs_unclean], 1
+    mov dword [nfs_readonly], 1
+.state_ok:
 
     ; Bitmap laden und gegen bitmap_crc32c pruefen
     xor ebx, ebx
@@ -2945,6 +3292,13 @@ nfs_alloc_result:     dd 0
 nfs_write_count:      dd 0
 nfs_dir_index:        dd 0
 nfs_volume_id_low:    dd 0
+; Transaction Log (Phase 2)
+nfs_txn_open:              dd 0
+nfs_journal_count:         dd 0
+nfs_journal_entries:       times NOVAFS_JOURNAL_SLOTS dd 0
+nfs_journal_undo_entries:  times NOVAFS_JOURNAL_SLOTS dd 0
+nfs_journal_undo_count:    dd 0
+nfs_journal_undo_saved_ro: dd 0
 ; PMM-Seiten (identitaetsabgebildet, DMA-tauglich)
 nfs_page_slots:
 nfs_root_page:        dd 0
@@ -2953,6 +3307,8 @@ nfs_aux_page:         dd 0
 nfs_data_page:        dd 0
 nfs_io_page:          dd 0
 nfs_data_verify_page: dd 0
+nfs_journal_header_page: dd 0
+nfs_journal_slot_page:   dd 0
 nfs_page_slots_end:
 nfs_test_page:        dd 0
 nfs_test_dir:         dd 0

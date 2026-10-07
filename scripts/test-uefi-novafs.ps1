@@ -167,19 +167,44 @@ try {
     $info=Invoke-NovaFs @('info',$disk,'--gpt')
     if($info-like'*Backup verwendet*'){throw 'Primaerer Superblock wurde nicht repariert'}
 
-    Write-Host 'NovaFS: unsauberes Volume (DIRTY) nach einem normalen Start'
+    Write-Host 'NovaFS: unsauberes Volume (DIRTY) mit gueltigem Journal wird repariert'
     $disk=New-ScenarioImage 'dirty' 0 ''
     $null=Invoke-Boot $disk 'boot1'
     $null=Invoke-NovaFs @('mark-dirty',$disk,'--gpt')
+    $infoDirty=Invoke-NovaFs @('info',$disk,'--gpt')
+    if($infoDirty-notlike'*DIRTY*'){throw 'mark-dirty hat das Volume nicht auf DIRTY gesetzt'}
+    $text=Invoke-Boot $disk 'boot2'
+    Assert-Contains $text ($writable+@('NOVA: NovaFS Journal-Wiederherstellung erfolgreich, Volume wieder sauber (CLEAN)',
+        'NOVA: NovaFS persistenter Bootzaehler 0x00000002')) 'dirty'
+    Assert-Missing $text ($failures+@('NovaFS Volume nicht sauber (DIRTY), nur Read-only gemountet',
+        'VFS Schreibfehler nach Teilaenderung')) 'dirty'
+    Assert-Fsck $disk 'dirty'
+    $info=Invoke-NovaFs @('info',$disk,'--gpt')
+    if($info-notlike'*CLEAN*'){throw 'Journal-Wiederherstellung hat das Volume nicht auf CLEAN zurueckgefuehrt'}
+    Assert-BootCount $disk 2 'dirty'
+
+    Write-Host 'NovaFS: DIRTY ohne gueltiges Journal bleibt Read-only (Phase-1-Rueckfall)'
+    $disk=New-ScenarioImage 'dirty-no-journal' 0 ''
+    $null=Invoke-Boot $disk 'boot1'
+    $null=Invoke-NovaFs @('mark-dirty',$disk,'--gpt')
+    $bytes=[IO.File]::ReadAllBytes($disk)
+    # Journal-Header-Magic im primaeren Superblock-Journalfeld zerstoeren,
+    # ohne das Datenlayout sonst zu veraendern (siehe §9: journal_block = 2+B).
+    $partBase=$partFirst*512
+    $bitmapBlocksOffset=$partBase+1*4096+400
+    $bitmapBlocks=[BitConverter]::ToUInt64($bytes,$bitmapBlocksOffset)
+    $journalBlock=2+$bitmapBlocks
+    $journalOffset=$partBase+$journalBlock*4096
+    $bytes[$journalOffset]=$bytes[$journalOffset]-bxor0xFF
+    [IO.File]::WriteAllBytes($disk,$bytes)
     $text=Invoke-Boot $disk 'boot2'
     Assert-Contains $text ($mounted+$vfsRead+@('NOVA: NovaFS Volume nicht sauber (DIRTY), nur Read-only gemountet',
         'NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert',
-        'NOVA: NovaFS Read-only, Schreibtest uebersprungen','NOVA: Boot Health SystemRoot nur Read-only verfuegbar')) 'dirty'
+        'NOVA: NovaFS Read-only, Schreibtest uebersprungen','NOVA: Boot Health SystemRoot nur Read-only verfuegbar')) 'dirty-no-journal'
     Assert-Missing $text @('Bootzaehler','SystemRoot bereit, wartet auf Trust','VFS.Write erfolgreich','VFS.Create erfolgreich',
-        'VFS.Delete erfolgreich','VFS.Rename erfolgreich') 'dirty'
+        'VFS.Delete erfolgreich','VFS.Rename erfolgreich','Journal-Wiederherstellung erfolgreich') 'dirty-no-journal'
     $info=Invoke-NovaFs @('info',$disk,'--gpt')
-    if($info-notlike'*DIRTY*'){throw 'DIRTY-Volume wurde vom Kernel veraendert'}
-    Assert-BootCount $disk 1 'dirty'
+    if($info-notlike'*DIRTY*'){throw 'DIRTY-Volume ohne gueltiges Journal wurde faelschlich repariert'}
 
     Write-Host 'NovaFS: unformatierte Partition'
     $disk=New-ScenarioImage 'empty' 0 'empty'
