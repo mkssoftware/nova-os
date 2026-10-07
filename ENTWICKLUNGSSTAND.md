@@ -1697,3 +1697,22 @@ Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 106.
 Details in `dev_detail.md`, Abschnitt 102 (Löschen), Abschnitt 103
 (Öffnen), Abschnitt 104 (Codebudget-Erweiterung), Abschnitt 105
 (Umbenennen) und Abschnitt 106 (Zeitstempel).
+
+## Time-Core-Grundlage aus den neuen TIME-NPSPECs
+
+- **neu eingelesen:** Die zuletzt hinzugekommenen NPSPECs unter
+  `docs/NPSPEC/sysarchitecture/044-TIME` und `045-TEXT`. Für den aktuellen
+  Kernelpfad ist zuerst der TIME-Block relevant, weil PIT-Ticks, Deadlines und
+  NovaFS-Zeitstempel bereits existieren, aber bisher keine gemeinsame
+  Clock-Source-/Clock-Domain-Introspection hatten.
+- **implementiert:** `entry32.asm` besitzt jetzt einen frühen `Time Core ABI
+  1.0` mit registrierter PIT-Clock-Source, separater monotoner Kernelzeit-
+  Domain und separater Wall-Clock-Domain im bewussten `Unknown`-Zustand. Damit
+  sind monotone Zeit und Wall Clock explizit getrennt; Deadlines bleiben auf
+  der monotonen PIT-Domain.
+- **Selftest:** Der Kernel prüft beim Booten, dass die PIT-Quelle registriert,
+  validiert und aktiv ist, dass die monotone Domain nicht rückwärts läuft, dass
+  die Wall-Clock-Domain nicht fälschlich als monotone/valide Quelle behandelt
+  wird und dass Clock-Domains nicht implizit miteinander kompatibel sind.
+- **Build:** UEFI-Image neu erstellt und validiert: Kernel Build-ID
+  `B6056B3B736AD93C0E882D07C7649A9C1A1C00A6`, NKI CRC32 `95F37182`.

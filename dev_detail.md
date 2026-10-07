@@ -4012,3 +4012,68 @@ Epoch-Umrechnung.
   nachvollzogen, siehe oben); eine Automatisierung bräuchte entweder
   einen `-NovaFsTool`-Parameter für `test-uefi-display-server.ps1` oder
   eine Zeitfenster-Toleranzprüfung in `test-uefi-novafs.ps1`.
+
+## 107. Time Core ABI 1.0
+
+Die neuen TIME-NPSPECs verlangen vor allem, dass monotone Zeit, Wall Clock,
+Clock Sources und Clock Domains nicht vermischt werden. Der Kernel hatte
+bereits `timer_ticks` aus PIT/IRQ0 und darauf aufbauende Deadline-Logik; jetzt
+gibt es dafür eine explizite Time-Core-Schicht.
+
+### Clock Source
+
+`time_clock_sources` enthält zunächst eine Quelle:
+
+```text
+ClockSourceID 1
+Provider      PIT
+Frequenz      100 Hz
+Auflösung     10 ms
+Flags         REGISTERED | VALIDATED | ACTIVE | MONOTONIC | STABLE
+```
+
+Wichtig: Die PIT-Quelle wird nur als monotone Bootstrap-Zeitbasis verwendet.
+Sie ist keine Wall Clock und keine Civil Time.
+
+### Clock Domains
+
+`time_clock_domains` enthält zwei getrennte Domains:
+
+```text
+1  Monotonic Kernel Time  Quelle PIT, 100 Hz, aktiv
+2  Wall Clock             keine Quelle, Zustand Unknown
+```
+
+Damit ist die neue NPSPEC-Regel abgebildet, dass `Unknown` nicht als `0`,
+`Valid` oder `Trusted` interpretiert werden darf. Die Wall Clock existiert als
+Konzept, wird aber ohne RTC-/Sync-Provider nicht als gültige Systemzeit
+veröffentlicht.
+
+### API und Tests
+
+Die interne `time_core_api` stellt bereit:
+
+- `time_clock_source_lookup`
+- `time_clock_domain_lookup`
+- `time_clock_domain_compatible`
+- `time_monotonic_now`
+
+Der Boot-Selftest prüft:
+
+- PIT-Source ist registriert, validiert, aktiv und monoton.
+- Monotonic-Domain zeigt auf die PIT-Source und läuft mit 100 Hz.
+- Wall-Clock-Domain bleibt getrennt und `Unknown`.
+- Monotone Zeit läuft nicht rückwärts.
+- Unterschiedliche Clock Domains werden nicht implizit kompatibel gemacht.
+
+Bootausgabe:
+
+```text
+NOVA: Time Core ABI 1.0, Clock Source, Domains und Monotonic Introspection bereit
+```
+
+### Artefakte
+
+- Kernel Build-ID: `B6056B3B736AD93C0E882D07C7649A9C1A1C00A6`
+- NKI CRC32: `95F37182`
+- IMG SHA256: `3B09F915F47B447254D220165A04998B84229995C23DB349450134048FF0C4AF`

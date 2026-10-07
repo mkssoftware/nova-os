@@ -160,6 +160,12 @@ kernel_entry:
     jc panic_interrupt_manager
     mov esi, message_interrupts_ok
     call serial_write_string
+    call time_core_initialize
+    jc panic_interrupt_manager
+    call time_core_self_test
+    jc panic_interrupt_manager
+    mov esi, message_time_core_ok
+    call serial_write_string
 
     call ipc_initialize
     jc panic_ipc
@@ -3245,6 +3251,29 @@ PIT_DIVISOR     equ 11932           ; ungefähr 100 Hz
 INTERRUPT_API_SIZE equ 32
 INTERRUPT_CAPABILITIES equ 0x00000007
 
+TIME_CORE_API_SIZE          equ 40
+TIME_CLOCK_SOURCE_RECORD_SIZE equ 32
+TIME_CLOCK_DOMAIN_RECORD_SIZE equ 32
+TIME_CLOCK_SOURCE_CAPACITY  equ 4
+TIME_CLOCK_DOMAIN_CAPACITY  equ 4
+TIME_CLOCK_SOURCE_PIT_ID    equ 1
+TIME_CLOCK_DOMAIN_MONO_ID   equ 1
+TIME_CLOCK_DOMAIN_WALL_ID   equ 2
+TIME_CLOCK_SOURCE_TYPE_PIT  equ 1
+TIME_CLOCK_DOMAIN_TYPE_MONOTONIC equ 1
+TIME_CLOCK_DOMAIN_TYPE_WALL equ 2
+TIME_SOURCE_FLAG_REGISTERED equ 0x00000001
+TIME_SOURCE_FLAG_VALIDATED  equ 0x00000002
+TIME_SOURCE_FLAG_ACTIVE     equ 0x00000004
+TIME_SOURCE_FLAG_MONOTONIC  equ 0x00000008
+TIME_SOURCE_FLAG_STABLE     equ 0x00000010
+TIME_DOMAIN_FLAG_REGISTERED equ 0x00000001
+TIME_DOMAIN_FLAG_ACTIVE     equ 0x00000002
+TIME_DOMAIN_FLAG_MONOTONIC  equ 0x00000004
+TIME_DOMAIN_FLAG_UNKNOWN    equ 0x00000008
+TIME_DOMAIN_SUSPEND_EXCLUDE equ 0
+TIME_DOMAIN_SUSPEND_INCLUDE equ 1
+
 interrupt_initialize:
     cli
     xor ebx, ebx
@@ -3414,6 +3443,179 @@ timer_self_test:
     ret
 .success:
     clc
+    ret
+
+; ---------------------------------------------------------------------------
+; Nova Time Core v1
+; NPSPEC-TIME-ARCH-0001 / CLOCKSOURCE / CLOCKDOMAIN / MONOTONIC / INTROSPECTION
+; ---------------------------------------------------------------------------
+
+time_core_initialize:
+    mov edi, time_clock_sources
+    xor eax, eax
+    mov ecx, (TIME_CLOCK_SOURCE_CAPACITY * TIME_CLOCK_SOURCE_RECORD_SIZE) / 4
+    rep stosd
+    mov edi, time_clock_domains
+    mov ecx, (TIME_CLOCK_DOMAIN_CAPACITY * TIME_CLOCK_DOMAIN_RECORD_SIZE) / 4
+    rep stosd
+
+    ; Clock Source 1: PIT/IRQ0. Sie ist nicht Wall Clock und wird explizit
+    ; validiert, bevor sie als monotone Bootstrap-Quelle verwendet wird.
+    mov edi, time_clock_sources
+    mov dword [edi + 0], TIME_CLOCK_SOURCE_PIT_ID
+    mov dword [edi + 4], TIME_CLOCK_SOURCE_TYPE_PIT
+    mov dword [edi + 8], TIME_SOURCE_FLAG_REGISTERED | TIME_SOURCE_FLAG_VALIDATED | TIME_SOURCE_FLAG_ACTIVE | TIME_SOURCE_FLAG_MONOTONIC | TIME_SOURCE_FLAG_STABLE
+    mov dword [edi + 12], TASK_DEADLINE_CLOCK_HZ
+    mov dword [edi + 16], 10000000       ; 10 ms pro PIT-Tick in ns
+    mov dword [edi + 20], PIT_DIVISOR
+    mov dword [edi + 24], 60             ; Bootstrap-Qualitaet, nicht Accuracy
+    mov dword [edi + 28], time_provider_name_pit
+
+    ; Domain 1: monotone Kernelzeit. Deadlines und Timeouts beziehen sich
+    ; hierauf, nicht auf Civil/Wall Clock.
+    mov edi, time_clock_domains
+    mov dword [edi + 0], TIME_CLOCK_DOMAIN_MONO_ID
+    mov dword [edi + 4], TIME_CLOCK_DOMAIN_TYPE_MONOTONIC
+    mov dword [edi + 8], TIME_CLOCK_SOURCE_PIT_ID
+    mov dword [edi + 12], TIME_DOMAIN_FLAG_REGISTERED | TIME_DOMAIN_FLAG_ACTIVE | TIME_DOMAIN_FLAG_MONOTONIC
+    mov dword [edi + 16], TASK_DEADLINE_CLOCK_HZ
+    mov dword [edi + 20], 1
+    mov dword [edi + 24], 0
+    mov dword [edi + 28], TIME_DOMAIN_SUSPEND_EXCLUDE
+
+    ; Domain 2: Wall Clock existiert als getrenntes Konzept, bleibt aber ohne
+    ; RTC/Sync-Provider bewusst Unknown. Unknown ist nicht gleich 0/Valid.
+    mov edi, time_clock_domains + TIME_CLOCK_DOMAIN_RECORD_SIZE
+    mov dword [edi + 0], TIME_CLOCK_DOMAIN_WALL_ID
+    mov dword [edi + 4], TIME_CLOCK_DOMAIN_TYPE_WALL
+    mov dword [edi + 8], 0
+    mov dword [edi + 12], TIME_DOMAIN_FLAG_REGISTERED | TIME_DOMAIN_FLAG_UNKNOWN
+    mov dword [edi + 16], 0
+    mov dword [edi + 20], 0
+    mov dword [edi + 24], 0
+    mov dword [edi + 28], TIME_DOMAIN_SUSPEND_INCLUDE
+
+    mov dword [time_core_ready], 1
+    clc
+    ret
+
+; EAX=ClockSourceID, Rückgabe EAX=Record oder CF.
+time_clock_source_lookup:
+    mov ecx, TIME_CLOCK_SOURCE_CAPACITY
+    mov edi, time_clock_sources
+.scan:
+    cmp [edi + 0], eax
+    je .found
+    add edi, TIME_CLOCK_SOURCE_RECORD_SIZE
+    loop .scan
+    xor eax, eax
+    stc
+    ret
+.found:
+    mov eax, edi
+    clc
+    ret
+
+; EAX=ClockDomainID, Rückgabe EAX=Record oder CF.
+time_clock_domain_lookup:
+    mov ecx, TIME_CLOCK_DOMAIN_CAPACITY
+    mov edi, time_clock_domains
+.scan:
+    cmp [edi + 0], eax
+    je .found
+    add edi, TIME_CLOCK_DOMAIN_RECORD_SIZE
+    loop .scan
+    xor eax, eax
+    stc
+    ret
+.found:
+    mov eax, edi
+    clc
+    ret
+
+; EAX/EDX=ClockDomainIDs. CF=0 nur bei gleicher, registrierter Domain.
+time_clock_domain_compatible:
+    push edx
+    call time_clock_domain_lookup
+    pop edx
+    jc .invalid
+    cmp [eax + 0], edx
+    jne .invalid
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+time_monotonic_now:
+    mov eax, [timer_ticks]
+    mov edx, TIME_CLOCK_DOMAIN_MONO_ID
+    clc
+    ret
+
+time_core_self_test:
+    cmp dword [time_core_ready], 1
+    jne .invalid
+
+    mov eax, TIME_CLOCK_SOURCE_PIT_ID
+    call time_clock_source_lookup
+    jc .invalid
+    mov ebx, [eax + 8]
+    test ebx, TIME_SOURCE_FLAG_REGISTERED
+    jz .invalid
+    test ebx, TIME_SOURCE_FLAG_VALIDATED
+    jz .invalid
+    test ebx, TIME_SOURCE_FLAG_ACTIVE
+    jz .invalid
+    test ebx, TIME_SOURCE_FLAG_MONOTONIC
+    jz .invalid
+    cmp dword [eax + 12], TASK_DEADLINE_CLOCK_HZ
+    jne .invalid
+    cmp dword [eax + 16], 0
+    je .invalid
+
+    mov eax, TIME_CLOCK_DOMAIN_MONO_ID
+    call time_clock_domain_lookup
+    jc .invalid
+    cmp dword [eax + 4], TIME_CLOCK_DOMAIN_TYPE_MONOTONIC
+    jne .invalid
+    cmp dword [eax + 8], TIME_CLOCK_SOURCE_PIT_ID
+    jne .invalid
+    test dword [eax + 12], TIME_DOMAIN_FLAG_MONOTONIC
+    jz .invalid
+    cmp dword [eax + 16], TASK_DEADLINE_CLOCK_HZ
+    jne .invalid
+
+    mov eax, TIME_CLOCK_DOMAIN_WALL_ID
+    call time_clock_domain_lookup
+    jc .invalid
+    cmp dword [eax + 4], TIME_CLOCK_DOMAIN_TYPE_WALL
+    jne .invalid
+    test dword [eax + 12], TIME_DOMAIN_FLAG_UNKNOWN
+    jz .invalid
+    test dword [eax + 12], TIME_DOMAIN_FLAG_MONOTONIC
+    jnz .invalid
+    cmp dword [eax + 8], TIME_CLOCK_SOURCE_PIT_ID
+    je .invalid
+
+    call time_monotonic_now
+    mov ebx, eax
+    call time_monotonic_now
+    sub eax, ebx
+    jl .invalid
+
+    mov eax, TIME_CLOCK_DOMAIN_MONO_ID
+    mov edx, TIME_CLOCK_DOMAIN_MONO_ID
+    call time_clock_domain_compatible
+    jc .invalid
+    mov eax, TIME_CLOCK_DOMAIN_MONO_ID
+    mov edx, TIME_CLOCK_DOMAIN_WALL_ID
+    call time_clock_domain_compatible
+    jnc .invalid
+    clc
+    ret
+.invalid:
+    stc
     ret
 
 io_wait:
@@ -3839,6 +4041,15 @@ timer_ticks:           dd 0
 last_exception_vector: dd 0
 last_fault_address:    dd 0
 interrupt_return_frame: dd 0
+time_core_ready:       dd 0
+
+align 4
+time_provider_name_pit: db "PIT", 0
+align 4
+time_clock_sources:
+    times TIME_CLOCK_SOURCE_CAPACITY * TIME_CLOCK_SOURCE_RECORD_SIZE db 0
+time_clock_domains:
+    times TIME_CLOCK_DOMAIN_CAPACITY * TIME_CLOCK_DOMAIN_RECORD_SIZE db 0
 
 align 16
 kernel_tss:
@@ -3855,6 +4066,19 @@ interrupt_api:
     dd interrupt_disable
     dd timer_get_ticks
     dd 100
+
+align 4
+time_core_api:
+    dd TIME_CORE_API_SIZE
+    dw 1, 0
+    dd TIME_CLOCK_SOURCE_CAPACITY
+    dd TIME_CLOCK_DOMAIN_CAPACITY
+    dd time_clock_source_lookup
+    dd time_clock_domain_lookup
+    dd time_clock_domain_compatible
+    dd time_monotonic_now
+    dd time_clock_sources
+    dd time_clock_domains
 
 ; ---------------------------------------------------------------------------
 ; Kernel-Nachrichtenwarteschlange (ADR-2005)
@@ -23256,6 +23480,8 @@ message_paging_error:
     db "NOVA PANIC: virtueller Speichermanager nicht initialisierbar", 13, 10, 0
 message_interrupts_ok:
     db "NOVA: IDT, PIC und PIT 100 Hz aktiv", 13, 10, 0
+message_time_core_ok:
+    db "NOVA: Time Core ABI 1.0, Clock Source, Domains und Monotonic Introspection bereit", 13, 10, 0
 message_interrupts_error:
     db "NOVA PANIC: Interrupt- oder Timerinitialisierung fehlgeschlagen", 13, 10, 0
 message_ipc_ok:
