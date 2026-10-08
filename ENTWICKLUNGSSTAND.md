@@ -369,6 +369,29 @@ Ein Object-Handle kann neben seinem Primary Type bis zu vier Secondary Types tra
 - `object_semantic_attach` setzt beim Setzen des Primary Types den Secondary-Count auf 0 (Slot-Wiederverwendung sauber).
 - Der `semantic_self_test` prüft Positive- und Negativfälle: Secondary anhängen, Slot abfragen, `has_type` für Primary und Secondary, Duplikat- und Primary-Gleichheitsabweisung, Count-Abfrage, Freigabe mit Clear.
 
+### Semantic Discovery (§122)
+
+Die vollständige Semantic-Registry kann jetzt zur Laufzeit abgefragt werden.
+
+- `semantic_find_by_name` — ESI=NUL-terminierter Name; gibt EAX=type_handle zurück (CF=1 wenn nicht gefunden); durchsucht alle registrierten Typen nach exaktem Namens-Match.
+- `semantic_query_type_info` — EAX=handle; gibt ECX=representation, EDX=version, ESI=Zeiger auf den Namen im Record zurück.
+- `semantic_enumerate_type` — EAX=0-basierter Index; gibt EAX=handle, ECX=repr, EDX=version, ESI=name_ptr zurück; CF=1 bei Index ≥ type_count.
+- `semantic_enumerate_conversion` — EAX=Index; füllt `semantic_disc_src/src_v/tgt/tgt_v/cap/loss`; CF=1 bei Index ≥ conversion_count.
+- `semantic_enumerate_subtype` — EAX=Index; füllt `semantic_disc_child/child_v/parent/parent_v`; CF=1 bei Index ≥ subtype_count.
+- `semantic_enumerate_trait` — EAX=Index; füllt `semantic_disc_type/type_v/trait/trait_v`; CF=1 bei Index ≥ trait_count.
+- `semantic_self_test` erweitert mit 13 neuen §122-Fällen: find_by_name (Treffer INLINE_DATA, Treffer TRAIT_READABLE, Miss), query_type_info, enumerate_type (Indizes 0, 2, 3→Fehler), enumerate_conversion (Index 0 mit Feldprüfung, Index 1→Fehler), enumerate_subtype, enumerate_trait.
+
+### Semantic Relationships – Subtypes und Traits (§121)
+
+Typen können jetzt explizite Hierarchie- und Rollenbeziehungen deklarieren.
+
+- `semantic_register_subtype` — registriert `child < parent` (beide Typen müssen existieren, pre-seal, keine Duplikate; EAX=child, ECX=child_ver, EDX=parent, EBX=parent_ver).
+- `semantic_register_trait` — registriert, dass ein Typ ein Trait implementiert (gleiche Signatur, gleiche Invarianten; EAX=type, EDX=trait).
+- `semantic_compatibility` prüft jetzt in dieser Reihenfolge: EXACT → SUBTYPE (direkte Subtype-Registry) → TRAIT (direkte Trait-Registry) → CONVERTIBLE (Conversion-Registry) → INCOMPATIBLE.
+- Dritter registrierter Demonstrationstyp: `nova.kernel.trait.readable` (Handle 3, `SEMANTIC_TRAIT_READABLE`).
+- In `semantic_initialize` registriert: DIAGNOSTIC < INLINE_DATA (Subtype), INLINE_DATA implements readable (Trait).
+- `semantic_self_test` aktualisiert: DIAGNOSTIC→INLINE_DATA = SUBTYPE (war INCOMPATIBLE); neue Fälle: INLINE_DATA→TRAIT_READABLE = TRAIT; DIAGNOSTIC→TRAIT_READABLE = INCOMPATIBLE (keine direkte Registrierung); Duplikat-Subtype nach Versiegelung scheitert; INLINE_DATA→DIAGNOSTIC bleibt CONVERTIBLE.
+
 ### Ausführung registrierter Conversion Capabilities (§120)
 
 Konvertierungen können jetzt tatsächlich ausgeführt werden, nicht nur deklariert.
@@ -572,10 +595,10 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
   die CRC-beschädigte neueste Kopie und der Rückfall auf die ältere Kopie sind
   bereits in QEMU geprüft
 - vollständige AP-Aktivierung und echter SMP-Betrieb
-- vollständige Semantic Relationships, Subtypes und Traits
+- ~~vollständige Semantic Relationships, Subtypes und Traits~~ (§121: `semantic_register_subtype`, `semantic_register_trait`; Subtype/Trait-Scans in `semantic_compatibility`; dritter Typ `nova.kernel.trait.readable`; DIAGNOSTIC < INLINE_DATA, INLINE_DATA implements readable; `semantic_self_test` aktualisiert)
 - ~~mehrere kompatible Semantic Types pro Ressource~~ (§119: `object_semantic_attach_secondary`, `object_semantic_has_type`, `object_semantic_query_secondary`, `object_semantic_secondary_count`, `object_semantic_clear_secondary`; bis zu 4 Secondary Types pro Ressource; Secondary-Sidecar-Arrays in `semantic32.inc`; `semantic_initialize` löscht Secondary-Felder; `object_semantic_attach` setzt Secondary-Count zurück; erweiterter `semantic_self_test`)
 - Typed Files und persistente Semantic Metadata
-- Semantic Discovery und Semantic Execution
+- ~~Semantic Discovery und Semantic Execution~~ (§122: `semantic_find_by_name`, `semantic_query_type_info`, `semantic_enumerate_type/conversion/subtype/trait`; Discovery-Scratch `semantic_disc_*`; `semantic_self_test` mit 13 neuen §122-Fällen)
 - ~~tatsächliche Ausführung registrierter Conversion Capabilities~~ (§120: `semantic_register_conversion_handler`, `semantic_execute_conversion`, eingebauter Handler `semantic_handler_inline_to_diag`; Handler-Registry bis 8 Einträge; Ausführungs-Scratch `semantic_exec_*`; `semantic_self_test` erweitert mit Positiv- und Negativfall)
 - NovaFS: echtes Copy-on-Write, Checkpoints/Snapshots,
   Zusammenlegen leerer Blätter und Baumhöhe > 2 (Transaction Log/Crash

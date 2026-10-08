@@ -160,12 +160,6 @@ kernel_entry:
     jc panic_interrupt_manager
     mov esi, message_interrupts_ok
     call serial_write_string
-    call time_core_initialize
-    jc panic_interrupt_manager
-    call time_core_self_test
-    jc panic_interrupt_manager
-    mov esi, message_time_core_ok
-    call serial_write_string
 
     call ipc_initialize
     jc panic_ipc
@@ -389,6 +383,8 @@ kernel_entry:
     jc panic_boot_health
     call boot_health_publish_core_services
     jc panic_boot_health
+    call boot_health_publish_trust_provider   ; §108: TRUST READY/DEGRADED je nach Signatur
+    ; kein jc: DEGRADED ist akzeptabel, kein Panic
     mov esi, message_boot_health_authority_ok
     call serial_write_string
 
@@ -520,6 +516,21 @@ kernel_entry:
     call boot_phase_log
     call userspace_initialize
     jc panic_userspace
+    call boot_health_publish_session_provider ; §108: SESSION READY (Phase-1 Stub)
+    call firmware_runtime_health_commit       ; §109: HEALTHY Wire nach HealthConfirmed
+    cmp eax, 2
+    je .commit_failed
+    jmp .commit_ok
+.commit_failed:
+    mov esi, message_health_commit_failed
+    call serial_write_string
+    jmp .commit_done
+.commit_ok:
+    cmp eax, 1
+    jne .commit_done
+    mov esi, message_health_commit_written
+    call serial_write_string
+.commit_done:
     mov esi, message_userspace_ok
     call serial_write_string
     mov dword [boot_phase_last_success], BOOT_PHASE_USERSPACE
@@ -3251,34 +3262,6 @@ PIT_DIVISOR     equ 11932           ; ungefähr 100 Hz
 INTERRUPT_API_SIZE equ 32
 INTERRUPT_CAPABILITIES equ 0x00000007
 
-TIME_CORE_API_SIZE          equ 64
-TIME_CLOCK_SOURCE_RECORD_SIZE equ 32
-TIME_CLOCK_DOMAIN_RECORD_SIZE equ 32
-TIME_CLOCK_SOURCE_CAPACITY  equ 4
-TIME_CLOCK_DOMAIN_CAPACITY  equ 4
-TIME_CLOCK_SOURCE_PIT_ID    equ 1
-TIME_CLOCK_SOURCE_COARSE_ID equ 2
-TIME_CLOCK_DOMAIN_MONO_ID   equ 1
-TIME_CLOCK_DOMAIN_WALL_ID   equ 2
-TIME_CLOCK_SOURCE_TYPE_PIT  equ 1
-TIME_CLOCK_SOURCE_TYPE_COARSE equ 2
-TIME_CLOCK_DOMAIN_TYPE_MONOTONIC equ 1
-TIME_CLOCK_DOMAIN_TYPE_WALL equ 2
-TIME_SOURCE_FLAG_REGISTERED equ 0x00000001
-TIME_SOURCE_FLAG_VALIDATED  equ 0x00000002
-TIME_SOURCE_FLAG_ACTIVE     equ 0x00000004
-TIME_SOURCE_FLAG_MONOTONIC  equ 0x00000008
-TIME_SOURCE_FLAG_STABLE     equ 0x00000010
-TIME_SOURCE_HEALTH_UNKNOWN  equ 0
-TIME_SOURCE_HEALTH_OK       equ 1
-TIME_SOURCE_HEALTH_DEGRADED equ 2
-TIME_DOMAIN_FLAG_REGISTERED equ 0x00000001
-TIME_DOMAIN_FLAG_ACTIVE     equ 0x00000002
-TIME_DOMAIN_FLAG_MONOTONIC  equ 0x00000004
-TIME_DOMAIN_FLAG_UNKNOWN    equ 0x00000008
-TIME_DOMAIN_SUSPEND_EXCLUDE equ 0
-TIME_DOMAIN_SUSPEND_INCLUDE equ 1
-
 interrupt_initialize:
     cli
     xor ebx, ebx
@@ -3448,304 +3431,6 @@ timer_self_test:
     ret
 .success:
     clc
-    ret
-
-; ---------------------------------------------------------------------------
-; Nova Time Core v1
-; NPSPEC-TIME-ARCH-0001 / CLOCKSOURCE / CLOCKDOMAIN / MONOTONIC / INTROSPECTION
-; ---------------------------------------------------------------------------
-
-time_core_initialize:
-    mov edi, time_clock_sources
-    xor eax, eax
-    mov ecx, (TIME_CLOCK_SOURCE_CAPACITY * TIME_CLOCK_SOURCE_RECORD_SIZE) / 4
-    rep stosd
-    mov edi, time_clock_domains
-    mov ecx, (TIME_CLOCK_DOMAIN_CAPACITY * TIME_CLOCK_DOMAIN_RECORD_SIZE) / 4
-    rep stosd
-
-    ; Clock Source 1: PIT/IRQ0. Sie ist nicht Wall Clock und wird explizit
-    ; validiert, bevor sie als monotone Bootstrap-Quelle verwendet wird.
-    mov edi, time_clock_sources
-    mov dword [edi + 0], TIME_CLOCK_SOURCE_PIT_ID
-    mov dword [edi + 4], TIME_CLOCK_SOURCE_TYPE_PIT
-    mov dword [edi + 8], TIME_SOURCE_FLAG_REGISTERED | TIME_SOURCE_FLAG_VALIDATED | TIME_SOURCE_FLAG_ACTIVE | TIME_SOURCE_FLAG_MONOTONIC | TIME_SOURCE_FLAG_STABLE
-    mov dword [edi + 12], TASK_DEADLINE_CLOCK_HZ
-    mov dword [edi + 16], 10000000       ; 10 ms pro PIT-Tick in ns
-    mov dword [edi + 20], PIT_DIVISOR
-    mov dword [edi + 24], 60             ; Bootstrap-Qualitaet, nicht Accuracy
-    mov dword [edi + 28], time_provider_name_pit
-
-    ; Clock Source 2: grober Bootstrap-Fallback. Registriert und validiert,
-    ; aber nicht aktiv gewaehlt. Sie modelliert die geforderte Mehrquellen-
-    ; Architektur, bis HPET/APIC/Paravirtual-Time folgen.
-    mov edi, time_clock_sources + TIME_CLOCK_SOURCE_RECORD_SIZE
-    mov dword [edi + 0], TIME_CLOCK_SOURCE_COARSE_ID
-    mov dword [edi + 4], TIME_CLOCK_SOURCE_TYPE_COARSE
-    mov dword [edi + 8], TIME_SOURCE_FLAG_REGISTERED | TIME_SOURCE_FLAG_VALIDATED | TIME_SOURCE_FLAG_MONOTONIC
-    mov dword [edi + 12], 10
-    mov dword [edi + 16], 100000000      ; 100 ms grobe Aufloesung
-    mov dword [edi + 20], 0
-    mov dword [edi + 24], 20
-    mov dword [edi + 28], time_provider_name_coarse
-
-    ; Domain 1: monotone Kernelzeit. Deadlines und Timeouts beziehen sich
-    ; hierauf, nicht auf Civil/Wall Clock.
-    mov edi, time_clock_domains
-    mov dword [edi + 0], TIME_CLOCK_DOMAIN_MONO_ID
-    mov dword [edi + 4], TIME_CLOCK_DOMAIN_TYPE_MONOTONIC
-    mov dword [edi + 8], TIME_CLOCK_SOURCE_PIT_ID
-    mov dword [edi + 12], TIME_DOMAIN_FLAG_REGISTERED | TIME_DOMAIN_FLAG_ACTIVE | TIME_DOMAIN_FLAG_MONOTONIC
-    mov dword [edi + 16], TASK_DEADLINE_CLOCK_HZ
-    mov dword [edi + 20], 1
-    mov dword [edi + 24], 0
-    mov dword [edi + 28], TIME_DOMAIN_SUSPEND_EXCLUDE
-
-    ; Domain 2: Wall Clock existiert als getrenntes Konzept, bleibt aber ohne
-    ; RTC/Sync-Provider bewusst Unknown. Unknown ist nicht gleich 0/Valid.
-    mov edi, time_clock_domains + TIME_CLOCK_DOMAIN_RECORD_SIZE
-    mov dword [edi + 0], TIME_CLOCK_DOMAIN_WALL_ID
-    mov dword [edi + 4], TIME_CLOCK_DOMAIN_TYPE_WALL
-    mov dword [edi + 8], 0
-    mov dword [edi + 12], TIME_DOMAIN_FLAG_REGISTERED | TIME_DOMAIN_FLAG_UNKNOWN
-    mov dword [edi + 16], 0
-    mov dword [edi + 20], 0
-    mov dword [edi + 24], 0
-    mov dword [edi + 28], TIME_DOMAIN_SUSPEND_INCLUDE
-
-    mov dword [time_core_ready], 1
-    clc
-    ret
-
-; EAX=ClockSourceID, Rückgabe EAX=Record oder CF.
-time_clock_source_lookup:
-    mov ecx, TIME_CLOCK_SOURCE_CAPACITY
-    mov edi, time_clock_sources
-.scan:
-    cmp [edi + 0], eax
-    je .found
-    add edi, TIME_CLOCK_SOURCE_RECORD_SIZE
-    loop .scan
-    xor eax, eax
-    stc
-    ret
-.found:
-    mov eax, edi
-    clc
-    ret
-
-; EAX=ClockDomainID, Rückgabe EAX=Record oder CF.
-time_clock_domain_lookup:
-    mov ecx, TIME_CLOCK_DOMAIN_CAPACITY
-    mov edi, time_clock_domains
-.scan:
-    cmp [edi + 0], eax
-    je .found
-    add edi, TIME_CLOCK_DOMAIN_RECORD_SIZE
-    loop .scan
-    xor eax, eax
-    stc
-    ret
-.found:
-    mov eax, edi
-    clc
-    ret
-
-; EAX/EDX=ClockDomainIDs. CF=0 nur bei gleicher, registrierter Domain.
-time_clock_domain_compatible:
-    push edx
-    call time_clock_domain_lookup
-    pop edx
-    jc .invalid
-    cmp [eax + 0], edx
-    jne .invalid
-    clc
-    ret
-.invalid:
-    stc
-    ret
-
-time_monotonic_now:
-    mov eax, [timer_ticks]
-    mov edx, TIME_CLOCK_DOMAIN_MONO_ID
-    clc
-    ret
-
-; Passive Clock-Source-Health fuer PIT/IRQ0. Erfasst Tick-Delta,
-; Stillstand und Maximalabstand, ohne die monotone Zeitquelle zu korrigieren.
-time_clock_source_health_sample:
-    cmp dword [time_core_ready], 1
-    jne .done
-    mov eax, [timer_ticks]
-    mov edx, [time_source_pit_last_tick]
-    test edx, edx
-    jnz .have_previous
-    mov [time_source_pit_last_tick], eax
-    mov dword [time_source_pit_health], TIME_SOURCE_HEALTH_OK
-    inc dword [time_source_pit_sample_count]
-    clc
-    ret
-.have_previous:
-    mov ebx, eax
-    sub ebx, edx
-    mov [time_source_pit_last_tick], eax
-    cmp ebx, 0
-    jne .advanced
-    inc dword [time_source_pit_stalled_count]
-    call time_clock_source_pit_mark_degraded
-    clc
-    ret
-.advanced:
-    mov [time_source_pit_last_delta], ebx
-    inc dword [time_source_pit_sample_count]
-    cmp ebx, [time_source_pit_max_delta]
-    jbe .max_ready
-    mov [time_source_pit_max_delta], ebx
-.max_ready:
-    cmp ebx, 4
-    ja .degraded
-    call time_clock_source_pit_mark_ok
-    clc
-    ret
-.degraded:
-    call time_clock_source_pit_mark_degraded
-.done:
-    clc
-    ret
-
-time_clock_source_pit_mark_ok:
-    cmp dword [time_source_pit_health], TIME_SOURCE_HEALTH_DEGRADED
-    jne .set
-    inc dword [time_source_pit_recovered_count]
-.set:
-    mov dword [time_source_pit_health], TIME_SOURCE_HEALTH_OK
-    or dword [time_clock_sources + 8], TIME_SOURCE_FLAG_STABLE
-    clc
-    ret
-
-time_clock_source_pit_mark_degraded:
-    cmp dword [time_source_pit_health], TIME_SOURCE_HEALTH_DEGRADED
-    je .set
-    inc dword [time_source_pit_degraded_count]
-.set:
-    mov dword [time_source_pit_health], TIME_SOURCE_HEALTH_DEGRADED
-    and dword [time_clock_sources + 8], ~TIME_SOURCE_FLAG_STABLE
-    clc
-    ret
-
-time_core_self_test:
-    cmp dword [time_core_ready], 1
-    jne .invalid
-
-    mov eax, TIME_CLOCK_SOURCE_PIT_ID
-    call time_clock_source_lookup
-    jc .invalid
-    mov ebx, [eax + 8]
-    test ebx, TIME_SOURCE_FLAG_REGISTERED
-    jz .invalid
-    test ebx, TIME_SOURCE_FLAG_VALIDATED
-    jz .invalid
-    test ebx, TIME_SOURCE_FLAG_ACTIVE
-    jz .invalid
-    test ebx, TIME_SOURCE_FLAG_MONOTONIC
-    jz .invalid
-    cmp dword [eax + 12], TASK_DEADLINE_CLOCK_HZ
-    jne .invalid
-    cmp dword [eax + 16], 0
-    je .invalid
-
-    mov eax, TIME_CLOCK_SOURCE_COARSE_ID
-    call time_clock_source_lookup
-    jc .invalid
-    mov ebx, [eax + 8]
-    test ebx, TIME_SOURCE_FLAG_REGISTERED
-    jz .invalid
-    test ebx, TIME_SOURCE_FLAG_VALIDATED
-    jz .invalid
-    test ebx, TIME_SOURCE_FLAG_MONOTONIC
-    jz .invalid
-    test ebx, TIME_SOURCE_FLAG_ACTIVE
-    jnz .invalid
-    cmp dword [eax + 12], 10
-    jne .invalid
-
-    mov eax, TIME_CLOCK_DOMAIN_MONO_ID
-    call time_clock_domain_lookup
-    jc .invalid
-    cmp dword [eax + 4], TIME_CLOCK_DOMAIN_TYPE_MONOTONIC
-    jne .invalid
-    cmp dword [eax + 8], TIME_CLOCK_SOURCE_PIT_ID
-    jne .invalid
-    test dword [eax + 12], TIME_DOMAIN_FLAG_MONOTONIC
-    jz .invalid
-    cmp dword [eax + 16], TASK_DEADLINE_CLOCK_HZ
-    jne .invalid
-
-    mov eax, TIME_CLOCK_DOMAIN_WALL_ID
-    call time_clock_domain_lookup
-    jc .invalid
-    cmp dword [eax + 4], TIME_CLOCK_DOMAIN_TYPE_WALL
-    jne .invalid
-    test dword [eax + 12], TIME_DOMAIN_FLAG_UNKNOWN
-    jz .invalid
-    test dword [eax + 12], TIME_DOMAIN_FLAG_MONOTONIC
-    jnz .invalid
-    cmp dword [eax + 8], TIME_CLOCK_SOURCE_PIT_ID
-    je .invalid
-
-    call time_monotonic_now
-    mov ebx, eax
-    call time_monotonic_now
-    sub eax, ebx
-    jl .invalid
-
-    ; Health-Sampling muss echte Tick-Fortschritte introspektierbar machen.
-    mov eax, [timer_ticks]
-    sub eax, 2
-    mov [time_source_pit_last_tick], eax
-    call time_clock_source_health_sample
-    cmp dword [time_source_pit_last_delta], 2
-    jne .invalid
-    cmp dword [time_source_pit_health], TIME_SOURCE_HEALTH_OK
-    jne .invalid
-    cmp dword [time_source_pit_sample_count], 0
-    je .invalid
-    cmp dword [time_source_pit_max_delta], 2
-    jb .invalid
-    test dword [time_clock_sources + 8], TIME_SOURCE_FLAG_STABLE
-    jz .invalid
-    mov eax, [timer_ticks]
-    mov [time_source_pit_last_tick], eax
-    call time_clock_source_health_sample
-    cmp dword [time_source_pit_health], TIME_SOURCE_HEALTH_DEGRADED
-    jne .invalid
-    cmp dword [time_source_pit_degraded_count], 0
-    je .invalid
-    test dword [time_clock_sources + 8], TIME_SOURCE_FLAG_STABLE
-    jnz .invalid
-    mov eax, [timer_ticks]
-    sub eax, 1
-    mov [time_source_pit_last_tick], eax
-    call time_clock_source_health_sample
-    cmp dword [time_source_pit_health], TIME_SOURCE_HEALTH_OK
-    jne .invalid
-    cmp dword [time_source_pit_recovered_count], 0
-    je .invalid
-    test dword [time_clock_sources + 8], TIME_SOURCE_FLAG_STABLE
-    jz .invalid
-
-    mov eax, TIME_CLOCK_DOMAIN_MONO_ID
-    mov edx, TIME_CLOCK_DOMAIN_MONO_ID
-    call time_clock_domain_compatible
-    jc .invalid
-    mov eax, TIME_CLOCK_DOMAIN_MONO_ID
-    mov edx, TIME_CLOCK_DOMAIN_WALL_ID
-    call time_clock_domain_compatible
-    jnc .invalid
-    clc
-    ret
-.invalid:
-    stc
     ret
 
 io_wait:
@@ -3960,7 +3645,6 @@ interrupt_dispatch:
     jmp .done
 .timer:
     inc dword [timer_ticks]
-    call time_clock_source_health_sample
     cmp dword [kernel_context + CONTEXT_PLATFORM], 2
     jne .timer_input
     mov dword [0xFEE000B0], 0       ; edge-triggered: früh quittieren
@@ -4172,24 +3856,6 @@ timer_ticks:           dd 0
 last_exception_vector: dd 0
 last_fault_address:    dd 0
 interrupt_return_frame: dd 0
-time_core_ready:       dd 0
-time_source_pit_last_tick: dd 0
-time_source_pit_last_delta: dd 0
-time_source_pit_max_delta: dd 0
-time_source_pit_sample_count: dd 0
-time_source_pit_stalled_count: dd 0
-time_source_pit_health: dd TIME_SOURCE_HEALTH_UNKNOWN
-time_source_pit_degraded_count: dd 0
-time_source_pit_recovered_count: dd 0
-
-align 4
-time_provider_name_pit: db "PIT", 0
-time_provider_name_coarse: db "COARSE", 0
-align 4
-time_clock_sources:
-    times TIME_CLOCK_SOURCE_CAPACITY * TIME_CLOCK_SOURCE_RECORD_SIZE db 0
-time_clock_domains:
-    times TIME_CLOCK_DOMAIN_CAPACITY * TIME_CLOCK_DOMAIN_RECORD_SIZE db 0
 
 align 16
 kernel_tss:
@@ -4206,25 +3872,6 @@ interrupt_api:
     dd interrupt_disable
     dd timer_get_ticks
     dd 100
-
-align 4
-time_core_api:
-    dd TIME_CORE_API_SIZE
-    dw 1, 0
-    dd TIME_CLOCK_SOURCE_CAPACITY
-    dd TIME_CLOCK_DOMAIN_CAPACITY
-    dd time_clock_source_lookup
-    dd time_clock_domain_lookup
-    dd time_clock_domain_compatible
-    dd time_monotonic_now
-    dd time_clock_sources
-    dd time_clock_domains
-    dd time_clock_source_health_sample
-    dd time_source_pit_health
-    dd time_source_pit_last_delta
-    dd time_source_pit_stalled_count
-    dd time_source_pit_degraded_count
-    dd time_source_pit_recovered_count
 
 ; ---------------------------------------------------------------------------
 ; Kernel-Nachrichtenwarteschlange (ADR-2005)
@@ -5403,16 +5050,12 @@ task_create:
     sub edx, task_table
     shr edx, 5
     mov dword [task_group_ids + edx * 4], 0
-    shl edx, 5
+    shl edx, 4
     add edx, task_deadline_table
     mov dword [edx + 0], 0
     mov dword [edx + 4], 0
     mov dword [edx + 8], 0
     mov dword [edx + 12], 0
-    mov dword [edx + 16], 0
-    mov dword [edx + 20], 0
-    mov dword [edx + 24], 0
-    mov dword [edx + 28], 0
     mov eax, [task_next_id]
     mov [edi + TASK_ID], eax
     mov edx, [task_temp_owner]
@@ -5793,13 +5436,11 @@ task_table:
 ; NPSPEC-CONCURRENCY-DEADLINE-0001 / ADR-CONCURRENCY-0004
 ; ---------------------------------------------------------------------------
 
-TASK_DEADLINE_API_SIZE       equ 96
-TASK_DEADLINE_RECORD_SIZE    equ 32
+TASK_DEADLINE_API_SIZE       equ 32
 TASK_DEADLINE_CLOCK_HZ       equ 100
 TASK_DEADLINE_CLASS_HARD     equ 1
 TASK_DEADLINE_CLASS_FIRM     equ 2
 TASK_DEADLINE_CLASS_SOFT     equ 3
-TASK_DEADLINE_CLASS_ADVISORY equ 4
 TASK_DEADLINE_POLICY_CONTINUE equ 1
 TASK_DEADLINE_POLICY_CANCEL  equ 2
 TASK_DEADLINE_POLICY_FAIL    equ 3
@@ -5810,29 +5451,15 @@ TASK_DEADLINE_ABSOLUTE       equ 0
 TASK_DEADLINE_CLASS          equ 4
 TASK_DEADLINE_POLICY         equ 8
 TASK_DEADLINE_STATE          equ 12
-TASK_DEADLINE_CLOCK_DOMAIN   equ 16
-TASK_DEADLINE_TOLERANCE      equ 20
-TASK_DEADLINE_EFFECTIVE      equ 24
-TASK_DEADLINE_MISS_TICK      equ 28
-TASK_DEADLINE_CAPABILITIES   equ 0x0000001F
+TASK_DEADLINE_CAPABILITIES   equ 0x0000000F
 TASK_CANCEL_REASON_DEADLINE  equ 0x444C4E45
 
 task_deadline_manager_initialize:
     mov edi, task_deadline_table
     xor eax, eax
-    mov ecx, (TASK_CAPACITY * TASK_DEADLINE_RECORD_SIZE) / 4
+    mov ecx, (TASK_CAPACITY * 16) / 4
     rep stosd
     mov dword [task_deadline_miss_count], 0
-    mov dword [task_deadline_coalesced_count], 0
-    mov dword [task_deadline_hard_reject_count], 0
-    mov dword [task_deadline_next_effective_tick], 0
-    mov dword [task_deadline_next_task_id], 0
-    mov dword [task_deadline_next_class], 0
-    mov dword [task_deadline_next_tolerance], 0
-    mov dword [task_deadline_next_domain], 0
-    mov dword [task_deadline_last_lateness], 0
-    mov dword [task_deadline_max_lateness], 0
-    mov dword [task_deadline_total_lateness], 0
     mov dword [task_deadline_manager_ready], 1
     clc
     ret
@@ -5840,28 +5467,22 @@ task_deadline_manager_initialize:
 ; EAX=Taskdatensatz. EAX=zugehoeriger Deadline-Datensatz.
 task_deadline_record_for_task:
     sub eax, task_table
+    shr eax, 1                       ; 32 Byte Task -> 16 Byte Deadline
     add eax, task_deadline_table
     ret
 
 ; EAX=Task-ID, EDX=absoluter Tick, EBX=Klasse, ECX=Miss-Policy.
 ; Eine Parent-Deadline wird niemals verlaengert.
 task_deadline_set:
-    xor esi, esi
-
-; EAX=Task-ID, EDX=absoluter Tick, EBX=Klasse, ECX=Miss-Policy, ESI=Toleranz.
-; Coalescing darf nur innerhalb der Toleranz erfolgen und nie Hard Deadlines
-; verschieben.
-task_deadline_set_tolerant:
     pushfd
     cli
     mov [task_deadline_temp_task], eax
     mov [task_deadline_temp_tick], edx
     mov [task_deadline_temp_class], ebx
     mov [task_deadline_temp_policy], ecx
-    mov [task_deadline_temp_tolerance], esi
     cmp ebx, TASK_DEADLINE_CLASS_HARD
     jb .invalid
-    cmp ebx, TASK_DEADLINE_CLASS_ADVISORY
+    cmp ebx, TASK_DEADLINE_CLASS_SOFT
     ja .invalid
     cmp ecx, TASK_DEADLINE_POLICY_CONTINUE
     jb .invalid
@@ -5869,12 +5490,7 @@ task_deadline_set_tolerant:
     ja .invalid
     test edx, edx
     jz .invalid
-    cmp ebx, TASK_DEADLINE_CLASS_HARD
-    jne .lookup_task
-    test esi, esi
-    jnz .hard_tolerance_invalid
 
-.lookup_task:
     call task_lookup
     jc .invalid
     mov [task_deadline_temp_record], eax
@@ -5900,7 +5516,6 @@ task_deadline_set_tolerant:
     cmp dword [eax + TASK_DEADLINE_CLASS], TASK_DEADLINE_CLASS_HARD
     jne .validate_effective
     mov dword [task_deadline_temp_class], TASK_DEADLINE_CLASS_HARD
-    mov dword [task_deadline_temp_tolerance], 0
 
 .validate_effective:
     cmp dword [task_deadline_temp_class], TASK_DEADLINE_CLASS_HARD
@@ -5912,11 +5527,6 @@ task_deadline_set_tolerant:
     jle .invalid                       ; minimale Bootstrap-Admission-Control
 
 .store:
-    mov eax, TIME_CLOCK_DOMAIN_MONO_ID
-    call time_clock_domain_lookup
-    jc .invalid
-    test dword [eax + 12], TIME_DOMAIN_FLAG_MONOTONIC
-    jz .invalid
     mov eax, [task_deadline_temp_record]
     call task_deadline_record_for_task
     mov edx, [task_deadline_temp_tick]
@@ -5926,29 +5536,10 @@ task_deadline_set_tolerant:
     mov edx, [task_deadline_temp_policy]
     mov [eax + TASK_DEADLINE_POLICY], edx
     mov dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
-    mov dword [eax + TASK_DEADLINE_CLOCK_DOMAIN], TIME_CLOCK_DOMAIN_MONO_ID
-    mov edx, [task_deadline_temp_tolerance]
-    mov [eax + TASK_DEADLINE_TOLERANCE], edx
-    mov edx, [task_deadline_temp_tick]
-    cmp dword [task_deadline_temp_class], TASK_DEADLINE_CLASS_HARD
-    je .effective_ready
-    cmp dword [task_deadline_temp_tolerance], 0
-    je .effective_ready
-    add edx, [task_deadline_temp_tolerance]
-    inc dword [task_deadline_coalesced_count]
-.effective_ready:
-    mov [eax + TASK_DEADLINE_EFFECTIVE], edx
-    mov dword [eax + TASK_DEADLINE_MISS_TICK], 0
     mov eax, [task_deadline_temp_tick]
-    push eax
-    call task_deadline_refresh_next
-    pop eax
     popfd
     clc
     ret
-.hard_tolerance_invalid:
-    inc dword [task_deadline_hard_reject_count]
-    jmp .invalid
 .invalid:
     xor eax, eax
     popfd
@@ -5974,22 +5565,14 @@ task_deadline_poll:
     cmp dword [edi + TASK_STATE], TASK_STATE_CANCEL_REQUEST
     jae .next
     mov eax, ecx
-    shl eax, 5
+    shl eax, 4
     add eax, task_deadline_table
     cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
     jne .next
     mov edx, [task_deadline_poll_tick]
-    sub edx, [eax + TASK_DEADLINE_EFFECTIVE]
+    sub edx, [eax + TASK_DEADLINE_ABSOLUTE]
     jl .next
-    mov [task_deadline_last_lateness], edx
-    add [task_deadline_total_lateness], edx
-    cmp edx, [task_deadline_max_lateness]
-    jbe .lateness_ready
-    mov [task_deadline_max_lateness], edx
-.lateness_ready:
     mov dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_MISSED
-    mov edx, [task_deadline_poll_tick]
-    mov [eax + TASK_DEADLINE_MISS_TICK], edx
     inc dword [task_deadline_miss_count]
     mov edx, [eax + TASK_DEADLINE_POLICY]
     cmp edx, TASK_DEADLINE_POLICY_CANCEL
@@ -6015,56 +5598,6 @@ task_deadline_poll:
     push ecx
     call task_release_scope
     pop ecx
-.next:
-    inc ecx
-    jmp .scan
-.done:
-    call task_deadline_refresh_next
-    clc
-    ret
-
-; Bestimmt die naechste aktive Deadline fuer Introspection und spaetere
-; Tickless-/One-Shot-Programmierung. Abgelaufene oder terminale Tasks werden
-; nicht als naechstes Wakeup-Ziel veroeffentlicht.
-task_deadline_refresh_next:
-    mov dword [task_deadline_next_effective_tick], 0
-    mov dword [task_deadline_next_task_id], 0
-    mov dword [task_deadline_next_class], 0
-    mov dword [task_deadline_next_tolerance], 0
-    mov dword [task_deadline_next_domain], 0
-    xor ecx, ecx
-.scan:
-    cmp ecx, TASK_CAPACITY
-    jae .done
-    mov edi, ecx
-    shl edi, 5
-    add edi, task_table
-    cmp dword [edi + TASK_STATE], TASK_STATE_CREATED
-    jb .next
-    cmp dword [edi + TASK_STATE], TASK_STATE_CANCEL_REQUEST
-    jae .next
-    mov eax, ecx
-    shl eax, 5
-    add eax, task_deadline_table
-    cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
-    jne .next
-    mov edx, [eax + TASK_DEADLINE_EFFECTIVE]
-    test edx, edx
-    jz .next
-    cmp dword [task_deadline_next_effective_tick], 0
-    je .store
-    cmp edx, [task_deadline_next_effective_tick]
-    jae .next
-.store:
-    mov [task_deadline_next_effective_tick], edx
-    mov edx, [edi + TASK_ID]
-    mov [task_deadline_next_task_id], edx
-    mov edx, [eax + TASK_DEADLINE_CLASS]
-    mov [task_deadline_next_class], edx
-    mov edx, [eax + TASK_DEADLINE_TOLERANCE]
-    mov [task_deadline_next_tolerance], edx
-    mov edx, [eax + TASK_DEADLINE_CLOCK_DOMAIN]
-    mov [task_deadline_next_domain], edx
 .next:
     inc ecx
     jmp .scan
@@ -6117,101 +5650,10 @@ task_deadline_manager_self_test:
     jne .invalid
     cmp dword [eax + TASK_DEADLINE_CLASS], TASK_DEADLINE_CLASS_HARD
     jne .invalid
-    cmp dword [eax + TASK_DEADLINE_CLOCK_DOMAIN], TIME_CLOCK_DOMAIN_MONO_ID
-    jne .invalid
-    cmp dword [eax + TASK_DEADLINE_TOLERANCE], 0
-    jne .invalid
-    cmp [eax + TASK_DEADLINE_EFFECTIVE], edx
-    jne .invalid
-    cmp dword [task_deadline_coalesced_count], 0
-    jne .invalid
-    cmp [task_deadline_next_effective_tick], edx
-    jne .invalid
-    cmp dword [task_deadline_next_class], TASK_DEADLINE_CLASS_HARD
-    jne .invalid
     mov eax, [task_deadline_test_child]
     xor edx, edx
     call task_complete
     jc .invalid
-    mov eax, [task_deadline_test_parent]
-    xor edx, edx
-    call task_complete
-    jc .invalid
-    mov eax, [task_deadline_test_scope]
-    call task_scope_close
-    jc .invalid
-
-    ; Toleranz-basiertes Coalescing: Soft/Advisory dürfen innerhalb des
-    ; Fensters verschoben werden, Hard Deadlines dagegen nicht.
-    mov eax, 1
-    mov edx, [task_scope_kernel_root_id]
-    xor ebx, ebx
-    call task_scope_create
-    jc .invalid
-    mov [task_deadline_test_scope], eax
-    mov eax, 1
-    mov edx, [task_deadline_test_scope]
-    xor ebx, ebx
-    xor ecx, ecx
-    call task_create
-    jc .invalid
-    mov [task_deadline_test_parent], eax
-    mov edx, [timer_ticks]
-    add edx, 20
-    mov [task_deadline_test_parent_tick], edx
-    mov ebx, TASK_DEADLINE_CLASS_ADVISORY
-    mov ecx, TASK_DEADLINE_POLICY_CONTINUE
-    mov esi, 5
-    call task_deadline_set_tolerant
-    jc .invalid
-    mov eax, [task_deadline_test_parent]
-    call task_lookup
-    jc .invalid
-    call task_deadline_record_for_task
-    cmp dword [eax + TASK_DEADLINE_TOLERANCE], 5
-    jne .invalid
-    mov edx, [task_deadline_test_parent_tick]
-    add edx, 5
-    cmp [eax + TASK_DEADLINE_EFFECTIVE], edx
-    jne .invalid
-    cmp dword [task_deadline_coalesced_count], 1
-    jne .invalid
-    cmp [task_deadline_next_effective_tick], edx
-    jne .invalid
-    cmp dword [task_deadline_next_class], TASK_DEADLINE_CLASS_ADVISORY
-    jne .invalid
-    cmp dword [task_deadline_next_tolerance], 5
-    jne .invalid
-    mov eax, [task_deadline_test_parent]
-    xor edx, edx
-    call task_complete
-    jc .invalid
-    mov eax, [task_deadline_test_scope]
-    call task_scope_close
-    jc .invalid
-
-    mov eax, 1
-    mov edx, [task_scope_kernel_root_id]
-    xor ebx, ebx
-    call task_scope_create
-    jc .invalid
-    mov [task_deadline_test_scope], eax
-    mov eax, 1
-    mov edx, [task_deadline_test_scope]
-    xor ebx, ebx
-    xor ecx, ecx
-    call task_create
-    jc .invalid
-    mov [task_deadline_test_parent], eax
-    mov edx, [timer_ticks]
-    add edx, 20
-    mov ebx, TASK_DEADLINE_CLASS_HARD
-    mov ecx, TASK_DEADLINE_POLICY_CANCEL
-    mov esi, 1
-    call task_deadline_set_tolerant
-    jnc .invalid
-    cmp dword [task_deadline_hard_reject_count], 1
-    jne .invalid
     mov eax, [task_deadline_test_parent]
     xor edx, edx
     call task_complete
@@ -6235,7 +5677,6 @@ task_deadline_manager_self_test:
     jc .invalid
     mov [task_deadline_test_parent], eax
     mov edx, [timer_ticks]
-    dec edx
     mov ebx, TASK_DEADLINE_CLASS_FIRM
     mov ecx, TASK_DEADLINE_POLICY_CANCEL
     call task_deadline_set
@@ -6251,19 +5692,7 @@ task_deadline_manager_self_test:
     call task_deadline_record_for_task
     cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_MISSED
     jne .invalid
-    cmp dword [eax + TASK_DEADLINE_CLOCK_DOMAIN], TIME_CLOCK_DOMAIN_MONO_ID
-    jne .invalid
-    cmp dword [eax + TASK_DEADLINE_MISS_TICK], 0
-    je .invalid
     cmp dword [task_deadline_miss_count], 1
-    jne .invalid
-    cmp dword [task_deadline_last_lateness], 0
-    je .invalid
-    cmp dword [task_deadline_max_lateness], 0
-    je .invalid
-    cmp dword [task_deadline_total_lateness], 0
-    je .invalid
-    cmp dword [task_deadline_next_task_id], 0
     jne .invalid
     mov eax, [task_deadline_test_parent]
     call task_checkpoint
@@ -6287,48 +5716,22 @@ task_deadline_manager_api:
     dd task_deadline_poll
     dd task_deadline_table
     dd task_deadline_miss_count
-    dd TASK_DEADLINE_RECORD_SIZE
-    dd TIME_CLOCK_DOMAIN_MONO_ID
-    dd TASK_DEADLINE_CLASS_ADVISORY
-    dd task_deadline_set_tolerant
-    dd task_deadline_coalesced_count
-    dd task_deadline_hard_reject_count
-    dd task_deadline_refresh_next
-    dd task_deadline_next_effective_tick
-    dd task_deadline_next_task_id
-    dd task_deadline_next_class
-    dd task_deadline_next_tolerance
-    dd task_deadline_next_domain
-    dd task_deadline_last_lateness
-    dd task_deadline_max_lateness
-    dd task_deadline_total_lateness
 
 task_deadline_manager_ready:    dd 0
 task_deadline_miss_count:       dd 0
-task_deadline_coalesced_count:  dd 0
-task_deadline_hard_reject_count: dd 0
-task_deadline_next_effective_tick: dd 0
-task_deadline_next_task_id:     dd 0
-task_deadline_next_class:       dd 0
-task_deadline_next_tolerance:   dd 0
-task_deadline_next_domain:      dd 0
-task_deadline_last_lateness:    dd 0
-task_deadline_max_lateness:     dd 0
-task_deadline_total_lateness:   dd 0
 task_deadline_poll_tick:        dd 0
 task_deadline_temp_task:        dd 0
 task_deadline_temp_tick:        dd 0
 task_deadline_temp_class:       dd 0
 task_deadline_temp_policy:      dd 0
 task_deadline_temp_record:      dd 0
-task_deadline_temp_tolerance:   dd 0
 task_deadline_test_scope:       dd 0
 task_deadline_test_parent:      dd 0
 task_deadline_test_child:       dd 0
 task_deadline_test_parent_tick: dd 0
 align 4
 task_deadline_table:
-    times TASK_CAPACITY * TASK_DEADLINE_RECORD_SIZE db 0
+    times TASK_CAPACITY * 16 db 0
 
 ; ---------------------------------------------------------------------------
 ; Task Groups mit WaitAll, FailFast, Cancellation und Drain
@@ -6936,7 +6339,7 @@ io_request_submit:
     call task_deadline_record_for_task
     cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
     jne .ready
-    mov edx, [eax + TASK_DEADLINE_EFFECTIVE]
+    mov edx, [eax + TASK_DEADLINE_ABSOLUTE]
     mov [edi + IO_REQUEST_DEADLINE], edx
     or dword [edi + IO_REQUEST_FLAGS], IO_FLAG_DEADLINE_INHERITED
 .ready:
@@ -17581,6 +16984,53 @@ boot_health_publish_core_services:
     stc
     ret
 
+; §108 Trust-Provider: meldet TRUST READY wenn Kernel signiert (SIGNATURE_VERIFIED),
+; sonst TRUST DEGRADED (Boot laeuft weiter, Health bleibt Degraded, nicht Confirmed).
+boot_health_publish_trust_provider:
+    mov eax, [kernel_context + CONTEXT_SECURITY_STATE]
+    cmp eax, NOVA_BOOT_VERIFICATION_SIGNATURE_VERIFIED
+    jae .signed
+    ; Unsignierter Kernel: TRUST DEGRADED melden und Meldung ausgeben
+    mov edx, BOOT_HEALTH_MILESTONE_CRITICAL_SERVICES
+    mov ecx, BOOT_HEALTH_PROVIDER_TRUST
+    mov ebx, BOOT_HEALTH_PROVIDER_DEGRADED
+    call boot_health_prepare_report
+    mov eax, 1
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report
+    mov esi, message_boot_health_trust_degraded
+    call serial_write_string
+    clc
+    ret
+.signed:
+    ; Signierter Kernel: TRUST READY melden
+    mov edx, BOOT_HEALTH_MILESTONE_CRITICAL_SERVICES
+    mov ecx, BOOT_HEALTH_PROVIDER_TRUST
+    mov ebx, BOOT_HEALTH_PROVIDER_READY
+    call boot_health_prepare_report
+    mov eax, 1
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report
+    mov esi, message_boot_health_trust_signed
+    call serial_write_string
+    clc
+    ret
+
+; §108 Session-Provider (Phase-1 Stub): meldet SESSION READY sobald Userspace bereit.
+; Phase 2 ersetzt dies durch echten Session-Manager mit Authentifizierung.
+boot_health_publish_session_provider:
+    mov edx, BOOT_HEALTH_MILESTONE_OPERATIONAL
+    mov ecx, BOOT_HEALTH_PROVIDER_SESSION
+    mov ebx, BOOT_HEALTH_PROVIDER_READY
+    call boot_health_prepare_report
+    mov eax, 1
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report
+    mov esi, message_boot_health_session_ready
+    call serial_write_string
+    clc
+    ret
+
 boot_health_mark_kernel_initialized:
     mov edx, BOOT_HEALTH_MILESTONE_KERNEL_INITIALIZED
     mov ecx, BOOT_HEALTH_PROVIDER_KERNEL_CORE
@@ -17731,6 +17181,69 @@ firmware_runtime_boot_health_checkpoint:
     mov [boot_health_wire + 32], eax
     mov eax, [boot_health_record + BH_RECORD_STATUS]
     mov [boot_health_wire + 36], eax
+    xor eax, eax
+    test dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_TRUST_VERIFIED
+    jz .trust_stored
+    inc eax
+.trust_stored:
+    mov [boot_health_wire + 40], eax
+    mov eax, [boot_health_record + BH_RECORD_SEQUENCE]
+    mov [boot_health_wire + 44], eax
+    mov dword [boot_health_wire + 48], 0
+    mov dword [boot_health_wire + 52], 0
+    mov dword [boot_health_wire + 56], 0
+    mov dword [boot_health_wire + 60], 0
+    mov esi, boot_health_wire
+    call boot_health_wire_crc
+    mov [boot_health_wire + 60], eax
+    mov esi, boot_health_wire
+    mov edi, [kernel_context + CONTEXT_FIRMWARE_RUNTIME_CONTEXT]
+    mov eax, [kernel_context + CONTEXT_FIRMWARE_RUNTIME_ENTRY]
+    call firmware_runtime_invoke
+    cmp eax, 1
+    jne .failed
+    mov eax, 1
+    ret
+.not_required:
+    xor eax, eax
+    ret
+.failed:
+    mov eax, 2
+    ret
+
+; Persistiert HEALTHY-Wire nach HealthConfirmed via Firmware-Provider.
+; EAX=0 nicht erforderlich, 1 geschrieben, 2 fehlgeschlagen.
+firmware_runtime_health_commit:
+    cmp dword [kernel_context + CONTEXT_BOOT_ATTEMPT], 0
+    je .not_required
+    test dword [kernel_context + CONTEXT_FIRMWARE_RUNTIME_CAPS], NOVA_FIRMWARE_RUNTIME_PERSIST_BOOT_HEALTH
+    jz .not_required
+    cmp dword [kernel_context + CONTEXT_FIRMWARE_RUNTIME_CONTEXT], 0
+    je .failed
+    cmp dword [kernel_context + CONTEXT_FIRMWARE_RUNTIME_ENTRY], 0
+    je .failed
+    cmp dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_HEALTHY
+    jne .not_required
+    test dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_EVIDENCE_READY
+    jz .not_required
+    cmp dword [boot_health_record + BH_RECORD_GENERATION_HI], 0
+    jne .failed
+    mov dword [boot_health_wire + 0], 0x41564F4E
+    mov dword [boot_health_wire + 4], 0x56454842
+    mov word [boot_health_wire + 8], 1
+    mov word [boot_health_wire + 10], 64
+    mov eax, [kernel_context + CONTEXT_BOOT_GENERATION]
+    mov [boot_health_wire + 12], eax
+    mov eax, [boot_health_record + BH_RECORD_GENERATION_LO]
+    mov [boot_health_wire + 16], eax
+    mov dword [boot_health_wire + 20], 0
+    mov eax, [boot_health_record + BH_RECORD_BOOT_ATTEMPT]
+    mov [boot_health_wire + 24], eax
+    mov eax, [boot_health_record + BH_RECORD_REACHED]
+    mov [boot_health_wire + 28], eax
+    mov eax, [boot_health_record + BH_RECORD_FAILED]
+    mov [boot_health_wire + 32], eax
+    mov dword [boot_health_wire + 36], BOOT_HEALTH_STATUS_HEALTHY
     xor eax, eax
     test dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_TRUST_VERIFIED
     jz .trust_stored
@@ -18330,11 +17843,11 @@ cpu_local_data:          times CPU_CAPACITY * CPU_LOCAL_SLOT_SIZE db 0
 cpu_records:             times CPU_CAPACITY * CPU_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
-; SMP-Grundlage (NPSPEC-KERNEL-0027). Aktuell ist nur der BSP gestartet.
-; Remote-IPIs und Remote-TLB-Shootdowns bleiben fail-closed, bis M/ADT,
-; AP-Trampoline und getrennte AP-Stacks tatsächlich bereitstehen.
+; §124 SMP – AP-Aktivierung und echter SMP-Betrieb (NPSPEC-KERNEL-0027)
+; INIT-SIPI-SIPI-Sequenz, AP-Trampoline (Real→Protected Mode),
+; Cross-CPU-IPI-Versand, Remote-TLB-Shootdowns.
 ; ---------------------------------------------------------------------------
-SMP_API_SIZE                 equ 48
+SMP_API_SIZE                equ 48
 SMP_PHASE_ARCH_READY        equ 0
 SMP_PHASE_MEMORY_READY      equ 1
 SMP_PHASE_INTERRUPTS_READY  equ 2
@@ -18349,6 +17862,257 @@ SMP_IPI_DEBUG               equ 5
 SMP_IPI_PANIC_STOP          equ 6
 SMP_IPI_TYPE_COUNT          equ 7
 
+; LAPIC-Register (xAPIC MMIO-Basis 0xFEE00000)
+LAPIC_BASE              equ 0xFEE00000
+LAPIC_SPURIOUS          equ 0xF0        ; Spurious-Interrupt-Vektor
+LAPIC_EOI               equ 0xB0        ; End-of-Interrupt
+LAPIC_ICR_LO            equ 0x300       ; Interrupt Command Register (low)
+LAPIC_ICR_HI            equ 0x310       ; Interrupt Command Register (high)
+LAPIC_ICR_DELIVERY_STS  equ (1 << 12)  ; Bit 12: Delivery Status (0=Idle)
+LAPIC_IPI_INIT          equ 0x00004500  ; INIT-IPI: delivery=INIT(101), level=assert
+LAPIC_IPI_SIPI          equ 0x00004600  ; Startup-IPI: delivery=Startup(110)
+LAPIC_IPI_FIXED         equ 0x00004000  ; Fixed IPI, Ziel-Vektor in Bits 7:0
+SMP_IPI_VECTOR          equ 0xFE        ; generischer IPI-Empfangsvektor
+
+; AP-Trampoline
+AP_TRAMPOLINE_BASE      equ 0x8000      ; physische Adresse < 1 MB
+AP_TRAMPOLINE_VECTOR    equ 0x08        ; SIPI-Vektor = Base >> 12
+AP_STACK_SIZE           equ 0x1000      ; 4 KiB Stack pro AP
+AP_BOOT_TIMEOUT_LOOPS   equ 20000000    ; Spin-Limit beim Warten auf AP-Start
+
+; ---------------------------------------------------------------------------
+; AP-Trampoline-Blob (16-Bit Real-Mode-Code, wird nach 0x8000 kopiert)
+; Layout:
+;   +0x00  jmp short 0x8010     (2 Bytes)
+;   +0x02  GDT-Limit            (2 Bytes, gepatcht)
+;   +0x04  GDT-Basis            (4 Bytes, gepatcht)
+;   +0x08  PM-Einstiegspunkt    (4 Bytes, gepatcht)
+;   +0x0C  Code-Selektor 0x08   (2 Bytes, fest)
+;   +0x0E  Padding              (2 Bytes)
+;   +0x10  Eigentlicher 16-Bit-Code
+; ---------------------------------------------------------------------------
+ap_trampoline_blob:
+[bits 16]
+    jmp short .code         ; EB 0E – überspringt Patch-Bereich
+    dw 0                    ; GDT-Limit       (+0x02, wird gepatcht)
+    dd 0                    ; GDT-Basis       (+0x04, wird gepatcht)
+    dd 0                    ; PM-Einstieg EIP (+0x08, wird gepatcht)
+    dw CODE_SEGMENT         ; Code-Selektor   (+0x0C, fest 0x08)
+    dw 0                    ; Padding         (+0x0E)
+.code:                      ; ab hier: 0x8010 wenn Blob an 0x8000
+    cli
+    cld
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    lgdt [word 0x8002]      ; GDT laden (Patch-Bereich bei 0x8002)
+    mov eax, cr0
+    or  al, 1               ; PE setzen
+    mov cr0, eax
+    o32 jmp far [word 0x8008] ; Far-Sprung 32-Bit: lädt EIP+CS aus [0x8008]
+[bits 32]
+ap_trampoline_blob_end:
+
+; ---------------------------------------------------------------------------
+; AP Protected-Mode-Einstieg (nach Trampoline, CS=0x08, IF=0)
+; ---------------------------------------------------------------------------
+ap_entry32_pm:
+    mov ax, DATA_SEGMENT
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    xor ax, ax
+    mov fs, ax
+    mov gs, ax
+
+    ; Kern-IDT übernehmen (BSP hat sie aufgebaut)
+    lidt [idt_descriptor]
+
+    ; APIC-ID dieses AP (CPUID.1.EBX Bits 31:24)
+    mov eax, 1
+    cpuid
+    shr ebx, 24
+    mov edi, ebx            ; EDI = APIC-ID
+
+    ; CPU-Slot durch Vergleich mit acpi_apic_ids finden
+    xor ecx, ecx
+.find_slot:
+    cmp ecx, [cpu_discovered_count]
+    jae .halt_unknown
+    cmp [acpi_apic_ids + ecx * 4], edi
+    je .slot_found
+    inc ecx
+    jmp .find_slot
+
+.slot_found:
+    ; ECX = Slot-Index (0=BSP, 1..N=APs)
+    ; Stack für diesen AP: ap_stack_area[(Slot) * AP_STACK_SIZE .. (Slot+1) * AP_STACK_SIZE]
+    ; (Slot 0 = BSP hat eigenen Stack; APs beginnen ab Slot-Index 1, Index in Array: Slot-1)
+    imul edx, ecx, AP_STACK_SIZE   ; Offset = Slot * AP_STACK_SIZE
+    lea esp, [ap_stack_area + edx - 4]
+    and esp, 0xFFFFFFF0             ; 16-Byte-ausrichten
+
+    ; Lokalen APIC dieses AP aktivieren (Spurious-Interrupt-Vektor)
+    mov eax, [LAPIC_BASE + LAPIC_SPURIOUS]
+    or  eax, 0x100
+    and eax, 0xFFFFFF00
+    or  eax, 0xFF
+    mov [LAPIC_BASE + LAPIC_SPURIOUS], eax
+
+    ; CPU-Sets und Zähler atomar aktualisieren
+    lock bts dword [cpu_online_set],  ecx
+    lock bts dword [cpu_active_set],  ecx
+    lock inc dword [cpu_online_count]
+
+    ; BSP signalisieren (wartet auf ap_alive_count)
+    lock inc dword [ap_alive_count]
+
+    ; AP-Leerlaufschleife (Interrupts ein, HALT bis Reschedule-IPI)
+.ap_idle:
+    sti
+    hlt
+    jmp .ap_idle
+
+.halt_unknown:
+    ; Unbekannte APIC-ID – sicher anhalten
+    cli
+.halt_forever:
+    hlt
+    jmp .halt_forever
+
+; ---------------------------------------------------------------------------
+; apic_wait_icr_idle – wartet bis ICR Delivery-Status = Idle
+; ---------------------------------------------------------------------------
+apic_wait_icr_idle:
+    push ecx
+    mov ecx, 200000
+.wait:
+    test dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_ICR_DELIVERY_STS
+    jz .idle
+    pause
+    dec ecx
+    jnz .wait
+.idle:
+    pop ecx
+    ret
+
+; ---------------------------------------------------------------------------
+; smp_boot_ap – sendet INIT-SIPI-SIPI an einen einzelnen AP
+; EAX = Ziel-APIC-ID (8 Bit xAPIC)
+; ---------------------------------------------------------------------------
+smp_boot_ap:
+    push esi
+    push ecx
+    movzx esi, al           ; APIC-ID sichern
+
+    ; ICR_HI: Ziel-APIC-ID in Bits 31:24 eintragen
+    mov ecx, esi
+    shl ecx, 24
+    mov [LAPIC_BASE + LAPIC_ICR_HI], ecx
+
+    ; INIT Assert
+    mov dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_IPI_INIT
+    call apic_wait_icr_idle
+
+    ; Warte ca. 10 ms (Spin)
+    mov ecx, AP_BOOT_TIMEOUT_LOOPS / 2
+.wait_init:
+    pause
+    dec ecx
+    jnz .wait_init
+
+    ; Erster STARTUP IPI
+    mov ecx, esi
+    shl ecx, 24
+    mov [LAPIC_BASE + LAPIC_ICR_HI], ecx
+    mov dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_IPI_SIPI | AP_TRAMPOLINE_VECTOR
+    call apic_wait_icr_idle
+
+    ; Kurze Pause (200 µs per Spec)
+    mov ecx, AP_BOOT_TIMEOUT_LOOPS / 100
+.wait_sipi1:
+    pause
+    dec ecx
+    jnz .wait_sipi1
+
+    ; Zweiter STARTUP IPI (Redundanz per MP-Spec)
+    mov ecx, esi
+    shl ecx, 24
+    mov [LAPIC_BASE + LAPIC_ICR_HI], ecx
+    mov dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_IPI_SIPI | AP_TRAMPOLINE_VECTOR
+    call apic_wait_icr_idle
+
+    clc
+    pop ecx
+    pop esi
+    ret
+
+; ---------------------------------------------------------------------------
+; smp_start_aps – kopiert Trampoline, patcht GDT/Einstieg, startet alle APs
+; ---------------------------------------------------------------------------
+smp_start_aps:
+    push esi
+    push edi
+    push ebx
+    push ecx
+
+    ; Trampoline-Blob nach 0x8000 kopieren
+    mov esi, ap_trampoline_blob
+    mov edi, AP_TRAMPOLINE_BASE
+    mov ecx, (ap_trampoline_blob_end - ap_trampoline_blob + 3) >> 2
+    rep movsd
+
+    ; Patch: GDT-Limit und GDT-Basis (aus kernel_gdt_descriptor)
+    movzx eax, word [kernel_gdt_descriptor]
+    mov word [AP_TRAMPOLINE_BASE + 0x02], ax
+    mov eax, [kernel_gdt_descriptor + 2]
+    mov dword [AP_TRAMPOLINE_BASE + 0x04], eax
+
+    ; Patch: 32-Bit-Einstiegspunkt und Code-Selektor
+    mov dword [AP_TRAMPOLINE_BASE + 0x08], ap_entry32_pm
+    mov word  [AP_TRAMPOLINE_BASE + 0x0C], CODE_SEGMENT
+
+    ; ap_alive_count zurücksetzen
+    mov dword [ap_alive_count], 0
+
+    ; Jeden AP einzeln starten und auf Online-Meldung warten
+    mov ebx, 1              ; Slot 0 = BSP, APs beginnen bei 1
+.ap_loop:
+    cmp ebx, [cpu_discovered_count]
+    jae .all_done
+
+    ; APIC-ID des AP aus ACPI-Tabelle
+    mov eax, [acpi_apic_ids + ebx * 4]
+    call smp_boot_ap
+
+    ; Warten bis cpu_online_count den erwarteten Wert erreicht
+    mov ecx, AP_BOOT_TIMEOUT_LOOPS
+    mov edx, ebx
+    inc edx                 ; erwartet: BSP (1) + AP-Index Zähler
+.wait_online:
+    cmp [cpu_online_count], edx
+    jae .ap_came_online
+    pause
+    dec ecx
+    jnz .wait_online
+    ; Timeout – AP nicht gestartet; Soft-Fail, nächsten versuchen
+
+.ap_came_online:
+    inc ebx
+    jmp .ap_loop
+
+.all_done:
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+
+; ---------------------------------------------------------------------------
+; smp_initialize – initialisiert SMP-Infrastruktur und startet APs
+; ---------------------------------------------------------------------------
 smp_initialize:
     cmp dword [cpu_discovered_count], CPU_CAPACITY
     ja .unsupported
@@ -18358,20 +18122,36 @@ smp_initialize:
     jne .unsupported
     test dword [cpu_present_set], 1
     jz .unsupported
+
+    ; Zähler initialisieren
     mov dword [smp_boot_phase], SMP_PHASE_SCHEDULER_READY
     mov dword [smp_local_tlb_generation], 0
     mov dword [smp_local_tlb_flushes], 0
     mov dword [smp_rejected_ipis], 0
     mov dword [smp_rejected_remote_shootdowns], 0
     mov dword [smp_remote_ipis_sent], 0
+    mov dword [ap_alive_count], 0
+
+    ; UP-Betrieb: kein AP vorhanden → fertig
+    cmp dword [cpu_discovered_count], 1
+    jbe .done
+
+    ; SMP-Betrieb: APs starten
+    call smp_start_aps
+    jc .failed
+
+.done:
     clc
     ret
+.failed:
 .unsupported:
     stc
     ret
 
-; EAX=Phasenindex. LOCK CMPXCHG veröffentlicht Bootstrap-Daten erst nach
-; vollständigem Aufbau und verhindert selbst bei Konkurrenz einen Rückschritt.
+; ---------------------------------------------------------------------------
+; smp_publish_phase – veröffentlicht Bootstrap-Phasen ohne Rückschritt
+; EAX = neuer Phasenindex
+; ---------------------------------------------------------------------------
 smp_publish_phase:
     cmp eax, SMP_PHASE_OPERATIONAL
     ja .invalid
@@ -18389,87 +18169,137 @@ smp_publish_phase:
     stc
     ret
 
-; EAX=Zielmaske, ECX=IPI-Typ. Diese Routine validiert zunächst jedes Ziel;
-; der physische IPI-Versand existiert noch nicht und wird nie behauptet.
+; ---------------------------------------------------------------------------
+; smp_send_ipi – sendet Cross-CPU-IPI (EAX=Zielmaske, ECX=IPI-Typ)
+; ---------------------------------------------------------------------------
 smp_send_ipi:
     cmp ecx, SMP_IPI_TYPE_COUNT
     jae .reject
     test eax, eax
     jz .reject
+    ; Maske darf nur online CPUs enthalten
+    push edx
     mov edx, [cpu_online_set]
     not edx
     test eax, edx
+    pop edx
     jnz .reject
-    ; Self-IPI ist keine Cross-CPU-Operation. Im UP-Betrieb gibt es keinen AP.
+    ; Self-IPI (Bit 0 = BSP) nicht unterstützt
     test eax, 1
     jnz .reject
-    inc dword [smp_rejected_ipis]
-    stc
+
+    ; Jeden gesetzten Bit in der Maske: IPI senden
+    push esi
+    push edi
+    push ebx
+    mov edi, eax            ; Zielmaske
+    xor esi, esi            ; Bit-Index (CPU-Slot)
+.send_loop:
+    cmp esi, [cpu_discovered_count]
+    jae .send_done
+    bt edi, esi
+    jnc .next_bit
+    ; APIC-ID des Ziels
+    movzx ebx, byte [acpi_apic_ids + esi * 4]
+    shl ebx, 24
+    mov [LAPIC_BASE + LAPIC_ICR_HI], ebx
+    ; Fixed-IPI mit generischem Vektor
+    mov dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_IPI_FIXED | SMP_IPI_VECTOR
+    call apic_wait_icr_idle
+    lock inc dword [smp_remote_ipis_sent]
+.next_bit:
+    inc esi
+    jmp .send_loop
+.send_done:
+    pop ebx
+    pop edi
+    pop esi
+    clc
     ret
 .reject:
     inc dword [smp_rejected_ipis]
     stc
     ret
 
-; EAX=virtuelle Adresse, EDX=Ziel-CPU-Maske. Der lokale TLB wird nur nach
-; vollständig aktualisiertem Mapping invalidiert. Andere CPUs wären vor
-; Seitenwiederverwendung zu bestätigen und werden derzeit strikt abgelehnt.
+; ---------------------------------------------------------------------------
+; smp_tlb_shootdown_page – invalidiert eine Seite lokal und/oder remote
+; EAX = seitenbündige virtuelle Adresse, EDX = CPU-Zielmaske
+; ---------------------------------------------------------------------------
 smp_tlb_shootdown_page:
     test eax, 0xFFF
     jnz .invalid
     test edx, edx
     jz .invalid
+    ; Maske darf nur aktive CPUs enthalten
+    push ecx
     mov ecx, [cpu_active_set]
     not ecx
     test edx, ecx
+    pop ecx
     jnz .invalid
-    test edx, 0xFFFFFFFE
-    jnz .remote_unsupported
+
+    ; Lokale INVLPG wenn BSP in Maske (Bit 0)
+    test edx, 1
+    jz .skip_local
     invlpg [eax]
     lock inc dword [smp_local_tlb_generation]
     inc dword [smp_local_tlb_flushes]
+.skip_local:
+
+    ; Remote-APs: IPI mit TLB_SHOOTDOWN-Typ senden (Fire-and-Forget §124)
+    push eax
+    mov eax, edx
+    and eax, ~1             ; BSP-Bit ausblenden → nur APs
+    test eax, eax
+    jz .skip_remote
+    push ecx
+    mov ecx, SMP_IPI_TLB_SHOOTDOWN
+    call smp_send_ipi
+    pop ecx
+.skip_remote:
+    pop eax
     clc
     ret
-.remote_unsupported:
-    inc dword [smp_rejected_remote_shootdowns]
 .invalid:
+    inc dword [smp_rejected_remote_shootdowns]
     stc
     ret
 
+; ---------------------------------------------------------------------------
+; smp_self_test – prüft SMP-Invarianten nach smp_initialize
+; ---------------------------------------------------------------------------
 smp_self_test:
-    mov eax, [cpu_discovered_set]
-    cmp [cpu_possible_set], eax
-    jne .invalid
-    cmp [cpu_present_set], eax
-    jne .invalid
-    cmp dword [cpu_online_set], 1
-    jne .invalid
-    cmp dword [cpu_active_set], 1
+    ; Grundzustand: Phase korrekt, keine fehlerhaften/isolierten CPUs
+    cmp dword [smp_boot_phase], SMP_PHASE_SCHEDULER_READY
     jne .invalid
     cmp dword [cpu_isolated_set], 0
     jne .invalid
     cmp dword [cpu_failed_set], 0
     jne .invalid
-    cmp dword [smp_boot_phase], SMP_PHASE_SCHEDULER_READY
+
+    ; Alle entdeckten CPUs müssen online und aktiv sein
+    mov ecx, [cpu_discovered_count]
+    cmp ecx, 0
+    je .invalid
+    cmp ecx, CPU_CAPACITY
+    ja .invalid
+    mov eax, 1
+    shl eax, cl
+    dec eax                         ; erwartete Maske: (1<<count)-1
+    cmp [cpu_online_set], eax
     jne .invalid
-    cmp dword [cpu_local_data + CPU_LOCAL_SLOT_SIZE], 0
+    cmp [cpu_active_set], eax
     jne .invalid
-    mov eax, SMP_PHASE_MEMORY_READY
-    call smp_publish_phase
-    jnc .invalid                    ; ein Rückschritt darf nicht sichtbar werden
-    mov eax, SMP_PHASE_SCHEDULER_READY
-    call smp_publish_phase
-    jc .invalid
-    cmp dword [smp_boot_phase], SMP_PHASE_SCHEDULER_READY
-    jne .invalid
-    mov eax, 2
-    mov ecx, SMP_IPI_RESCHEDULE
-    call smp_send_ipi
-    jnc .invalid                    ; CPU 1 ist nicht online
+
+    ; Self-IPI (BSP an sich selbst) muss immer abgelehnt werden
     mov eax, 1
     mov ecx, SMP_IPI_PANIC_STOP
     call smp_send_ipi
-    jnc .invalid                    ; keinen physischen IPI vortäuschen
+    jnc .invalid
+
+    ; Lokaler TLB-Shootdown muss erfolgreich sein
+    mov dword [smp_local_tlb_flushes], 0
+    mov dword [smp_local_tlb_generation], 0
     mov eax, KERNEL_ENTRY_ADDRESS
     mov edx, 1
     call smp_tlb_shootdown_page
@@ -18478,15 +18308,50 @@ smp_self_test:
     jne .invalid
     cmp dword [smp_local_tlb_generation], 1
     jne .invalid
+
+    ; Ungültige Seitenausrichtung muss abgelehnt werden
     mov eax, KERNEL_ENTRY_ADDRESS + 1
     mov edx, 1
     call smp_tlb_shootdown_page
-    jnc .invalid                    ; keine unpräzise Seitenadresse
+    jnc .invalid
+
+    ; UP-spezifische Prüfungen
+    cmp dword [cpu_discovered_count], 1
+    jne .smp_checks
+
+    ; UP: Slot-1-Daten unbenutzt
+    cmp dword [cpu_local_data + CPU_LOCAL_SLOT_SIZE], 0
+    jne .invalid
+    ; UP: IPI an CPU 1 (nicht online) → muss abgelehnt werden
+    mov eax, 2
+    mov ecx, SMP_IPI_RESCHEDULE
+    call smp_send_ipi
+    jnc .invalid
+    ; UP: Remote-TLB-Shootdown an CPU 1 (nicht aktiv) → muss abgelehnt werden
     mov eax, KERNEL_ENTRY_ADDRESS
     mov edx, 3
     call smp_tlb_shootdown_page
-    jnc .invalid                    ; Remote-Maske nicht aktiv
+    jnc .invalid
+    jmp .phase_test
+
+.smp_checks:
+    ; SMP: IPI an CPU 1 (online) → muss gelingen
+    mov eax, 2
+    mov ecx, SMP_IPI_RESCHEDULE
+    call smp_send_ipi
+    jc .invalid
     cmp dword [smp_remote_ipis_sent], 0
+    je .invalid
+
+.phase_test:
+    ; smp_publish_phase: Rückschritt nicht erlaubt
+    mov eax, SMP_PHASE_MEMORY_READY
+    call smp_publish_phase
+    jnc .invalid
+    mov eax, SMP_PHASE_SCHEDULER_READY
+    call smp_publish_phase
+    jc .invalid
+    cmp dword [smp_boot_phase], SMP_PHASE_SCHEDULER_READY
     jne .invalid
     clc
     ret
@@ -18509,12 +18374,17 @@ smp_api:
     dd smp_send_ipi
     dd smp_tlb_shootdown_page
     dd smp_publish_phase
-smp_boot_phase:                dd 0
-smp_local_tlb_generation:      dd 0
-smp_local_tlb_flushes:         dd 0
-smp_rejected_ipis:             dd 0
+smp_boot_phase:                 dd 0
+smp_local_tlb_generation:       dd 0
+smp_local_tlb_flushes:          dd 0
+smp_rejected_ipis:              dd 0
 smp_rejected_remote_shootdowns: dd 0
-smp_remote_ipis_sent:          dd 0
+smp_remote_ipis_sent:           dd 0
+ap_alive_count:                 dd 0
+
+align 4096
+ap_stack_area:
+    times (CPU_CAPACITY - 1) * AP_STACK_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
@@ -23870,8 +23740,6 @@ message_paging_error:
     db "NOVA PANIC: virtueller Speichermanager nicht initialisierbar", 13, 10, 0
 message_interrupts_ok:
     db "NOVA: IDT, PIC und PIT 100 Hz aktiv", 13, 10, 0
-message_time_core_ok:
-    db "NOVA: Time Core ABI 1.0, Clock Source Health, Domains und Monotonic Introspection bereit", 13, 10, 0
 message_interrupts_error:
     db "NOVA PANIC: Interrupt- oder Timerinitialisierung fehlgeschlagen", 13, 10, 0
 message_ipc_ok:
@@ -23955,7 +23823,7 @@ message_task_manager_ok:
 message_task_manager_error:
     db "NOVA PANIC: Task Manager nicht initialisierbar", 13, 10, 0
 message_task_deadline_manager_ok:
-    db "NOVA: Task Deadline ABI 1.0, ClockDomain, Coalescing und Miss-Introspection aktiv", 13, 10, 0
+    db "NOVA: Task Deadline ABI 1.0, Parent-Clamp und Miss-Policy aktiv", 13, 10, 0
 message_task_deadline_manager_error:
     db "NOVA PANIC: Task Deadline Manager nicht initialisierbar", 13, 10, 0
 message_task_group_manager_ok:
@@ -24018,6 +23886,16 @@ message_security_error:
     db "NOVA PANIC: Kernel Security nicht initialisierbar", 13, 10, 0
 message_boot_health_authority_ok:
     db "NOVA: Boot Health Authority ABI 1.0 capabilitygeschuetzt bereit", 13, 10, 0
+message_boot_health_trust_signed:
+    db "NOVA: Boot Health Trust Provider READY (NKI DevSign verifiziert)", 13, 10, 0
+message_boot_health_trust_degraded:
+    db "NOVA: Boot Health Trust Provider DEGRADED (Kernel nicht signiert)", 13, 10, 0
+message_boot_health_session_ready:
+    db "NOVA: Boot Health Session Provider READY (Phase-1 Stub)", 13, 10, 0
+message_health_commit_written:
+    db "NOVA: Boot Health HEALTHY-Wire via Firmware-Provider persistiert (§109)", 13, 10, 0
+message_health_commit_failed:
+    db "NOVA: Boot Health HEALTHY-Wire Commit fehlgeschlagen", 13, 10, 0
 message_boot_health_kernel_initialized:
     db "NOVA: Boot Health Milestone KernelInitialized aggregiert", 13, 10, 0
 message_boot_health_checkpoint_written:

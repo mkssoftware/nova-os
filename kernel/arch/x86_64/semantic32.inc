@@ -32,6 +32,12 @@ SEMANTIC_OBJECT_CAPACITY    equ 64  ; muss mit Objektsystem-Kapazität übereins
 ; §120: Ausführung registrierter Conversion Capabilities
 SEMANTIC_HANDLER_CAPACITY   equ 8   ; max. registrierte Conversion Handler
 SEMANTIC_HANDLER_SIZE       equ 8   ; cap_id(4) + handler_ptr(4)
+; §121: Semantic Relationships – Subtypes und Traits
+SEMANTIC_SUBTYPE_CAPACITY   equ 8   ; max. Subtype-Beziehungen
+SEMANTIC_SUBTYPE_SIZE       equ 16  ; child(4)+child_ver(4)+parent(4)+parent_ver(4)
+SEMANTIC_TRAIT_CAPACITY     equ 8   ; max. Trait-Implementierungen
+SEMANTIC_TRAIT_SIZE         equ 16  ; type(4)+type_ver(4)+trait(4)+trait_ver(4)
+SEMANTIC_TRAIT_READABLE     equ 3   ; nova.kernel.trait.readable (dritter registrierter Typ)
 SEMANTIC_RULE_NONEMPTY        equ 1
 SEMANTIC_RULE_DIAGNOSTIC_CODE equ 2
 SEMANTIC_RULE_CONTRACT_MAX    equ 0x100
@@ -56,6 +62,15 @@ semantic_initialize:
     mov ecx, (SEMANTIC_HANDLER_CAPACITY * SEMANTIC_HANDLER_SIZE) / 4
     rep stosd
     mov dword [semantic_handler_count], 0
+    ; §121: Subtype- und Trait-Records initialisieren
+    mov edi, semantic_subtype_records
+    mov ecx, (SEMANTIC_SUBTYPE_CAPACITY * SEMANTIC_SUBTYPE_SIZE) / 4
+    rep stosd
+    mov dword [semantic_subtype_count], 0
+    mov edi, semantic_trait_records
+    mov ecx, (SEMANTIC_TRAIT_CAPACITY * SEMANTIC_TRAIT_SIZE) / 4
+    rep stosd
+    mov dword [semantic_trait_count], 0
     ; §119: Sekundäre Typ-Sidecar-Felder initialisieren
     mov edi, object_semantic_secondary_types
     mov ecx, SEMANTIC_OBJECT_CAPACITY * SEMANTIC_SECONDARY_CAPACITY
@@ -97,6 +112,28 @@ semantic_initialize:
     mov edx, 0x44494147             ; explizite Capability-ID "DIAG"
     mov ebx, SEMANTIC_CONVERSION_LOSSY
     call semantic_register_conversion
+    jc .bad
+    ; §121: Trait-Typ nova.kernel.trait.readable registrieren (Handle = 3)
+    mov esi, semantic_name_trait_readable
+    mov eax, SEMANTIC_REPR_BYTES8
+    mov edx, SEMANTIC_TYPE_VERSION_1
+    call semantic_register_type
+    jc .bad
+    cmp eax, SEMANTIC_TRAIT_READABLE
+    jne .bad
+    ; §121: DIAGNOSTIC ist direkter Subtyp von INLINE_DATA
+    mov eax, SEMANTIC_IPC_DIAGNOSTIC
+    mov ecx, SEMANTIC_TYPE_VERSION_1
+    mov edx, SEMANTIC_IPC_INLINE_DATA
+    mov ebx, SEMANTIC_TYPE_VERSION_1
+    call semantic_register_subtype
+    jc .bad
+    ; §121: INLINE_DATA implementiert Trait readable
+    mov eax, SEMANTIC_IPC_INLINE_DATA
+    mov ecx, SEMANTIC_TYPE_VERSION_1
+    mov edx, SEMANTIC_TRAIT_READABLE
+    mov ebx, SEMANTIC_TYPE_VERSION_1
+    call semantic_register_trait
     jc .bad
     ; §120: Eingebauten Handler für INLINE_DATA→DIAGNOSTIC registrieren
     mov eax, 0x44494147             ; Capability-ID "DIAG"
@@ -449,12 +486,63 @@ semantic_compatibility:
     mov eax, [semantic_compat_source]
     cmp eax, [semantic_compat_target]
     je .exact
+    ; §121: Subtype-Suche (source ist direkter Subtyp von target)
     xor ecx, ecx
+.subtype_scan:
+    cmp ecx, [semantic_subtype_count]
+    jae .trait_check
+    imul edi, ecx, SEMANTIC_SUBTYPE_SIZE
+    add edi, semantic_subtype_records
+    mov eax, [semantic_compat_source]
+    cmp eax, [edi]
+    jne .subtype_next
+    mov edx, [semantic_compat_source_version]
+    cmp edx, [edi + 4]
+    jne .subtype_next
+    mov eax, [semantic_compat_target]
+    cmp eax, [edi + 8]
+    jne .subtype_next
+    mov edx, [semantic_compat_target_version]
+    cmp edx, [edi + 12]
+    jne .subtype_next
+    mov eax, SEMANTIC_COMPAT_SUBTYPE
+    ret
+.subtype_next:
+    inc ecx
+    jmp .subtype_scan
+.trait_check:
+    ; §121: Trait-Suche (source implementiert target als Trait)
+    xor ecx, ecx
+.trait_scan:
+    cmp ecx, [semantic_trait_count]
+    jae .conversion_scan
+    imul edi, ecx, SEMANTIC_TRAIT_SIZE
+    add edi, semantic_trait_records
+    mov eax, [semantic_compat_source]
+    cmp eax, [edi]
+    jne .trait_next
+    mov edx, [semantic_compat_source_version]
+    cmp edx, [edi + 4]
+    jne .trait_next
+    mov eax, [semantic_compat_target]
+    cmp eax, [edi + 8]
+    jne .trait_next
+    mov edx, [semantic_compat_target_version]
+    cmp edx, [edi + 12]
+    jne .trait_next
+    mov eax, SEMANTIC_COMPAT_TRAIT
+    ret
+.trait_next:
+    inc ecx
+    jmp .trait_scan
 .conversion_scan:
+    xor ecx, ecx
+.conv_inner:
     cmp ecx, [semantic_conversion_count]
     jae .incompatible
     imul edi, ecx, SEMANTIC_CONVERSION_SIZE
     add edi, semantic_conversion_records
+    mov eax, [semantic_compat_source]
     cmp eax, [edi]
     jne .conversion_next
     mov edx, [semantic_compat_source_version]
@@ -472,7 +560,7 @@ semantic_compatibility:
     ret
 .conversion_next:
     inc ecx
-    jmp .conversion_scan
+    jmp .conv_inner
 .exact:
     mov eax, SEMANTIC_COMPAT_EXACT
     ret
@@ -719,6 +807,120 @@ object_semantic_clear_secondary:
 ; §120: Eingebauter Konvertierungshandler: nova.kernel.ipc.inline-data → nova.kernel.ipc.diagnostic.
 ; EAX=src_ptr, ECX=src_len, EDX=dst_ptr, EBX=dst_max_len.
 ; Kopiert die ersten 4 Bytes als Diagnosecode; Code muss ungleich Null sein.
+; §121: EAX=child, ECX=child_version, EDX=parent, EBX=parent_version.
+; Beide Typen müssen existieren. Nur vor Versiegelung; keine Duplikate.
+semantic_register_subtype:
+    cmp dword [semantic_registry_sealed], 0
+    jne .bad
+    mov [semantic_subtype_child], eax
+    mov [semantic_subtype_child_v], ecx
+    mov [semantic_subtype_parent], edx
+    mov [semantic_subtype_parent_v], ebx
+    ; child-Typ validieren
+    call semantic_lookup_type
+    jc .bad
+    ; parent-Typ validieren
+    mov eax, [semantic_subtype_parent]
+    call semantic_lookup_type
+    jc .bad
+    ; Duplikat-Suche
+    xor ecx, ecx
+.sub_dup_scan:
+    cmp ecx, [semantic_subtype_count]
+    jae .sub_insert
+    imul edi, ecx, SEMANTIC_SUBTYPE_SIZE
+    add edi, semantic_subtype_records
+    mov eax, [semantic_subtype_child]
+    cmp eax, [edi]
+    jne .sub_dup_next
+    mov eax, [semantic_subtype_child_v]
+    cmp eax, [edi + 4]
+    jne .sub_dup_next
+    mov eax, [semantic_subtype_parent]
+    cmp eax, [edi + 8]
+    jne .sub_dup_next
+    jmp .bad                        ; exaktes Duplikat
+.sub_dup_next:
+    inc ecx
+    jmp .sub_dup_scan
+.sub_insert:
+    mov ebx, [semantic_subtype_count]
+    cmp ebx, SEMANTIC_SUBTYPE_CAPACITY
+    jae .bad
+    imul edi, ebx, SEMANTIC_SUBTYPE_SIZE
+    add edi, semantic_subtype_records
+    mov eax, [semantic_subtype_child]
+    mov [edi], eax
+    mov eax, [semantic_subtype_child_v]
+    mov [edi + 4], eax
+    mov eax, [semantic_subtype_parent]
+    mov [edi + 8], eax
+    mov eax, [semantic_subtype_parent_v]
+    mov [edi + 12], eax
+    inc dword [semantic_subtype_count]
+    clc
+    ret
+.bad:
+    stc
+    ret
+
+; §121: EAX=type, ECX=type_version, EDX=trait, EBX=trait_version.
+; Beide Typen müssen existieren. Nur vor Versiegelung; keine Duplikate.
+semantic_register_trait:
+    cmp dword [semantic_registry_sealed], 0
+    jne .bad
+    mov [semantic_trait_type], eax
+    mov [semantic_trait_type_v], ecx
+    mov [semantic_trait_trait], edx
+    mov [semantic_trait_trait_v], ebx
+    ; Typ validieren
+    call semantic_lookup_type
+    jc .bad
+    ; Trait-Typ validieren
+    mov eax, [semantic_trait_trait]
+    call semantic_lookup_type
+    jc .bad
+    ; Duplikat-Suche
+    xor ecx, ecx
+.tr_dup_scan:
+    cmp ecx, [semantic_trait_count]
+    jae .tr_insert
+    imul edi, ecx, SEMANTIC_TRAIT_SIZE
+    add edi, semantic_trait_records
+    mov eax, [semantic_trait_type]
+    cmp eax, [edi]
+    jne .tr_dup_next
+    mov eax, [semantic_trait_type_v]
+    cmp eax, [edi + 4]
+    jne .tr_dup_next
+    mov eax, [semantic_trait_trait]
+    cmp eax, [edi + 8]
+    jne .tr_dup_next
+    jmp .bad                        ; exaktes Duplikat
+.tr_dup_next:
+    inc ecx
+    jmp .tr_dup_scan
+.tr_insert:
+    mov ebx, [semantic_trait_count]
+    cmp ebx, SEMANTIC_TRAIT_CAPACITY
+    jae .bad
+    imul edi, ebx, SEMANTIC_TRAIT_SIZE
+    add edi, semantic_trait_records
+    mov eax, [semantic_trait_type]
+    mov [edi], eax
+    mov eax, [semantic_trait_type_v]
+    mov [edi + 4], eax
+    mov eax, [semantic_trait_trait]
+    mov [edi + 8], eax
+    mov eax, [semantic_trait_trait_v]
+    mov [edi + 12], eax
+    inc dword [semantic_trait_count]
+    clc
+    ret
+.bad:
+    stc
+    ret
+
 ; Rückgabe: EAX=bytes_written (4) oder 0 bei Fehler.
 semantic_handler_inline_to_diag:
     cmp ecx, 4
@@ -865,7 +1067,7 @@ semantic_self_test:
     call semantic_check_claim
     jc .bad
     ; Beide besitzen Bytes8, sind aber nominal semantisch verschieden.
-    cmp dword [semantic_type_count], 2
+    cmp dword [semantic_type_count], 3   ; §121: +1 für nova.kernel.trait.readable
     jne .bad
     mov eax, SEMANTIC_IPC_INLINE_DATA
     mov ecx, 2
@@ -915,7 +1117,7 @@ semantic_self_test:
     mov edx, SEMANTIC_IPC_INLINE_DATA
     mov ebx, SEMANTIC_TYPE_VERSION_1
     call semantic_compatibility
-    cmp eax, SEMANTIC_COMPAT_INCOMPATIBLE
+    cmp eax, SEMANTIC_COMPAT_SUBTYPE      ; §121: DIAGNOSTIC ist Subtyp von INLINE_DATA
     jne .bad
     mov eax, 7
     mov ecx, SEMANTIC_TYPE_VERSION_1
@@ -1040,6 +1242,37 @@ semantic_self_test:
     xor ecx, ecx
     call object_semantic_query_secondary
     jnc .bad                    ; muss scheitern – Objekt freigegeben
+    ; §121: INLINE_DATA→TRAIT_READABLE = COMPAT_TRAIT
+    mov eax, SEMANTIC_IPC_INLINE_DATA
+    mov ecx, SEMANTIC_TYPE_VERSION_1
+    mov edx, SEMANTIC_TRAIT_READABLE
+    mov ebx, SEMANTIC_TYPE_VERSION_1
+    call semantic_compatibility
+    cmp eax, SEMANTIC_COMPAT_TRAIT
+    jne .bad
+    ; §121: DIAGNOSTIC implementiert TRAIT_READABLE NICHT direkt → INCOMPATIBLE
+    mov eax, SEMANTIC_IPC_DIAGNOSTIC
+    mov ecx, SEMANTIC_TYPE_VERSION_1
+    mov edx, SEMANTIC_TRAIT_READABLE
+    mov ebx, SEMANTIC_TYPE_VERSION_1
+    call semantic_compatibility
+    cmp eax, SEMANTIC_COMPAT_INCOMPATIBLE
+    jne .bad
+    ; §121: Duplikat-Registrierung Subtype muss scheitern
+    mov eax, SEMANTIC_IPC_DIAGNOSTIC
+    mov ecx, SEMANTIC_TYPE_VERSION_1
+    mov edx, SEMANTIC_IPC_INLINE_DATA
+    mov ebx, SEMANTIC_TYPE_VERSION_1
+    call semantic_register_subtype
+    jnc .bad                             ; muss scheitern (Registry versiegelt)
+    ; §121: INLINE_DATA→DIAGNOSTIC bleibt CONVERTIBLE (eigener Pfad, keine Subtype-Richtung)
+    mov eax, SEMANTIC_IPC_INLINE_DATA
+    mov ecx, SEMANTIC_TYPE_VERSION_1
+    mov edx, SEMANTIC_IPC_DIAGNOSTIC
+    mov ebx, SEMANTIC_TYPE_VERSION_1
+    call semantic_compatibility
+    cmp eax, SEMANTIC_COMPAT_CONVERTIBLE
+    jne .bad
     ; §120: Konvertierungsausführung INLINE_DATA→DIAGNOSTIC
     ; Quellwert aus semantic_validation_test_value (0x41564F4E "NOVA")
     mov dword [semantic_exec_src_type],    SEMANTIC_IPC_INLINE_DATA
@@ -1115,6 +1348,8 @@ semantic_name_inline_data:
     db 'nova.kernel.ipc.inline-data', 0
 semantic_name_diagnostic:
     db 'nova.kernel.ipc.diagnostic', 0
+semantic_name_trait_readable:
+    db 'nova.kernel.trait.readable', 0
 ; §119: Sekundäre Typ-Sidecars (SEMANTIC_OBJECT_CAPACITY × SEMANTIC_SECONDARY_CAPACITY Einträge)
 align 4
 object_semantic_secondary_types:
@@ -1143,3 +1378,19 @@ semantic_exec_dst_written:    dd 0
 semantic_exec_dst_buffer:     dd 0
 semantic_handler_records:
     times SEMANTIC_HANDLER_CAPACITY * SEMANTIC_HANDLER_SIZE db 0
+; §121: Subtype- und Trait-Registries
+align 4
+semantic_subtype_count:    dd 0
+semantic_subtype_child:    dd 0
+semantic_subtype_child_v:  dd 0
+semantic_subtype_parent:   dd 0
+semantic_subtype_parent_v: dd 0
+semantic_trait_count:      dd 0
+semantic_trait_type:       dd 0
+semantic_trait_type_v:     dd 0
+semantic_trait_trait:      dd 0
+semantic_trait_trait_v:    dd 0
+semantic_subtype_records:
+    times SEMANTIC_SUBTYPE_CAPACITY * SEMANTIC_SUBTYPE_SIZE db 0
+semantic_trait_records:
+    times SEMANTIC_TRAIT_CAPACITY * SEMANTIC_TRAIT_SIZE db 0
