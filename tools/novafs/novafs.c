@@ -31,6 +31,8 @@
 #include <time.h>
 
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
 #define fseek64 _fseeki64
 #define ftell64 _ftelli64
 #else
@@ -169,6 +171,12 @@ static void die(const char *format, ...) {
     fputc('\n', stderr);
     va_end(args);
     exit(1);
+}
+
+static void stdout_binary(void) {
+#ifdef _WIN32
+    if (_setmode(_fileno(stdout), _O_BINARY) == -1) die("stdout konnte nicht auf Binaermodus gesetzt werden");
+#endif
 }
 
 static uint16_t r16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
@@ -1336,7 +1344,8 @@ int main(int argc, char **argv) {
         uint64_t id = resolve(&v, args[0]), length;
         if (!id) die("nicht gefunden: %s", args[0]);
         uint8_t *data = file_read(&v, id, &length);
-        fwrite(data, 1, length, stdout);
+        stdout_binary();
+        if (length && fwrite(data, 1, length, stdout) != length) die("Schreibfehler stdout");
         free(data);
     } else if (!strcmp(command, "mkdir") || !strcmp(command, "put")) {
         int is_put = !strcmp(command, "put");

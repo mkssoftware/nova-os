@@ -2062,3 +2062,90 @@ Neuer Ablauf nach Frame-Sicherung und Tick-Inkrementierung:
 lastbalanciertes Scheduling; alternativ: Thread-Affinität / CPU-Pinning.
 
 Kernel-Binary: ~248 KB.
+
+## §133 Thread-Affinität & Doppel-Ausführungsschutz (2026-10-08)
+
+**Ziel:** Zwei kritische SMP-Korrektheitsprobleme lösen:
+1. BSP-Thread (Slot 0) darf nicht auf APs migrieren → CPU-Pinning via Affinität
+2. Gleicher Thread-Slot darf nicht gleichzeitig auf zwei CPUs laufen → `thread_running_on[]`
+
+**Neue Datenlabels:**
+- `thread_cpu_affinity: times SCHEDULER_THREAD_COUNT dd -1`
+  - `-1` = beliebige CPU darf diesen Slot laden
+  - `N` = nur CPU N darf laden
+  - Initialisierung: `thread_cpu_affinity[0] = 0` (Slot 0 → nur BSP)
+- `thread_running_on: times SCHEDULER_THREAD_COUNT dd -1`
+  - `-1` = Slot frei (bereit zum Laden)
+  - `N` = läuft gerade auf CPU N
+  - Initialisierung: `thread_running_on[0] = 0` (Slot 0 läuft ab Start auf BSP)
+- `scheduler_caller_cpu: dd 0` — aufrufende CPU, gesetzt unter Spinlock vor `scheduler_on_tick`
+
+**`scheduler_on_tick` neu (§133):**
+- Sichert ESI/EDI (callee-save); Frame-Zeiger jetzt `[esp+12]` statt `[esp+4]`
+- Beim Freigeben des alten Slots: `thread_running_on[old] = -1`
+- `.try_slot`-Schleife mit Wrap-Detection via ESI (verhindert Endlos-Loop):
+  1. Affinitätsprüfung: `thread_cpu_affinity[slot]` ∈ {-1, caller_cpu} → ok, sonst weiter
+  2. Running-Prüfung: `thread_running_on[slot] == -1` → frei, sonst weiter
+  3. Wenn alle Slots geprüft und keiner passt → gleichen Frame zurückgeben (`.no_slot_found`)
+- Bei `.slot_ok`: `thread_running_on[slot] = caller_cpu` (Slot atomar reserviert; unter Spinlock)
+
+**`scheduler_initialize` Ergänzung:**
+- `thread_cpu_affinity[0] = 0` — Slot 0 BSP-gepinnt
+- `thread_running_on[0] = 0` — Slot 0 von Anfang an auf BSP
+
+**`scheduler_api`** erweitert (32 → 40 Byte):
+- Capabilities-Bit `SCHEDULER_CAP_AFFINITY = 0x04` gesetzt
+- `+32`: Zeiger auf `thread_cpu_affinity`
+- `+36`: Zeiger auf `thread_running_on`
+
+**BSP-Callsite** (`interrupt_dispatch .timer_schedule`):
+- `mov dword [scheduler_caller_cpu], 0` nach Lock-Erwerb (vor Frame-Push)
+
+**AP-Callsite** (`isr_ap_timer .at_try_sched`):
+- `mov [scheduler_caller_cpu], ecx` nach Lock-Erwerb (ECX = CPU-Slot)
+
+**Effekt im Betrieb:**
+- BSP (edi=0): Slot 0 ist affin für CPU 0 und nicht belegt → BSP übernimmt Slot 0
+- APs (edi≠0): Slot 0 ist affin für CPU 0 → wird übersprungen; APs picken aus Slots 1..N−1
+- Wenn BSP auf Slot 1 wechselt: `thread_running_on[1] = 0`, APs überspringen 1; sobald BSP wieder auf 0 wechselt, gibt BSP Slot 1 frei (`= -1`) → AP kann Slot 1 übernehmen
+
+**Nächster Schritt (§134):** Dynamische Thread-Erstellung zur Laufzeit (API für
+Userspace/Services, um Threads anzufordern) + erweiterter Scheduler-Slot-Pool.
+
+Kernel-Binary: ~249 KB.
+
+## §134 NovaFS-Stabilisierung: harte Nutzdatenprüfsummen-Pfade (2026-10-08)
+
+**Ziel:** NovaFS darf aktivierte Nutzdatenprüfsummen nicht stillschweigend
+umgehen, wenn die Prüfsummen-Metadaten beschädigt oder nicht lesbar sind.
+
+**Geändert in `kernel/arch/x86_64/novafs32.inc`:**
+- `novafs_mount` validiert jetzt bei gesetztem `checksum_tree_block`:
+  - Prüfsummen-Array liegt hinter der Journal-Region,
+  - Array endet vor dem Backup-Superblock,
+  - alle zugehörigen Array-Blöcke sind in der Bitmap reserviert.
+- `novafs_data_checksum_verify` überspringt Lesefehler des
+  Prüfsummen-Arrayblocks nicht mehr. Wenn Checksum-Metadaten aktiv sind, müssen
+  sie lesbar sein; sonst schlägt der Read kontrolliert fehl.
+- `novafs_data_checksum_write` gibt Fehler jetzt per Carry Flag zurück.
+  `novafs_write` wertet das aus, sodass eine laufende VFS-/NovaFS-Transaktion
+  über den vorhandenen Journal-Abbruchpfad zurückrollen kann.
+
+**Geändert in `tools/novafs/novafs.c`:**
+- `novafs cat` schaltet unter Windows `stdout` explizit in den Binärmodus.
+  Dadurch werden zufällige/binäre Dateiinhalte nicht mehr durch Textmodus-
+  Zeilenendkonvertierung verändert.
+- `cat` prüft außerdem, ob alle Bytes erfolgreich nach stdout geschrieben
+  wurden.
+
+**Effekt:** Alte Volumes mit `checksum_tree_block = 0` bleiben kompatibel. Neue
+oder migrierte Volumes mit aktivierten Nutzdatenprüfsummen fallen bei
+inkonsistenter Checksum-Region früh beim Mount bzw. beim Zugriff aus, statt
+scheinbar erfolgreich ohne Integritätsprüfung weiterzulaufen.
+
+**Validierung:**
+- `make kernel` über MSYS2-Bash erfolgreich; Kernel-Binary bleibt innerhalb des
+  NKI-Limits.
+- `make -f Makefile.novafs novafs-check` mit deaktivierter MSYS-Argument-
+  Konvertierung erfolgreich; dabei werden Baumteilungen, Löschen/Umbenennen,
+  Backup-Superblock, Fehlererkennung und binäre Datei-Inhalte geprüft.

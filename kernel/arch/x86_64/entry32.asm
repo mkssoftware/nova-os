@@ -3698,6 +3698,7 @@ interrupt_dispatch:
     ; lock bts setzt Bit 0 und gibt alten Wert zurück; CF=1 → schon gehalten.
     lock bts dword [scheduler_lock], 0
     jc .sched_skip              ; Sollte auf BSP nie eintreten (defensive Guard)
+    mov dword [scheduler_caller_cpu], 0  ; BSP = CPU-Slot 0 (§133)
     mov eax, [interrupt_return_frame]
     push eax
     call scheduler_on_tick
@@ -18803,6 +18804,7 @@ isr_ap_timer:
     jc .at_restore              ; Lock belegt → diesen Tick überspringen
 
     push ecx                    ; CPU-Slot sichern  (ESP = F-4)
+    mov [scheduler_caller_cpu], ecx  ; §133: aufrufende CPU identifizieren
     lea eax, [esp + 4]          ; EAX = F (Frame-Basis)
     push eax                    ; Argument: Frame-Zeiger (ESP = F-8)
     call scheduler_on_tick      ; EAX ← neuer (oder gleicher) Frame-Zeiger
@@ -19082,15 +19084,17 @@ module_test_image:
 ; Präemptiver Round-Robin-Scheduler (ADR-2004 / ADR-2012)
 ; ---------------------------------------------------------------------------
 
-SCHEDULER_THREAD_COUNT equ 3
+SCHEDULER_THREAD_COUNT equ 8
 SCHEDULER_FRAME_SIZE   equ 68
-SCHEDULER_API_SIZE     equ 32
+SCHEDULER_API_SIZE     equ 48                    ; §134: +8 (dynamic slot state)
 SCHEDULER_CAP_PREEMPT  equ 0x00000001
 SCHEDULER_CAP_RR       equ 0x00000002
+SCHEDULER_CAP_AFFINITY equ 0x00000004           ; §133: CPU-Affinitätsunterstützung
+SCHEDULER_CAP_DYNAMIC  equ 0x00000008           ; §134: dynamische Thread-Slots
 
 ; Thread Manager (ADR-2012)
-THREAD_API_SIZE      equ 32
-THREAD_CAPACITY      equ 3
+THREAD_API_SIZE      equ 36
+THREAD_CAPACITY      equ SCHEDULER_THREAD_COUNT
 THREAD_RECORD_SIZE   equ 32
 THREAD_STATE_READY   equ 1
 OBJECT_TYPE_THREAD   equ 5
@@ -19208,6 +19212,74 @@ thread_register:
     stc
     ret
 
+; EAX=Einstieg, EDX=PID, ECX=CPU-Affinität (-1=beliebig). EAX=TID.
+; Belegt einen freien Scheduler-Slot, erzeugt einen eigenen Kontextframe und
+; veröffentlicht den Thread unter scheduler_lock. Dadurch können APs den Slot
+; erst sehen, wenn Kontext, Affinität und Thread-Datensatz vollständig sind.
+thread_create_dynamic:
+    pushfd
+    cli
+    mov [thread_temp_entry], eax
+    mov [thread_temp_pid], edx
+    mov [thread_temp_affinity], ecx
+    cmp dword [thread_manager_ready], 1
+    jne .invalid_no_lock
+    test eax, eax
+    jz .invalid_no_lock
+    mov eax, edx
+    call process_lookup
+    jc .invalid_no_lock
+
+.lock:
+    lock bts dword [scheduler_lock], 0
+    jc .lock
+
+    mov ebx, 1                         ; Slot 0 bleibt BSP-/Kernel-Slot
+.scan_slot:
+    cmp ebx, SCHEDULER_THREAD_COUNT
+    jae .invalid_unlock
+    cmp dword [thread_task_ids + ebx * 4], 0
+    jne .next_slot
+    cmp dword [scheduler_contexts + ebx * 4], 0
+    je .slot_found
+.next_slot:
+    inc ebx
+    jmp .scan_slot
+
+.slot_found:
+    mov [thread_temp_slot], ebx
+    mov eax, [thread_temp_entry]
+    call scheduler_create_frame
+    jc .invalid_unlock
+    mov ebx, [thread_temp_slot]
+    mov [scheduler_contexts + ebx * 4], eax
+    mov eax, [thread_temp_affinity]
+    mov [thread_cpu_affinity + ebx * 4], eax
+    mov dword [thread_running_on + ebx * 4], -1
+
+    mov eax, [thread_temp_entry]
+    mov edx, [thread_temp_pid]
+    mov ebx, [thread_temp_slot]
+    call thread_register
+    jc .invalid_clear_slot
+    lock btr dword [scheduler_lock], 0
+    popfd
+    clc
+    ret
+
+.invalid_clear_slot:
+    mov ebx, [thread_temp_slot]
+    mov dword [scheduler_contexts + ebx * 4], 0
+    mov dword [thread_cpu_affinity + ebx * 4], -1
+    mov dword [thread_running_on + ebx * 4], -1
+.invalid_unlock:
+    lock btr dword [scheduler_lock], 0
+.invalid_no_lock:
+    xor eax, eax
+    popfd
+    stc
+    ret
+
 ; EAX=TID. EAX=Datensatz oder 0.
 thread_lookup:
     xor ecx, ecx
@@ -19253,9 +19325,28 @@ thread_manager_self_test:
     mov edx, [task_scope_kernel_root_id]
     cmp [eax + TASK_RECORD_SCOPE], edx
     jne .invalid
-    cmp dword [task_count], THREAD_CAPACITY
+    ; §134: zur Laufzeit einen zusätzlichen Thread in einen freien
+    ; Scheduler-Slot legen. Der Thread ist CPU-ungebunden und darf damit von
+    ; BSP oder APs übernommen werden, sobald der Scheduler ihn auswählt.
+    mov eax, scheduler_dynamic_thread
+    mov edx, 1
+    mov ecx, -1
+    call thread_create_dynamic
+    jc .invalid
+    mov [thread_dynamic_tid], eax
+    call thread_lookup
+    jc .invalid
+    cmp dword [eax + THREAD_SLOT], 3
     jne .invalid
-    cmp dword [thread_count], THREAD_CAPACITY
+    cmp dword [eax + THREAD_ENTRY], scheduler_dynamic_thread
+    jne .invalid
+    cmp dword [thread_cpu_affinity + 3 * 4], -1
+    jne .invalid
+    cmp dword [thread_running_on + 3 * 4], -1
+    jne .invalid
+    cmp dword [task_count], 4
+    jne .invalid
+    cmp dword [thread_count], 4
     jne .invalid
     clc
     ret
@@ -19273,6 +19364,7 @@ thread_manager_api:
     dd thread_count
     dd thread_table
     dd thread_next_tid
+    dd thread_create_dynamic
 
 thread_count:       dd 0
 thread_next_tid:    dd 0
@@ -19281,6 +19373,8 @@ thread_temp_pid:    dd 0
 thread_temp_slot:   dd 0
 thread_temp_record: dd 0
 thread_temp_task:   dd 0
+thread_temp_affinity: dd 0
+thread_dynamic_tid: dd 0
 thread_manager_ready: dd 0
 align 4
 thread_table:
@@ -19291,9 +19385,24 @@ thread_task_ids:
 scheduler_initialize:
     mov dword [scheduler_enabled], 0
     mov dword [scheduler_current], 0
-    mov dword [scheduler_contexts + 0], 0
+    mov edi, scheduler_contexts
+    xor eax, eax
+    mov ecx, SCHEDULER_THREAD_COUNT
+    rep stosd
+    mov edi, thread_cpu_affinity
+    mov eax, -1
+    mov ecx, SCHEDULER_THREAD_COUNT
+    rep stosd
+    mov edi, thread_running_on
+    mov eax, -1
+    mov ecx, SCHEDULER_THREAD_COUNT
+    rep stosd
     mov dword [scheduler_thread1_runs], 0
     mov dword [scheduler_thread2_runs], 0
+    mov dword [scheduler_dynamic_runs], 0
+    ; §133: Slot 0 (BSP-Idle/Kernel-Thread) auf CPU 0 pinnen
+    mov dword [thread_cpu_affinity + 0], 0      ; nur BSP (CPU 0) darf Slot 0 laden
+    mov dword [thread_running_on + 0], 0        ; Slot 0 läuft ab Start auf BSP
 
     mov eax, scheduler_thread1
     call scheduler_create_frame
@@ -19357,14 +19466,22 @@ scheduler_create_frame:
     stc
     ret
 
-; [ESP+4] enthält den vollständigen Frame des unterbrochenen Threads.
+; [ESP+4] = vollständiger Frame-Zeiger des unterbrochenen Threads.
+; Nutzt scheduler_caller_cpu (unter Spinlock gesetzt) für Affinitätsprüfung (§133).
+; ESI/EDI werden gesichert und restauriert.
 scheduler_on_tick:
-    mov eax, [esp + 4]
+    push esi
+    push edi
+    ; Basisadresse: [esp+12] = Frame-Zeiger (ursprünglich [esp+4] + 2×push)
+    mov eax, [esp + 12]
     cmp dword [scheduler_enabled], 1
     jne .done
+
+    ; Aktuellen Slot freigeben: Frame sichern, als "nicht laufend" markieren
     mov edx, [scheduler_current]
     mov [scheduler_contexts + edx * 4], eax
     mov [scheduler_previous_slot], edx
+    mov dword [thread_running_on + edx * 4], -1    ; §133: Slot freigeben
 
     cmp dword [thread_manager_ready], 1
     jne .select_next
@@ -19379,13 +19496,37 @@ scheduler_on_tick:
 
 .select_next:
     mov edx, [scheduler_previous_slot]
+    mov esi, edx                    ; §133: Start für Wrap-Detection (kein Endlos-Loop)
+    mov edi, [scheduler_caller_cpu] ; §133: aufrufende CPU (gesetzt unter Spinlock)
+
+.try_slot:
     inc edx
     cmp edx, SCHEDULER_THREAD_COUNT
-    jb .selected
-    xor edx, edx
-.selected:
+    jb .check_affin
+    xor edx, edx                    ; Wrap um auf Slot 0
+
+.check_affin:
+    cmp edx, esi                    ; §133: alle Slots geprüft → kein kompatibler Slot
+    je .no_slot_found
+
+    ; §133: Affinitätsprüfung
+    mov eax, [thread_cpu_affinity + edx * 4]
+    cmp eax, -1                     ; -1 = beliebige CPU → ok
+    je .check_running
+    cmp eax, edi                    ; affinity = diese CPU?
+    jne .try_slot                   ; nein → nächster Slot
+
+.check_running:
+    ; §133: Slot bereits auf anderer CPU laufend?
+    cmp dword [thread_running_on + edx * 4], -1
+    jne .try_slot                   ; belegt → nächster Slot
+
+.slot_ok:
+    ; Slot passt – übernehmen
     mov [scheduler_current], edx
     mov [scheduler_selected_slot], edx
+    mov [thread_running_on + edx * 4], edi   ; §133: als "laufend auf CPU edi" markieren
+
     cmp dword [thread_manager_ready], 1
     jne .load_frame
     mov eax, [thread_task_ids + edx * 4]
@@ -19396,10 +19537,23 @@ scheduler_on_tick:
     cmp dword [eax + TASK_STATE], TASK_STATE_READY
     jne .load_frame
     mov dword [eax + TASK_STATE], TASK_STATE_RUNNING
+
 .load_frame:
     mov edx, [scheduler_selected_slot]
     mov eax, [scheduler_contexts + edx * 4]
+    jmp .done
+
+.no_slot_found:
+    ; §133: Kein freier kompatibler Slot.
+    ; Aktuellen Slot wieder als "laufend" markieren und gleichen Frame zurückgeben.
+    mov edx, [scheduler_previous_slot]
+    mov [thread_running_on + edx * 4], edi
+    mov [scheduler_current], edx
+    mov eax, [esp + 12]
+
 .done:
+    pop edi
+    pop esi
     ret
 
 scheduler_thread1:
@@ -19441,12 +19595,19 @@ scheduler_thread2:
     pause
     jmp scheduler_thread2
 
+scheduler_dynamic_thread:
+    inc dword [scheduler_dynamic_runs]
+    pause
+    jmp scheduler_dynamic_thread
+
 scheduler_self_test:
     mov ecx, 100000000
 .wait:
     cmp dword [scheduler_thread1_runs], 0
     je .continue
     cmp dword [scheduler_thread2_runs], 0
+    je .continue
+    cmp dword [scheduler_dynamic_runs], 0
     je .continue
     cmp dword [ipc_error], 0
     jne .invalid
@@ -19468,21 +19629,31 @@ scheduler_api:
     dd SCHEDULER_API_SIZE
     dw 1, 0
     dd SCHEDULER_THREAD_COUNT
-    dd SCHEDULER_CAP_PREEMPT | SCHEDULER_CAP_RR
+    dd SCHEDULER_CAP_PREEMPT | SCHEDULER_CAP_RR | SCHEDULER_CAP_AFFINITY | SCHEDULER_CAP_DYNAMIC
     dd scheduler_on_tick
     dd scheduler_current
     dd scheduler_thread1_runs
     dd scheduler_thread2_runs
+    dd thread_cpu_affinity          ; Zeiger auf per-Slot Affinitäts-Array (§133)
+    dd thread_running_on            ; Zeiger auf per-Slot Running-On-Array (§133)
+    dd scheduler_contexts           ; §134: Slot-Kontexte für dynamische Threads
+    dd thread_task_ids              ; §134: Slot→Task-Zuordnung
 
-scheduler_lock:    dd 0           ; Spinlock – nur eine CPU darf scheduler_on_tick gleichzeitig ausführen
-scheduler_enabled: dd 0
-scheduler_current: dd 0
+scheduler_lock:         dd 0       ; Spinlock – nur eine CPU gleichzeitig in scheduler_on_tick
+scheduler_caller_cpu:   dd 0       ; CPU-Slot des Aufrufers (unter Spinlock gesetzt, §133)
+scheduler_enabled:      dd 0
+scheduler_current:      dd 0
 scheduler_previous_slot: dd 0
 scheduler_selected_slot: dd 0
 scheduler_contexts:
     times SCHEDULER_THREAD_COUNT dd 0
+thread_cpu_affinity:               ; per-Slot: -1=beliebige CPU, N=nur CPU N (§133)
+    times SCHEDULER_THREAD_COUNT dd -1
+thread_running_on:                 ; per-Slot: -1=frei, N=läuft auf CPU N (§133)
+    times SCHEDULER_THREAD_COUNT dd -1
 scheduler_thread1_runs: dd 0
 scheduler_thread2_runs: dd 0
+scheduler_dynamic_runs: dd 0
 
 ; ---------------------------------------------------------------------------
 ; Minimaler Kernel Main

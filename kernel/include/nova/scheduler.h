@@ -8,6 +8,8 @@
 
 #define NOVA_SCHEDULER_CAP_PREEMPTIVE (1u << 0)
 #define NOVA_SCHEDULER_CAP_ROUND_ROBIN (1u << 1)
+#define NOVA_SCHEDULER_CAP_AFFINITY (1u << 2)
+#define NOVA_SCHEDULER_CAP_DYNAMIC_THREADS (1u << 3)
 
 typedef struct NovaSchedulerApiV1 {
     uint32_t StructSize;
@@ -19,8 +21,12 @@ typedef struct NovaSchedulerApiV1 {
     uint32_t CurrentThreadAddress;
     uint32_t Thread1RunsAddress;
     uint32_t Thread2RunsAddress;
+    uint32_t ThreadCpuAffinityAddress;
+    uint32_t ThreadRunningOnAddress;
+    uint32_t SchedulerContextsAddress;
+    uint32_t ThreadTaskIdsAddress;
 } NovaSchedulerApiV1;
 
-_Static_assert(sizeof(NovaSchedulerApiV1) == 32, "NovaSchedulerApiV1 ABI size");
+_Static_assert(sizeof(NovaSchedulerApiV1) == 48, "NovaSchedulerApiV1 ABI size");
 
 #endif

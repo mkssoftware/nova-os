@@ -4849,3 +4849,53 @@ Der Kernel kann darüber entscheiden, ob der Trust-Provider seinen Commit als `H
 | Testfall | Beschreibung | Erwartetes Ergebnis |
 |---|---|---|
 | `nki-v2-hmacsha256-valid` | NKI v2 mit HMAC-SHA-256 + QEMU (Secure Boot disabled) | `UEFI:KERNEL-DEVSIGN-VERIFIED` + `UEFI:KERNEL-POLICY-AUTHORIZED` + `UEFI:KERNEL-HANDOFF-READY` + `NOVA_KERNEL_READY` |
+
+---
+
+## §119 – NovaFS: harte Nutzdatenprüfsummen-Pfade
+
+**Kurzfassung:** Wenn ein NovaFS-Volume Nutzdatenprüfsummen aktiviert, werden
+Checksum-Metadaten ab jetzt als verbindlicher Teil der Integritätskette
+behandelt.
+
+### Problem
+
+Die Kernel-Routine `novafs_data_checksum_verify` übersprang bisher einen
+Lesefehler des Prüfsummen-Arrayblocks. Das war für alte Volumes mit
+`checksum_tree_block = 0` korrekt, aber für aktivierte Prüfsummen zu weich: ein
+defekter oder falsch platzierter Checksum-Bereich konnte dazu führen, dass
+Nutzdaten ohne echte Prüfung gelesen wurden.
+
+### Umsetzung
+
+- `novafs_mount` berechnet aus `total_blocks` die Anzahl benötigter
+  Checksum-Arrayblöcke (`ceil(total_blocks / 1024)`).
+- Bei gesetztem `checksum_tree_block` muss die Region:
+  - hinter `transaction_log_block + NOVAFS_JOURNAL_BLOCKS` beginnen,
+  - vor dem Backup-Superblock enden,
+  - vollständig in der Free-Space-Bitmap als belegt markiert sein.
+- `novafs_data_checksum_verify` behandelt einen Lesefehler des
+  Checksum-Arrayblocks als Fehler, nicht als „Prüfung überspringen“.
+- `novafs_data_checksum_write` meldet Fehler per Carry Flag zurück.
+- `novafs_write` bricht bei einem Checksum-Schreibfehler ab; der vorhandene
+  `novafs_change_abort`/Journal-Pfad kann die Änderung dadurch zurückrollen.
+- Das Host-Werkzeug setzt bei `cat` unter Windows stdout in den Binärmodus.
+  Ohne diese Korrektur konnte der Windows-Textmodus zufällige Binärdateien beim
+  Ausgeben verändern, obwohl die Daten im NovaFS-Volume korrekt gespeichert
+  waren.
+
+### Kompatibilität
+
+Volumes ohne aktivierten Checksum-Bereich (`checksum_tree_block = 0`) behalten
+das bisherige No-op-Verhalten. Die Änderung betrifft nur Volumes, die
+Nutzdatenprüfsummen explizit aktiviert haben.
+
+### Validierung
+
+`make kernel` wurde erfolgreich über MSYS2-Bash ausgeführt. Der Kernel lässt
+sich assemblieren und bleibt im bestehenden 256-KiB-NKI-Limit.
+
+`make -f Makefile.novafs novafs-check` läuft mit
+`MSYS2_ARG_CONV_EXCL="*"` erfolgreich durch. Der Test deckt u. a. binäre
+Dateiinhalte, Tree-Splits, Löschen/Umbenennen, Backup-Superblock und erkannte
+Korruption ab.

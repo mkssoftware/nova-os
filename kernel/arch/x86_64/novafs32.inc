@@ -2306,7 +2306,7 @@ novafs_now_epoch:
 novafs_days_before_month: dd 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
 
 ; --- Nutzdatenprüfsummen ---
-; novafs_data_checksum_write: EAX=Blocknummer, EDI=Datenpuffer (4096 Byte). CF=0 immer.
+; novafs_data_checksum_write: EAX=Blocknummer, EDI=Datenpuffer (4096 Byte). CF=1 bei Fehler.
 ; Schreibt CRC32C des Datenpuffers in das Prüfsummen-Array des Volumes.
 ; Ist nfs_checksum_block=0 (altes Volume), wird nichts getan.
 novafs_data_checksum_write:
@@ -2334,7 +2334,7 @@ novafs_data_checksum_write:
     ; Array-Block lesen
     mov edi, [nfs_checksum_page]
     call novafs_read_block
-    jc .skip
+    jc .error
     ; CRC32C eintragen
     mov eax, [nfs_csum_off]
     mov ecx, [nfs_csum_crc]
@@ -2344,10 +2344,14 @@ novafs_data_checksum_write:
     mov eax, [nfs_csum_ablock]
     mov edi, [nfs_checksum_page]
     call novafs_write_block_logged
-.skip:
+    jc .error
     popad
 .done:
     clc
+    ret
+.error:
+    popad
+    stc
     ret
 
 ; novafs_data_checksum_verify: EAX=Blocknummer, EDI=Datenpuffer. CF=1 bei Fehler.
@@ -2371,7 +2375,7 @@ novafs_data_checksum_verify:
     ; Array-Block lesen
     mov edi, [nfs_checksum_page]
     call novafs_read_block
-    jc .ok_pop               ; Lesefehler: Prüfung überspringen
+    jc .error_pop            ; Checksum-Metadaten muessen lesbar sein
     ; Gespeicherten CRC32C holen
     mov eax, [nfs_csum_off]
     mov esi, [nfs_checksum_page]
@@ -2395,6 +2399,10 @@ novafs_data_checksum_verify:
 .mismatch:
     popad
     mov dword [nfs_error], NOVAFS_ERR_CORRUPT
+    stc
+    ret
+.error_pop:
+    popad
     stc
     ret
 
@@ -3317,6 +3325,7 @@ novafs_write:
     mov eax, [nfs_rw_physical]
     mov edi, [nfs_data_page]
     call novafs_data_checksum_write
+    jc .invalid
     ; §125 CoW: Extent-Eintrag auf neuen Block umbiegen
     cmp dword [nfs_cow_new_phys], 0
     je .cow_done
@@ -3811,6 +3820,32 @@ novafs_mount:
     ; Prüfsummen-Array-Block aus dem Superblock lesen (0 = altes Volume, keine Prüfsummen)
     mov eax, [nfs_sb + NFS_SB_CHECKSUM_TREE]
     mov [nfs_checksum_block], eax
+    mov dword [nfs_checksum_blocks], 0
+    test eax, eax
+    jz .checksum_region_ok
+    ; Pro 4-KiB-Arrayblock werden 1024 Datenblock-CRCs gespeichert.
+    ; Die Region muss hinter der Journal-Region liegen und vor dem
+    ; Backup-Superblock enden, sonst koennte ein defekter Superblock
+    ; Checksum-I/O auf Metadaten oder ausserhalb des Volumes umlenken.
+    mov eax, [nfs_total_blocks]
+    add eax, 1023
+    jc .corrupt
+    shr eax, 10
+    test eax, eax
+    jz .corrupt
+    mov [nfs_checksum_blocks], eax
+    mov ebx, [nfs_checksum_block]
+    mov ecx, [nfs_sb + NFS_SB_JOURNAL_BLOCK]
+    add ecx, NOVAFS_JOURNAL_BLOCKS
+    jc .corrupt
+    cmp ebx, ecx
+    jb .corrupt
+    mov ecx, ebx
+    add ecx, eax
+    jc .corrupt
+    cmp ecx, [nfs_total_blocks]
+    jae .corrupt
+.checksum_region_ok:
 
     ; Bitmap laden und gegen bitmap_crc32c pruefen
     xor ebx, ebx
@@ -3853,6 +3888,24 @@ novafs_mount:
     dec eax
     call novafs_block_used
     jnc .corrupt
+    ; Falls Nutzdatenpruefsummen aktiv sind, muss ihre Array-Region in der
+    ; Bitmap reserviert sein. So faellt ein teilweise migriertes oder
+    ; beschaedigtes Volume beim Mount kontrolliert aus, statt spaeter Daten-
+    ; und Checksum-Bloecke zu vermischen.
+    cmp dword [nfs_checksum_block], 0
+    je .checksum_bitmap_ok
+    xor ebx, ebx
+.checksum_bitmap:
+    cmp ebx, [nfs_checksum_blocks]
+    jae .checksum_bitmap_ok
+    mov eax, [nfs_checksum_block]
+    add eax, ebx
+    jc .corrupt
+    call novafs_block_used
+    jnc .corrupt
+    inc ebx
+    jmp .checksum_bitmap
+.checksum_bitmap_ok:
 
     ; Baumwurzeln pruefen
     mov ebx, nfs_tree_object
@@ -4539,6 +4592,7 @@ nfs_rtc_check:        times 6 dd 0
 nfs_rtc_days:         dd 0
 nfs_crc_saved:        dd 0, 0
 nfs_checksum_block:   dd 0
+nfs_checksum_blocks:  dd 0
 nfs_csum_blk:         dd 0
 nfs_csum_crc:         dd 0
 nfs_csum_ablock:      dd 0
