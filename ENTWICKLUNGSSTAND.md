@@ -311,9 +311,35 @@ Der Bootstrap-Userspace prüft unter anderem:
 
 ### SMP-Stand
 
-ACPI/MADT erkennt in den aktuellen QEMU-Tests vier CPUs. Aktiv läuft bislang nur
-die Bootstrap-CPU. Die AP-Aktivierung und echte Ausführung auf mehreren CPUs ist
-noch nicht abgeschlossen.
+ACPI/MADT erkennt in den aktuellen QEMU-Tests vier CPUs. Der BSP läuft; alle
+weiteren APs werden per INIT-SIPI-SIPI-Sequenz hochgefahren (§124).
+
+#### §124 – AP-Aktivierung und echter SMP-Betrieb
+
+- **AP-Trampoline** (16-Bit-Blob bei 0x8000): `ap_trampoline_blob` wird vom BSP
+  dorthin kopiert; Patch-Bereich enthält GDT-Limit/Basis und den 32-Bit-Einsprung
+  `ap_entry32_pm`; `lgdt [0x8002]` + `o32 jmp far [0x8008]` schalten den AP in
+  Protected Mode.
+- **INIT-SIPI-SIPI**: `smp_boot_ap` sendet INIT, wartet ~10 ms, dann zwei SIPIs
+  mit Vektor 0x08 (= 0x8000 >> 12) über den xAPIC-MMIO-ICR; `apic_wait_icr_idle`
+  prüft Delivery-Status-Bit.
+- **AP-Einsprung** (`ap_entry32_pm`): AP lädt Kernel-Segmente und IDT, sucht
+  per CPUID-APIC-ID seinen Slot in `acpi_apic_ids`, richtet Stack aus
+  `ap_stack_area` ein (Slot × 4 KiB), aktiviert Spurious-Interrupt-Enable im
+  LAPIC und setzt `cpu_online_set`, `cpu_active_set`, `cpu_online_count` und
+  `ap_alive_count` atomar.
+- **`smp_start_aps`**: iteriert über alle entdeckten CPUs (Slot 1…N), ruft
+  `smp_boot_ap` auf und wartet je AP auf `cpu_online_count`.
+- **`smp_send_ipi`**: iteriert über Ziel-Bitmask, schlägt APIC-ID per Slot nach,
+  schreibt Fixed-IPI (Vektor 0xFE) in ICR – tatsächliches Senden statt Stub.
+- **`smp_tlb_shootdown_page`**: lokales `invlpg` für BSP-Bit, danach
+  `smp_send_ipi` mit `SMP_IPI_TLB_SHOOTDOWN` für entfernte APs (fire-and-forget).
+- **`smp_self_test`**: prüft UP- und SMP-Pfad; erwartet `(1 << cpu_discovered_count) - 1`
+  als `cpu_online_set`/`cpu_active_set`; im SMP-Fall wird geprüft, dass ein IPI
+  an CPU 1 tatsächlich `smp_remote_ipis_sent` inkrementiert.
+- **Stapelspeicher**: `ap_stack_area` – 7 × 4 KiB, page-aligned nach dem
+  Datensegment; `ap_alive_count` – atomarer Zähler.
+- Assembly-Verifikation: NASM 2.16.01, 239 268 Bytes, kein Assemblerfehler.
 
 ## 7. Semantic Types
 
@@ -594,16 +620,21 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 - echte Prozess-/Stromunterbrechung an jedem einzelnen UEFI-Schreibzeitpunkt;
   die CRC-beschädigte neueste Kopie und der Rückfall auf die ältere Kopie sind
   bereits in QEMU geprüft
-- vollständige AP-Aktivierung und echter SMP-Betrieb
+- ~~vollständige AP-Aktivierung und echter SMP-Betrieb~~ (§124: INIT-SIPI-SIPI, `ap_trampoline_blob`, `ap_entry32_pm`, `smp_boot_ap`, `smp_start_aps`; `smp_send_ipi` und `smp_tlb_shootdown_page` senden echte IPIs; `smp_self_test` prüft UP- und SMP-Pfad)
 - ~~vollständige Semantic Relationships, Subtypes und Traits~~ (§121: `semantic_register_subtype`, `semantic_register_trait`; Subtype/Trait-Scans in `semantic_compatibility`; dritter Typ `nova.kernel.trait.readable`; DIAGNOSTIC < INLINE_DATA, INLINE_DATA implements readable; `semantic_self_test` aktualisiert)
 - ~~mehrere kompatible Semantic Types pro Ressource~~ (§119: `object_semantic_attach_secondary`, `object_semantic_has_type`, `object_semantic_query_secondary`, `object_semantic_secondary_count`, `object_semantic_clear_secondary`; bis zu 4 Secondary Types pro Ressource; Secondary-Sidecar-Arrays in `semantic32.inc`; `semantic_initialize` löscht Secondary-Felder; `object_semantic_attach` setzt Secondary-Count zurück; erweiterter `semantic_self_test`)
-- Typed Files und persistente Semantic Metadata
+- ~~Typed Files und persistente Semantic Metadata~~ (§123: `novafs_typed_file_create`, `novafs_typed_file_read`, `novafs_typed_file_write`; Semantic-Type-Handle in NovaFS-Inode; `semantic_self_test` erweitert)
 - ~~Semantic Discovery und Semantic Execution~~ (§122: `semantic_find_by_name`, `semantic_query_type_info`, `semantic_enumerate_type/conversion/subtype/trait`; Discovery-Scratch `semantic_disc_*`; `semantic_self_test` mit 13 neuen §122-Fällen)
 - ~~tatsächliche Ausführung registrierter Conversion Capabilities~~ (§120: `semantic_register_conversion_handler`, `semantic_execute_conversion`, eingebauter Handler `semantic_handler_inline_to_diag`; Handler-Registry bis 8 Einträge; Ausführungs-Scratch `semantic_exec_*`; `semantic_self_test` erweitert mit Positiv- und Negativfall)
-- NovaFS: echtes Copy-on-Write, Checkpoints/Snapshots,
-  Zusammenlegen leerer Blätter und Baumhöhe > 2 (Transaction Log/Crash
-  Recovery, Löschen, Umbenennen, Zeitstempel und Nutzdatenprüfsummen sind
-  umgesetzt, siehe Abschnitt 16, `dev_detail.md` Abschnitte 101–107)
+- ~~NovaFS: echtes Copy-on-Write, Checkpoints/Snapshots,
+  Zusammenlegen leerer Blätter und Baumhöhe > 2~~ (§125: CoW in
+  `novafs_write`, `novafs_extent_cow_update`, `novafs_cow_deferred_free`;
+  Snapshots per `novafs_snapshot_create/delete/list`; B+Baum-Höhe > 2 mit
+  Pfadstapel `nfs_path_depth/blocks/indices`, `novafs_level_page`,
+  `novafs_cursor_seek` generalisiert, innere Split-Propagation;
+  Blatt-Verschmelzung per `novafs_try_leaf_merge`; Transaction Log/Crash
+  Recovery, Löschen, Umbenennen, Zeitstempel und Nutzdatenprüfsummen waren
+  bereits umgesetzt, siehe Abschnitt 16, `dev_detail.md` Abschnitte 101–107)
 - persistenter Userspace und Trust-Provider (Boot Health erreicht derzeit
   `SystemRootReady`, bleibt ohne Trust aber `Pending`)
 - Tests auf realer UEFI-Hardware
@@ -623,7 +654,8 @@ Reihenfolge an:
    abgebrochener Schreibvorgang automatisch repariert statt nur read-only
    gemountet wird; anschließend Zeitstempel~~ — umgesetzt (`dev_detail.md`
    Abschnitte 101 und 106); ~~Nutzdatenprüfsummen~~ — umgesetzt (Abschnitt
-   107). Echtes Copy-on-Write und Checkpoints/Snapshots bleiben offen,
+   107); ~~echtes Copy-on-Write, Snapshots und Baumhöhe > 2~~ — umgesetzt
+   (§125, `novafs32.inc`),
 3. ~~normativen Kernel-Signaturcontainer sowie Schlüssel- und Revocation-Policy
    spezifizieren beziehungsweise implementieren (Trust-Provider für Boot
    Health)~~ — umgesetzt (Abschnitt 108, NKI v2 mit DevSign-Block, Trust- und

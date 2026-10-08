@@ -49,6 +49,7 @@ NFS_SB_GENERATION     equ 40
 NFS_SB_OBJECT_TREE    equ 56
 NFS_SB_DIRECTORY_TREE equ 64
 NFS_SB_EXTENT_TREE    equ 72
+NFS_SB_CHECKSUM_TREE  equ 88
 NFS_SB_JOURNAL_BLOCK  equ 112
 NFS_SB_FREE_SPACE     equ 96
 NFS_SB_INCOMPAT       equ 128
@@ -63,6 +64,19 @@ NFS_SB_OBJECT_COUNT   equ 408
 NFS_SB_BACKUP_BLOCK   equ 416
 NFS_SB_BITMAP_CRC     equ 424
 NFS_SB_MOUNT_COUNT    equ 432
+; §125 – Snapshot-Tabelle im Superblock (ab Offset 436)
+NFS_SB_SNAP_COUNT     equ 436
+NFS_SB_SNAP_TABLE     equ 440
+NFS_SNAP_GENERATION   equ 0
+NFS_SNAP_OBJ_ROOT     equ 8
+NFS_SNAP_DIR_ROOT     equ 12
+NFS_SNAP_EXT_ROOT     equ 16
+NFS_SNAP_CSM_ROOT     equ 20
+NFS_SNAP_TIMESTAMP    equ 24
+NFS_SNAP_VALID        equ 32
+NFS_SNAP_ENTRY        equ 40
+NFS_MAX_SNAPSHOTS     equ 4
+NFS_MAX_HEIGHT        equ 4
 
 ; Baumknoten
 NFS_N_MAGIC       equ 0
@@ -91,6 +105,10 @@ NFS_O_TYPE        equ 16
 NFS_O_FLAGS       equ 20
 NFS_O_SIZE        equ 24
 NFS_O_ALLOCATED   equ 32
+NFS_O_CREATED     equ 40   ; u64, Unix-Epoch-Sekunden (0 = unbekannt/Alt-Volume)
+NFS_O_MODIFIED    equ 48   ; u64, Unix-Epoch-Sekunden
+NFS_O_ACCESSED    equ 56   ; u64, Unix-Epoch-Sekunden (nur bei Erzeugung/Schreiben gesetzt, siehe Abschnitt 106)
+NFS_O_CHANGED     equ 64   ; u64, Unix-Epoch-Sekunden (Metadaten-Aenderung)
 NFS_O_PERMISSIONS equ 80
 NFS_O_LINKS       equ 84
 NFS_O_GENERATION  equ 112
@@ -1047,53 +1065,119 @@ novafs_key_set:
     ret
 
 ; ---------------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+; §125 – Pfadtiefe → Pufferadresse
+; ECX=Pfadtiefe (0=root, 1=inner1, 2=inner2, >=3=leaf). EDI=Puffer. ECX zerstoert.
+novafs_level_page:
+    cmp ecx, 0
+    jne .l1
+    mov edi, [nfs_root_page]
+    ret
+.l1:
+    cmp ecx, 1
+    jne .l2
+    mov edi, [nfs_inner1_page]
+    ret
+.l2:
+    cmp ecx, 2
+    jne .lleaf
+    mov edi, [nfs_inner2_page]
+    ret
+.lleaf:
+    mov edi, [nfs_leaf_page]
+    ret
+
 ; Cursor (ein globaler Cursor; Blatt in nfs_leaf_page, Wurzel in nfs_root_page)
 ; ---------------------------------------------------------------------------
 
 ; EBX=Baum. Positioniert auf das erste Item >= nfs_key. CF bei Fehler.
+; §125: generalisiert fuer Baumhoehe bis NFS_MAX_HEIGHT.
 novafs_cursor_seek:
     pushad
     mov [nfs_cur_tree], ebx
+    ; Wurzel laden
     mov ecx, [ebx + NFS_TD_ROOT]
     mov eax, [nfs_sb + ecx]
+    mov [nfs_path_blocks + 0], eax
     mov edi, [nfs_root_page]
     mov edx, 0xFFFFFFFF
     call novafs_node_load
     jc .invalid
     mov edi, [nfs_root_page]
+    ; Eltern-Prüfung: Wurzel muss parentlos sein
     mov eax, [edi + NFS_N_PARENT]
     or eax, [edi + NFS_N_PARENT + 4]
     jnz .corrupt
+    ; Ist Wurzel schon ein Blatt?
     cmp word [edi + NFS_N_LEVEL], 0
-    jne .inner_root
+    je .root_is_leaf
+    ; Abstieg durch innere Knoten; EBP = aktuelle Pfadtiefe (0 = Wurzel)
+    xor ebp, ebp
+.inner_descent:
+    ; EDI = Puffer der inneren Knotenebene EBP, EBX = Baum (unveraendert)
+    movzx ecx, word [edi + NFS_N_COUNT]
+    test ecx, ecx
+    jz .corrupt
+    ; Kindauswahl: groessten Separator-Index suchen, dessen Schluessel <= nfs_key
+    ; nfs_path_indices[ebp] = gewaehlter Kind-Index (initial 0)
+    mov dword [nfs_path_indices + ebp*4], 0
+    mov edx, 1
+.sep_scan:
+    cmp edx, ecx
+    jae .sep_done
+    imul esi, edx, NOVAFS_INNER_ITEM
+    lea esi, [edi + NOVAFS_NODE_HEADER + esi]
+    call novafs_compare_inner       ; zerstoert nur EAX
+    cmp eax, 0xFFFFFFFF
+    jne .sep_done
+    mov [nfs_path_indices + ebp*4], edx
+    inc edx
+    jmp .sep_scan
+.sep_done:
+    mov edx, [nfs_path_indices + ebp*4]
+    ; Kind-Block aus dem inneren Knoten holen
+    imul ecx, edx, NOVAFS_INNER_ITEM
+    cmp dword [edi + NOVAFS_NODE_HEADER + ecx + 20], 0
+    jne .corrupt
+    mov eax, [edi + NOVAFS_NODE_HEADER + ecx + 16]
+    ; Pfadtiefe erhoehen und Kind laden
+    inc ebp
+    mov [nfs_path_blocks + ebp*4], eax
+    mov ecx, ebp
+    call novafs_level_page          ; EDI = Puffer fuer Tiefe EBP (zerstoert ECX)
+    mov edx, 0xFFFFFFFF
+    call novafs_node_load
+    jc .invalid
+    ; Puffer neu setzen (novafs_node_load benutzt pushad, EDI bleibt)
+    mov ecx, ebp
+    call novafs_level_page
+    ; Ist dieses Kind ein Blatt?
+    cmp word [edi + NFS_N_LEVEL], 0
+    je .leaf_loaded
+    ; Noch ein innerer Knoten – weiter absteigen
+    cmp ebp, NFS_MAX_HEIGHT - 2
+    jae .corrupt
+    jmp .inner_descent
+.leaf_loaded:
+    ; EBP = Pfadtiefe des Eltern-inneren-Knotens; Blatt steht in nfs_level_page(EBP)
+    ; Für Rueckwaertskompatibilitaet: nfs_cur_height = EBP + 1, nfs_cur_child = path_indices[EBP-1]
+    mov [nfs_path_depth], ebp
+    mov eax, ebp
+    inc eax
+    mov [nfs_cur_height], eax
+    mov eax, [nfs_path_indices + ebp*4 - 4]
+    mov [nfs_cur_child], eax
+    jmp .position
+.root_is_leaf:
+    ; Hoehe 1: Wurzel ist Blatt; kopiere in leaf_page fuer einheitlichen Zugriff
     mov dword [nfs_cur_height], 1
+    mov dword [nfs_path_depth], 0
     mov dword [nfs_cur_child], 0
+    mov dword [nfs_path_indices + 0], 0
     mov esi, edi
     mov edi, [nfs_leaf_page]
     mov ecx, NOVAFS_BLOCK_SIZE / 4
     rep movsd
-    jmp .position
-.inner_root:
-    mov dword [nfs_cur_height], 2
-    movzx ecx, word [edi + NFS_N_COUNT]
-    test ecx, ecx
-    jz .corrupt
-    mov dword [nfs_cur_child], 0
-    mov edx, 1
-.child_scan:
-    cmp edx, ecx
-    jae .child_found
-    imul esi, edx, NOVAFS_INNER_ITEM
-    lea esi, [edi + NOVAFS_NODE_HEADER + esi]
-    call novafs_compare_inner
-    cmp eax, 0xFFFFFFFF
-    jne .child_found
-    mov [nfs_cur_child], edx
-    inc edx
-    jmp .child_scan
-.child_found:
-    call novafs_cursor_load_leaf
-    jc .invalid
 .position:
     mov edi, [nfs_leaf_page]
     movzx ecx, word [edi + NFS_N_COUNT]
@@ -1121,28 +1205,66 @@ novafs_cursor_seek:
     stc
     ret
 
-; Laedt das Blatt nfs_cur_child der inneren Wurzel. CF am Ende oder bei Fehler.
-novafs_cursor_load_leaf:
+; §125 – Steigt den Pfad-Stack hoch und laedt das naechste Geschwister-Blatt.
+; CF wenn kein naechstes Blatt vorhanden. Verwendet EBX=nfs_cur_tree.
+novafs_cursor_advance_leaf:
     pushad
     mov ebx, [nfs_cur_tree]
-    mov esi, [nfs_root_page]
-    movzx ecx, word [esi + NFS_N_COUNT]
-    mov edx, [nfs_cur_child]
+    ; Von der Tiefe direkt ueber dem Blatt aufwaerts suchen
+    mov ebp, [nfs_path_depth]
+    test ebp, ebp
+    jz .end                         ; Hoehe 1: kein naechstes Blatt
+.climb:
+    dec ebp
+    ; Innere Knoten bei EBP laden (liegen noch im Puffer)
+    mov ecx, ebp
+    call novafs_level_page          ; EDI = innerer Puffer
+    ; Versuche naechstes Kind
+    mov edx, [nfs_path_indices + ebp*4]
+    inc edx
+    movzx ecx, word [edi + NFS_N_COUNT]
     cmp edx, ecx
-    jae .end
-    imul edx, edx, NOVAFS_INNER_ITEM
-    cmp dword [esi + NOVAFS_NODE_HEADER + edx + 20], 0
+    ja .climb                       ; kein naechstes Kind, eine Ebene hoeher
+    ; Naechstes Kind gefunden bei EBP, Index EDX
+    mov [nfs_path_indices + ebp*4], edx
+    ; Fuer jede Ebene unterhalb EBP: lade erstes Kind
+    ; Lade Kind-Block
+    imul ecx, edx, NOVAFS_INNER_ITEM
+    cmp dword [edi + NOVAFS_NODE_HEADER + ecx + 20], 0
     jne .corrupt
-    mov eax, [esi + NOVAFS_NODE_HEADER + edx + 16]
-    mov edi, [nfs_leaf_page]
-    xor edx, edx
+    mov eax, [edi + NOVAFS_NODE_HEADER + ecx + 16]
+    inc ebp
+.load_down:
+    ; EAX = Block zu laden, EBP = Tiefe
+    mov [nfs_path_blocks + ebp*4], eax
+    mov ecx, ebp
+    call novafs_level_page
+    mov edx, 0xFFFFFFFF
     call novafs_node_load
     jc .invalid
-    mov eax, [esi + NFS_N_BLOCK]
-    cmp [edi + NFS_N_PARENT], eax
+    mov ecx, ebp
+    call novafs_level_page
+    ; Ist dieses ein Blatt?
+    cmp word [edi + NFS_N_LEVEL], 0
+    je .loaded
+    ; Innerer Knoten: wähle erstes Kind (Index 0)
+    mov dword [nfs_path_indices + ebp*4], 0
+    cmp dword [edi + NOVAFS_NODE_HEADER + 20], 0
     jne .corrupt
-    cmp dword [edi + NFS_N_PARENT + 4], 0
-    jne .corrupt
+    mov eax, [edi + NOVAFS_NODE_HEADER + 16]
+    inc ebp
+    jmp .load_down
+.loaded:
+    ; Blatt geladen; nfs_path_depth, nfs_cur_height, nfs_cur_child aktualisieren
+    mov [nfs_path_depth], ebp
+    mov eax, ebp
+    inc eax
+    mov [nfs_cur_height], eax
+    cmp ebp, 0
+    je .no_child_update
+    mov eax, [nfs_path_indices + ebp*4 - 4]
+    mov [nfs_cur_child], eax
+.no_child_update:
     popad
     clc
     ret
@@ -1154,7 +1276,14 @@ novafs_cursor_load_leaf:
     stc
     ret
 
+; §125 (Rueckwaertskompatibilitaet) – wird intern nicht mehr aufgerufen,
+; bleibt als Alias fuer externen Code.
+novafs_cursor_load_leaf:
+    call novafs_cursor_advance_leaf
+    ret
+
 ; ESI=aktuelles Item. Wechselt bei Bedarf ins naechste Blatt; CF am Ende.
+; §125: nutzt novafs_cursor_advance_leaf statt hardcodierter Hoehe-2-Logik.
 novafs_cursor_item:
     push eax
     push ecx
@@ -1165,10 +1294,8 @@ novafs_cursor_item:
     mov eax, [nfs_cur_index]
     cmp eax, ecx
     jb .have
-    cmp dword [nfs_cur_height], 2
-    jne .end
-    inc dword [nfs_cur_child]
-    call novafs_cursor_load_leaf
+    ; Blatt erschoepft: naechstes Geschwister-Blatt laden
+    call novafs_cursor_advance_leaf
     jc .end
     mov dword [nfs_cur_index], 0
     jmp .again
@@ -1349,15 +1476,28 @@ novafs_tree_insert:
     ret
 
 .update_parent:
-    ; Eintrag fuer das rechte Blatt hinter dem geteilten Kind einfuegen.
+    ; §125 – Split-Propagation den Pfad-Stack aufwaerts.
+    ; nfs_aux_page enthaelt das rechte Kind (Blatt oder innerer Knoten).
+    ; Schleife: EBP = aktuelle Eltertiefe (beginnt bei nfs_path_depth - 1)
+    mov ebp, [nfs_path_depth]
+    dec ebp                     ; Elterknoten des gerade gespaltenen Kindes
+.split_propagate:
+    ; Innerer Knoten bei Tiefe EBP in seinen Puffer laden
+    mov ecx, ebp
+    call novafs_level_page      ; EDI = innerer Knoten-Puffer
+    ; Separator-Eintrag fuer das rechte Kind erstellen
     mov esi, [nfs_aux_page]
     lea esi, [esi + NOVAFS_NODE_HEADER]
     mov edx, nfs_inner_temp
     mov eax, [nfs_ins_right]
     call novafs_inner_entry_from_item
-    mov edi, [nfs_root_page]
-    mov eax, [nfs_cur_child]
+    ; Einfuegeposition: nach dem Kind-Index dieser Ebene
+    mov eax, [nfs_path_indices + ebp*4]
     inc eax
+    movzx ecx, word [edi + NFS_N_COUNT]
+    cmp ecx, NOVAFS_INNER_MAX
+    jae .split_inner            ; innerer Knoten auch voll
+    ; Platz vorhanden: Eintrag einfuegen und speichern
     mov esi, nfs_inner_temp
     mov ecx, NOVAFS_INNER_ITEM
     call novafs_node_insert_at
@@ -1367,6 +1507,150 @@ novafs_tree_insert:
     clc
     ret
 
+.split_inner:
+    ; Innerer Knoten voll: aufteilen. Verwende nfs_aux_page als rechten Knoten.
+    ; Vorher: aktueller Rechts-Separator in nfs_inner_temp.
+    ; Wir brauchen einen neuen Block fuer den rechten inneren Knoten.
+    ; Speichere Block-Nummer des linken Knotens
+    mov eax, [edi + NFS_N_BLOCK]
+    push eax                    ; linker Block auf Stack
+    call novafs_alloc_block
+    jc .rollback_inner
+    mov [nfs_ins_right], eax    ; neuer rechter Block
+    ; Ist das die Wurzel (EBP==0)?
+    test ebp, ebp
+    jnz .inner_parent_known
+    ; Neue Wurzel allozieren
+    call novafs_alloc_block
+    jc .rollback_inner
+    mov [nfs_ins_new_root], eax
+    mov [nfs_ins_parent], eax
+    mov [edi + NFS_N_PARENT], eax
+    jmp .inner_build_right
+.inner_parent_known:
+    dec ebp
+    mov ecx, ebp
+    call novafs_level_page
+    mov eax, [edi + NFS_N_BLOCK]
+    mov [nfs_ins_parent], eax
+    inc ebp
+    mov ecx, ebp
+    call novafs_level_page
+.inner_build_right:
+    ; Rechten inneren Knoten im aux_page aufbauen
+    push edi                    ; linken Knoten-Puffer retten
+    mov edi, [nfs_aux_page]
+    mov eax, [nfs_ins_right]
+    mov edx, 1
+    mov ecx, [nfs_ins_parent]
+    call novafs_node_init
+    pop edi
+    ; Split: linke Haelfte behaelt (count+1)/2 Eintraege
+    movzx eax, word [edi + NFS_N_COUNT]
+    inc eax
+    shr eax, 1
+    mov [nfs_ins_left], eax
+    ; Pruefen, ob neuer Separator vor oder nach Split-Punkt
+    mov edx, [nfs_path_indices + ebp*4]
+    inc edx                     ; Einfuege-Index
+    cmp edx, [nfs_ins_left]
+    jae .inner_into_right
+    ; Separator geht links: Items [left-1, count) nach rechts schieben
+    mov eax, [nfs_ins_left]
+    dec eax
+    mov edx, NOVAFS_INNER_ITEM
+    call novafs_split_move      ; verschiebt Items vom linken in aux_page
+    mov edi, [nfs_path_blocks + ebp*4]   ; linker Block
+    ; insert into left inner node
+    mov ecx, ebp
+    call novafs_level_page
+    mov eax, [nfs_path_indices + ebp*4]
+    inc eax
+    mov esi, nfs_inner_temp
+    mov ecx, NOVAFS_INNER_ITEM
+    call novafs_node_insert_at
+    jmp .inner_split_store
+.inner_into_right:
+    mov eax, [nfs_ins_left]
+    mov edx, NOVAFS_INNER_ITEM
+    call novafs_split_move
+    mov edi, [nfs_aux_page]
+    mov eax, [nfs_path_indices + ebp*4]
+    sub eax, [nfs_ins_left]
+    inc eax
+    mov esi, nfs_inner_temp
+    mov ecx, NOVAFS_INNER_ITEM
+    call novafs_node_insert_at
+.inner_split_store:
+    ; Beide Haelften schreiben
+    mov edi, [nfs_aux_page]
+    call novafs_node_store
+    jc .invalid
+    mov ecx, ebp
+    call novafs_level_page
+    call novafs_node_store
+    jc .invalid
+    ; Neue Wurzel?
+    test ebp, ebp
+    jnz .inner_parent_propagate
+    ; Neue innere Wurzel erzeugen (gleich wie beim Blatt-Split fuer Hoehe 1)
+    pop ecx                     ; linker Block (oben auf Stack gepusht)
+    mov edi, [nfs_root_page]
+    mov eax, [nfs_ins_new_root]
+    mov edx, [edi + NFS_N_LEVEL]
+    inc edx
+    xor ecx, ecx
+    call novafs_node_init
+    mov ecx, ebp
+    call novafs_level_page
+    lea esi, [edi + NOVAFS_NODE_HEADER]
+    lea edx, [edi + NOVAFS_NODE_HEADER]       ; WRONG - edi is root now
+    ; Rebuild: root_page is now the new root
+    ; nfs_level_page(0) = root_page already loaded with new root init
+    ; Recalculate: left child = old left inner node (path_blocks[0])
+    ; right child = nfs_ins_right
+    mov edi, [nfs_root_page]
+    mov eax, [nfs_path_blocks + 0]            ; alter linker innerer Block
+    ; Wir brauchen das erste Item des linken Knotens als Separator
+    ; Lade linken Knoten kurz in inner1_page
+    push edi
+    mov edi, [nfs_inner1_page]
+    mov edx, 0xFFFFFFFF
+    call novafs_node_load
+    lea esi, [edi + NOVAFS_NODE_HEADER]
+    pop edi
+    lea edx, [edi + NOVAFS_NODE_HEADER]
+    call novafs_inner_entry_from_item
+    ; rechtes Kind
+    mov edi, [nfs_aux_page]
+    lea esi, [edi + NOVAFS_NODE_HEADER]
+    mov edi, [nfs_root_page]
+    lea edx, [edi + NOVAFS_NODE_HEADER + NOVAFS_INNER_ITEM]
+    mov eax, [nfs_ins_right]
+    call novafs_inner_entry_from_item
+    mov word [edi + NFS_N_COUNT], 2
+    call novafs_node_store
+    jc .invalid
+    mov ecx, [ebx + NFS_TD_ROOT]
+    mov eax, [nfs_ins_new_root]
+    mov [nfs_sb + ecx], eax
+    mov dword [nfs_sb + ecx + 4], 0
+    popad
+    clc
+    ret
+
+.inner_parent_propagate:
+    ; Separator fuer den neuen rechten inneren Knoten berechnen und Stack hoeher
+    mov edi, [nfs_aux_page]
+    lea esi, [edi + NOVAFS_NODE_HEADER]
+    mov edx, nfs_inner_temp
+    mov eax, [nfs_ins_right]
+    call novafs_inner_entry_from_item
+    dec ebp
+    jmp .split_propagate
+
+.rollback_inner:
+    pop eax                     ; linker Block (cleanup)
 .tree_full:
     mov dword [nfs_error], NOVAFS_ERR_TREE_FULL
     popad
@@ -1719,6 +2003,401 @@ novafs_requires_system_write:
     clc
     ret
 
+; ---------------------------------------------------------------------------
+; Echtzeituhr (CMOS RTC) und Unix-Epoch (Abschnitt 106)
+; ---------------------------------------------------------------------------
+;
+; AL=CMOS-Registerindex -> EAX=Rohwert (0..255, nullerweitert). Nur EAX wird
+; veraendert.
+novafs_cmos_read:
+    out 0x70, al
+    in al, 0x71
+    movzx eax, al
+    ret
+
+; AL=BCD-Byte -> EAX=Binaerwert (High-Nibble*10 + Low-Nibble). Nur EAX wird
+; veraendert, ECX/EDX werden intern benutzt und wiederhergestellt.
+novafs_bcd_to_bin:
+    push ecx
+    push edx
+    movzx eax, al
+    mov edx, eax
+    and edx, 0x0F
+    push edx
+    shr eax, 4
+    and eax, 0x0F
+    mov ecx, 10
+    mul ecx                          ; EAX = Zehner-Nibble * 10, EDX wird dabei ueberschrieben
+    pop edx
+    add eax, edx
+    pop edx
+    pop ecx
+    ret
+
+; Liest alle RTC-Felder einmal roh aus CMOS (Ports 0x70/0x71) und wandelt sie
+; (BCD- und 12h/24h-Korrektur anhand Status Register B) in die Skalare
+; nfs_rtc_sec/min/hour/day/month/year (volles 4-stelliges Jahr). Kein
+; UIP-Schutz hier; der Aufrufer (novafs_now_epoch) liest zweimal und
+; vergleicht, um eine Lesung waehrend eines laufenden Registerupdates zu
+; verwerfen. Keine NMI-Maskierung waehrend des Zugriffs (bewusste
+; Vereinfachung, siehe Abschnitt 106 "Offen").
+novafs_rtc_sample:
+    push eax
+    push ebx
+    push ecx
+    push edx
+
+    mov al, 0x0B                     ; Status Register B
+    out 0x70, al
+    in al, 0x71
+    movzx eax, al
+    mov [nfs_rtc_regb], eax
+
+    mov al, 0x00                     ; Sekunden
+    call novafs_cmos_read
+    mov [nfs_rtc_sec], eax
+    mov al, 0x02                     ; Minuten
+    call novafs_cmos_read
+    mov [nfs_rtc_min], eax
+    mov al, 0x04                     ; Stunden (Bit 7 = PM im 12h-Modus)
+    call novafs_cmos_read
+    mov [nfs_rtc_hour], eax
+    mov al, 0x07                     ; Tag
+    call novafs_cmos_read
+    mov [nfs_rtc_day], eax
+    mov al, 0x08                     ; Monat
+    call novafs_cmos_read
+    mov [nfs_rtc_month], eax
+    mov al, 0x09                     ; Jahr (2-stellig)
+    call novafs_cmos_read
+    mov [nfs_rtc_year], eax
+    mov al, 0x32                     ; Jahrhundert (nicht auf jeder Firmware belegt)
+    call novafs_cmos_read
+    mov [nfs_rtc_century], eax
+
+    mov eax, [nfs_rtc_regb]
+    test al, 0x04                    ; Bit 2 = 1: Werte sind bereits binaer
+    jnz .binary_values
+
+    mov eax, [nfs_rtc_sec]
+    call novafs_bcd_to_bin
+    mov [nfs_rtc_sec], eax
+    mov eax, [nfs_rtc_min]
+    call novafs_bcd_to_bin
+    mov [nfs_rtc_min], eax
+    mov eax, [nfs_rtc_hour]
+    mov ebx, eax
+    and ebx, 0x80                    ; PM-Flag vor der BCD-Wandlung sichern
+    and eax, 0x7F
+    call novafs_bcd_to_bin
+    or eax, ebx
+    mov [nfs_rtc_hour], eax
+    mov eax, [nfs_rtc_day]
+    call novafs_bcd_to_bin
+    mov [nfs_rtc_day], eax
+    mov eax, [nfs_rtc_month]
+    call novafs_bcd_to_bin
+    mov [nfs_rtc_month], eax
+    mov eax, [nfs_rtc_year]
+    call novafs_bcd_to_bin
+    mov [nfs_rtc_year], eax
+    mov eax, [nfs_rtc_century]
+    call novafs_bcd_to_bin
+    mov [nfs_rtc_century], eax
+.binary_values:
+
+    mov eax, [nfs_rtc_regb]
+    test al, 0x02                    ; Bit 1 = 1: 24-Stunden-Format
+    jnz .hours_24
+    mov eax, [nfs_rtc_hour]
+    mov ebx, eax
+    and ebx, 0x80                    ; PM-Flag
+    and eax, 0x7F                    ; Stundenwert 1..12
+    cmp eax, 12
+    jne .not_noon_midnight
+    test ebx, ebx
+    jz .midnight
+    jmp .store_12h                   ; 12 PM (Mittag) bleibt 12
+.midnight:
+    xor eax, eax                     ; 12 AM (Mitternacht) = Stunde 0
+    jmp .store_12h
+.not_noon_midnight:
+    test ebx, ebx
+    jz .store_12h                    ; AM, 1..11: unveraendert
+    add eax, 12                      ; PM, 1..11 -> 13..23
+.store_12h:
+    mov [nfs_rtc_hour], eax
+.hours_24:
+    and dword [nfs_rtc_hour], 0x7F   ; verbleibendes PM-Bit maskieren
+
+    mov eax, [nfs_rtc_century]
+    cmp eax, 19
+    jb .century_default
+    cmp eax, 21
+    jbe .century_ok
+.century_default:
+    mov eax, 20                      ; unplausibel/nicht implementiert -> 20xx annehmen
+.century_ok:
+    mov ecx, 100
+    mul ecx
+    add eax, [nfs_rtc_year]
+    mov [nfs_rtc_year], eax
+
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+; ECX=Jahr (vierstellig) -> EAX=1, wenn Schaltjahr, sonst 0. ECX bleibt
+; erhalten.
+novafs_rtc_is_leap:
+    push ecx
+    push edx
+    push ebx
+    mov ebx, ecx
+    mov eax, ebx
+    xor edx, edx
+    mov ecx, 4
+    div ecx
+    test edx, edx
+    jnz .not_leap
+    mov eax, ebx
+    xor edx, edx
+    mov ecx, 100
+    div ecx
+    test edx, edx
+    jnz .leap
+    mov eax, ebx
+    xor edx, edx
+    mov ecx, 400
+    div ecx
+    test edx, edx
+    jnz .not_leap
+.leap:
+    mov eax, 1
+    jmp .done
+.not_leap:
+    xor eax, eax
+.done:
+    pop ebx
+    pop edx
+    pop ecx
+    ret
+
+; Liefert EDX:EAX = aktuelle Unixzeit (Sekunden seit 1970-01-01T00:00:00,
+; ohne Zeitzonenkorrektur: die RTC wird als UTC behandelt). Liest die
+; CMOS-RTC zweimal hintereinander und verwirft die Lesung, falls sich
+; zwischen beiden Lesungen etwas geaendert hat (Schutz gegen einen
+; laufenden Registerupdate-Uebergang).
+novafs_now_epoch:
+    push ebx
+    push ecx
+    push esi
+    push edi
+
+.wait_uip:
+    mov al, 0x0A
+    out 0x70, al
+    in al, 0x71
+    test al, 0x80
+    jnz .wait_uip
+
+.read_again:
+    call novafs_rtc_sample
+    mov eax, [nfs_rtc_sec]
+    mov [nfs_rtc_check], eax
+    mov eax, [nfs_rtc_min]
+    mov [nfs_rtc_check + 4], eax
+    mov eax, [nfs_rtc_hour]
+    mov [nfs_rtc_check + 8], eax
+    mov eax, [nfs_rtc_day]
+    mov [nfs_rtc_check + 12], eax
+    mov eax, [nfs_rtc_month]
+    mov [nfs_rtc_check + 16], eax
+    mov eax, [nfs_rtc_year]
+    mov [nfs_rtc_check + 20], eax
+
+    call novafs_rtc_sample
+    mov eax, [nfs_rtc_sec]
+    cmp eax, [nfs_rtc_check]
+    jne .read_again
+    mov eax, [nfs_rtc_min]
+    cmp eax, [nfs_rtc_check + 4]
+    jne .read_again
+    mov eax, [nfs_rtc_hour]
+    cmp eax, [nfs_rtc_check + 8]
+    jne .read_again
+    mov eax, [nfs_rtc_day]
+    cmp eax, [nfs_rtc_check + 12]
+    jne .read_again
+    mov eax, [nfs_rtc_month]
+    cmp eax, [nfs_rtc_check + 16]
+    jne .read_again
+    mov eax, [nfs_rtc_year]
+    cmp eax, [nfs_rtc_check + 20]
+    jne .read_again
+
+    ; Tage seit 1970-01-01 bis zum Beginn des gelesenen Jahres.
+    mov dword [nfs_rtc_days], 0
+    mov ecx, 1970
+.year_loop:
+    cmp ecx, [nfs_rtc_year]
+    jge .year_done
+    call novafs_rtc_is_leap
+    mov edx, 365
+    add edx, eax
+    add [nfs_rtc_days], edx
+    inc ecx
+    jmp .year_loop
+.year_done:
+
+    ; Tage seit Jahresbeginn bis zum Beginn des Monats (Tabelle fuer
+    ; Nicht-Schaltjahre; Schalttag wird separat addiert).
+    mov eax, [nfs_rtc_month]
+    dec eax
+    mov esi, novafs_days_before_month
+    mov eax, [esi + eax * 4]
+    add [nfs_rtc_days], eax
+    mov ecx, [nfs_rtc_year]
+    call novafs_rtc_is_leap
+    test eax, eax
+    jz .no_leap_add
+    cmp dword [nfs_rtc_month], 2
+    jbe .no_leap_add
+    inc dword [nfs_rtc_days]
+.no_leap_add:
+
+    ; Tag im Monat (1-basiert) -> Tage seit Monatsbeginn.
+    mov eax, [nfs_rtc_day]
+    dec eax
+    add [nfs_rtc_days], eax
+
+    ; Sekunden = Tage*86400 + Stunden*3600 + Minuten*60 + Sekunden (voll
+    ; 64-Bit in EBX:ESI aufsummiert).
+    mov eax, [nfs_rtc_days]
+    mov ecx, 86400
+    mul ecx
+    mov ebx, eax
+    mov esi, edx
+    mov eax, [nfs_rtc_hour]
+    mov ecx, 3600
+    mul ecx
+    add ebx, eax
+    adc esi, edx
+    mov eax, [nfs_rtc_min]
+    mov ecx, 60
+    mul ecx
+    add ebx, eax
+    adc esi, edx
+    mov eax, [nfs_rtc_sec]
+    add ebx, eax
+    adc esi, 0
+
+    mov eax, ebx
+    mov edx, esi
+
+    pop edi
+    pop esi
+    pop ecx
+    pop ebx
+    ret
+
+novafs_days_before_month: dd 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+
+; --- Nutzdatenprüfsummen ---
+; novafs_data_checksum_write: EAX=Blocknummer, EDI=Datenpuffer (4096 Byte). CF=0 immer.
+; Schreibt CRC32C des Datenpuffers in das Prüfsummen-Array des Volumes.
+; Ist nfs_checksum_block=0 (altes Volume), wird nichts getan.
+novafs_data_checksum_write:
+    cmp dword [nfs_checksum_block], 0
+    je .done
+    pushad
+    mov [nfs_csum_blk], eax
+    ; CRC32C des Datenpuffers berechnen
+    mov esi, edi
+    mov ecx, NOVAFS_BLOCK_SIZE
+    mov eax, 0xFFFFFFFF
+    call crc32c_update
+    not eax
+    mov [nfs_csum_crc], eax
+    ; Array-Block und Byte-Offset bestimmen (block/1024, (block%1024)*4)
+    mov eax, [nfs_csum_blk]
+    mov ecx, eax
+    shr ecx, 10              ; ecx = block / 1024 = Offset im Array
+    and eax, 0x3FF           ; eax = block % 1024
+    shl eax, 2               ; eax = byte_offset = (block%1024)*4
+    mov [nfs_csum_off], eax
+    mov eax, [nfs_checksum_block]
+    add eax, ecx             ; physischer Array-Block
+    mov [nfs_csum_ablock], eax
+    ; Array-Block lesen
+    mov edi, [nfs_checksum_page]
+    call novafs_read_block
+    jc .skip
+    ; CRC32C eintragen
+    mov eax, [nfs_csum_off]
+    mov ecx, [nfs_csum_crc]
+    mov edi, [nfs_checksum_page]
+    mov [edi + eax], ecx
+    ; Array-Block zurückschreiben (journalisiert)
+    mov eax, [nfs_csum_ablock]
+    mov edi, [nfs_checksum_page]
+    call novafs_write_block_logged
+.skip:
+    popad
+.done:
+    clc
+    ret
+
+; novafs_data_checksum_verify: EAX=Blocknummer, EDI=Datenpuffer. CF=1 bei Fehler.
+; Liest CRC32C aus dem Prüfsummen-Array und vergleicht mit dem Datenpuffer.
+; CRC=0 bedeutet nicht initialisiert -> Prüfung überspringen (CF=0).
+; Ist nfs_checksum_block=0, wird nichts getan (CF=0).
+novafs_data_checksum_verify:
+    cmp dword [nfs_checksum_block], 0
+    je .done_nc
+    pushad
+    mov [nfs_csum_blk], eax
+    mov [nfs_csum_data], edi
+    ; Array-Block und Byte-Offset
+    mov ecx, eax
+    shr ecx, 10
+    and eax, 0x3FF
+    shl eax, 2
+    mov [nfs_csum_off], eax
+    mov eax, [nfs_checksum_block]
+    add eax, ecx
+    ; Array-Block lesen
+    mov edi, [nfs_checksum_page]
+    call novafs_read_block
+    jc .ok_pop               ; Lesefehler: Prüfung überspringen
+    ; Gespeicherten CRC32C holen
+    mov eax, [nfs_csum_off]
+    mov esi, [nfs_checksum_page]
+    mov ecx, [esi + eax]
+    test ecx, ecx
+    jz .ok_pop               ; 0 = nicht initialisiert -> OK
+    mov [nfs_csum_crc], ecx
+    ; CRC32C des Datenpuffers berechnen
+    mov esi, [nfs_csum_data]
+    mov ecx, NOVAFS_BLOCK_SIZE
+    mov eax, 0xFFFFFFFF
+    call crc32c_update
+    not eax
+    cmp eax, [nfs_csum_crc]
+    jne .mismatch
+.ok_pop:
+    popad
+.done_nc:
+    clc
+    ret
+.mismatch:
+    popad
+    mov dword [nfs_error], NOVAFS_ERR_CORRUPT
+    stc
+    ret
+
 ; EAX=Eltern-ObjectID, ESI=Name, ECX=Laenge, EDX=Typ (Datei/Verzeichnis).
 ; EAX=neue ObjectID. Laufende Aenderung (novafs_change_begin) erforderlich.
 novafs_create:
@@ -1772,6 +2451,15 @@ novafs_create:
     mov dword [nfs_item + NFS_O_PERMISSIONS], 0755o
 .perm_done:
     mov dword [nfs_item + NFS_O_LINKS], 1
+    call novafs_now_epoch
+    mov [nfs_item + NFS_O_CREATED], eax
+    mov [nfs_item + NFS_O_CREATED + 4], edx
+    mov [nfs_item + NFS_O_MODIFIED], eax
+    mov [nfs_item + NFS_O_MODIFIED + 4], edx
+    mov [nfs_item + NFS_O_ACCESSED], eax
+    mov [nfs_item + NFS_O_ACCESSED + 4], edx
+    mov [nfs_item + NFS_O_CHANGED], eax
+    mov [nfs_item + NFS_O_CHANGED + 4], edx
     mov eax, [nfs_sb + NFS_SB_GENERATION]
     mov edx, [nfs_sb + NFS_SB_GENERATION + 4]
     add eax, 1
@@ -1900,6 +2588,11 @@ novafs_cursor_remove:
     dec word [edi + NFS_N_COUNT]
     call novafs_node_store
     jc .failed
+    ; §125 – Blatt-Zusammenlegen pruefen (nur wenn Elternknoten vorhanden)
+    cmp dword [nfs_path_depth], 0
+    je .done
+    call novafs_try_leaf_merge      ; ignoriere Fehler (best-effort)
+.done:
     popad
     clc
     ret
@@ -1908,6 +2601,155 @@ novafs_cursor_remove:
 .failed:
     popad
     stc
+    ret
+
+; §125 – Blatt-Zusammenlegen: rechtes Geschwister borgen oder verschmelzen.
+; EBX=Baum. Nur aufgerufen wenn nfs_path_depth > 0 (Hoehe >= 2).
+; Best-effort: Fehler werden ignoriert; Loeschen gelingt auch ohne Merge.
+; Strategie: nur rechtes Geschwister, um Register-Druck gering zu halten.
+; [nfs_aux_page] = rechtes Geschwister (wenn vorhanden).
+novafs_try_leaf_merge:
+    pushad
+    ; Blatt-Itemzahl prüfen
+    mov edi, [nfs_leaf_page]
+    movzx ecx, word [edi + NFS_N_COUNT]
+    mov edx, [ebx + NFS_TD_MAX]
+    shr edx, 1
+    cmp ecx, edx
+    jae .done_ok                ; ausreichend gefuellt
+    ; Elternknoten bestimmen (Pfadtiefe-1)
+    mov ebp, [nfs_path_depth]
+    dec ebp
+    ; Rechtes Geschwister: Kind-Index+1 im Elternknoten
+    mov eax, [nfs_path_indices + ebp*4]
+    inc eax                     ; Index des rechten Geschwister-Eintrags
+    mov ecx, ebp
+    call novafs_level_page      ; EDI = Elternpuffer (Tiefe EBP)
+    movzx ecx, word [edi + NFS_N_COUNT]
+    cmp eax, ecx
+    jae .done_ok                ; kein rechtes Geschwister
+    ; Block des rechten Geschwisters holen
+    imul ecx, eax, NOVAFS_INNER_ITEM
+    cmp dword [edi + NOVAFS_NODE_HEADER + ecx + 20], 0
+    jne .done_ok
+    mov edx, [edi + NOVAFS_NODE_HEADER + ecx + 16]  ; Block des rechten Geschwister
+    ; Rechtes Geschwister in nfs_aux_page laden
+    push edi                    ; Elternpuffer retten
+    push eax                    ; Einfüge-Index retten
+    mov edi, [nfs_aux_page]
+    mov eax, edx
+    mov edx, 0xFFFFFFFF
+    call novafs_node_load
+    jc .pop2_done               ; Ladefehler – überspringen
+    ; Anzahl Items im rechten Geschwister
+    mov edi, [nfs_aux_page]
+    movzx ecx, word [edi + NFS_N_COUNT]
+    mov edx, [ebx + NFS_TD_MAX]
+    shr edx, 1
+    cmp ecx, edx
+    jbe .do_merge               ; Geschwister hat <= min Items → verschmelzen
+    ; Borrow-right: erstes Item des rechten Geschwister ans aktuelle Blatt anfügen
+    lea esi, [edi + NOVAFS_NODE_HEADER]
+    push edi                    ; aux_page retten
+    mov edi, [nfs_leaf_page]
+    movzx eax, word [edi + NFS_N_COUNT]
+    mov ecx, [ebx + NFS_TD_ITEM]
+    call novafs_node_insert_at  ; füge Item am Ende des aktuellen Blatts ein
+    call novafs_node_store
+    pop edi                     ; aux_page
+    jc .pop2_done
+    ; Erstes Item im rechten Geschwister entfernen
+    movzx ecx, word [edi + NFS_N_COUNT]
+    mov edx, [ebx + NFS_TD_ITEM]
+    push edi
+    lea esi, [edi + NOVAFS_NODE_HEADER + edx]
+    lea edi, [edi + NOVAFS_NODE_HEADER]
+    mov ecx, ecx
+    dec ecx
+    imul ecx, edx
+    rep movsb
+    pop edi
+    movzx eax, word [edi + NFS_N_COUNT]
+    dec eax
+    mov word [edi + NFS_N_COUNT], ax
+    imul eax, [ebx + NFS_TD_ITEM]
+    lea edi, [edi + NOVAFS_NODE_HEADER + eax]
+    mov ecx, [ebx + NFS_TD_ITEM]
+    xor eax, eax
+    rep stosb
+    mov edi, [nfs_aux_page]
+    call novafs_node_store
+    ; Kein Eltern-Update nötig (Separator ist weiterhin gültige Untergrenze)
+    pop eax                     ; Einfüge-Index (unbenutzt)
+    pop edi                     ; Elternpuffer (unbenutzt)
+    jmp .done_ok
+.do_merge:
+    ; Alle Items des rechten Geschwister ans aktuelle Blatt anhängen
+    movzx edx, word [edi + NFS_N_COUNT]
+    test edx, edx
+    jz .pop2_done
+    mov ecx, [ebx + NFS_TD_ITEM]
+    imul ecx, edx
+    lea esi, [edi + NOVAFS_NODE_HEADER]
+    mov edi, [nfs_leaf_page]
+    movzx eax, word [edi + NFS_N_COUNT]
+    imul eax, [ebx + NFS_TD_ITEM]
+    lea edi, [edi + NOVAFS_NODE_HEADER + eax]
+    rep movsb
+    ; Itemzahl des aktuellen Blatts erhöhen
+    mov edi, [nfs_leaf_page]
+    movzx eax, word [edi + NFS_N_COUNT]
+    add eax, edx
+    mov word [edi + NFS_N_COUNT], ax
+    call novafs_node_store
+    jc .pop2_done
+    ; Rechtes Geschwister-Block freigeben
+    mov edi, [nfs_aux_page]
+    mov eax, [edi + NFS_N_BLOCK]
+    call novafs_free_block
+    ; Separator-Eintrag des rechten Geschwisters im Elternknoten entfernen
+    pop eax                     ; rechter Geschwister-Index im Elternknoten
+    pop edi                     ; Elternpuffer
+    mov ecx, ebp
+    call novafs_level_page      ; EDI = Elternpuffer
+    movzx ecx, word [edi + NFS_N_COUNT]
+    ; shift-delete: Item an Index EAX aus dem inneren Knoten entfernen
+    mov edx, NOVAFS_INNER_ITEM
+    mov ebp, ecx
+    sub ebp, eax
+    dec ebp
+    imul ebp, edx
+    imul eax, edx
+    lea esi, [edi + NOVAFS_NODE_HEADER + eax]
+    add esi, edx                ; esi = &items[aex+1]
+    lea edi, [edi + NOVAFS_NODE_HEADER + eax]
+    push ecx
+    mov ecx, ebp
+    rep movsb
+    pop ecx
+    dec ecx
+    imul ecx, edx               ; letzten Eintrag nullen
+    mov eax, ecx
+    xor ecx, ecx
+    ; edi zeigt schon auf die richtige Stelle
+    mov ecx, edx
+    rep stosb
+    mov edi, [nfs_path_blocks + ebp*4]  ; EBP wurde überschrieben – nutze gespeicherte Tiefe
+    ; Elternknoten schreiben: lade ihn über seinen Block
+    mov ecx, [nfs_path_depth]
+    dec ecx
+    call novafs_level_page      ; EDI = Elternpuffer
+    movzx eax, word [edi + NFS_N_COUNT]
+    dec eax
+    mov word [edi + NFS_N_COUNT], ax
+    call novafs_node_store
+    jmp .done_ok
+.pop2_done:
+    pop eax
+    pop edi
+.done_ok:
+    popad
+    clc
     ret
 
 ; EAX=Eltern-ObjectID, ESI=Name, ECX=Laenge. Loescht eine Datei samt Extents
@@ -2108,15 +2950,18 @@ novafs_rename:
     mov ebx, nfs_tree_directory
     call novafs_cursor_remove
     jc .failed
-    mov eax, [nfs_mv_dst_parent]
-    cmp eax, [nfs_mv_src_parent]
-    je .done
     mov eax, [nfs_mv_object]
     call novafs_object_find
     jc .failed
+    call novafs_now_epoch
+    mov [nfs_object + NFS_O_CHANGED], eax
+    mov [nfs_object + NFS_O_CHANGED + 4], edx
     mov eax, [nfs_mv_dst_parent]
+    cmp eax, [nfs_mv_src_parent]
+    je .store_object
     mov [nfs_object + NFS_O_PARENT], eax
     mov dword [nfs_object + NFS_O_PARENT + 4], 0
+.store_object:
     call novafs_object_store
     jc .failed
 .done:
@@ -2356,6 +3201,10 @@ novafs_read:
     mov edi, [nfs_data_page]
     call novafs_read_block
     jc .invalid
+    ; EAX = Blocknummer (durch pushad/popad in novafs_read_block erhalten)
+    mov edi, [nfs_data_page]
+    call novafs_data_checksum_verify
+    jc .invalid
     mov esi, [nfs_data_page]
     add esi, ebx
     mov edi, [nfs_rw_buffer]
@@ -2435,12 +3284,24 @@ novafs_write:
     rep stosd
     jmp .modify
 .existing:
-    cmp dword [nfs_rw_chunk], NOVAFS_BLOCK_SIZE
-    je .modify
+    ; §125 Copy-on-Write: neuen Block allozieren, alten Inhalt lesen (bei Teilschreibung),
+    ; modifizierten Inhalt schreiben, Extent-Pointer aktualisieren, alten Block freigeben.
     mov eax, [nfs_rw_physical]
+    mov [nfs_cow_old_phys], eax
+    mov eax, [nfs_rw_object]
+    mov [nfs_cow_object], eax
+    mov eax, [nfs_rw_block]
+    mov [nfs_cow_log_blk], eax
+    ; Neuen Block allozieren
+    call novafs_alloc_block
+    jc .invalid
+    mov [nfs_cow_new_phys], eax
+    mov [nfs_rw_physical], eax      ; ab jetzt neuer Block
+    ; Alten Block-Inhalt lesen (immer, auch bei Vollblock – Metadaten kopieren)
+    mov eax, [nfs_cow_old_phys]
     mov edi, [nfs_data_page]
     call novafs_read_block
-    jc .invalid
+    jc .cow_rollback
 .modify:
     mov esi, [nfs_rw_buffer]
     mov edi, [nfs_data_page]
@@ -2453,11 +3314,32 @@ novafs_write:
     mov edi, [nfs_data_page]
     call novafs_write_block_logged
     jc .invalid
+    mov eax, [nfs_rw_physical]
+    mov edi, [nfs_data_page]
+    call novafs_data_checksum_write
+    ; §125 CoW: Extent-Eintrag auf neuen Block umbiegen
+    cmp dword [nfs_cow_new_phys], 0
+    je .cow_done
+    mov eax, [nfs_cow_object]
+    mov edx, [nfs_cow_log_blk]
+    mov ecx, [nfs_cow_old_phys]
+    mov ebx, [nfs_cow_new_phys]
+    call novafs_extent_cow_update
+    jc .invalid
+    ; Alten Block freigeben (sofort wenn keine Snapshots)
+    mov eax, [nfs_cow_old_phys]
+    call novafs_cow_deferred_free
+    mov dword [nfs_cow_new_phys], 0
+.cow_done:
     mov ecx, [nfs_rw_chunk]
     add [nfs_rw_buffer], ecx
     add [nfs_rw_offset], ecx
     sub [nfs_rw_remaining], ecx
     jmp .block
+.cow_rollback:
+    mov eax, [nfs_cow_new_phys]
+    call novafs_free_block
+    jmp .invalid
 .metadata:
     mov eax, [nfs_rw_object]
     call novafs_object_find
@@ -2471,6 +3353,13 @@ novafs_write:
     shl eax, 12
     add [nfs_object + NFS_O_ALLOCATED], eax
     adc dword [nfs_object + NFS_O_ALLOCATED + 4], 0
+    call novafs_now_epoch
+    mov [nfs_object + NFS_O_MODIFIED], eax
+    mov [nfs_object + NFS_O_MODIFIED + 4], edx
+    mov [nfs_object + NFS_O_CHANGED], eax
+    mov [nfs_object + NFS_O_CHANGED + 4], edx
+    mov [nfs_object + NFS_O_ACCESSED], eax
+    mov [nfs_object + NFS_O_ACCESSED + 4], edx
     call novafs_object_store
     jc .invalid
     popad
@@ -2478,6 +3367,261 @@ novafs_write:
     ret
 .read_only:
     mov dword [nfs_error], NOVAFS_ERR_READ_ONLY
+.invalid:
+    popad
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; §125 – Copy-on-Write Helfer
+; ---------------------------------------------------------------------------
+
+; EAX=ObjectID, EDX=logischer Block, ECX=alter phys. Block, EBX=neuer phys. Block.
+; Aktualisiert den Extent-Baum-Eintrag (ggf. Aufteilung des Multi-Block-Extents).
+; CF bei Fehler.
+novafs_extent_cow_update:
+    pushad
+    mov [nfs_cow_object], eax
+    mov [nfs_cow_log_blk], edx
+    mov [nfs_cow_old_phys], ecx
+    mov [nfs_cow_new_phys], ebx
+    ; Extent für das Objekt+logischen Block suchen
+    xor edx, edx
+    call novafs_key_set
+    mov ebx, nfs_tree_extent
+    call novafs_cursor_seek
+    jc .invalid
+.scan:
+    call novafs_cursor_item
+    jc .invalid
+    mov eax, [nfs_cow_object]
+    cmp [esi + NFS_E_OBJECT], eax
+    jne .invalid
+    cmp dword [esi + NFS_E_OBJECT + 4], 0
+    jne .invalid
+    ; Prüfen ob logischer Block in diesem Extent liegt
+    mov eax, [esi + NFS_E_LOGICAL]
+    shr eax, 12                     ; Start-Block
+    mov ecx, [esi + NFS_E_COUNT]
+    mov edx, eax
+    add edx, ecx
+    mov ebp, [nfs_cow_log_blk]
+    cmp ebp, eax
+    jb .next
+    cmp ebp, edx
+    jae .next
+    ; Gefunden. Ist es ein Single-Block-Extent?
+    cmp ecx, 1
+    je .single_block
+    ; Multi-Block-Extent: aufteilen in bis zu 3 Teile.
+    ; Teil 1: [start .. log_blk-1]  (vorhanden wenn log_blk > start)
+    ; Teil 2: [log_blk, new_phys, 1]
+    ; Teil 3: [log_blk+1 .. end-1] (vorhanden wenn log_blk < end-1)
+    mov [nfs_ins_left], eax         ; Extent-Start
+    mov [nfs_ins_count], ecx        ; Extent-Count
+    ; Alten Extent-Block und Start-Physical merken
+    mov eax, [esi + NFS_E_PHYSICAL]
+    mov [nfs_ins_right], eax        ; alter Start-Physical
+    ; Schrumpfe den bestehenden Eintrag auf Teil 1 (wenn möglich)
+    mov eax, [nfs_ins_left]
+    mov ecx, [nfs_cow_log_blk]
+    sub ecx, eax                    ; Länge Teil 1
+    test ecx, ecx
+    jz .no_part1
+    mov [esi + NFS_E_COUNT], ecx
+    mov edi, [nfs_leaf_page]
+    call novafs_node_store
+    jc .invalid
+    jmp .insert_part2
+.no_part1:
+    ; Teil 1 hat Länge 0: lösche bestehenden Eintrag
+    mov ebx, nfs_tree_extent
+    call novafs_cursor_remove
+    jc .invalid
+.insert_part2:
+    ; Teil 2 einfügen: [log_blk, new_phys, 1]
+    mov edi, nfs_item
+    xor eax, eax
+    mov ecx, NFS_E_ITEM / 4
+    rep stosd
+    mov eax, [nfs_cow_object]
+    mov [nfs_item + NFS_E_OBJECT], eax
+    mov eax, [nfs_cow_log_blk]
+    shl eax, 12
+    mov [nfs_item + NFS_E_LOGICAL], eax
+    mov eax, [nfs_cow_new_phys]
+    mov [nfs_item + NFS_E_PHYSICAL], eax
+    mov dword [nfs_item + NFS_E_COUNT], 1
+    mov dword [nfs_item + NFS_E_UNCOMPRESSED], NOVAFS_BLOCK_SIZE
+    mov dword [nfs_item + NFS_E_STORED], NOVAFS_BLOCK_SIZE
+    mov ebx, nfs_tree_extent
+    mov esi, nfs_item
+    call novafs_tree_insert
+    jc .invalid
+    ; Teil 3 einfügen: [log_blk+1 .. end-1] (wenn nötig)
+    mov eax, [nfs_cow_log_blk]
+    inc eax                         ; log_blk+1
+    mov ecx, [nfs_ins_left]
+    add ecx, [nfs_ins_count]        ; Extent-Ende
+    sub ecx, eax                    ; Länge Teil 3
+    jbe .done_cow
+    mov edi, nfs_item
+    push ecx
+    xor ecx, ecx
+    mov edx, NFS_E_ITEM / 4
+    push edx
+    push edi
+    mov ecx, NFS_E_ITEM / 4
+    rep stosd
+    pop edi
+    pop edx
+    pop ecx
+    mov edx, [nfs_cow_object]
+    mov [nfs_item + NFS_E_OBJECT], edx
+    mov edx, eax
+    shl edx, 12
+    mov [nfs_item + NFS_E_LOGICAL], edx
+    ; Physischer Block des Teils 3: alter Start + (log_blk+1 - extent_start)
+    mov edx, [nfs_ins_right]        ; alter Start-Physical
+    mov ebp, eax
+    sub ebp, [nfs_ins_left]
+    add edx, ebp
+    mov [nfs_item + NFS_E_PHYSICAL], edx
+    mov [nfs_item + NFS_E_COUNT], ecx
+    mov ebp, ecx
+    shl ebp, 12
+    mov [nfs_item + NFS_E_UNCOMPRESSED], ebp
+    mov [nfs_item + NFS_E_STORED], ebp
+    mov ebx, nfs_tree_extent
+    mov esi, nfs_item
+    call novafs_tree_insert
+    jc .invalid
+    jmp .done_cow
+.single_block:
+    ; Einfacher Fall: Extent hat genau 1 Block → Physical direkt überschreiben
+    mov eax, [nfs_cow_new_phys]
+    mov [esi + NFS_E_PHYSICAL], eax
+    mov edi, [nfs_leaf_page]
+    call novafs_node_store
+    jc .invalid
+    jmp .done_cow
+.next:
+    inc dword [nfs_cur_index]
+    jmp .scan
+.done_cow:
+    popad
+    clc
+    ret
+.invalid:
+    popad
+    stc
+    ret
+
+; EAX=physischer Block. Gibt ihn sofort frei, wenn keine Snapshots existieren.
+; Mit Snapshots: Block wird nicht freigegeben (künftige Erweiterung: Ref-Count).
+novafs_cow_deferred_free:
+    pushad
+    cmp dword [nfs_snap_count], 0
+    jne .deferred
+    call novafs_free_block
+.deferred:
+    popad
+    clc
+    ret
+
+; ---------------------------------------------------------------------------
+; §125 – Snapshots
+; ---------------------------------------------------------------------------
+
+; Snapshot anlegen. EAX = Snapshot-Index (0..3); CF bei Fehler (kein Platz).
+novafs_snapshot_create:
+    pushad
+    ; Freien Slot suchen
+    xor ebp, ebp
+.find_slot:
+    cmp ebp, NFS_MAX_SNAPSHOTS
+    jae .full
+    imul ecx, ebp, NFS_SNAP_ENTRY
+    add ecx, NFS_SB_SNAP_TABLE
+    cmp dword [nfs_sb + ecx + NFS_SNAP_VALID], 0
+    je .slot_found
+    inc ebp
+    jmp .find_slot
+.slot_found:
+    ; Snapshot-Eintrag füllen
+    imul ecx, ebp, NFS_SNAP_ENTRY
+    add ecx, NFS_SB_SNAP_TABLE
+    lea edi, [nfs_sb + ecx]
+    ; Generation
+    mov eax, [nfs_sb + NFS_SB_GENERATION]
+    mov [edi + NFS_SNAP_GENERATION], eax
+    mov eax, [nfs_sb + NFS_SB_GENERATION + 4]
+    mov [edi + NFS_SNAP_GENERATION + 4], eax
+    ; Tree roots
+    mov eax, [nfs_sb + NFS_SB_OBJECT_TREE]
+    mov [edi + NFS_SNAP_OBJ_ROOT], eax
+    mov eax, [nfs_sb + NFS_SB_DIRECTORY_TREE]
+    mov [edi + NFS_SNAP_DIR_ROOT], eax
+    mov eax, [nfs_sb + NFS_SB_EXTENT_TREE]
+    mov [edi + NFS_SNAP_EXT_ROOT], eax
+    mov eax, [nfs_sb + NFS_SB_CHECKSUM_TREE]
+    mov [edi + NFS_SNAP_CSM_ROOT], eax
+    ; Timestamp
+    call novafs_now_epoch
+    mov [edi + NFS_SNAP_TIMESTAMP], eax
+    mov [edi + NFS_SNAP_TIMESTAMP + 4], edx
+    ; Als gültig markieren
+    mov dword [edi + NFS_SNAP_VALID], 1
+    inc dword [nfs_sb + NFS_SB_SNAP_COUNT]
+    inc dword [nfs_snap_count]
+    ; Rückgabe: EAX = Slot-Index
+    mov [esp + 28], ebp             ; EAX in gespeichertem pushad-Rahmen
+    popad
+    clc
+    ret
+.full:
+    mov dword [nfs_error], NOVAFS_ERR_FULL
+    popad
+    stc
+    ret
+
+; EAX=Snapshot-Index. Löscht einen Snapshot. CF bei ungültigem Index.
+novafs_snapshot_delete:
+    pushad
+    cmp eax, NFS_MAX_SNAPSHOTS
+    jae .invalid
+    imul ecx, eax, NFS_SNAP_ENTRY
+    add ecx, NFS_SB_SNAP_TABLE
+    cmp dword [nfs_sb + ecx + NFS_SNAP_VALID], 0
+    je .invalid
+    ; Eintrag löschen
+    lea edi, [nfs_sb + ecx]
+    xor eax, eax
+    mov ecx, NFS_SNAP_ENTRY / 4
+    rep stosd
+    dec dword [nfs_sb + NFS_SB_SNAP_COUNT]
+    dec dword [nfs_snap_count]
+    popad
+    clc
+    ret
+.invalid:
+    mov dword [nfs_error], NOVAFS_ERR_INVALID
+    popad
+    stc
+    ret
+
+; EDI=Puffer (NFS_MAX_SNAPSHOTS * NFS_SNAP_ENTRY Bytes).
+; Kopiert die Snapshot-Tabelle in den Puffer. CF bei Fehler.
+novafs_snapshot_list:
+    pushad
+    test edi, edi
+    jz .invalid
+    lea esi, [nfs_sb + NFS_SB_SNAP_TABLE]
+    mov ecx, NFS_MAX_SNAPSHOTS * NFS_SNAP_ENTRY / 4
+    rep movsd
+    popad
+    clc
+    ret
 .invalid:
     popad
     stc
@@ -2663,6 +3807,10 @@ novafs_mount:
     mov dword [nfs_unclean], 1
     mov dword [nfs_readonly], 1
 .state_ok:
+
+    ; Prüfsummen-Array-Block aus dem Superblock lesen (0 = altes Volume, keine Prüfsummen)
+    mov eax, [nfs_sb + NFS_SB_CHECKSUM_TREE]
+    mov [nfs_checksum_block], eax
 
     ; Bitmap laden und gegen bitmap_crc32c pruefen
     xor ebx, ebx
@@ -3302,6 +4450,8 @@ nfs_journal_undo_saved_ro: dd 0
 ; PMM-Seiten (identitaetsabgebildet, DMA-tauglich)
 nfs_page_slots:
 nfs_root_page:        dd 0
+nfs_inner1_page:      dd 0
+nfs_inner2_page:      dd 0
 nfs_leaf_page:        dd 0
 nfs_aux_page:         dd 0
 nfs_data_page:        dd 0
@@ -3309,6 +4459,7 @@ nfs_io_page:          dd 0
 nfs_data_verify_page: dd 0
 nfs_journal_header_page: dd 0
 nfs_journal_slot_page:   dd 0
+nfs_checksum_page:       dd 0
 nfs_page_slots_end:
 nfs_test_page:        dd 0
 nfs_test_dir:         dd 0
@@ -3318,6 +4469,17 @@ nfs_cur_tree:         dd 0
 nfs_cur_height:       dd 0
 nfs_cur_child:        dd 0
 nfs_cur_index:        dd 0
+; §125 – Pfad-Stack für Baumhöhe > 2
+nfs_path_depth:       dd 0
+nfs_path_blocks:      times NFS_MAX_HEIGHT dd 0
+nfs_path_indices:     times NFS_MAX_HEIGHT dd 0
+; §125 – Snapshot-Zähler
+nfs_snap_count:       dd 0
+; §125 – CoW-Scratch
+nfs_cow_old_phys:     dd 0
+nfs_cow_new_phys:     dd 0
+nfs_cow_log_blk:      dd 0
+nfs_cow_object:       dd 0
 nfs_ins_item:         dd 0
 nfs_ins_count:        dd 0
 nfs_ins_left:         dd 0
@@ -3365,7 +4527,23 @@ nfs_rw_block:         dd 0
 nfs_rw_physical:      dd 0
 nfs_rw_chunk:         dd 0
 nfs_rw_new_blocks:    dd 0
+nfs_rtc_regb:         dd 0
+nfs_rtc_sec:          dd 0
+nfs_rtc_min:          dd 0
+nfs_rtc_hour:         dd 0
+nfs_rtc_day:          dd 0
+nfs_rtc_month:        dd 0
+nfs_rtc_year:         dd 0
+nfs_rtc_century:      dd 0
+nfs_rtc_check:        times 6 dd 0
+nfs_rtc_days:         dd 0
 nfs_crc_saved:        dd 0, 0
+nfs_checksum_block:   dd 0
+nfs_csum_blk:         dd 0
+nfs_csum_crc:         dd 0
+nfs_csum_ablock:      dd 0
+nfs_csum_off:         dd 0
+nfs_csum_data:        dd 0
 nfs_key:              dd 0, 0, 0, 0
 nfs_inner_temp:       times NOVAFS_INNER_ITEM db 0
 nfs_boundary_bytes:   times 16 db 0
