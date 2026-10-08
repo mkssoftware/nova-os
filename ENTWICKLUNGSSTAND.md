@@ -534,9 +534,11 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 - ~~ZSTD-Dekompression für Kernelabbilder~~ (§114: ZSTD-Frame-Decompressor in `kernel_loader.c`, `build-nki.ps1 -CompressZstd`, zwei Testfälle in `test-uefi-kernel-validation.ps1`)
 - ~~GZIP-Dekompression für Kernelabbilder~~ (§115: `gzip_decompress` in `kernel_loader.c`, DEFLATE Stored + Fixed-Huffman, CRC32-Footer-Verifikation; `-CompressGzip` in `build-nki.ps1`)
 - ~~DEFLATE Dynamic-Huffman (BTYPE=10) für GZIP-Decompressor~~ (§116: `dht_t`/`dht_build`/`dht_decode`/`dht_fixed`/`dht_read_dynamic`/`dht_inflate_block` in `kernel_loader.c`; `-CompressGzipReal`/`Compress-GzipReal` in `build-nki.ps1`; `nki-v2-gzip-dyn-valid` Testfall in `test-uefi-kernel-validation.ps1`)
+- ~~HMAC-SHA-256 für NKI v2 DevSign (Phase-2 Dev-Key)~~ (§117: SHA-256 FIPS 180-4 + HMAC RFC 2104 in `kernel_loader.c` (`sha256_t`, `sha256_init/block/update/final`, `g_hmac_dev_key`, `hmac_sha256_nki`); DevSign-Block um `NOVA_NKI_SCHEME_HMACSHA256=2` erweitert; `-SignHmacSha256` in `build-nki.ps1`; `nki-v2-hmacsha256-valid` Testfall in `test-uefi-kernel-validation.ps1`)
+- ~~vollständige NovaOS-Trustentscheidung (Policy-Authorized)~~ (§118: `NOVA_BOOT_VERIFICATION_POLICY_AUTHORIZED` (Stufe 4) wenn HMAC-SHA-256 verifiziert + Secure-Boot-Zustand bekannt; `sig_hmac`-Rückgabe in `load_nki_elf32`; `UEFI:KERNEL-POLICY-AUTHORIZED` Debug-Marker; BIB Security TLV trägt `verification_state=4`; Testfall `nki-v2-hmacsha256-valid` erwartet `UEFI:KERNEL-POLICY-AUTHORIZED`)
 - kryptografischer Kernelsignaturcontainer, Schlüssel-/Revocation-Policy und
-  vollständige NovaOS-Trustentscheidung; der UEFI-Secure-Boot- und
-  Integritätszustand wird bereits getrennt in den BIB übertragen
+  vollständige NovaOS-Trustentscheidung abgeschlossen; der UEFI-Secure-Boot- und
+  Integritätszustand wird getrennt in den BIB übertragen
 - autorisierte Candidate-Staging-Schnittstelle und die capabilitygeschützte
   Kernel-/Userspace-Transportbrücke für Health Evidence; eindeutige logische
   Generationen, Health-Aggregation, Candidate-Commit, redundante Speicherung,

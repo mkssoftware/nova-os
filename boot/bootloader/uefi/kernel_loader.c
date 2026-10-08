@@ -874,6 +874,79 @@ static uint32_t gzip_decompress(const uint8_t*src,uint32_t src_len,uint8_t*dst,u
     return written;
 }
 
+/* §117: SHA-256-Implementierung (RFC 6234 / FIPS 180-4) fuer HMAC-SHA-256-DevSign. */
+static const uint32_t g_sha256_K[64]={
+    0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
+    0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
+    0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
+    0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
+    0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
+    0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
+    0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
+    0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u
+};
+#define SHA256_ROTR(x,n) (((x)>>(n))|((x)<<(32u-(n))))
+#define SHA256_CH(x,y,z) (((x)&(y))^(~(x)&(z)))
+#define SHA256_MAJ(x,y,z) (((x)&(y))^((x)&(z))^((y)&(z)))
+#define SHA256_S0(x) (SHA256_ROTR(x,2u)^SHA256_ROTR(x,13u)^SHA256_ROTR(x,22u))
+#define SHA256_S1(x) (SHA256_ROTR(x,6u)^SHA256_ROTR(x,11u)^SHA256_ROTR(x,25u))
+#define SHA256_G0(x) (SHA256_ROTR(x,7u)^SHA256_ROTR(x,18u)^((x)>>3u))
+#define SHA256_G1(x) (SHA256_ROTR(x,17u)^SHA256_ROTR(x,19u)^((x)>>10u))
+typedef struct{uint32_t h[8];uint64_t len;uint8_t buf[64];uint32_t nbuf;}sha256_t;
+static void sha256_init(sha256_t*c){
+    c->h[0]=0x6a09e667u;c->h[1]=0xbb67ae85u;c->h[2]=0x3c6ef372u;c->h[3]=0xa54ff53au;
+    c->h[4]=0x510e527fu;c->h[5]=0x9b05688cu;c->h[6]=0x1f83d9abu;c->h[7]=0x5be0cd19u;
+    c->len=0;c->nbuf=0;
+}
+static void sha256_block(sha256_t*c,const uint8_t*p){
+    uint32_t w[64];
+    for(uint32_t i=0;i<16u;++i)w[i]=((uint32_t)p[i*4u]<<24)|((uint32_t)p[i*4u+1u]<<16)|((uint32_t)p[i*4u+2u]<<8)|p[i*4u+3u];
+    for(uint32_t i=16u;i<64u;++i)w[i]=SHA256_G1(w[i-2u])+w[i-7u]+SHA256_G0(w[i-15u])+w[i-16u];
+    uint32_t a=c->h[0],b=c->h[1],cc=c->h[2],d=c->h[3],e=c->h[4],f=c->h[5],g=c->h[6],h=c->h[7],t1,t2;
+    for(uint32_t i=0;i<64u;++i){
+        t1=h+SHA256_S1(e)+SHA256_CH(e,f,g)+g_sha256_K[i]+w[i];
+        t2=SHA256_S0(a)+SHA256_MAJ(a,b,cc);
+        h=g;g=f;f=e;e=d+t1;d=cc;cc=b;b=a;a=t1+t2;
+    }
+    c->h[0]+=a;c->h[1]+=b;c->h[2]+=cc;c->h[3]+=d;
+    c->h[4]+=e;c->h[5]+=f;c->h[6]+=g;c->h[7]+=h;
+}
+static void sha256_update(sha256_t*c,const uint8_t*data,uint32_t len){
+    c->len+=(uint64_t)len;
+    while(len){
+        uint32_t room=64u-c->nbuf,take=len<room?len:room;
+        bytes_copy(c->buf+c->nbuf,data,take);c->nbuf+=take;data+=take;len-=take;
+        if(c->nbuf==64u){sha256_block(c,c->buf);c->nbuf=0;}
+    }
+}
+static void sha256_final(sha256_t*c,uint8_t out[32]){
+    uint64_t bits=c->len*8u;
+    c->buf[c->nbuf++]=0x80u;
+    if(c->nbuf>56u){while(c->nbuf<64u)c->buf[c->nbuf++]=0;sha256_block(c,c->buf);c->nbuf=0;}
+    while(c->nbuf<56u)c->buf[c->nbuf++]=0;
+    for(uint32_t i=0;i<8u;++i)c->buf[56u+i]=(uint8_t)(bits>>((uint64_t)(7u-i)*8u));
+    sha256_block(c,c->buf);
+    for(uint32_t i=0;i<8u;++i){out[i*4u]=(uint8_t)(c->h[i]>>24u);out[i*4u+1u]=(uint8_t)(c->h[i]>>16u);out[i*4u+2u]=(uint8_t)(c->h[i]>>8u);out[i*4u+3u]=(uint8_t)c->h[i];}
+}
+/* §117: HMAC-SHA-256 Dev-Key (identisch mit PowerShell-Skript) */
+static const uint8_t g_hmac_dev_key[32]={
+    0x4E,0x6F,0x76,0x61,0x4F,0x53,0x44,0x65,
+    0x76,0x4B,0x65,0x79,0x30,0x31,0x32,0x33,
+    0x34,0x35,0x36,0x37,0x38,0x39,0x61,0x62,
+    0x63,0x64,0x65,0x66,0x67,0x68,0x69,0x6A
+};
+/* HMAC-SHA-256 ueber NKI-Header (hdr[64]) + Payload (payload[plen]) */
+static void hmac_sha256_nki(const uint8_t*hdr,const uint8_t*payload,uint32_t plen,uint8_t out[32]){
+    uint8_t ipad[64],opad[64],inner[32];
+    for(uint32_t i=0;i<64u;++i){
+        uint8_t k=(i<32u)?g_hmac_dev_key[i]:0u;
+        ipad[i]=k^0x36u;opad[i]=k^0x5cu;
+    }
+    sha256_t c;
+    sha256_init(&c);sha256_update(&c,ipad,64);sha256_update(&c,hdr,64);sha256_update(&c,payload,plen);sha256_final(&c,inner);
+    sha256_init(&c);sha256_update(&c,opad,64);sha256_update(&c,inner,32);sha256_final(&c,out);
+}
+
 /* §108: load_nki_elf32 akzeptiert NKI v1 und v2.
    Bei v2 mit sig_size==64: DevSign-Block (NKTS) nach Payload pruefen.
    *sig_verified=true wenn DevSign korrekt, sonst false. */
@@ -971,20 +1044,27 @@ static bool load_nki_elf32(EFI_BOOT_SERVICES *bs,const uint8_t *file,UINTN size,
     if(nki->version==NOVA_NKI_VERSION_2&&nki->sig_size==NOVA_NKI_SIG_SIZE_DEVSIGN){
         const nova_nki_signature_t *sig=(const nova_nki_signature_t *)(file_payload+nki->image_size);
         static const uint8_t nkts[4]={'N','K','T','S'};
-        if(bytes_equal(sig->magic,nkts,4)&&sig->scheme==NOVA_NKI_SCHEME_DEVSIGN&&
-           sig->key_id==NOVA_NKI_DEVSIGN_KEY_ID){
-            /* §111 Revocation-Policy: revocation_gen != 0 wird hart abgewiesen */
+        if(bytes_equal(sig->magic,nkts,4)){
+            /* §117: Revocation-Policy gilt fuer alle Schemes */
             if(sig->revocation_gen!=0){
                 nova_debug_string("UEFI:KERNEL-DEVSIGN-REVOKED\n");
                 boot_log_add(NOVA_BOOT_LOG_ERROR,"KERNEL DEVSIGN REVOKED (revocation_gen != 0)");
                 return false;
             }
-            /* dev_mac = payload_crc32 XOR "NOVD" */
-            uint32_t expected_mac=nki->payload_crc32^NOVA_NKI_DEVSIGN_XOR_MASK;
-            uint32_t stored_mac=0;
-            bytes_copy(&stored_mac,sig->sig_data,4);
-            if(stored_mac==expected_mac&&bytes_equal(sig->build_id,nki->build_id,16))
-                *sig_verified=true;
+            if(sig->scheme==NOVA_NKI_SCHEME_DEVSIGN&&sig->key_id==NOVA_NKI_DEVSIGN_KEY_ID){
+                /* §108: CRC-XOR Dev-MAC (Phase-1-Platzhalter) */
+                uint32_t expected_mac=nki->payload_crc32^NOVA_NKI_DEVSIGN_XOR_MASK;
+                uint32_t stored_mac=0;
+                bytes_copy(&stored_mac,sig->sig_data,4);
+                if(stored_mac==expected_mac&&bytes_equal(sig->build_id,nki->build_id,16))
+                    *sig_verified=true;
+            } else if(sig->scheme==NOVA_NKI_SCHEME_HMACSHA256&&sig->key_id==NOVA_NKI_HMACSHA256_KEY_ID){
+                /* §117: HMAC-SHA-256 Dev-Key */
+                uint8_t expected_mac[32];
+                hmac_sha256_nki(file,file_payload,nki->image_size,expected_mac);
+                if(bytes_equal(sig->sig_data,expected_mac,32)&&bytes_equal(sig->build_id,nki->build_id,16))
+                    *sig_verified=true;
+            }
         }
     }
     uint8_t elf_build_id[20];

@@ -15,7 +15,10 @@ param(
     [switch]$CompressGzip,
 
     # §116: GZIP-Frame-Kompression mit echtem DEFLATE-Kompressor (.NET GZipStream, erzeugt BTYPE=10)
-    [switch]$CompressGzipReal
+    [switch]$CompressGzipReal,
+
+    # §117: HMAC-SHA-256-Signatur (Phase-2 Dev-Key) statt CRC-XOR-MAC (Phase-1)
+    [switch]$SignHmacSha256
 )
 
 $ErrorActionPreference = 'Stop'
@@ -235,6 +238,46 @@ $devMacBytes = [BitConverter]::GetBytes($devMac)
 # build_id (16 Bytes) — Spiegel des NKI-Header-Feldes
 $sigBuildId = [byte[]]$buildId
 
+# §117: HMAC-SHA-256 Dev-Key (32 Bytes, identisch mit g_hmac_dev_key in kernel_loader.c)
+$hmacDevKey = [byte[]](
+    0x4E, 0x6F, 0x76, 0x61, 0x4F, 0x53, 0x44, 0x65,
+    0x76, 0x4B, 0x65, 0x79, 0x30, 0x31, 0x32, 0x33,
+    0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x61, 0x62,
+    0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A
+)
+if ($SignHmacSha256) {
+    # NKI-Header-Bytes exakt so aufbauen wie der Schreibblock (64 Bytes)
+    $hdrMs = [IO.MemoryStream]::new()
+    $hdrW  = [IO.BinaryWriter]::new($hdrMs)
+    $hdrW.Write([Text.Encoding]::ASCII.GetBytes("NOVANKI"))
+    $hdrW.Write([byte]0)
+    $hdrW.Write([uint32]2)
+    $hdrW.Write([uint32]$headerSize)
+    $hdrW.Write([uint32]1)
+    $hdrW.Write([uint32]3)
+    $hdrW.Write($entryPoint)
+    $hdrW.Write($entryPoint)
+    $hdrW.Write([uint32]$payload.Length)
+    $hdrW.Write($compressionId)
+    $hdrW.Write($crc32)
+    $hdrW.Write([byte[]]$buildId)
+    $hdrW.Write([uint32]64)    # sig_size = 64
+    $hdrW.Flush()
+    $headerBytes = $hdrMs.ToArray()
+    $hdrW.Dispose(); $hdrMs.Dispose()
+    # HMAC-SHA-256 über (Header[64] + Payload[image_size])
+    $hmacMsg = [byte[]]::new($headerBytes.Length + $payload.Length)
+    [Array]::Copy($headerBytes, 0, $hmacMsg, 0, $headerBytes.Length)
+    [Array]::Copy($payload,     0, $hmacMsg, $headerBytes.Length, $payload.Length)
+    $hmacObj    = [Security.Cryptography.HMACSHA256]::new($hmacDevKey)
+    $hmacResult = $hmacObj.ComputeHash($hmacMsg)
+    $hmacObj.Dispose()
+    # DevSign-Felder auf Phase-2 überschreiben
+    $devsignScheme = [byte]2               # NOVA_NKI_SCHEME_HMACSHA256
+    $devsignKeyId  = [uint32]0x48534832    # NOVA_NKI_HMACSHA256_KEY_ID "HSH2"
+    $sigData       = $hmacResult           # 32 Bytes HMAC-SHA-256
+}
+
 $stream = [IO.File]::Open($OutputFile, [IO.FileMode]::Create, [IO.FileAccess]::Write)
 $writer = [IO.BinaryWriter]::new($stream)
 try {
@@ -273,4 +316,5 @@ $compressLabel = if ($Compress) { "LZ4-komprimiert, unkomprimiert=$($elfPayload.
                  elseif ($CompressGzip) { "GZIP-Stored-komprimiert, unkomprimiert=$($elfPayload.Length)" } `
                  elseif ($CompressGzipReal) { "GZIP-DEFLATE-komprimiert, unkomprimiert=$($elfPayload.Length)" } `
                  else { "unkomprimiert" }
-Write-Host ("NKI v2: {0} Bytes Payload ({1}), CRC32 {2:X8}, DevSign dev_mac={3:X8}" -f $payload.Length, $compressLabel, $crc32, $devMac)
+$signLabel = if ($SignHmacSha256) { "scheme=2 HMAC-SHA-256" } else { "scheme=1 CRC-XOR dev_mac=$($devMac.ToString('X8'))" }
+Write-Host ("NKI v2: {0} Bytes Payload ({1}), CRC32 {2:X8}, DevSign {3}" -f $payload.Length, $compressLabel, $crc32, $signLabel)

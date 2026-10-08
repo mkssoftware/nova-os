@@ -4731,3 +4731,121 @@ typedef struct {
 ### Debug-Marker
 
 - `UEFI:KERNEL-GZIP-DECOMPRESSED` — gilt für BTYPE=00/01/10 (unveränderter Marker aus §115)
+
+---
+
+## §117 – HMAC-SHA-256 für NKI v2 DevSign (Phase-2 Dev-Key)
+
+**Ziel:** Den Phase-1-CRC-XOR-Platzhalter (scheme=1) durch echte HMAC-SHA-256-Kryptografie (scheme=2) ersetzen. Der NKTS-Block bleibt 64 Bytes; `sig_data[32]` nimmt den 32-Byte-HMAC-SHA-256-Output auf.
+
+### Neue Konstanten in `nova_boot_protocol.h`
+
+```c
+#define NOVA_NKI_SCHEME_HMACSHA256    2u          /* Phase-2: HMAC-SHA-256 mit Dev-Key */
+#define NOVA_NKI_HMACSHA256_KEY_ID    0x48534832u /* "HSH2" */
+```
+
+### SHA-256 in `kernel_loader.c` (FIPS 180-4)
+
+Vollständige portable Implementierung ohne externe Bibliotheken (UEFI-Umgebung).
+
+| Symbol | Typ | Beschreibung |
+|---|---|---|
+| `g_sha256_K[64]` | `const uint32_t[]` | 64 Rundenkonstanten (Kubikwurzel-Primzahlen) |
+| `SHA256_ROTR/CH/MAJ/S0/S1/G0/G1` | Makros | Bitoperationen per FIPS 180-4 |
+| `sha256_t` | `struct` | Zustand: `h[8]`, `len`, `buf[64]`, `nbuf` |
+| `sha256_init` | Funktion | Setzt IV (erste Kubikwurzeln von Primzahlen) |
+| `sha256_block` | Funktion | 64-Runden-Merkle-Damgård-Kompression eines 64-Byte-Blocks |
+| `sha256_update` | Funktion | Verarbeitet beliebig lange Eingaben (puffert intern) |
+| `sha256_final` | Funktion | Padding (0x80, 56-Byte-Ausrichtung, Big-Endian-Bitlänge), gibt 32-Byte-Hash aus |
+
+**HMAC-SHA-256 (RFC 2104):**
+- Key `g_hmac_dev_key[32]` = `"NovaOSDevKey0123456789abcdefghij"` (identisch in C und PowerShell)
+- Key auf 64 Bytes mit Nullen erweitert → ipad = key XOR 0x36, opad = key XOR 0x5c
+- inner = SHA256(ipad ‖ NKI-Header[64] ‖ Payload[image_size])
+- outer = SHA256(opad ‖ inner) → 32-Byte-Ergebnis in `sig_data[0..31]`
+
+### Verifikation in `load_nki_elf32`
+
+Revocation-Check wurde aus dem scheme=1-Zweig herausgezogen und gilt jetzt für **alle Schemes**:
+
+```c
+if (bytes_equal(sig->magic, nkts, 4)) {
+    if (sig->revocation_gen != 0) { /* REVOKED für alle Schemes */ }
+    if (scheme==1 && key_id==DEV\x01) { /* CRC-XOR Phase-1 */ }
+    else if (scheme==2 && key_id=="HSH2") {
+        hmac_sha256_nki(file, file_payload, nki->image_size, expected_mac);
+        if (bytes_equal(sig_data, expected_mac, 32) && build_id match)
+            *sig_verified = true;
+    }
+}
+```
+
+### Änderungen in `build-nki.ps1`
+
+- Neuer Parameter `-SignHmacSha256` (Switch)
+- `$hmacDevKey`: 32-Byte-Array, identisch mit `g_hmac_dev_key` in C
+- Wenn `-SignHmacSha256`: Header-Bytes aus `MemoryStream` exakt wie Schreibblock aufbauen, HMAC über (Header[64] + Payload) berechnen mittels `.NET HMACSHA256`, `$devsignScheme=2`, `$devsignKeyId=0x48534832`, `$sigData=$hmacResult` überschreiben
+- `$signLabel` in der Write-Host-Ausgabe unterscheidet Phase-1 von Phase-2
+
+### Testfall
+
+| Testfall | Beschreibung | Erwartetes Ergebnis |
+|---|---|---|
+| `nki-v2-hmacsha256-valid` | NKI v2 mit HMAC-SHA-256-Signatur (scheme=2, kein Compress) | `UEFI:KERNEL-DEVSIGN-VERIFIED` + `UEFI:KERNEL-HANDOFF-READY` + `NOVA_KERNEL_READY` |
+
+### Debug-Marker
+
+- `UEFI:KERNEL-DEVSIGN-VERIFIED` — gilt für scheme=1 (CRC-XOR) und scheme=2 (HMAC-SHA-256)
+- `UEFI:KERNEL-DEVSIGN-REVOKED` — gilt für alle Schemes wenn revocation_gen != 0
+
+---
+
+## §118 – Policy-Authorized Trust Decision
+
+**Ziel:** `NOVA_BOOT_VERIFICATION_POLICY_AUTHORIZED` (Stufe 4, höchste Verifikationsstufe) wird erreicht wenn HMAC-SHA-256 (scheme=2) verifiziert und der UEFI-Secure-Boot-Zustand bekannt ist. Diese Stufe repräsentiert die vollständige NovaOS-Trustentscheidung: kryptografische Integrität + Firmware-Zustandskenntnis.
+
+### Neue `load_nki_elf32`-Signatur
+
+```c
+static bool load_nki_elf32(..., bool *sig_verified, bool *sig_hmac);
+```
+
+- `*sig_hmac=true` nur wenn scheme=2 (HMAC-SHA-256) erfolgreich verifiziert
+- `*sig_verified=true` für scheme=1 und scheme=2 (wie bisher)
+
+### Policy-Entscheidungslogik (Hauptfluss)
+
+```c
+uint32_t sbs = current_secure_boot_state(&sbs_flags_tmp);
+uint32_t verification_state =
+    (sig_hmac && sbs != NOVA_SECURE_BOOT_UNKNOWN) ? NOVA_BOOT_VERIFICATION_POLICY_AUTHORIZED :
+    sig_verified ? NOVA_BOOT_VERIFICATION_SIGNATURE_VERIFIED :
+    (nki_container ? NOVA_BOOT_VERIFICATION_INTEGRITY_VERIFIED :
+                     NOVA_BOOT_VERIFICATION_STRUCTURE_VALIDATED);
+```
+
+| Bedingung | Stufe |
+|---|---|
+| HMAC-SHA-256 ok + Secure-Boot-Zustand bekannt | `POLICY_AUTHORIZED` (4) |
+| CRC-XOR ok (scheme=1) oder HMAC nicht erreicht | `SIGNATURE_VERIFIED` (3) |
+| NKI-CRC32 ok, kein DevSign | `INTEGRITY_VERIFIED` (2) |
+| ELF direkt geladen | `STRUCTURE_VALIDATED` (1) |
+
+`NOVA_SECURE_BOOT_UNKNOWN` (Zustand nicht lesbar) blockiert den Upgrade auf Stufe 4.
+`NOVA_SECURE_BOOT_DISABLED`, `ENABLED` und `SETUP_MODE` ermöglichen ihn.
+
+### Debug-Marker
+
+- `UEFI:KERNEL-POLICY-AUTHORIZED` — emittiert wenn `verification_state == POLICY_AUTHORIZED`
+
+### BIB Security TLV
+
+`nova_bib_security_t.verification_state` trägt jetzt Stufe 4 wenn Policy-Authorized.
+Der Kernel kann darüber entscheiden, ob der Trust-Provider seinen Commit als `HEALTHY` autorisiert.
+
+### Testfall
+
+| Testfall | Beschreibung | Erwartetes Ergebnis |
+|---|---|---|
+| `nki-v2-hmacsha256-valid` | NKI v2 mit HMAC-SHA-256 + QEMU (Secure Boot disabled) | `UEFI:KERNEL-DEVSIGN-VERIFIED` + `UEFI:KERNEL-POLICY-AUTHORIZED` + `UEFI:KERNEL-HANDOFF-READY` + `NOVA_KERNEL_READY` |

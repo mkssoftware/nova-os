@@ -331,6 +331,17 @@ try {
             'UEFI:KERNEL-HANDOFF-READY',
             'NOVA_KERNEL_READY'
         )
+
+        # §117: NKI v2 mit HMAC-SHA-256-Signatur (Phase-2 Dev-Key)
+        $hmacNki=[IO.Path]::Combine($tempDir,'nki-v2-hmacsha256.nki')
+        & $NkiBuilder -InputFile $Elf32 -OutputFile $hmacNki -SignHmacSha256 | Out-Null
+        $hmacImage=[IO.Path]::Combine($tempDir,'nki-v2-hmacsha256.img')
+        & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $hmacNki -KernelElf $Elf32 -OutputImage $hmacImage | Out-Null
+        Invoke-SuccessCase 'nki-v2-hmacsha256-valid' $hmacImage @(
+            'UEFI:KERNEL-DEVSIGN-VERIFIED',
+            'UEFI:KERNEL-HANDOFF-READY',
+            'NOVA_KERNEL_READY'
+        )
     }
 } finally {
     $env:TMP=$oldTmp;$env:TEMP=$oldTemp

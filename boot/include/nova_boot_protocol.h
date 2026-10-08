@@ -15,11 +15,13 @@
 #define NOVA_NKI_COMPRESSION_ZSTD     2u
 #define NOVA_NKI_COMPRESSION_GZIP     3u
 
-/* NKI v2 Signatur-Container (DevSign Phase-1) */
+/* NKI v2 Signatur-Container (DevSign Phase-1 und Phase-2) */
 #define NOVA_NKI_SIG_SIZE_DEVSIGN     64u
 #define NOVA_NKI_SCHEME_DEVSIGN       1u          /* Phase-1: CRC-XOR, kein echter Krypto */
 #define NOVA_NKI_DEVSIGN_KEY_ID       0x44455601u /* "DEV\x01" */
 #define NOVA_NKI_DEVSIGN_XOR_MASK     0x4E4F5644u /* "NOVD" */
+#define NOVA_NKI_SCHEME_HMACSHA256    2u          /* Phase-2: HMAC-SHA-256 mit Dev-Key */
+#define NOVA_NKI_HMACSHA256_KEY_ID    0x48534832u /* "HSH2" */
 #define NOVA_LOADER_ABI_VERSION       0x00010000u
 #define NOVA_BIB_VERSION_MAJOR        1u
 #define NOVA_BIB_VERSION_MINOR        2u
