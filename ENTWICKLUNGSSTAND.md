@@ -1726,5 +1726,28 @@ Details in `dev_detail.md`, Abschnitt 102 (Löschen), Abschnitt 103
   `EffectiveTick`. Hard-Deadlines mit Toleranz werden abgewiesen; von einem
   Hard-Parent geerbte Deadlines verlieren ihre Toleranz automatisch. Der
   Selftest prüft beide Fälle.
+- **Introspection:** Der Deadline-Manager zählt jetzt angewendete
+  Coalescing-Entscheidungen und abgewiesene Hard-Deadline-Toleranzen. Diese
+  Zähler hängen an der internen Deadline-ABI und werden im Selftest geprüft,
+  damit Coalescing nicht nur implizit über `EffectiveTick`, sondern auch als
+  erklärbare Entscheidung sichtbar ist.
+- **Next-Deadline:** Zusätzlich berechnet der Deadline-Manager die nächste
+  aktive Deadline (`next_effective_tick`, Task-ID, Klasse, Toleranz und
+  ClockDomain). Polling aktualisiert diese Sicht nach Misses; Setzen einer
+  Deadline aktualisiert sie sofort. Das bereitet die spätere tickless/one-shot
+  Timerprogrammierung aus `NPSPEC-TIME-TICKLESS-0001` vor.
+- **Miss-Lateness:** Deadline-Misses speichern jetzt nicht nur den
+  Erkennungszeitpunkt, sondern auch den Verzug in monotonen Ticks. Der Manager
+  führt `last`, `max` und `total` Lateness als Diagnosewerte und prüft sie im
+  Selftest mit einer bewusst überfälligen Firm-Deadline.
+- **Clock-Source-Health:** Der Time-Core sampled die PIT-Clock-Source bei
+  jedem Timer-IRQ passiv mit. Erfasst werden letztes Tick-Delta, maximales
+  Delta, Sample-Anzahl, Stillstandszähler und Health-Zustand (`Unknown`,
+  `OK`, `Degraded`). Der Selftest prüft, dass Tick-Fortschritt sichtbar wird.
+- **Degrade/Recover:** Die PIT-Clock-Source verliert bei Stillstand oder
+  ungewöhnlich großem Delta ihr `STABLE`-Flag und zählt den Degrade-Übergang.
+  Bei wieder stabilen Samples wird sie auf `OK` gesetzt, `STABLE` wieder
+  hergestellt und ein Recover-Zähler erhöht. Damit ist die erste
+  Clock-Source-Degradation aus `NPSPEC-TIME-CLOCKSOURCE-0001` umgesetzt.
 - **Build:** UEFI-Image neu erstellt und validiert: Kernel Build-ID
-  `A7EE8DA708561CA55B3855AA79DC1AC702101540`, NKI CRC32 `BAB3803F`.
+  `33B81ED3E7FD41D95AC5F09AA556870300FBF865`, NKI CRC32 `8F8B1C08`.

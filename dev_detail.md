@@ -4097,20 +4097,97 @@ eine explizite Toleranz. Die Bootstrap-Regel ist absichtlich konservativ:
   Fensters `AbsoluteTick + Tolerance` erhalten.
 - `EffectiveTick` ist der Zeitpunkt, den Polling und IO-Vererbung verwenden;
   `AbsoluteTick` bleibt als ursprüngliche Anforderung erhalten.
+- `task_deadline_coalesced_count` zählt tatsächlich angewendete
+  Coalescing-Entscheidungen.
+- `task_deadline_hard_reject_count` zählt abgewiesene Hard-Deadline-
+  Toleranzen.
+- `task_deadline_refresh_next` veröffentlicht die nächste aktive Deadline mit
+  effektivem Tick, Task-ID, Klasse, Toleranz und ClockDomain. Terminale,
+  abgebrochene oder bereits verfehlte Tasks werden nicht als nächstes Wakeup
+  gemeldet.
 
 Damit ist die erste Grundlage aus `NPSPEC-TIME-COALESCING-0001` umgesetzt,
 ohne schon einen globalen Tickless-Planer oder echte Hardware-One-Shot-Timer
 vorauszusetzen.
 
+### Next-Deadline-Introspection
+
+Für `NPSPEC-TIME-TICKLESS-0001` und `NPSPEC-TIME-INTROSPECTION-0001` hält der
+Deadline-Manager jetzt eine kompakte Sicht auf das nächste relevante Wakeup:
+
+```text
+task_deadline_next_effective_tick
+task_deadline_next_task_id
+task_deadline_next_class
+task_deadline_next_tolerance
+task_deadline_next_domain
+```
+
+Diese Sicht wird beim Setzen einer Deadline und nach jedem Poll aktualisiert.
+Sie ist noch keine echte Hardware-One-Shot-Programmierung, aber sie trennt die
+Entscheidung „welches Ereignis ist als nächstes relevant?“ bereits vom
+periodischen PIT-Tick.
+
+### Miss-Lateness
+
+Für Deadline-Misses gibt es zusätzlich Diagnosewerte:
+
+```text
+task_deadline_last_lateness
+task_deadline_max_lateness
+task_deadline_total_lateness
+```
+
+`Lateness` ist `PollTick - EffectiveTick` in monotonen PIT-Ticks. Dadurch kann
+der Kernel später unterscheiden, ob ein Miss exakt am effektiven Zeitpunkt
+erkannt wurde oder ob Scheduler/Interrupt/Coalescing bereits echten Verzug
+erzeugt haben. Der Selftest erzeugt dafür bewusst eine bereits überfällige
+Firm-Deadline und prüft, dass `last`, `max` und `total` nicht leer bleiben.
+
+### Clock-Source-Health
+
+Der Time-Core besitzt jetzt ein passives Health-Sampling für die PIT-Clock-
+Source. Bei jedem Timer-IRQ wird `time_clock_source_health_sample` aufgerufen;
+vor `time_core_initialize` kehrt die Funktion ohne Wirkung zurück.
+
+Erfasste Werte:
+
+```text
+time_source_pit_last_delta
+time_source_pit_max_delta
+time_source_pit_sample_count
+time_source_pit_stalled_count
+time_source_pit_health
+```
+
+`time_source_pit_health` verwendet die Zustände `Unknown`, `OK` und
+`Degraded`. Ein normales Tick-Delta hält die Quelle auf `OK`; ein Stillstand
+oder ein ungewöhnlich großer Abstand markiert sie als `Degraded`. Noch wird die
+Quelle dadurch nicht automatisch ersetzt, aber `NPSPEC-TIME-CLOCKSOURCE-0001`
+und `NPSPEC-TIME-INTROSPECTION-0001` haben damit erstmals konkrete
+Diagnosedaten.
+
+### Degrade und Recover
+
+`time_clock_source_pit_mark_degraded` entfernt bei Stillstand oder großem
+Delta das `TIME_SOURCE_FLAG_STABLE`-Flag der PIT-Clock-Source und zählt den
+Übergang in `time_source_pit_degraded_count`. Sobald wieder ein normales
+Sample eintrifft, stellt `time_clock_source_pit_mark_ok` das `STABLE`-Flag
+wieder her und zählt `time_source_pit_recovered_count`.
+
+Damit gibt es noch keinen alternativen Clock-Source-Wechsel, aber fehlerhafte
+oder instabile Zeitquellen werden nicht mehr nur beobachtet, sondern im
+Clock-Source-Record sichtbar degradiert.
+
 Bootausgabe:
 
 ```text
-NOVA: Time Core ABI 1.0, Clock Source, Domains und Monotonic Introspection bereit
-NOVA: Task Deadline ABI 1.0, ClockDomain, Toleranz und Miss-Introspection aktiv
+NOVA: Time Core ABI 1.0, Clock Source Health, Domains und Monotonic Introspection bereit
+NOVA: Task Deadline ABI 1.0, ClockDomain, Coalescing und Miss-Introspection aktiv
 ```
 
 ### Artefakte
 
-- Kernel Build-ID: `A7EE8DA708561CA55B3855AA79DC1AC702101540`
-- NKI CRC32: `BAB3803F`
-- IMG SHA256: `0D1B9EF5199291A04BC4882CA46FF1B5366D6903B3E39993377D6115A9C18C3E`
+- Kernel Build-ID: `33B81ED3E7FD41D95AC5F09AA556870300FBF865`
+- NKI CRC32: `8F8B1C08`
+- IMG SHA256: `96990F8EFB75C7989DDE34449754FED2C316D0A46BEFE80AADD2ABBD9CBD0F96`

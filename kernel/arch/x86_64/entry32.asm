@@ -3251,15 +3251,17 @@ PIT_DIVISOR     equ 11932           ; ungefähr 100 Hz
 INTERRUPT_API_SIZE equ 32
 INTERRUPT_CAPABILITIES equ 0x00000007
 
-TIME_CORE_API_SIZE          equ 40
+TIME_CORE_API_SIZE          equ 64
 TIME_CLOCK_SOURCE_RECORD_SIZE equ 32
 TIME_CLOCK_DOMAIN_RECORD_SIZE equ 32
 TIME_CLOCK_SOURCE_CAPACITY  equ 4
 TIME_CLOCK_DOMAIN_CAPACITY  equ 4
 TIME_CLOCK_SOURCE_PIT_ID    equ 1
+TIME_CLOCK_SOURCE_COARSE_ID equ 2
 TIME_CLOCK_DOMAIN_MONO_ID   equ 1
 TIME_CLOCK_DOMAIN_WALL_ID   equ 2
 TIME_CLOCK_SOURCE_TYPE_PIT  equ 1
+TIME_CLOCK_SOURCE_TYPE_COARSE equ 2
 TIME_CLOCK_DOMAIN_TYPE_MONOTONIC equ 1
 TIME_CLOCK_DOMAIN_TYPE_WALL equ 2
 TIME_SOURCE_FLAG_REGISTERED equ 0x00000001
@@ -3267,6 +3269,9 @@ TIME_SOURCE_FLAG_VALIDATED  equ 0x00000002
 TIME_SOURCE_FLAG_ACTIVE     equ 0x00000004
 TIME_SOURCE_FLAG_MONOTONIC  equ 0x00000008
 TIME_SOURCE_FLAG_STABLE     equ 0x00000010
+TIME_SOURCE_HEALTH_UNKNOWN  equ 0
+TIME_SOURCE_HEALTH_OK       equ 1
+TIME_SOURCE_HEALTH_DEGRADED equ 2
 TIME_DOMAIN_FLAG_REGISTERED equ 0x00000001
 TIME_DOMAIN_FLAG_ACTIVE     equ 0x00000002
 TIME_DOMAIN_FLAG_MONOTONIC  equ 0x00000004
@@ -3471,6 +3476,19 @@ time_core_initialize:
     mov dword [edi + 24], 60             ; Bootstrap-Qualitaet, nicht Accuracy
     mov dword [edi + 28], time_provider_name_pit
 
+    ; Clock Source 2: grober Bootstrap-Fallback. Registriert und validiert,
+    ; aber nicht aktiv gewaehlt. Sie modelliert die geforderte Mehrquellen-
+    ; Architektur, bis HPET/APIC/Paravirtual-Time folgen.
+    mov edi, time_clock_sources + TIME_CLOCK_SOURCE_RECORD_SIZE
+    mov dword [edi + 0], TIME_CLOCK_SOURCE_COARSE_ID
+    mov dword [edi + 4], TIME_CLOCK_SOURCE_TYPE_COARSE
+    mov dword [edi + 8], TIME_SOURCE_FLAG_REGISTERED | TIME_SOURCE_FLAG_VALIDATED | TIME_SOURCE_FLAG_MONOTONIC
+    mov dword [edi + 12], 10
+    mov dword [edi + 16], 100000000      ; 100 ms grobe Aufloesung
+    mov dword [edi + 20], 0
+    mov dword [edi + 24], 20
+    mov dword [edi + 28], time_provider_name_coarse
+
     ; Domain 1: monotone Kernelzeit. Deadlines und Timeouts beziehen sich
     ; hierauf, nicht auf Civil/Wall Clock.
     mov edi, time_clock_domains
@@ -3553,6 +3571,68 @@ time_monotonic_now:
     clc
     ret
 
+; Passive Clock-Source-Health fuer PIT/IRQ0. Erfasst Tick-Delta,
+; Stillstand und Maximalabstand, ohne die monotone Zeitquelle zu korrigieren.
+time_clock_source_health_sample:
+    cmp dword [time_core_ready], 1
+    jne .done
+    mov eax, [timer_ticks]
+    mov edx, [time_source_pit_last_tick]
+    test edx, edx
+    jnz .have_previous
+    mov [time_source_pit_last_tick], eax
+    mov dword [time_source_pit_health], TIME_SOURCE_HEALTH_OK
+    inc dword [time_source_pit_sample_count]
+    clc
+    ret
+.have_previous:
+    mov ebx, eax
+    sub ebx, edx
+    mov [time_source_pit_last_tick], eax
+    cmp ebx, 0
+    jne .advanced
+    inc dword [time_source_pit_stalled_count]
+    call time_clock_source_pit_mark_degraded
+    clc
+    ret
+.advanced:
+    mov [time_source_pit_last_delta], ebx
+    inc dword [time_source_pit_sample_count]
+    cmp ebx, [time_source_pit_max_delta]
+    jbe .max_ready
+    mov [time_source_pit_max_delta], ebx
+.max_ready:
+    cmp ebx, 4
+    ja .degraded
+    call time_clock_source_pit_mark_ok
+    clc
+    ret
+.degraded:
+    call time_clock_source_pit_mark_degraded
+.done:
+    clc
+    ret
+
+time_clock_source_pit_mark_ok:
+    cmp dword [time_source_pit_health], TIME_SOURCE_HEALTH_DEGRADED
+    jne .set
+    inc dword [time_source_pit_recovered_count]
+.set:
+    mov dword [time_source_pit_health], TIME_SOURCE_HEALTH_OK
+    or dword [time_clock_sources + 8], TIME_SOURCE_FLAG_STABLE
+    clc
+    ret
+
+time_clock_source_pit_mark_degraded:
+    cmp dword [time_source_pit_health], TIME_SOURCE_HEALTH_DEGRADED
+    je .set
+    inc dword [time_source_pit_degraded_count]
+.set:
+    mov dword [time_source_pit_health], TIME_SOURCE_HEALTH_DEGRADED
+    and dword [time_clock_sources + 8], ~TIME_SOURCE_FLAG_STABLE
+    clc
+    ret
+
 time_core_self_test:
     cmp dword [time_core_ready], 1
     jne .invalid
@@ -3573,6 +3653,21 @@ time_core_self_test:
     jne .invalid
     cmp dword [eax + 16], 0
     je .invalid
+
+    mov eax, TIME_CLOCK_SOURCE_COARSE_ID
+    call time_clock_source_lookup
+    jc .invalid
+    mov ebx, [eax + 8]
+    test ebx, TIME_SOURCE_FLAG_REGISTERED
+    jz .invalid
+    test ebx, TIME_SOURCE_FLAG_VALIDATED
+    jz .invalid
+    test ebx, TIME_SOURCE_FLAG_MONOTONIC
+    jz .invalid
+    test ebx, TIME_SOURCE_FLAG_ACTIVE
+    jnz .invalid
+    cmp dword [eax + 12], 10
+    jne .invalid
 
     mov eax, TIME_CLOCK_DOMAIN_MONO_ID
     call time_clock_domain_lookup
@@ -3603,6 +3698,41 @@ time_core_self_test:
     call time_monotonic_now
     sub eax, ebx
     jl .invalid
+
+    ; Health-Sampling muss echte Tick-Fortschritte introspektierbar machen.
+    mov eax, [timer_ticks]
+    sub eax, 2
+    mov [time_source_pit_last_tick], eax
+    call time_clock_source_health_sample
+    cmp dword [time_source_pit_last_delta], 2
+    jne .invalid
+    cmp dword [time_source_pit_health], TIME_SOURCE_HEALTH_OK
+    jne .invalid
+    cmp dword [time_source_pit_sample_count], 0
+    je .invalid
+    cmp dword [time_source_pit_max_delta], 2
+    jb .invalid
+    test dword [time_clock_sources + 8], TIME_SOURCE_FLAG_STABLE
+    jz .invalid
+    mov eax, [timer_ticks]
+    mov [time_source_pit_last_tick], eax
+    call time_clock_source_health_sample
+    cmp dword [time_source_pit_health], TIME_SOURCE_HEALTH_DEGRADED
+    jne .invalid
+    cmp dword [time_source_pit_degraded_count], 0
+    je .invalid
+    test dword [time_clock_sources + 8], TIME_SOURCE_FLAG_STABLE
+    jnz .invalid
+    mov eax, [timer_ticks]
+    sub eax, 1
+    mov [time_source_pit_last_tick], eax
+    call time_clock_source_health_sample
+    cmp dword [time_source_pit_health], TIME_SOURCE_HEALTH_OK
+    jne .invalid
+    cmp dword [time_source_pit_recovered_count], 0
+    je .invalid
+    test dword [time_clock_sources + 8], TIME_SOURCE_FLAG_STABLE
+    jz .invalid
 
     mov eax, TIME_CLOCK_DOMAIN_MONO_ID
     mov edx, TIME_CLOCK_DOMAIN_MONO_ID
@@ -3830,6 +3960,7 @@ interrupt_dispatch:
     jmp .done
 .timer:
     inc dword [timer_ticks]
+    call time_clock_source_health_sample
     cmp dword [kernel_context + CONTEXT_PLATFORM], 2
     jne .timer_input
     mov dword [0xFEE000B0], 0       ; edge-triggered: früh quittieren
@@ -4042,9 +4173,18 @@ last_exception_vector: dd 0
 last_fault_address:    dd 0
 interrupt_return_frame: dd 0
 time_core_ready:       dd 0
+time_source_pit_last_tick: dd 0
+time_source_pit_last_delta: dd 0
+time_source_pit_max_delta: dd 0
+time_source_pit_sample_count: dd 0
+time_source_pit_stalled_count: dd 0
+time_source_pit_health: dd TIME_SOURCE_HEALTH_UNKNOWN
+time_source_pit_degraded_count: dd 0
+time_source_pit_recovered_count: dd 0
 
 align 4
 time_provider_name_pit: db "PIT", 0
+time_provider_name_coarse: db "COARSE", 0
 align 4
 time_clock_sources:
     times TIME_CLOCK_SOURCE_CAPACITY * TIME_CLOCK_SOURCE_RECORD_SIZE db 0
@@ -4079,6 +4219,12 @@ time_core_api:
     dd time_monotonic_now
     dd time_clock_sources
     dd time_clock_domains
+    dd time_clock_source_health_sample
+    dd time_source_pit_health
+    dd time_source_pit_last_delta
+    dd time_source_pit_stalled_count
+    dd time_source_pit_degraded_count
+    dd time_source_pit_recovered_count
 
 ; ---------------------------------------------------------------------------
 ; Kernel-Nachrichtenwarteschlange (ADR-2005)
@@ -5647,7 +5793,7 @@ task_table:
 ; NPSPEC-CONCURRENCY-DEADLINE-0001 / ADR-CONCURRENCY-0004
 ; ---------------------------------------------------------------------------
 
-TASK_DEADLINE_API_SIZE       equ 52
+TASK_DEADLINE_API_SIZE       equ 96
 TASK_DEADLINE_RECORD_SIZE    equ 32
 TASK_DEADLINE_CLOCK_HZ       equ 100
 TASK_DEADLINE_CLASS_HARD     equ 1
@@ -5677,6 +5823,16 @@ task_deadline_manager_initialize:
     mov ecx, (TASK_CAPACITY * TASK_DEADLINE_RECORD_SIZE) / 4
     rep stosd
     mov dword [task_deadline_miss_count], 0
+    mov dword [task_deadline_coalesced_count], 0
+    mov dword [task_deadline_hard_reject_count], 0
+    mov dword [task_deadline_next_effective_tick], 0
+    mov dword [task_deadline_next_task_id], 0
+    mov dword [task_deadline_next_class], 0
+    mov dword [task_deadline_next_tolerance], 0
+    mov dword [task_deadline_next_domain], 0
+    mov dword [task_deadline_last_lateness], 0
+    mov dword [task_deadline_max_lateness], 0
+    mov dword [task_deadline_total_lateness], 0
     mov dword [task_deadline_manager_ready], 1
     clc
     ret
@@ -5716,7 +5872,7 @@ task_deadline_set_tolerant:
     cmp ebx, TASK_DEADLINE_CLASS_HARD
     jne .lookup_task
     test esi, esi
-    jnz .invalid
+    jnz .hard_tolerance_invalid
 
 .lookup_task:
     call task_lookup
@@ -5776,14 +5932,23 @@ task_deadline_set_tolerant:
     mov edx, [task_deadline_temp_tick]
     cmp dword [task_deadline_temp_class], TASK_DEADLINE_CLASS_HARD
     je .effective_ready
+    cmp dword [task_deadline_temp_tolerance], 0
+    je .effective_ready
     add edx, [task_deadline_temp_tolerance]
+    inc dword [task_deadline_coalesced_count]
 .effective_ready:
     mov [eax + TASK_DEADLINE_EFFECTIVE], edx
     mov dword [eax + TASK_DEADLINE_MISS_TICK], 0
     mov eax, [task_deadline_temp_tick]
+    push eax
+    call task_deadline_refresh_next
+    pop eax
     popfd
     clc
     ret
+.hard_tolerance_invalid:
+    inc dword [task_deadline_hard_reject_count]
+    jmp .invalid
 .invalid:
     xor eax, eax
     popfd
@@ -5816,6 +5981,12 @@ task_deadline_poll:
     mov edx, [task_deadline_poll_tick]
     sub edx, [eax + TASK_DEADLINE_EFFECTIVE]
     jl .next
+    mov [task_deadline_last_lateness], edx
+    add [task_deadline_total_lateness], edx
+    cmp edx, [task_deadline_max_lateness]
+    jbe .lateness_ready
+    mov [task_deadline_max_lateness], edx
+.lateness_ready:
     mov dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_MISSED
     mov edx, [task_deadline_poll_tick]
     mov [eax + TASK_DEADLINE_MISS_TICK], edx
@@ -5844,6 +6015,56 @@ task_deadline_poll:
     push ecx
     call task_release_scope
     pop ecx
+.next:
+    inc ecx
+    jmp .scan
+.done:
+    call task_deadline_refresh_next
+    clc
+    ret
+
+; Bestimmt die naechste aktive Deadline fuer Introspection und spaetere
+; Tickless-/One-Shot-Programmierung. Abgelaufene oder terminale Tasks werden
+; nicht als naechstes Wakeup-Ziel veroeffentlicht.
+task_deadline_refresh_next:
+    mov dword [task_deadline_next_effective_tick], 0
+    mov dword [task_deadline_next_task_id], 0
+    mov dword [task_deadline_next_class], 0
+    mov dword [task_deadline_next_tolerance], 0
+    mov dword [task_deadline_next_domain], 0
+    xor ecx, ecx
+.scan:
+    cmp ecx, TASK_CAPACITY
+    jae .done
+    mov edi, ecx
+    shl edi, 5
+    add edi, task_table
+    cmp dword [edi + TASK_STATE], TASK_STATE_CREATED
+    jb .next
+    cmp dword [edi + TASK_STATE], TASK_STATE_CANCEL_REQUEST
+    jae .next
+    mov eax, ecx
+    shl eax, 5
+    add eax, task_deadline_table
+    cmp dword [eax + TASK_DEADLINE_STATE], TASK_DEADLINE_STATE_ARMED
+    jne .next
+    mov edx, [eax + TASK_DEADLINE_EFFECTIVE]
+    test edx, edx
+    jz .next
+    cmp dword [task_deadline_next_effective_tick], 0
+    je .store
+    cmp edx, [task_deadline_next_effective_tick]
+    jae .next
+.store:
+    mov [task_deadline_next_effective_tick], edx
+    mov edx, [edi + TASK_ID]
+    mov [task_deadline_next_task_id], edx
+    mov edx, [eax + TASK_DEADLINE_CLASS]
+    mov [task_deadline_next_class], edx
+    mov edx, [eax + TASK_DEADLINE_TOLERANCE]
+    mov [task_deadline_next_tolerance], edx
+    mov edx, [eax + TASK_DEADLINE_CLOCK_DOMAIN]
+    mov [task_deadline_next_domain], edx
 .next:
     inc ecx
     jmp .scan
@@ -5902,6 +6123,12 @@ task_deadline_manager_self_test:
     jne .invalid
     cmp [eax + TASK_DEADLINE_EFFECTIVE], edx
     jne .invalid
+    cmp dword [task_deadline_coalesced_count], 0
+    jne .invalid
+    cmp [task_deadline_next_effective_tick], edx
+    jne .invalid
+    cmp dword [task_deadline_next_class], TASK_DEADLINE_CLASS_HARD
+    jne .invalid
     mov eax, [task_deadline_test_child]
     xor edx, edx
     call task_complete
@@ -5947,6 +6174,14 @@ task_deadline_manager_self_test:
     add edx, 5
     cmp [eax + TASK_DEADLINE_EFFECTIVE], edx
     jne .invalid
+    cmp dword [task_deadline_coalesced_count], 1
+    jne .invalid
+    cmp [task_deadline_next_effective_tick], edx
+    jne .invalid
+    cmp dword [task_deadline_next_class], TASK_DEADLINE_CLASS_ADVISORY
+    jne .invalid
+    cmp dword [task_deadline_next_tolerance], 5
+    jne .invalid
     mov eax, [task_deadline_test_parent]
     xor edx, edx
     call task_complete
@@ -5975,6 +6210,8 @@ task_deadline_manager_self_test:
     mov esi, 1
     call task_deadline_set_tolerant
     jnc .invalid
+    cmp dword [task_deadline_hard_reject_count], 1
+    jne .invalid
     mov eax, [task_deadline_test_parent]
     xor edx, edx
     call task_complete
@@ -5998,6 +6235,7 @@ task_deadline_manager_self_test:
     jc .invalid
     mov [task_deadline_test_parent], eax
     mov edx, [timer_ticks]
+    dec edx
     mov ebx, TASK_DEADLINE_CLASS_FIRM
     mov ecx, TASK_DEADLINE_POLICY_CANCEL
     call task_deadline_set
@@ -6018,6 +6256,14 @@ task_deadline_manager_self_test:
     cmp dword [eax + TASK_DEADLINE_MISS_TICK], 0
     je .invalid
     cmp dword [task_deadline_miss_count], 1
+    jne .invalid
+    cmp dword [task_deadline_last_lateness], 0
+    je .invalid
+    cmp dword [task_deadline_max_lateness], 0
+    je .invalid
+    cmp dword [task_deadline_total_lateness], 0
+    je .invalid
+    cmp dword [task_deadline_next_task_id], 0
     jne .invalid
     mov eax, [task_deadline_test_parent]
     call task_checkpoint
@@ -6045,9 +6291,30 @@ task_deadline_manager_api:
     dd TIME_CLOCK_DOMAIN_MONO_ID
     dd TASK_DEADLINE_CLASS_ADVISORY
     dd task_deadline_set_tolerant
+    dd task_deadline_coalesced_count
+    dd task_deadline_hard_reject_count
+    dd task_deadline_refresh_next
+    dd task_deadline_next_effective_tick
+    dd task_deadline_next_task_id
+    dd task_deadline_next_class
+    dd task_deadline_next_tolerance
+    dd task_deadline_next_domain
+    dd task_deadline_last_lateness
+    dd task_deadline_max_lateness
+    dd task_deadline_total_lateness
 
 task_deadline_manager_ready:    dd 0
 task_deadline_miss_count:       dd 0
+task_deadline_coalesced_count:  dd 0
+task_deadline_hard_reject_count: dd 0
+task_deadline_next_effective_tick: dd 0
+task_deadline_next_task_id:     dd 0
+task_deadline_next_class:       dd 0
+task_deadline_next_tolerance:   dd 0
+task_deadline_next_domain:      dd 0
+task_deadline_last_lateness:    dd 0
+task_deadline_max_lateness:     dd 0
+task_deadline_total_lateness:   dd 0
 task_deadline_poll_tick:        dd 0
 task_deadline_temp_task:        dd 0
 task_deadline_temp_tick:        dd 0
@@ -23604,7 +23871,7 @@ message_paging_error:
 message_interrupts_ok:
     db "NOVA: IDT, PIC und PIT 100 Hz aktiv", 13, 10, 0
 message_time_core_ok:
-    db "NOVA: Time Core ABI 1.0, Clock Source, Domains und Monotonic Introspection bereit", 13, 10, 0
+    db "NOVA: Time Core ABI 1.0, Clock Source Health, Domains und Monotonic Introspection bereit", 13, 10, 0
 message_interrupts_error:
     db "NOVA PANIC: Interrupt- oder Timerinitialisierung fehlgeschlagen", 13, 10, 0
 message_ipc_ok:
@@ -23688,7 +23955,7 @@ message_task_manager_ok:
 message_task_manager_error:
     db "NOVA PANIC: Task Manager nicht initialisierbar", 13, 10, 0
 message_task_deadline_manager_ok:
-    db "NOVA: Task Deadline ABI 1.0, ClockDomain, Toleranz und Miss-Introspection aktiv", 13, 10, 0
+    db "NOVA: Task Deadline ABI 1.0, ClockDomain, Coalescing und Miss-Introspection aktiv", 13, 10, 0
 message_task_deadline_manager_error:
     db "NOVA PANIC: Task Deadline Manager nicht initialisierbar", 13, 10, 0
 message_task_group_manager_ok:
