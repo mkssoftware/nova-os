@@ -1851,3 +1851,48 @@ spätestens 2106 über). UFS_ARGS-Puffer (96 Byte, USER_STACK_ADDRESS-1408) hat
 ausreichend Platz für 80 Byte.
 
 Kernel-Binary: 245760 Byte (~239 KB; Spielraum ~13 KB bis zur Decke 258048 Byte).
+
+---
+
+## §128 AP-Aktivierung & echter SMP-Betrieb (2026-10-08)
+
+**Ziel:** Application Processors antworten korrekt auf Cross-CPU-IPIs. Bisher
+fehlte der IDT-Eintrag für Vektor 0xFE (SMP_IPI_VECTOR), sodass jeder IPI
+einen `isr_unexpected`-Pfad → Kernel-Panic ausgelöst hätte. Außerdem kannte
+der AP nicht den empfangenen IPI-Typ, und TLB-Shootdown-Adressen wurden remote
+nicht übergeben.
+
+**Kernel (`entry32.asm`):**
+
+*IPI-Dispatch-Handler `isr_ipi` (Vektor 0xFE):*
+Neuer ISR ohne Ring-Wechsel (AP in Ring-0). Ablauf:
+1. LAPIC-EOI (erlaubt erneute IPIs dieses Vektors)
+2. Eigene APIC-ID aus LAPIC-ID-Register (`[0xFEE00020]` Bits 31:24)
+3. CPU-Slot via `acpi_apic_ids`-Tabelle ermitteln
+4. Mailbox `smp_ipi_mailbox[slot]` atomar mit `xchg` leeren
+5. Dispatch: `TLB_SHOOTDOWN` → `invlpg [smp_shootdown_addr]`;
+   `CPU_STOP/PANIC_STOP` → `cli; hlt`; `RESCHEDULE` → kein explizites Handling
+   (AP kehrt nach `iret` in `sti; hlt`-Idle-Schleife zurück)
+
+*Neue Datenbereiche:*
+- `smp_ipi_mailbox: times CPU_CAPACITY dd 0` — per-CPU-Bitmaske ausstehender IPI-Typen
+- `smp_shootdown_addr: dd 0` — virtuelle Adresse für Remote-TLB-Shootdown
+
+*`smp_send_ipi` erweitert:* Schreibt `1 << IPI-Typ` per `lock or` in die
+Mailbox des Ziel-CPU-Slots, bevor die LAPIC-ICR-Nachricht abgeschickt wird.
+
+*`smp_tlb_shootdown_page` erweitert:* Schreibt die virtuelle Seitenadresse in
+`smp_shootdown_addr` bevor der TLB_SHOOTDOWN-IPI gesendet wird.
+
+*IDT-Registrierung:* `interrupt_initialize` trägt `isr_ipi` an Vektor 0xFE
+(= SMP_IPI_VECTOR) ein — nach dem Syscall-Gate, vor `lidt`. Damit ist der
+Vektor sowohl im PIC- als auch APIC-Pfad aktiv.
+
+**Verhalten:**
+- UP (1 CPU): kein AP-Trampoline, SMP-Code nicht aktiv → keine Änderung
+- SMP (≥2 CPUs): APs empfangen RESCHEDULE-IPIs ohne Fault; TLB-Shootdown
+  wirksam auf allen beteiligten APs; CPU_STOP hält APs sicher an
+- `smp_self_test` unverändert bestanden (bestehende SMP-Prüfung verifiziert,
+  dass `smp_send_ipi` erfolgreich war; Mailbox-Befüllung tritt jetzt dazu)
+
+Kernel-Binary: 245760 Byte (~239 KB; Spielraum ~13 KB).

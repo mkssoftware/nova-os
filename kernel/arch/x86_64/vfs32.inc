@@ -25,7 +25,7 @@ SYSCALL_VFS_RENAME          equ 9
 VFS_LOOKUP_FLAG_WRITE       equ 0x00000001
 VFS_IO_MAX                  equ 4096
 VFS_ENTRY_SIZE              equ 288
-VFS_INFO_SIZE               equ 48
+VFS_INFO_SIZE               equ 80
 VFS_RENAME_SIZE             equ 40
 
 HANDLE_RIGHT_READ           equ 0x00000040
@@ -826,9 +826,10 @@ vfs_op_read_directory:
     ret
 
 ; ---------------------------------------------------------------------------
-; VFS.Query (7): NovaVfsObjectInfoV1 (48 Byte)
+; VFS.Query (7): NovaVfsObjectInfoV2 (80 Byte)
 ;   +8 Handle, +12 Rights, +16 ObjectId (u64), +24 ObjectType, +28 Flags,
-;   +32 Size (u64), +40 Generation (u64)
+;   +32 Size (u64), +40 Generation (u64),
+;   +48 Created (u64), +56 Modified (u64), +64 Accessed (u64), +72 Changed (u64)
 ; ---------------------------------------------------------------------------
 vfs_op_query:
     mov ecx, VFS_INFO_SIZE
@@ -857,6 +858,22 @@ vfs_op_query:
     mov [vfs_args + 40], eax
     mov eax, [nfs_object + NFS_O_GENERATION + 4]
     mov [vfs_args + 44], eax
+    mov eax, [nfs_object + NFS_O_CREATED]
+    mov [vfs_args + 48], eax
+    mov eax, [nfs_object + NFS_O_CREATED + 4]
+    mov [vfs_args + 52], eax
+    mov eax, [nfs_object + NFS_O_MODIFIED]
+    mov [vfs_args + 56], eax
+    mov eax, [nfs_object + NFS_O_MODIFIED + 4]
+    mov [vfs_args + 60], eax
+    mov eax, [nfs_object + NFS_O_ACCESSED]
+    mov [vfs_args + 64], eax
+    mov eax, [nfs_object + NFS_O_ACCESSED + 4]
+    mov [vfs_args + 68], eax
+    mov eax, [nfs_object + NFS_O_CHANGED]
+    mov [vfs_args + 72], eax
+    mov eax, [nfs_object + NFS_O_CHANGED + 4]
+    mov [vfs_args + 76], eax
     call vfs_copy_args_back
     test eax, eax
     jnz .return
@@ -1074,7 +1091,7 @@ vfs_write_mark:   dd 0
 vfs_bounce_page:  dd 0
 nfs_busy:         dd 0
 vfs_seen:         dd 0
-vfs_args:         times 64 db 0
+vfs_args:         times 80 db 0
 vfs_path:         times 256 db 0
 vfs_path_target:  times 256 db 0
 vfs_entry:        times VFS_ENTRY_SIZE db 0

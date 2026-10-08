@@ -3307,6 +3307,10 @@ interrupt_initialize:
     mov eax, syscall_stub
     call idt_set_gate
     mov byte [idt_table + 0x80 * 8 + 5], 0xEE ; present, Ring-3, Interrupt-Gate
+    ; SMP IPI-Vektor (Prio: nach Syscall, vor LIDT)
+    mov ebx, SMP_IPI_VECTOR
+    mov eax, isr_ipi
+    call idt_set_gate
     lidt [idt_descriptor]
 
     cmp dword [kernel_context + CONTEXT_PLATFORM], 2
@@ -18380,6 +18384,12 @@ smp_send_ipi:
     jae .send_done
     bt edi, esi
     jnc .next_bit
+    ; IPI-Typ in Mailbox des Ziel-AP vermerken (ECX = IPI-Typ, ESI = CPU-Slot)
+    push eax
+    mov eax, 1
+    shl eax, cl
+    lock or [smp_ipi_mailbox + esi * 4], eax
+    pop eax
     ; APIC-ID des Ziels
     movzx ebx, byte [acpi_apic_ids + esi * 4]
     shl ebx, 24
@@ -18428,6 +18438,7 @@ smp_tlb_shootdown_page:
 .skip_local:
 
     ; Remote-APs: IPI mit TLB_SHOOTDOWN-Typ senden (Fire-and-Forget §124)
+    mov [smp_shootdown_addr], eax    ; Zieladresse für remote INVLPG sichern
     push eax
     mov eax, edx
     and eax, ~1             ; BSP-Bit ausblenden → nur APs
@@ -18562,6 +18573,57 @@ smp_rejected_ipis:              dd 0
 smp_rejected_remote_shootdowns: dd 0
 smp_remote_ipis_sent:           dd 0
 ap_alive_count:                 dd 0
+smp_ipi_mailbox:                times CPU_CAPACITY dd 0   ; pending IPI-Typen (Bitmaske pro CPU-Slot)
+smp_shootdown_addr:             dd 0                      ; Seitenaddr. für remote TLB-Shootdown
+
+; ---------------------------------------------------------------------------
+; isr_ipi – generischer IPI-Empfänger (Vektor SMP_IPI_VECTOR = 0xFE)
+; Kein Ring-Wechsel (AP läuft in Ring-0), daher kein SS/ESP auf dem Stack.
+; Reihenfolge: TLB_SHOOTDOWN → CPU_STOP/PANIC_STOP, RESCHEDULE braucht kein
+; explizites Handling (AP kehrt nach IRET in die Idle-Schleife zurück).
+; ---------------------------------------------------------------------------
+isr_ipi:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    ; LAPIC EOI: weiteren IPI dieses Vektors erlauben
+    mov dword [LAPIC_BASE + LAPIC_EOI], 0
+    ; Eigene APIC-ID aus LAPIC ID-Register (Bits 31:24)
+    mov eax, [LAPIC_BASE + 0x020]
+    shr eax, 24
+    ; CPU-Slot anhand der ACPI-Tabelle ermitteln
+    xor ecx, ecx
+.ipi_find:
+    cmp ecx, [cpu_discovered_count]
+    jae .ipi_done
+    cmp [acpi_apic_ids + ecx * 4], eax
+    je .ipi_found
+    inc ecx
+    jmp .ipi_find
+.ipi_found:
+    ; Mailbox atomar lesen und leeren
+    xor edx, edx
+    xchg edx, [smp_ipi_mailbox + ecx * 4]
+    ; TLB_SHOOTDOWN: INVLPG der gemeldeten Adresse
+    test edx, (1 << SMP_IPI_TLB_SHOOTDOWN)
+    jz .ipi_check_stop
+    mov eax, [smp_shootdown_addr]
+    invlpg [eax]
+.ipi_check_stop:
+    ; CPU_STOP / PANIC_STOP: AP sicher anhalten
+    test edx, (1 << SMP_IPI_CPU_STOP) | (1 << SMP_IPI_PANIC_STOP)
+    jz .ipi_done
+    cli
+.ipi_halt:
+    hlt
+    jmp .ipi_halt
+.ipi_done:
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    iret
 
 align 4096
 ap_stack_area:
