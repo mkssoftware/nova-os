@@ -26,6 +26,9 @@ SEMANTIC_CONVERSION_CAPACITY equ 8
 SEMANTIC_CONVERSION_SIZE     equ 24
 SEMANTIC_CONVERSION_LOSSLESS equ 1
 SEMANTIC_CONVERSION_LOSSY    equ 2
+; §119: Mehrere kompatible Semantic Types pro Ressource
+SEMANTIC_SECONDARY_CAPACITY equ 4   ; sekundäre Typen pro Objekt (Primary nicht gezählt)
+SEMANTIC_OBJECT_CAPACITY    equ 64  ; muss mit Objektsystem-Kapazität übereinstimmen
 SEMANTIC_RULE_NONEMPTY        equ 1
 SEMANTIC_RULE_DIAGNOSTIC_CODE equ 2
 SEMANTIC_RULE_CONTRACT_MAX    equ 0x100
@@ -45,6 +48,19 @@ semantic_initialize:
     rep stosd
     mov dword [semantic_type_count], 0
     mov dword [semantic_conversion_count], 0
+    ; §119: Sekundäre Typ-Sidecar-Felder initialisieren
+    mov edi, object_semantic_secondary_types
+    mov ecx, SEMANTIC_OBJECT_CAPACITY * SEMANTIC_SECONDARY_CAPACITY
+    rep stosd
+    mov edi, object_semantic_secondary_versions
+    mov ecx, SEMANTIC_OBJECT_CAPACITY * SEMANTIC_SECONDARY_CAPACITY
+    rep stosd
+    mov edi, object_semantic_secondary_validation
+    mov ecx, SEMANTIC_OBJECT_CAPACITY * SEMANTIC_SECONDARY_CAPACITY
+    rep stosd
+    mov edi, object_semantic_secondary_count_array
+    mov ecx, SEMANTIC_OBJECT_CAPACITY
+    rep stosd
     mov dword [semantic_registry_sealed], 0
     mov esi, semantic_name_inline_data
     mov eax, SEMANTIC_REPR_BYTES8
@@ -486,6 +502,8 @@ object_semantic_attach:
     mov [object_semantic_versions + eax * 4], ecx
     mov ecx, [esp]
     mov [object_semantic_validation + eax * 4], ecx
+    ; §119: Sekundäre Slots bei Primary-Attach zurücksetzen
+    mov dword [object_semantic_secondary_count_array + eax * 4], 0
     add esp, 16
     clc
     ret
@@ -514,6 +532,175 @@ object_semantic_query:
 .query_bad:
     add esp, 4
     stc
+    ret
+
+; §119: Sekundären Typ an Objekt anhängen.
+; EAX=Objekthandle, ECX=Secondary Type Handle, EDX=Version, EBX=ValidationStatus.
+; Primary muss bereits gesetzt sein. Secondary != Primary, kein Duplikat.
+; CF=0 bei Erfolg; CF=1 bei Fehler.
+object_semantic_attach_secondary:
+    cmp ebx, SEMANTIC_VALIDATION_DECLARED
+    jb .bad
+    cmp ebx, SEMANTIC_VALIDATION_VERIFIED
+    ja .bad
+    push eax                    ; [esp+12] = Objekthandle
+    push ecx                    ; [esp+8]  = Secondary Type Handle
+    push edx                    ; [esp+4]  = Version
+    push ebx                    ; [esp+0]  = ValidationStatus
+    mov eax, ecx
+    call semantic_lookup_type
+    jc .restore_bad
+    mov ecx, [esp+4]
+    cmp ecx, [edx + SEMANTIC_TYPE_VERSION]
+    jne .restore_bad
+    mov eax, [esp+12]
+    call object_lookup
+    jc .restore_bad
+    mov eax, [esp+12]
+    and eax, 0xFFFF
+    dec eax                     ; EAX = Objektindex
+    cmp dword [object_semantic_types + eax * 4], 0
+    je .restore_bad             ; Primary muss zuerst gesetzt sein
+    mov ecx, [esp+8]
+    cmp ecx, [object_semantic_types + eax * 4]
+    je .restore_bad             ; Secondary darf nicht gleich Primary sein
+    mov edi, eax
+    imul edi, edi, SEMANTIC_SECONDARY_CAPACITY ; EDI = Basis-Slot-Index
+    xor ebx, ebx               ; EBX = Slot-Zähler
+.sec_scan:
+    cmp ebx, [object_semantic_secondary_count_array + eax * 4]
+    jae .sec_insert
+    lea esi, [edi + ebx]
+    cmp ecx, [object_semantic_secondary_types + esi * 4]
+    je .restore_bad             ; Duplikat abweisen
+    inc ebx
+    jmp .sec_scan
+.sec_insert:
+    cmp ebx, SEMANTIC_SECONDARY_CAPACITY
+    jae .restore_bad            ; Kapazität erschöpft
+    lea esi, [edi + ebx]
+    mov [object_semantic_secondary_types + esi * 4], ecx
+    mov ecx, [esp+4]
+    mov [object_semantic_secondary_versions + esi * 4], ecx
+    mov ecx, [esp]
+    mov [object_semantic_secondary_validation + esi * 4], ecx
+    inc dword [object_semantic_secondary_count_array + eax * 4]
+    add esp, 16
+    clc
+    ret
+.restore_bad:
+    add esp, 16
+.bad:
+    stc
+    ret
+
+; §119: Prüft ob Primary- oder irgendein Secondary-Type mit Type Handle übereinstimmt.
+; EAX=Objekthandle, ECX=gesuchter Type Handle.
+; CF=0: gefunden (EDX=Version, EBX=ValidationStatus). CF=1: nicht gefunden.
+object_semantic_has_type:
+    push eax                    ; [esp+4] = Objekthandle
+    push ecx                    ; [esp+0] = gesuchter Type Handle
+    call object_lookup
+    jc .has_bad
+    mov eax, [esp+4]
+    and eax, 0xFFFF
+    dec eax                     ; Objektindex
+    mov ecx, [esp]              ; gesuchter Type Handle
+    cmp ecx, [object_semantic_types + eax * 4]
+    jne .has_check_secondary
+    mov edx, [object_semantic_versions + eax * 4]
+    mov ebx, [object_semantic_validation + eax * 4]
+    add esp, 8
+    clc
+    ret
+.has_check_secondary:
+    mov edi, eax
+    imul edi, edi, SEMANTIC_SECONDARY_CAPACITY
+    xor ebx, ebx
+.has_scan:
+    cmp ebx, [object_semantic_secondary_count_array + eax * 4]
+    jae .has_bad
+    lea esi, [edi + ebx]
+    cmp ecx, [object_semantic_secondary_types + esi * 4]
+    jne .has_next
+    mov edx, [object_semantic_secondary_versions + esi * 4]
+    mov ebx, [object_semantic_secondary_validation + esi * 4]
+    add esp, 8
+    clc
+    ret
+.has_next:
+    inc ebx
+    jmp .has_scan
+.has_bad:
+    add esp, 8
+    stc
+    ret
+
+; §119: Secondary Type nach Slot-Index abfragen.
+; EAX=Objekthandle, ECX=Slot-Index (0-basiert).
+; CF=0: ECX=TypeHandle, EDX=Version, EBX=ValidationStatus. CF=1: ungültig.
+object_semantic_query_secondary:
+    push eax                    ; [esp+4] = Objekthandle
+    push ecx                    ; [esp+0] = Slot-Index
+    call object_lookup
+    jc .qsec_bad
+    mov eax, [esp+4]
+    and eax, 0xFFFF
+    dec eax                     ; Objektindex
+    mov ecx, [esp]              ; Slot-Index
+    cmp ecx, [object_semantic_secondary_count_array + eax * 4]
+    jae .qsec_bad
+    imul edi, eax, SEMANTIC_SECONDARY_CAPACITY
+    add edi, ecx                ; EDI = absoluter Slot-Flat-Index
+    mov ecx, [object_semantic_secondary_types + edi * 4]
+    mov edx, [object_semantic_secondary_versions + edi * 4]
+    mov ebx, [object_semantic_secondary_validation + edi * 4]
+    add esp, 8
+    clc
+    ret
+.qsec_bad:
+    add esp, 8
+    stc
+    ret
+
+; §119: Anzahl der sekundären Types eines Objekts.
+; EAX=Objekthandle. EAX=Anzahl bei CF=0. CF=1 bei ungültigem Handle.
+object_semantic_secondary_count:
+    push eax
+    call object_lookup
+    jc .cnt_bad
+    mov eax, [esp]
+    and eax, 0xFFFF
+    dec eax
+    mov eax, [object_semantic_secondary_count_array + eax * 4]
+    add esp, 4
+    clc
+    ret
+.cnt_bad:
+    add esp, 4
+    stc
+    ret
+
+; §119: Sekundäre Typ-Slots eines Objekts zurücksetzen.
+; Aufzurufen nach object_release, damit der Slot für neue Objekte sauber ist.
+; EAX=früheres Objekthandle (Slot-Index-Berechnung; object_lookup wird nicht benötigt).
+object_semantic_clear_secondary:
+    and eax, 0xFFFF
+    dec eax                     ; Objektindex
+    mov dword [object_semantic_secondary_count_array + eax * 4], 0
+    imul edi, eax, SEMANTIC_SECONDARY_CAPACITY
+    xor ecx, ecx
+.clr_loop:
+    cmp ecx, SEMANTIC_SECONDARY_CAPACITY
+    jae .clr_done
+    lea esi, [edi + ecx]
+    mov dword [object_semantic_secondary_types + esi * 4], 0
+    mov dword [object_semantic_secondary_versions + esi * 4], 0
+    mov dword [object_semantic_secondary_validation + esi * 4], 0
+    inc ecx
+    jmp .clr_loop
+.clr_done:
+    clc
     ret
 
 semantic_self_test:
@@ -630,6 +817,79 @@ semantic_self_test:
     mov eax, [semantic_test_object]
     call object_semantic_query
     jnc .bad                     ; Freigabe entfernt auch Type-Sidecar
+    ; §119: Mehrere Semantic Types – Secondary-Type-Anhang und Abfrage
+    mov eax, 1
+    xor edx, edx
+    xor ebx, ebx
+    call object_create
+    jc .bad
+    mov [semantic_test_object], eax
+    ; Primary Type setzen
+    mov ecx, SEMANTIC_IPC_INLINE_DATA
+    mov edx, SEMANTIC_TYPE_VERSION_1
+    mov ebx, SEMANTIC_VALIDATION_VERIFIED
+    call object_semantic_attach
+    jc .release_bad
+    ; Secondary ohne Primary-Vorbedingung (neues Objekt ohne Primary darf nicht klappen)
+    ; → hier Primary bereits gesetzt; Positive-Test: Secondary anhängen
+    mov eax, [semantic_test_object]
+    mov ecx, SEMANTIC_IPC_DIAGNOSTIC
+    mov edx, SEMANTIC_TYPE_VERSION_1
+    mov ebx, SEMANTIC_VALIDATION_DECLARED
+    call object_semantic_attach_secondary
+    jc .release_bad             ; muss gelingen
+    ; Secondary Slot 0 == DIAGNOSTIC
+    mov eax, [semantic_test_object]
+    xor ecx, ecx
+    call object_semantic_query_secondary
+    jc .release_bad
+    cmp ecx, SEMANTIC_IPC_DIAGNOSTIC
+    jne .release_bad
+    cmp edx, SEMANTIC_TYPE_VERSION_1
+    jne .release_bad
+    cmp ebx, SEMANTIC_VALIDATION_DECLARED
+    jne .release_bad
+    ; has_type: Primary muss gefunden werden
+    mov eax, [semantic_test_object]
+    mov ecx, SEMANTIC_IPC_INLINE_DATA
+    call object_semantic_has_type
+    jc .release_bad
+    ; has_type: Secondary muss gefunden werden
+    mov eax, [semantic_test_object]
+    mov ecx, SEMANTIC_IPC_DIAGNOSTIC
+    call object_semantic_has_type
+    jc .release_bad
+    ; Duplikat-Secondary muss abgewiesen werden
+    mov eax, [semantic_test_object]
+    mov ecx, SEMANTIC_IPC_DIAGNOSTIC
+    mov edx, SEMANTIC_TYPE_VERSION_1
+    mov ebx, SEMANTIC_VALIDATION_DECLARED
+    call object_semantic_attach_secondary
+    jnc .release_bad
+    ; Secondary == Primary muss abgewiesen werden
+    mov eax, [semantic_test_object]
+    mov ecx, SEMANTIC_IPC_INLINE_DATA
+    mov edx, SEMANTIC_TYPE_VERSION_1
+    mov ebx, SEMANTIC_VALIDATION_DECLARED
+    call object_semantic_attach_secondary
+    jnc .release_bad
+    ; Secondary-Count == 1
+    mov eax, [semantic_test_object]
+    call object_semantic_secondary_count
+    jc .release_bad
+    cmp eax, 1
+    jne .release_bad
+    ; Freigabe: Secondary-Sidecar explizit zurücksetzen, dann Objekt freigeben
+    mov eax, [semantic_test_object]
+    call object_semantic_clear_secondary
+    mov eax, [semantic_test_object]
+    call object_release
+    jc .bad
+    ; Nach Freigabe: object_lookup ungültig → Secondary-Abfrage muss scheitern
+    mov eax, [semantic_test_object]
+    xor ecx, ecx
+    call object_semantic_query_secondary
+    jnc .bad                    ; muss scheitern – Objekt freigegeben
     clc
     ret
 .release_bad:
@@ -677,3 +937,13 @@ semantic_name_inline_data:
     db 'nova.kernel.ipc.inline-data', 0
 semantic_name_diagnostic:
     db 'nova.kernel.ipc.diagnostic', 0
+; §119: Sekundäre Typ-Sidecars (SEMANTIC_OBJECT_CAPACITY × SEMANTIC_SECONDARY_CAPACITY Einträge)
+align 4
+object_semantic_secondary_types:
+    times SEMANTIC_OBJECT_CAPACITY * SEMANTIC_SECONDARY_CAPACITY dd 0
+object_semantic_secondary_versions:
+    times SEMANTIC_OBJECT_CAPACITY * SEMANTIC_SECONDARY_CAPACITY dd 0
+object_semantic_secondary_validation:
+    times SEMANTIC_OBJECT_CAPACITY * SEMANTIC_SECONDARY_CAPACITY dd 0
+object_semantic_secondary_count_array:
+    times SEMANTIC_OBJECT_CAPACITY dd 0

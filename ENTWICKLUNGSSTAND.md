@@ -356,6 +356,19 @@ Target Version, Capability-ID und Verlustklasse registriert. Lossless und Lossy
 werden unterschieden. Die Registry beschreibt nur zulässige Pfade; sie führt
 keine stillschweigende Konvertierung aus.
 
+### Mehrere Semantic Types pro Ressource (§119)
+
+Ein Object-Handle kann neben seinem Primary Type bis zu vier Secondary Types tragen.
+
+- `object_semantic_attach_secondary` hängt einen weiteren Typ an ein Objekt; Primary muss bereits gesetzt sein, Secondary darf weder dem Primary noch einem bereits registrierten Secondary entsprechen.
+- `object_semantic_has_type` prüft, ob ein Typ als Primary oder als Secondary eines Objekts eingetragen ist.
+- `object_semantic_query_secondary` fragt einen Secondary-Slot nach Index ab und liefert Type Handle, Version und ValidationStatus.
+- `object_semantic_secondary_count` gibt die Anzahl aktuell gesetzter Secondary Types zurück.
+- `object_semantic_clear_secondary` setzt alle Secondary-Slots zurück (nach `object_release` aufzurufen, damit der Slot für neue Objekte sauber ist).
+- `semantic_initialize` löscht die neuen Secondary-Sidecar-Arrays beim Start explizit.
+- `object_semantic_attach` setzt beim Setzen des Primary Types den Secondary-Count auf 0 (Slot-Wiederverwendung sauber).
+- Der `semantic_self_test` prüft Positive- und Negativfälle: Secondary anhängen, Slot abfragen, `has_type` für Primary und Secondary, Duplikat- und Primary-Gleichheitsabweisung, Count-Abfrage, Freigabe mit Clear.
+
 ### Typed Resources, IPC und Capabilities
 
 - Object-Handles besitzen getrennte Semantic-Type-Sidecars.
@@ -549,7 +562,7 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
   bereits in QEMU geprüft
 - vollständige AP-Aktivierung und echter SMP-Betrieb
 - vollständige Semantic Relationships, Subtypes und Traits
-- mehrere kompatible Semantic Types pro Ressource
+- ~~mehrere kompatible Semantic Types pro Ressource~~ (§119: `object_semantic_attach_secondary`, `object_semantic_has_type`, `object_semantic_query_secondary`, `object_semantic_secondary_count`, `object_semantic_clear_secondary`; bis zu 4 Secondary Types pro Ressource; Secondary-Sidecar-Arrays in `semantic32.inc`; `semantic_initialize` löscht Secondary-Felder; `object_semantic_attach` setzt Secondary-Count zurück; erweiterter `semantic_self_test`)
 - Typed Files und persistente Semantic Metadata
 - Semantic Discovery und Semantic Execution
 - tatsächliche Ausführung registrierter Conversion Capabilities
