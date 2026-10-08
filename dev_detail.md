@@ -4451,3 +4451,98 @@ Neuer optionaler Parameter `-NkiBuilder` (Pfad zu `build-nki.ps1`).
 ### Debug-Marker
 
 - `UEFI:KERNEL-LZ4-DECOMPRESSED` — LZ4-Dekompression erfolgreich abgeschlossen
+
+---
+
+## Abschnitt 114 — ZSTD-Dekompression für Kernelabbilder im UEFI-Bootloader
+
+**Datum:** 8. Oktober 2026
+
+### Motivation
+
+§114 ergänzt den zweiten Kompressionstyp: ZSTD-Frame-Format (RFC 8878). ZSTD bietet gegenüber LZ4 eine höhere Kompressionsrate bei moderater Dekompressionsgeschwindigkeit und ist in modernen Linux-Kerneln, Firmware-Updates und Paketmanagern weit verbreitet.
+
+### NKI-Payload-Layout bei ZSTD
+
+```
+NKI-Datei (64-Byte-Header + komprimierter Payload + optionaler DevSign-Block)
+
+[0..63]          NKI-Header (header.compression = 2 = ZSTD)
+[64..64+size-1]  Komprimierter Payload:
+  [0..3]           uncompressed_size (uint32 LE) — unkomprimierte ELF-Größe
+  [4..size-1]      ZSTD-Frame (vollständiges Frame-Format mit Magic, FHD, Blöcken)
+[64+size..]      optionaler DevSign-Block (wenn sig_size == 64)
+```
+
+CRC32 und DevSign dev_mac decken den gesamten komprimierten Payload ab (identisch zu LZ4).
+
+### ZSTD-Frame-Format (implementierter Subset)
+
+```
+[0..3]   Magic: 0x28 0xB5 0x2F 0xFD (= 0xFD2FB528 LE)
+[4]      Frame_Header_Descriptor (FHD):
+           Bits 7-6: FCS_Flag (Frame Content Size Größe: 0=variabel/0B, 1=2B, 2=4B, 3=8B)
+           Bit  5:   Single_Segment_Flag (kein Window_Descriptor wenn gesetzt)
+           Bit  4:   Unused (muss 0 sein)
+           Bit  3:   Reserved_Bit (muss 0 sein — Loader prüft, lehnt ab wenn gesetzt)
+           Bit  2:   Content_Checksum_Flag (Loader überspringt Checksum)
+           Bits 1-0: Dict_ID_Flag (0/1/2/4 Byte Dict-ID)
+[..]     Window_Descriptor (1 Byte, fehlt wenn Single_Segment=1)
+[..]     Frame_Content_Size (0/1/2/4/8 Bytes je nach FCS_Flag)
+[..]     Blöcke:
+           Block_Header (3 Bytes LE): [Last:1][Type:2][Size:21]
+           Block_Type 0 (Raw):        Size Bytes unveränderter Daten
+           Block_Type 1 (RLE):        1 Byte, Size-mal wiederholt
+           Block_Type 2 (Compressed): vom Loader abgelehnt (return 0)
+           Block_Type 3 (Reserved):   vom Loader abgelehnt (return 0)
+[..]     Content_Checksum (4 Bytes, optional — Loader überspringt)
+```
+
+### Neue Konstanten
+
+| Symbol | Wert | Datei |
+|---|---|---|
+| `NOVA_NKI_COMPRESSION_ZSTD` | `2u` | `nova_boot_protocol.h` |
+| `NKI_COMPRESSION_ZSTD` | `equ 2` | `layout.inc` |
+
+### ZSTD-Decompressor (`kernel_loader.c`)
+
+Neue statische Funktion `zstd_decompress(src, src_len, dst, dst_cap)` direkt vor `load_nki_elf32`. Implementiert:
+
+- Magic-Verifikation (0xFD2FB528)
+- FHD-Parsing: FCS_Flag, Single_Segment, Reserved_Bit-Check, Dict_ID-Skip
+- Window_Descriptor-Skip (wenn Single_Segment=0)
+- Frame_Content_Size-Lesen (FCS_Flag 0/1/2; 3 = >4 GiB abgelehnt)
+- Blockschleife: Raw_Block-Kopie, RLE_Block-Fill; Compressed_Block und Reserved → return 0
+- FCS-Verifikation: wenn FCS bekannt, muss `written == fcs`
+
+### Änderungen an `load_nki_elf32`
+
+1. **Kompressionscheck** erweitert: zusätzlich `nki->compression != NOVA_NKI_COMPRESSION_ZSTD` im ODER-Ausdruck
+2. **Dekompression** als `else if`-Zweig nach LZ4-Block:
+   - 4 Bytes `uncompressed_size` aus Payload-Anfang lesen (max 4 MB)
+   - `AllocatePool(EFI_LOADER_DATA, uncomp_size)` für Dekomprimierungspuffer
+   - `zstd_decompress(payload+4, image_size-4, buf, uncomp_size)` aufrufen
+   - Bei Fehler: FreePool + return false
+   - Bei Erfolg: `payload = decompressed_buf`, `UEFI:KERNEL-ZSTD-DECOMPRESSED` loggen
+
+### Änderungen an `build-nki.ps1`
+
+- Neuer Schalter `-CompressZstd`
+- Gegenseitige Ausschluss-Prüfung: `-Compress` und `-CompressZstd` können nicht gleichzeitig angegeben werden
+- Neue Funktion `Compress-ZstdRaw`: erzeugt ein gültiges ZSTD-Frame im Raw-Block-Format (kein echter Kompressor; FHD=0xA0, FCS=4 Bytes, ein Raw-Block mit Last=1)
+- Kompressionsblock: `$payload = [uncompressed_size:4] + [zstd_frame]`, `$compressionId = 2`
+- Updated Write-Host zeigt "ZSTD-komprimiert"
+
+### Neue Testfälle in `test-uefi-kernel-validation.ps1`
+
+| Testfall | Beschreibung | Erwartetes Ergebnis |
+|---|---|---|
+| `nki-v2-zstd-valid` | ZSTD-komprimiertes NKI v2 mit DevSign | `UEFI:KERNEL-ZSTD-DECOMPRESSED` + `UEFI:KERNEL-DEVSIGN-VERIFIED` + `NOVA_KERNEL_READY` |
+| `bad-nki-v2-zstd-as-lz4` | ZSTD-Payload mit compression=1 (LZ4) | LZ4-Decompressor schlägt fehl → Fallback auf `UEFI:ELF32-DIRECT-VALIDATED` |
+
+**Anmerkung:** Der bestehende `bad-nki-v2-unknown-compression`-Test wurde von compression=2 auf compression=3 aktualisiert, da compression=2 jetzt ZSTD bedeutet.
+
+### Debug-Marker
+
+- `UEFI:KERNEL-ZSTD-DECOMPRESSED` — ZSTD-Dekompression erfolgreich abgeschlossen

@@ -6,10 +6,16 @@ param(
     [string]$OutputFile,
 
     # §113: LZ4-Blockformat-Kompression (Literal-Only, kein echter Back-Reference-Kompressor)
-    [switch]$Compress
+    [switch]$Compress,
+
+    # §114: ZSTD-Frame-Kompression (Raw-Block-Only, kein Huffman/FSE-Kompressor)
+    [switch]$CompressZstd
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Compress -and $CompressZstd) {
+    throw 'Die Schalter -Compress (LZ4) und -CompressZstd (ZSTD) schliessen sich gegenseitig aus.'
+}
 
 $headerSize = 64
 $maximumPayloadSize = 262144
@@ -57,6 +63,29 @@ function Compress-Lz4Block([byte[]]$data) {
 
 $elfPayload = $payload   # Original-ELF für Build-ID-Extraktion behalten
 
+# §114: ZSTD-Raw-Block-Kompressor (gültiges ZSTD-Frame-Format, kein Huffman/FSE)
+# Frame-Layout: magic(4) + FHD(1=0xA0) + FCS(4 LE) + BlockHeader(3 LE) + Rohdaten
+# FHD 0xA0: FCS_Flag=2 (FCS in 4 Bytes), Single_Segment=1, kein Checksum, kein Dict
+function Compress-ZstdRaw([byte[]]$data) {
+    $n = $data.Length
+    $out = [Collections.Generic.List[byte]]::new()
+    # ZSTD-Magic (0xFD2FB528 LE)
+    $out.Add(0x28); $out.Add(0xB5); $out.Add(0x2F); $out.Add(0xFD)
+    # Frame_Header_Descriptor: FCS_Flag=2, Single_Segment=1
+    $out.Add(0xA0)
+    # Frame_Content_Size (4 Bytes LE)
+    $fcs = [BitConverter]::GetBytes([uint32]$n)
+    foreach ($b in $fcs) { $out.Add($b) }
+    # Block_Header (3 Bytes LE): Last_Block=1, Block_Type=0 (Raw), Block_Size=n
+    # bh = (n << 3) | 1
+    $out.Add([byte](($n -shl 3) -bor 1))
+    $out.Add([byte](($n -shr 5) -band 0xFF))
+    $out.Add([byte](($n -shr 13) -band 0xFF))
+    # Rohdaten (unveraendert)
+    foreach ($b in $data) { $out.Add($b) }
+    return $out.ToArray()
+}
+
 $compressionId = [uint32]0   # NOVA_NKI_COMPRESSION_NONE
 if ($Compress) {
     $lz4Block  = Compress-Lz4Block -data $payload
@@ -66,6 +95,15 @@ if ($Compress) {
     [Array]::Copy($lz4Block,   0, $compressed, 4, $lz4Block.Length)
     $payload = $compressed
     $compressionId = [uint32]1   # NOVA_NKI_COMPRESSION_LZ4
+}
+if ($CompressZstd) {
+    $zstdFrame  = Compress-ZstdRaw -data $payload
+    $sizePrefix = [BitConverter]::GetBytes([uint32]$payload.Length)
+    $compressed = [byte[]]::new(4 + $zstdFrame.Length)
+    [Array]::Copy($sizePrefix, 0, $compressed, 0, 4)
+    [Array]::Copy($zstdFrame,  0, $compressed, 4, $zstdFrame.Length)
+    $payload = $compressed
+    $compressionId = [uint32]2   # NOVA_NKI_COMPRESSION_ZSTD
 }
 
 $crc32 = Get-Crc32 -Data $payload
@@ -161,5 +199,7 @@ try {
     $stream.Dispose()
 }
 
-$compressLabel = if ($Compress) { "LZ4-komprimiert, unkomprimiert=$($elfPayload.Length)" } else { "unkomprimiert" }
+$compressLabel = if ($Compress) { "LZ4-komprimiert, unkomprimiert=$($elfPayload.Length)" } `
+                 elseif ($CompressZstd) { "ZSTD-komprimiert, unkomprimiert=$($elfPayload.Length)" } `
+                 else { "unkomprimiert" }
 Write-Host ("NKI v2: {0} Bytes Payload ({1}), CRC32 {2:X8}, DevSign dev_mac={3:X8}" -f $payload.Length, $compressLabel, $crc32, $devMac)

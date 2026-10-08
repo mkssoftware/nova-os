@@ -531,7 +531,8 @@ Userspace-Diensten zur persistenten UEFI-Boot-Control-Autorität.
 Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 
 - ~~LZ4-Dekompression für Kernelabbilder~~ (§113: LZ4-Block-Decompressor in `kernel_loader.c`, `build-nki.ps1 -Compress`, zwei Testfälle in `test-uefi-kernel-validation.ps1`)
-- ZSTD- und GZIP-Dekompression für Kernelabbilder (folgt)
+- ~~ZSTD-Dekompression für Kernelabbilder~~ (§114: ZSTD-Frame-Decompressor in `kernel_loader.c`, `build-nki.ps1 -CompressZstd`, zwei Testfälle in `test-uefi-kernel-validation.ps1`)
+- GZIP-Dekompression für Kernelabbilder (folgt)
 - kryptografischer Kernelsignaturcontainer, Schlüssel-/Revocation-Policy und
   vollständige NovaOS-Trustentscheidung; der UEFI-Secure-Boot- und
   Integritätszustand wird bereits getrennt in den BIB übertragen

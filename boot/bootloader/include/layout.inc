@@ -59,6 +59,7 @@ NKI_VERSION                equ 1
 NKI_ARCH_X86_32            equ 1
 NKI_COMPRESSION_NONE       equ 0
 NKI_COMPRESSION_LZ4        equ 1
+NKI_COMPRESSION_ZSTD       equ 2
 
 NKI_OFF_MAGIC_LOW          equ 0
 NKI_OFF_MAGIC_HIGH         equ 4

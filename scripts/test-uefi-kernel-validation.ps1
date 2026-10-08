@@ -270,13 +270,34 @@ try {
             'NOVA_KERNEL_READY'
         )
 
-        # Negativfall: NKI v2 mit compression=2 (unbekannt) muss abgelehnt werden
-        # NKI-Header: compression liegt bei Offset 36
+        # Negativfall: NKI v2 mit compression=3 (unbekannt) muss abgelehnt werden
+        # NKI-Header: compression liegt bei Offset 36; Wert 3 ist nach §113/§114 nicht definiert
         $badCompNki=[IO.Path]::Combine($tempDir,'nki-v2-bad-compression.nki')
-        Write-PatchedU32 $lz4Nki $badCompNki 36 2
+        Write-PatchedU32 $lz4Nki $badCompNki 36 3
         $badCompImage=[IO.Path]::Combine($tempDir,'bad-nki-v2-compression.img')
         & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $badCompNki -KernelElf $Elf32 -OutputImage $badCompImage | Out-Null
         Invoke-ValidationCase 'bad-nki-v2-unknown-compression' $badCompImage 'UEFI:ELF32-DIRECT-VALIDATED'
+
+        # §114 ZSTD-Kompression: Testfälle
+        # Positivfall: ZSTD-komprimiertes NKI v2 muss erfolgreich dekomprimiert und geladen werden
+        $zstdNki=[IO.Path]::Combine($tempDir,'nki-v2-zstd.nki')
+        & $NkiBuilder -InputFile $Elf32 -OutputFile $zstdNki -CompressZstd | Out-Null
+        $zstdImage=[IO.Path]::Combine($tempDir,'nki-v2-zstd.img')
+        & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $zstdNki -KernelElf $Elf32 -OutputImage $zstdImage | Out-Null
+        Invoke-SuccessCase 'nki-v2-zstd-valid' $zstdImage @(
+            'UEFI:KERNEL-ZSTD-DECOMPRESSED',
+            'UEFI:KERNEL-DEVSIGN-VERIFIED',
+            'UEFI:KERNEL-HANDOFF-READY',
+            'NOVA_KERNEL_READY'
+        )
+
+        # Negativfall: ZSTD-komprimiertes NKI v2 mit falschem compression-Feld (1=LZ4)
+        # LZ4-Decompressor versucht ZSTD-Frame als LZ4-Block zu parsen und schlaegt fehl
+        $zstdAsLz4Nki=[IO.Path]::Combine($tempDir,'nki-v2-zstd-as-lz4.nki')
+        Write-PatchedU32 $zstdNki $zstdAsLz4Nki 36 1
+        $zstdAsLz4Image=[IO.Path]::Combine($tempDir,'bad-nki-v2-zstd-as-lz4.img')
+        & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $zstdAsLz4Nki -KernelElf $Elf32 -OutputImage $zstdAsLz4Image | Out-Null
+        Invoke-ValidationCase 'bad-nki-v2-zstd-as-lz4' $zstdAsLz4Image 'UEFI:ELF32-DIRECT-VALIDATED'
     }
 } finally {
     $env:TMP=$oldTmp;$env:TEMP=$oldTemp

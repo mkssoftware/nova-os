@@ -663,6 +663,74 @@ static uint32_t lz4_block_decompress(const uint8_t *src,uint32_t src_len,
     return (uint32_t)(d-dst);
 }
 
+/* §114: ZSTD-Frame-Decompressor (Raw- und RLE-Bloecke; Compressed-Bloecke werden abgelehnt).
+   Payload-Layout bei compression=ZSTD: [0..3] uncompressed_size LE, [4..] ZSTD-Frame.
+   Gibt die Anzahl geschriebener Bytes zurueck oder 0 bei Fehler. */
+static uint32_t zstd_decompress(const uint8_t *src,uint32_t src_len,
+                                uint8_t *dst,uint32_t dst_cap)
+{
+    if(src_len<6u)return 0;
+    /* ZSTD-Magic: 0xFD2FB528 (Little Endian) */
+    if(src[0]!=0x28u||src[1]!=0xB5u||src[2]!=0x2Fu||src[3]!=0xFDu)return 0;
+    uint32_t pos=4u;
+    /* Frame_Header_Descriptor */
+    uint8_t fhd=src[pos++];
+    if(fhd&0x08u)return 0;                   /* Reserved_Bit muss 0 sein */
+    uint8_t fcs_flag=(uint8_t)(fhd>>6);
+    uint8_t single_seg=(uint8_t)((fhd>>5)&1u);
+    uint8_t dict_id_flag=(uint8_t)(fhd&3u);
+    /* Dict_ID ueberspringen (0/1/2/4 Bytes je nach Flag) */
+    static const uint8_t dict_id_sizes[4]={0,1,2,4};
+    pos+=dict_id_sizes[dict_id_flag];
+    if(pos>src_len)return 0;
+    /* Window_Descriptor (nur wenn Single_Segment=0) */
+    if(!single_seg){if(pos>=src_len)return 0;pos++;}
+    /* Frame_Content_Size lesen */
+    uint32_t fcs=0;bool fcs_known=false;
+    if(fcs_flag==0u){
+        if(single_seg){if(pos>=src_len)return 0;fcs=src[pos++];fcs_known=true;}
+    } else if(fcs_flag==1u){
+        if(pos+2u>src_len)return 0;
+        fcs=(uint32_t)src[pos]|(uint32_t)src[pos+1u]<<8;fcs+=256u;pos+=2u;fcs_known=true;
+    } else if(fcs_flag==2u){
+        if(pos+4u>src_len)return 0;
+        fcs=(uint32_t)src[pos]|(uint32_t)src[pos+1u]<<8|
+            (uint32_t)src[pos+2u]<<16|(uint32_t)src[pos+3u]<<24;
+        pos+=4u;fcs_known=true;
+    } else {
+        return 0;                             /* 8-Byte-FCS: >4 GiB nicht unterstuetzt */
+    }
+    if(fcs_known&&fcs>dst_cap)return 0;
+    /* Bloecke dekomprimieren */
+    uint32_t written=0u;
+    for(;;){
+        if(pos+3u>src_len)return 0;
+        /* Block_Header: 3 Bytes LE; Bit 0=Last_Block, Bits 2:1=Block_Type, Bits 23:3=Block_Size */
+        uint32_t bh=(uint32_t)src[pos]|(uint32_t)src[pos+1u]<<8|(uint32_t)src[pos+2u]<<16;
+        pos+=3u;
+        uint8_t last=(uint8_t)(bh&1u);
+        uint8_t btype=(uint8_t)((bh>>1)&3u);
+        uint32_t bsize=bh>>3;
+        if(btype==0u){                        /* Raw_Block: unveraenderte Nutzdaten */
+            if(pos+bsize>src_len)return 0;
+            if(written+bsize>dst_cap)return 0;
+            for(uint32_t i=0;i<bsize;++i)dst[written++]=src[pos++];
+        } else if(btype==1u){                 /* RLE_Block: ein Byte, bsize-mal wiederholt */
+            if(pos>=src_len)return 0;
+            uint8_t val=src[pos++];
+            if(written+bsize>dst_cap)return 0;
+            for(uint32_t i=0;i<bsize;++i)dst[written++]=val;
+        } else {
+            return 0;                         /* Compressed_Block oder Reserved: nicht implementiert */
+        }
+        if(last)break;
+    }
+    /* Content-Checksum ueberspringen (optionale Pruefsumme am Frame-Ende) */
+    /* FCS-Verifikation: Groesse muss mit Headerwert uebereinstimmen */
+    if(fcs_known&&written!=fcs)return 0;
+    return written;
+}
+
 /* §108: load_nki_elf32 akzeptiert NKI v1 und v2.
    Bei v2 mit sig_size==64: DevSign-Block (NKTS) nach Payload pruefen.
    *sig_verified=true wenn DevSign korrekt, sonst false. */
@@ -680,7 +748,8 @@ static bool load_nki_elf32(EFI_BOOT_SERVICES *bs,const uint8_t *file,UINTN size,
        nki->header_size!=64||nki->architecture!=NOVA_BOOT_ARCH_X86_32||
        (nki->flags&3u)!=3u||
        (nki->compression!=NOVA_NKI_COMPRESSION_NONE&&
-        nki->compression!=NOVA_NKI_COMPRESSION_LZ4))return false;
+        nki->compression!=NOVA_NKI_COMPRESSION_LZ4&&
+        nki->compression!=NOVA_NKI_COMPRESSION_ZSTD))return false;
     /* v1: sig_size muss 0 sein; v2: 0 oder NOVA_NKI_SIG_SIZE_DEVSIGN */
     if(nki->version==NOVA_NKI_VERSION&&nki->sig_size!=0)return false;
     if(nki->version==NOVA_NKI_VERSION_2&&
@@ -711,6 +780,26 @@ static bool load_nki_elf32(EFI_BOOT_SERVICES *bs,const uint8_t *file,UINTN size,
         payload=decompressed_buf;
         decompressed_size=uncomp_size;
         nova_debug_string("UEFI:KERNEL-LZ4-DECOMPRESSED\n");
+    }
+    /* §114: ZSTD-Dekompression wenn compression==ZSTD */
+    else if(nki->compression==NOVA_NKI_COMPRESSION_ZSTD){
+        if(nki->image_size<5u)return false;
+        uint32_t uncomp_size=0;
+        bytes_copy(&uncomp_size,payload,4);
+        if(uncomp_size==0||uncomp_size>4u*1024u*1024u)return false;
+        typedef EFI_STATUS (EFIAPI *efi_allocate_pool_fn3)(uint32_t,UINTN,VOID **);
+        efi_allocate_pool_fn3 alloc_pool=(efi_allocate_pool_fn3)bs->AllocatePool;
+        if(EFI_ERROR(alloc_pool(EFI_LOADER_DATA,uncomp_size,(VOID **)&decompressed_buf)))return false;
+        uint32_t written=zstd_decompress(payload+4u,nki->image_size-4u,decompressed_buf,uncomp_size);
+        if(written!=uncomp_size){
+            typedef EFI_STATUS (EFIAPI *efi_free_pool_fn2)(VOID *);
+            efi_free_pool_fn2 free_pool=(efi_free_pool_fn2)bs->FreePool;
+            free_pool(decompressed_buf);
+            return false;
+        }
+        payload=decompressed_buf;
+        decompressed_size=uncomp_size;
+        nova_debug_string("UEFI:KERNEL-ZSTD-DECOMPRESSED\n");
     }
     /* §108 DevSign-Verifikation fuer NKI v2 mit sig_size==64.
        Sig-Block liegt im Originalbild (file+64+image_size), nicht im Dekomprimierungs-Puffer. */

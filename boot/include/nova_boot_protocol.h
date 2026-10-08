@@ -9,9 +9,10 @@
 #define NOVA_NKI_FLAG_ELF_BUILD_ID    0x00000001u
 #define NOVA_NKI_FLAG_NOVA_METADATA   0x00000002u
 
-/* §113 NKI Kompressions-IDs */
+/* §113/§114 NKI Kompressions-IDs */
 #define NOVA_NKI_COMPRESSION_NONE     0u
 #define NOVA_NKI_COMPRESSION_LZ4      1u
+#define NOVA_NKI_COMPRESSION_ZSTD     2u
 
 /* NKI v2 Signatur-Container (DevSign Phase-1) */
 #define NOVA_NKI_SIG_SIZE_DEVSIGN     64u
