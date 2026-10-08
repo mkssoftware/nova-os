@@ -369,6 +369,17 @@ Ein Object-Handle kann neben seinem Primary Type bis zu vier Secondary Types tra
 - `object_semantic_attach` setzt beim Setzen des Primary Types den Secondary-Count auf 0 (Slot-Wiederverwendung sauber).
 - Der `semantic_self_test` prüft Positive- und Negativfälle: Secondary anhängen, Slot abfragen, `has_type` für Primary und Secondary, Duplikat- und Primary-Gleichheitsabweisung, Count-Abfrage, Freigabe mit Clear.
 
+### Ausführung registrierter Conversion Capabilities (§120)
+
+Konvertierungen können jetzt tatsächlich ausgeführt werden, nicht nur deklariert.
+
+- `semantic_register_conversion_handler` registriert einen Funktionszeiger für eine Capability-ID (nur vor Registry-Versiegelung, max. 8 Handler, keine Duplikate).
+- `semantic_execute_conversion` führt eine Konvertierung durch: validiert Source- und Target-Type-Version, sucht den passenden Konvertierungspfad in der Registry, findet den registrierten Handler für die Capability-ID und ruft ihn auf.
+- Der eingebaute Handler `semantic_handler_inline_to_diag` konvertiert `nova.kernel.ipc.inline-data → nova.kernel.ipc.diagnostic`: kopiert die ersten 4 Bytes als Diagnose-Code (muss ≠ 0 sein, gemäß `RULE_DIAGNOSTIC_CODE`); gibt 4 oder 0 zurück.
+- Der Aufrufer füllt vor dem Aufruf das Scratch-Bereich `semantic_exec_*` (src/tgt Type+Version, src_ptr, src_len, dst_ptr, dst_max); danach stehen `semantic_exec_dst_written` und der geschriebene Inhalt im Zielpuffer bereit.
+- `semantic_initialize` registriert den eingebauten Handler direkt nach der Konvertierungsdeklaration, vor dem Versiegeln der Registry.
+- Der `semantic_self_test` prüft: INLINE_DATA→DIAGNOSTIC gelingt (CF=0, EAX=4, Zielpuffer enthält `0x41564F4E`); DIAGNOSTIC→INLINE_DATA scheitert (kein Konvertierungspfad → CF=1).
+
 ### Typed Resources, IPC und Capabilities
 
 - Object-Handles besitzen getrennte Semantic-Type-Sidecars.
@@ -565,7 +576,7 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 - ~~mehrere kompatible Semantic Types pro Ressource~~ (§119: `object_semantic_attach_secondary`, `object_semantic_has_type`, `object_semantic_query_secondary`, `object_semantic_secondary_count`, `object_semantic_clear_secondary`; bis zu 4 Secondary Types pro Ressource; Secondary-Sidecar-Arrays in `semantic32.inc`; `semantic_initialize` löscht Secondary-Felder; `object_semantic_attach` setzt Secondary-Count zurück; erweiterter `semantic_self_test`)
 - Typed Files und persistente Semantic Metadata
 - Semantic Discovery und Semantic Execution
-- tatsächliche Ausführung registrierter Conversion Capabilities
+- ~~tatsächliche Ausführung registrierter Conversion Capabilities~~ (§120: `semantic_register_conversion_handler`, `semantic_execute_conversion`, eingebauter Handler `semantic_handler_inline_to_diag`; Handler-Registry bis 8 Einträge; Ausführungs-Scratch `semantic_exec_*`; `semantic_self_test` erweitert mit Positiv- und Negativfall)
 - NovaFS: echtes Copy-on-Write, Checkpoints/Snapshots,
   Zusammenlegen leerer Blätter und Baumhöhe > 2 (Transaction Log/Crash
   Recovery, Löschen, Umbenennen, Zeitstempel und Nutzdatenprüfsummen sind
