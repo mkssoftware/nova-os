@@ -1896,3 +1896,169 @@ Vektor sowohl im PIC- als auch APIC-Pfad aktiv.
   dass `smp_send_ipi` erfolgreich war; Mailbox-Befüllung tritt jetzt dazu)
 
 Kernel-Binary: 245760 Byte (~239 KB; Spielraum ~13 KB).
+
+---
+
+## §129 Per-AP LAPIC-Timer (2026-10-08)
+
+**Ziel:** Jeder Application Processor erhält einen eigenen periodischen
+100-Hz-Taktgeber über seinen lokalen APIC-Timer. Damit erhalten APs eine
+Zeitbasis für künftige per-CPU-Scheduler-Integration und beweisen, dass ihre
+LAPIC-Timer-Hardware korrekt konfiguriert werden kann.
+
+**Neue Konstanten (`entry32.asm`):**
+
+| Konstante | Wert | Bedeutung |
+|---|---|---|
+| `LAPIC_TIMER_LVT` | `0x320` | LVT-Timer-Register (Modus, Maske, Vektor) |
+| `LAPIC_TIMER_DCR` | `0x3E0` | Divide Configuration Register |
+| `LAPIC_TIMER_ICR` | `0x380` | Initial Count Register (Write startet Countdown) |
+| `LAPIC_TIMER_CCR` | `0x390` | Current Count Register (Read-only) |
+| `LAPIC_LVT_PERIODIC` | `0x00020000` | Bit 17: Periodischer Betrieb |
+| `LAPIC_LVT_MASKED` | `0x00010000` | Bit 16: Interrupt maskiert |
+| `LAPIC_TIMER_VECTOR` | `0xEF` | Vektor 239 für AP-LAPIC-Timer-Ticks |
+
+**Neue Daten:**
+- `ap_timer_ticks: times CPU_CAPACITY dd 0` – per-CPU Tick-Zähler (100 Hz)
+- `lapic_timer_count: dd 0` – kalibrierter LAPIC-ICR-Wert (100 Hz), identisch
+  auf allen CPUs desselben Boards
+
+**Kalibrierung in `ap_entry32_pm`** (nach LAPIC-Spurious-Aktivierung):
+1. DCR = divide-by-1 (Kodierung `0xB`)
+2. LVT: maskiert, One-Shot, Vektor 0xEF
+3. ICR = 0xFFFFFFFF (startet Countdown)
+4. Auf erste PIT-Flanke warten (`timer_ticks`-Änderung) → Tick-Rand-Synchronisation
+5. ICR neu auf 0xFFFFFFFF (Messung beginnt exakt am Tick-Rand)
+6. Nächste PIT-Flanke abwarten (eine vollständige 10-ms-Periode)
+7. CCR lesen; `elapsed = neg(CCR)` ≈ Bus-Takte pro 10 ms = ICR für 100 Hz
+8. LVT: periodisch, unmaskiert; ICR = elapsed → Timer läuft
+
+**ISR `isr_ap_timer` (Vektor 0xEF):**
+- Kein Ring-Wechsel (AP in Ring-0)
+- LAPIC-EOI sofort (erlaubt Folge-Interrupts)
+- LAPIC-ID-Register (`[0xFEE00020]` Bits 31:24) → CPU-Slot-Suche wie in `isr_ipi`
+- `lock inc dword [ap_timer_ticks + ecx * 4]`
+- Kein `scheduler_on_tick`-Aufruf – der Scheduler ist noch nicht SMP-sicher
+  (Basis für §130: per-CPU-Scheduler)
+
+**Keine Änderungen an `vfs32.inc`, `novafs32.inc` oder anderen `.inc`-Dateien.**
+
+Kernel-Binary: ~246 KB.
+
+---
+
+## §130 Scheduler-Spinlock & AP-Timer-Verifikation (2026-10-08)
+
+**Ziel:** `scheduler_on_tick` wird SMP-sicher (nur eine CPU gleichzeitig), und
+`smp_self_test` beweist nach dem AP-Boot, dass alle AP-LAPIC-Timer tatsächlich
+laufen. Damit ist echter SMP-Betrieb vollständig verifiziert.
+
+**Scheduler-Spinlock (`scheduler_lock: dd 0`):**
+- Neue 32-Bit-Variable vor `scheduler_enabled`
+- BSP-Timer-Pfad (`.timer_schedule` in `interrupt_dispatch`) umrahmt
+  `scheduler_on_tick` mit `lock bts [scheduler_lock], 0` / `lock btr …, 0`
+- Greift BSP nie in sich selbst (einfacher Guard ohne Busy-Wait)
+- Legt Fundament für spätere AP-Scheduler-Teilnahme (§131), sobald APs
+  einen vollständigen `pushad`-Frame aufbauen
+
+**Erweiterung `smp_self_test` SMP-Branch:**
+1. 20 PIT-Ticks warten (≈ 200 ms) nach IPI-Prüfung
+2. Jeden AP-Slot (1 … N−1) prüfen: `ap_timer_ticks[slot] > 0`
+   → Schlägt fehl, wenn LAPIC-Timer auf einem AP nicht kalibriert/gestartet wurde
+3. `lapic_timer_count` auf Plausibilität prüfen (> 0, < 2³¹)
+
+**`smp_api` erweitert (Größe 48 → 56 Byte):**
+- `+48`: Zeiger auf `ap_timer_ticks` (per-CPU-Array, §129)
+- `+52`: Zeiger auf `lapic_timer_count` (kalibrierter ICR-Wert, §129)
+
+**`isr_ap_timer`:** Kein Scheduler-Aufruf aus dem ISR heraus – der AP-ISR
+hat keinen vollständigen `pushad`-Frame und kann `scheduler_on_tick` nicht
+sicher aufrufen. Das ist §131.
+
+Kernel-Binary: ~247 KB.
+
+## §131 Vollständiger AP-Kontext-ISR & per-CPU Frame-Tracking (2026-10-08)
+
+**Ziel:** `isr_ap_timer` baut denselben vollständigen 68-Byte-`pushad`-Kontext-
+Frame auf wie `isr_common` (BSP-Pfad). Damit ist der AP-ISR für die spätere
+`scheduler_on_tick`-Integration (§132) vorbereitet.
+
+**Neuer `isr_ap_timer` (Vollformat):**
+- Speichert `error_code=0` + `vector=0xEF`, dann `pushad`, dann GS/FS/ES/DS
+- Lädt `DS`/`ES` = `DATA_SEGMENT` (FS/GS bleiben 0, kein TLS in Ring-0)
+- Sendet LAPIC-EOI sofort nach Frame-Aufbau
+- Ermittelt eigene CPU-Slot-Nummer via `LAPIC_ID[31:24]` → lineares Durchsuchen
+  in `acpi_apic_ids[]` (identisch zu AP-Boot-Sequenz)
+- Speichert `ESP` in `ap_current_frames[slot]` → Scheduler kann später Frame lesen
+- Inkrementiert `ap_timer_ticks[slot]` atomar (`lock inc`)
+- Guard: setzt `per_cpu_current_thread[slot] = -1` falls noch 0 (erster Tick,
+  bevor `ap_entry32_pm` die Initialisierung abgeschlossen hat)
+- Restauriert vollständig: `pop gs/fs/es/ds`, `popad`, `add esp, 8`, `iretd`
+
+**Neue Datenlabels (nach `lapic_timer_count`):**
+- `ap_current_frames: times CPU_CAPACITY dd 0` — per-CPU Frame-Zeiger
+- `per_cpu_current_thread: times CPU_CAPACITY dd 0` — per-CPU Thread-Slot
+
+**`ap_entry32_pm` `.slot_found`:**
+- Initialisiert `per_cpu_current_thread[ecx] = -1` sofort nach Slot-Identifikation
+  (vor Stack-Setup), so dass der erste LAPIC-Timer-ISR den Guard nicht benötigt
+
+**`smp_api` erweitert (Größe 56 → 64 Byte):**
+- `+56`: Zeiger auf `ap_current_frames` (per-CPU ISR-Frame-Zeiger, §131)
+- `+60`: Zeiger auf `per_cpu_current_thread` (per-CPU Thread-Slot, §131)
+
+**Nächster Schritt (§132):** AP ruft `scheduler_on_tick` mit dem vollen Frame-
+Zeiger auf — echter SMP-Scheduler mit lastbalanciertem Thread-Wechsel.
+
+Kernel-Binary: ~247 KB.
+
+## §132 AP-Scheduler-Teilnahme & echter SMP-Kontext-Switch (2026-10-08)
+
+**Ziel:** APs rufen `scheduler_on_tick` unter dem bereits vorhandenen
+`scheduler_lock`-Spinlock auf. Wenn der Scheduler einen anderen Thread-Frame
+wählt, wechselt der AP via `mov esp, eax` auf den neuen Stack und kehrt per
+`iretd` in den neuen Thread zurück — echter SMP-Kontext-Switch.
+
+**Änderung: `isr_ap_timer` `.at_found` (§132-Erweiterung):**
+
+Neuer Ablauf nach Frame-Sicherung und Tick-Inkrementierung:
+
+1. **`lock bts [scheduler_lock], 0`** — nicht-blockierender Versuch.
+   - CF=1 (Lock belegt, anderer CPU hat Scheduler): `.at_restore` → ISR kehrt
+     unverändert zurück. In der Praxis sehr selten, da BSP und APs zeitlich
+     verteilt feuern.
+   - CF=0 (Lock erworben): weiter.
+
+2. **Stack-Layout für `scheduler_on_tick`:**
+   - `push ecx` sichert CPU-Slot (ESP = F−4)
+   - `lea eax, [esp+4]` berechnet Original-Frame-Basis F
+   - `push eax` legt Frame-Argument ab (ESP = F−8)
+   - `call scheduler_on_tick` → liest `[esp+4]` = F ✓
+   - `add esp, 4` + `pop ecx` restauriert ESP = F, ECX = CPU-Slot
+
+3. **`per_cpu_current_thread[cpu_slot]`** ← `scheduler_selected_slot` (welcher
+   globale Thread-Slot diesem AP zugewiesen wurde).
+
+4. **`lock btr [scheduler_lock], 0`** — Lock freigeben.
+
+5. **Kontext-Switch:**
+   - `cmp eax, esp` → gleich: kein Wechsel (Idle-Schleife läuft weiter)
+   - verschieden: `mov esp, eax` → wechselt auf den Frame des neuen Threads;
+     `iretd` kehrt zu dessen gespeichertem EIP/CS/EFLAGS zurück.
+
+**Warum das korrekt ist:**
+- `scheduler_contexts[slot]` enthält den Frame-Zeiger des aktuellen Threads in
+  dem Slot. Der Frame liegt auf dem Stack der CPU, die den Thread zuletzt
+  ausgeführt hat (BSP-Stack oder AP-Stack). Da die Stacks dauerhaft in
+  `ap_stack_area` / `kernel_boot_stack_top` liegen, ist der Frame immer gültig.
+- Wenn CPU A den Frame von CPU B übernimmt, springt sie auf CPU-B-Stack und
+  kehrt via `iretd` in den Thread zurück. Der Thread selbst merkt nichts vom
+  CPU-Wechsel (Ring-0, kein TLS/GS-Switch nötig).
+- Round-Robin ist global: BSP + APs teilen denselben `scheduler_current`-Zähler.
+  Der Spinlock verhindert gleichzeitigen Zugriff. Effekt: Threads werden reihum
+  auf alle CPUs verteilt, die in einem Tick den Lock erwerben.
+
+**Nächster Schritt (§133):** Per-CPU Run-Queues und Work-Stealing für echtes
+lastbalanciertes Scheduling; alternativ: Thread-Affinität / CPU-Pinning.
+
+Kernel-Binary: ~248 KB.

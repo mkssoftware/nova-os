@@ -3311,6 +3311,10 @@ interrupt_initialize:
     mov ebx, SMP_IPI_VECTOR
     mov eax, isr_ipi
     call idt_set_gate
+    ; AP LAPIC-Timer-Vektor
+    mov ebx, LAPIC_TIMER_VECTOR
+    mov eax, isr_ap_timer
+    call idt_set_gate
     lidt [idt_descriptor]
 
     cmp dword [kernel_context + CONTEXT_PLATFORM], 2
@@ -3689,15 +3693,25 @@ interrupt_dispatch:
     call task_deadline_poll
     call io_request_poll_deadlines
     call io_cancel_for_requested_tasks
+    ; Scheduler-Spinlock: BSP hält ihn immer (kein Contention im Normalfall,
+    ; da APs via isr_ap_timer nur versuchen, den Lock zu bekommen).
+    ; lock bts setzt Bit 0 und gibt alten Wert zurück; CF=1 → schon gehalten.
+    lock bts dword [scheduler_lock], 0
+    jc .sched_skip              ; Sollte auf BSP nie eintreten (defensive Guard)
     mov eax, [interrupt_return_frame]
     push eax
     call scheduler_on_tick
     add esp, 4
     mov [interrupt_return_frame], eax
+    lock btr dword [scheduler_lock], 0
     push eax
     mov al, PIC_EOI
     out PIC1_COMMAND, al
     pop eax
+    jmp .done
+.sched_skip:
+    mov al, PIC_EOI
+    out PIC1_COMMAND, al
     jmp .done
 .keyboard:
     cmp dword [kernel_context + CONTEXT_PLATFORM], 2
@@ -18032,7 +18046,7 @@ cpu_records:             times CPU_CAPACITY * CPU_RECORD_SIZE db 0
 ; INIT-SIPI-SIPI-Sequenz, AP-Trampoline (Real→Protected Mode),
 ; Cross-CPU-IPI-Versand, Remote-TLB-Shootdowns.
 ; ---------------------------------------------------------------------------
-SMP_API_SIZE                equ 48
+SMP_API_SIZE                equ 64
 SMP_PHASE_ARCH_READY        equ 0
 SMP_PHASE_MEMORY_READY      equ 1
 SMP_PHASE_INTERRUPTS_READY  equ 2
@@ -18056,6 +18070,15 @@ LAPIC_ICR_HI            equ 0x310       ; Interrupt Command Register (high)
 LAPIC_ICR_DELIVERY_STS  equ (1 << 12)  ; Bit 12: Delivery Status (0=Idle)
 LAPIC_IPI_INIT          equ 0x00004500  ; INIT-IPI: delivery=INIT(101), level=assert
 LAPIC_IPI_SIPI          equ 0x00004600  ; Startup-IPI: delivery=Startup(110)
+
+; LAPIC-Timer-Register (xAPIC)
+LAPIC_TIMER_LVT         equ 0x320       ; LVT Timer (Modus, Vektor, Maske)
+LAPIC_TIMER_DCR         equ 0x3E0       ; Divide Configuration Register
+LAPIC_TIMER_ICR         equ 0x380       ; Initial Count Register (Write → startet Timer)
+LAPIC_TIMER_CCR         equ 0x390       ; Current Count Register (Read-only)
+LAPIC_LVT_PERIODIC      equ 0x00020000  ; Bit 17: Periodischer Betrieb
+LAPIC_LVT_MASKED        equ 0x00010000  ; Bit 16: Interrupt maskiert
+LAPIC_TIMER_VECTOR      equ 0xEF        ; Vektor 239 – AP-LAPIC-Timer-Tick
 LAPIC_IPI_FIXED         equ 0x00004000  ; Fixed IPI, Ziel-Vektor in Bits 7:0
 SMP_IPI_VECTOR          equ 0xFE        ; generischer IPI-Empfangsvektor
 
@@ -18132,6 +18155,8 @@ ap_entry32_pm:
 
 .slot_found:
     ; ECX = Slot-Index (0=BSP, 1..N=APs)
+    ; per-CPU Thread-Slot initialisieren: -1 = Idle (§131)
+    mov dword [per_cpu_current_thread + ecx * 4], -1
     ; Stack für diesen AP: ap_stack_area[(Slot) * AP_STACK_SIZE .. (Slot+1) * AP_STACK_SIZE]
     ; (Slot 0 = BSP hat eigenen Stack; APs beginnen ab Slot-Index 1, Index in Array: Slot-1)
     imul edx, ecx, AP_STACK_SIZE   ; Offset = Slot * AP_STACK_SIZE
@@ -18144,6 +18169,56 @@ ap_entry32_pm:
     and eax, 0xFFFFFF00
     or  eax, 0xFF
     mov [LAPIC_BASE + LAPIC_SPURIOUS], eax
+
+    ; ---------------------------------------------------------------------------
+    ; LAPIC-Timer kalibrieren (gegen BSP-PIT, 100 Hz) und starten
+    ;
+    ; Ablauf:
+    ;   1. DCR = divide-by-1 (volle Bus-Frequenz)
+    ;   2. LVT = maskiert, One-Shot, Vektor LAPIC_TIMER_VECTOR
+    ;   3. ICR = 0xFFFFFFFF (Maximum – startet Countdown)
+    ;   4. Auf nächste PIT-Flanke warten (timer_ticks ändert sich) → Sync
+    ;   5. ICR neu auf Maximum (beginnt jetzt exakt am Tick-Rand)
+    ;   6. Nächste PIT-Flanke abwarten (eine volle 10-ms-Periode)
+    ;   7. CCR lesen → elapsed = neg(CCR) ≈ ICR-Wert für 100 Hz
+    ;   8. Periodischen Betrieb starten
+    ; ---------------------------------------------------------------------------
+    push ecx                          ; Slot-Register sichern
+    push edx
+
+    ; Schritt 1: DCR = divide-by-1 (Kodierung: 0b1011 = 0xB)
+    mov dword [LAPIC_BASE + LAPIC_TIMER_DCR], 0xB
+
+    ; Schritt 2+3: LVT maskiert, One-Shot; ICR auf Maximum
+    mov dword [LAPIC_BASE + LAPIC_TIMER_LVT], LAPIC_LVT_MASKED | LAPIC_TIMER_VECTOR
+    mov dword [LAPIC_BASE + LAPIC_TIMER_ICR], 0xFFFFFFFF
+
+    ; Schritt 4: Auf nächste PIT-Flanke synchronisieren
+    mov eax, [timer_ticks]
+.ap_cal_sync:
+    cmp [timer_ticks], eax
+    je  .ap_cal_sync
+
+    ; Schritt 5: ICR neu – jetzt exakt am Tick-Rand
+    mov dword [LAPIC_BASE + LAPIC_TIMER_ICR], 0xFFFFFFFF
+
+    ; Schritt 6: Eine vollständige PIT-Periode (10 ms) messen
+    mov eax, [timer_ticks]
+.ap_cal_measure:
+    cmp [timer_ticks], eax
+    je  .ap_cal_measure
+
+    ; Schritt 7: Verbleibende Zähler → elapsed = -CCR (mod 2^32)
+    mov eax, [LAPIC_BASE + LAPIC_TIMER_CCR]
+    neg eax                           ; elapsed ≈ 0xFFFFFFFF − CCR + 1
+    mov [lapic_timer_count], eax      ; Wert merken (alle APs eines Boards gleich)
+
+    ; Schritt 8: Periodischen Betrieb starten (unmaskiert, Vektor 0xEF)
+    mov dword [LAPIC_BASE + LAPIC_TIMER_LVT], LAPIC_LVT_PERIODIC | LAPIC_TIMER_VECTOR
+    mov [LAPIC_BASE + LAPIC_TIMER_ICR], eax
+
+    pop edx
+    pop ecx
 
     ; CPU-Sets und Zähler atomar aktualisieren
     lock bts dword [cpu_online_set],  ecx
@@ -18535,6 +18610,32 @@ smp_self_test:
     cmp dword [smp_remote_ipis_sent], 0
     je .invalid
 
+    ; SMP: AP-LAPIC-Timer prüfen – 20 PIT-Ticks warten (≈ 200 ms),
+    ; dann muss jeder AP-Slot (Slot 1 … cpu_discovered_count-1) mindestens
+    ; einen Tick in ap_timer_ticks gezählt haben.
+    ; LAPIC-Timer kalibriert sich gegen PIT → nach 200 ms sind ≈ 20 AP-Ticks sicher.
+    mov eax, [timer_ticks]
+    add eax, 20
+.timer_wait:
+    cmp [timer_ticks], eax
+    jb  .timer_wait
+
+    ; Alle AP-Slots (1 … N-1) auf Tick-Zähler > 0 prüfen
+    mov ecx, 1                          ; BSP ist Slot 0, APs beginnen ab 1
+.ap_tick_check:
+    cmp ecx, [cpu_discovered_count]
+    jae .ap_tick_ok
+    cmp dword [ap_timer_ticks + ecx * 4], 0
+    je  .invalid                        ; Kein Tick → LAPIC-Timer auf AP ECX defekt
+    inc ecx
+    jmp .ap_tick_check
+.ap_tick_ok:
+    ; LAPIC-Timer-Kalibrierwert muss plausibel sein (> 0 und < 2^31)
+    cmp dword [lapic_timer_count], 0
+    je  .invalid
+    cmp dword [lapic_timer_count], 0x80000000
+    jae .invalid
+
 .phase_test:
     ; smp_publish_phase: Rückschritt nicht erlaubt
     mov eax, SMP_PHASE_MEMORY_READY
@@ -18566,6 +18667,10 @@ smp_api:
     dd smp_send_ipi
     dd smp_tlb_shootdown_page
     dd smp_publish_phase
+    dd ap_timer_ticks           ; Zeiger auf per-CPU LAPIC-Timer-Tick-Array (§129)
+    dd lapic_timer_count        ; Zeiger auf kalibrierten LAPIC-ICR-Wert (§129)
+    dd ap_current_frames        ; Zeiger auf per-CPU ISR-Kontext-Frame-Array (§131)
+    dd per_cpu_current_thread   ; Zeiger auf per-CPU Thread-Slot-Array (§131)
 smp_boot_phase:                 dd 0
 smp_local_tlb_generation:       dd 0
 smp_local_tlb_flushes:          dd 0
@@ -18575,6 +18680,10 @@ smp_remote_ipis_sent:           dd 0
 ap_alive_count:                 dd 0
 smp_ipi_mailbox:                times CPU_CAPACITY dd 0   ; pending IPI-Typen (Bitmaske pro CPU-Slot)
 smp_shootdown_addr:             dd 0                      ; Seitenaddr. für remote TLB-Shootdown
+ap_timer_ticks:                 times CPU_CAPACITY dd 0   ; per-CPU LAPIC-Timer-Ticks (100 Hz)
+lapic_timer_count:              dd 0                      ; kalibrierter LAPIC-ICR-Wert für 100 Hz
+ap_current_frames:              times CPU_CAPACITY dd 0   ; per-CPU Zeiger auf letzten ISR-Kontext-Frame (§131)
+per_cpu_current_thread:         times CPU_CAPACITY dd 0   ; per-CPU laufender Thread-Slot (-1 = Idle, §131)
 
 ; ---------------------------------------------------------------------------
 ; isr_ipi – generischer IPI-Empfänger (Vektor SMP_IPI_VECTOR = 0xFE)
@@ -18624,6 +18733,102 @@ isr_ipi:
     pop ebx
     pop eax
     iret
+
+; ---------------------------------------------------------------------------
+; isr_ap_timer – vollständiger Kontext-ISR für AP-LAPIC-Timer (Vektor 0xEF)
+;
+; Frame-Layout (68 Byte, identisch mit isr_common):
+;   [ESP+ 0] GS  [ESP+ 4] FS  [ESP+ 8] ES  [ESP+12] DS
+;   [ESP+16..47] pushad (EDI,ESI,EBP,ESP*,EBX,EDX,ECX,EAX)
+;   [ESP+48] Vektor (0xEF)   [ESP+52] Fehlercode (0)
+;   [ESP+56] EIP  [ESP+60] CS  [ESP+64] EFLAGS   ← CPU-IRET-Frame
+;
+; Das vollständige Frame erlaubt §132 (AP-Task-Dispatch), einen anderen
+; Frame via scheduler_on_tick zu laden – genau wie isr_common es für den BSP tut.
+; ---------------------------------------------------------------------------
+isr_ap_timer:
+    push dword 0                        ; Fehlercode-Platzhalter
+    push dword LAPIC_TIMER_VECTOR       ; Pseudo-Vektor 0xEF
+    pushad
+    push ds
+    push es
+    push fs
+    push gs
+    mov ax, DATA_SEGMENT
+    mov ds, ax
+    mov es, ax
+    ; FS/GS bleiben 0 (kein TLS im Kernel-Ring-0)
+
+    ; LAPIC früh quittieren (weitere Interrupts können ankommen)
+    mov dword [LAPIC_BASE + LAPIC_EOI], 0
+
+    ; LAPIC-ID → CPU-Slot (Bits 31:24 des LAPIC-ID-Registers)
+    mov eax, [LAPIC_BASE + 0x020]
+    shr eax, 24
+    xor ecx, ecx
+.at_find:
+    cmp ecx, [cpu_discovered_count]
+    jae .at_restore
+    cmp [acpi_apic_ids + ecx * 4], eax
+    je .at_found
+    inc ecx
+    jmp .at_find
+
+.at_found:
+    ; Vollständigen Frame-Zeiger sichern (ESP zeigt auf GS = Frame-Basis)
+    mov [ap_current_frames + ecx * 4], esp
+    ; Per-CPU Tick-Zähler atomar inkrementieren
+    lock inc dword [ap_timer_ticks + ecx * 4]
+    ; Per-CPU Current-Thread auf -1 (Idle) initialisieren, falls 0 (ungesetzt)
+    ; Normalfall: wird bereits in ap_entry32_pm gesetzt; Guard für Robustheit
+    cmp dword [per_cpu_current_thread + ecx * 4], 0
+    jne .at_try_sched
+    mov dword [per_cpu_current_thread + ecx * 4], -1
+
+.at_try_sched:
+    ; ---------------------------------------------------------------------------
+    ; §132: AP nimmt am Scheduler teil.
+    ; Strategie: Spinlock einmalig versuchen – kein Busy-Wait.
+    ;   CF=1 → anderer CPU hält Lock → diesen Tick überspringen (normal).
+    ;   CF=0 → wir haben den Lock → scheduler_on_tick aufrufen.
+    ;
+    ; Stack-Layout beim Aufruf von scheduler_on_tick:
+    ;   F    = ESP (Frame-Basis, zeigt auf GS) zum Einsprung in .at_found
+    ;   F-4  = gesicherter ECX (CPU-Slot)       ← push ecx
+    ;   F-8  = Argument: F (Frame-Zeiger)        ← push eax (lea eax,[esp+4])
+    ;   F-12 = Return-Adresse                    ← call pushes it
+    ;   scheduler_on_tick liest [esp+4] = [F-8] = F ✓
+    ; ---------------------------------------------------------------------------
+    lock bts dword [scheduler_lock], 0
+    jc .at_restore              ; Lock belegt → diesen Tick überspringen
+
+    push ecx                    ; CPU-Slot sichern  (ESP = F-4)
+    lea eax, [esp + 4]          ; EAX = F (Frame-Basis)
+    push eax                    ; Argument: Frame-Zeiger (ESP = F-8)
+    call scheduler_on_tick      ; EAX ← neuer (oder gleicher) Frame-Zeiger
+    add esp, 4                  ; Argument entfernen (ESP = F-4)
+    pop ecx                     ; CPU-Slot wiederherstellen (ESP = F)
+
+    ; per-CPU aktuellen Thread-Slot aktualisieren
+    mov edx, [scheduler_selected_slot]
+    mov [per_cpu_current_thread + ecx * 4], edx
+
+    lock btr dword [scheduler_lock], 0
+
+    ; Kontext-Switch: falls Scheduler einen anderen Frame wählt, Stack wechseln
+    ; EAX = neuer Frame-Zeiger, ESP = F (alter Frame-Basis)
+    cmp eax, esp
+    je .at_restore              ; kein Wechsel – gleiches Frame
+    mov esp, eax                ; zu neuem Thread-Frame wechseln
+
+.at_restore:
+    pop gs
+    pop fs
+    pop es
+    pop ds
+    popad
+    add esp, 8                          ; Fehlercode + Vektor-Platzhalter
+    iretd
 
 align 4096
 ap_stack_area:
@@ -19269,6 +19474,7 @@ scheduler_api:
     dd scheduler_thread1_runs
     dd scheduler_thread2_runs
 
+scheduler_lock:    dd 0           ; Spinlock – nur eine CPU darf scheduler_on_tick gleichzeitig ausführen
 scheduler_enabled: dd 0
 scheduler_current: dd 0
 scheduler_previous_slot: dd 0
