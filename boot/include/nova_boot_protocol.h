@@ -4,9 +4,20 @@
 #include <stdint.h>
 
 #define NOVA_NKI_VERSION              1u
+#define NOVA_NKI_VERSION_2            2u
 #define NOVA_NKI_HEADER_SIZE          64u
 #define NOVA_NKI_FLAG_ELF_BUILD_ID    0x00000001u
 #define NOVA_NKI_FLAG_NOVA_METADATA   0x00000002u
+
+/* §113 NKI Kompressions-IDs */
+#define NOVA_NKI_COMPRESSION_NONE     0u
+#define NOVA_NKI_COMPRESSION_LZ4      1u
+
+/* NKI v2 Signatur-Container (DevSign Phase-1) */
+#define NOVA_NKI_SIG_SIZE_DEVSIGN     64u
+#define NOVA_NKI_SCHEME_DEVSIGN       1u          /* Phase-1: CRC-XOR, kein echter Krypto */
+#define NOVA_NKI_DEVSIGN_KEY_ID       0x44455601u /* "DEV\x01" */
+#define NOVA_NKI_DEVSIGN_XOR_MASK     0x4E4F5644u /* "NOVD" */
 #define NOVA_LOADER_ABI_VERSION       0x00010000u
 #define NOVA_BIB_VERSION_MAJOR        1u
 #define NOVA_BIB_VERSION_MINOR        2u
@@ -97,8 +108,20 @@ typedef struct nova_nki_header {
     uint32_t compression;
     uint32_t payload_crc32;
     uint8_t  build_id[16];
-    uint32_t reserved;
+    uint32_t sig_size;       /* v1: 0 (reserved); v2: 0=kein Sig, 64=DevSign-Block */
 } nova_nki_header_t;
+
+/* NKI v2 DevSign-Block (64 Bytes, direkt nach Payload) */
+typedef struct nova_nki_signature {
+    uint8_t  magic[4];       /* "NKTS" */
+    uint8_t  scheme;         /* NOVA_NKI_SCHEME_DEVSIGN = 1 */
+    uint8_t  sig_flags;      /* reserviert, 0 */
+    uint8_t  reserved[2];    /* 0 */
+    uint32_t key_id;         /* NOVA_NKI_DEVSIGN_KEY_ID */
+    uint32_t revocation_gen; /* Revocation-Generation; 0 = aktuelle */
+    uint8_t  sig_data[32];   /* dev_mac[4] bei Byte 0..3, Rest 0 */
+    uint8_t  build_id[16];   /* Spiegelt NKI-Header build_id */
+} nova_nki_signature_t;
 
 typedef struct nova_bib_header {
     uint8_t  magic[8];
@@ -240,6 +263,7 @@ typedef struct nova_bib_firmware_runtime {
 #pragma pack(pop)
 
 _Static_assert(sizeof(nova_nki_header_t) == 64, "NKI-Header muss 64 Byte groß sein");
+_Static_assert(sizeof(nova_nki_signature_t) == 64, "NKI-Signaturblock muss 64 Byte groß sein");
 _Static_assert(sizeof(nova_bib_header_t) == 32, "BIB-Header muss 32 Byte groß sein");
 _Static_assert(sizeof(nova_bib_tlv_header_t) == 8, "TLV-Header muss 8 Byte groß sein");
 _Static_assert(sizeof(nova_bib_firmware_t) == 16, "Firmware-TLV muss 16 Byte groß sein");

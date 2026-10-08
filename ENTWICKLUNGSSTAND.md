@@ -1,6 +1,6 @@
 # NovaOS – aktueller Entwicklungsstand
 
-**Stand:** 7. Oktober 2026
+**Stand:** 8. Oktober 2026
 **Projektpfad:** `C:\recoverboot\nova-os`  
 **Aktueller Schwerpunkt:** UEFI-Bootpfad, Kernel-Handoff und persistentes NovaFS-Systemvolume
 
@@ -530,7 +530,8 @@ Userspace-Diensten zur persistenten UEFI-Boot-Control-Autorität.
 
 Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 
-- LZ4-, ZSTD- und GZIP-Dekompression für Kernelabbilder
+- ~~LZ4-Dekompression für Kernelabbilder~~ (§113: LZ4-Block-Decompressor in `kernel_loader.c`, `build-nki.ps1 -Compress`, zwei Testfälle in `test-uefi-kernel-validation.ps1`)
+- ZSTD- und GZIP-Dekompression für Kernelabbilder (folgt)
 - kryptografischer Kernelsignaturcontainer, Schlüssel-/Revocation-Policy und
   vollständige NovaOS-Trustentscheidung; der UEFI-Secure-Boot- und
   Integritätszustand wird bereits getrennt in den BIB übertragen
@@ -548,10 +549,10 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 - Typed Files und persistente Semantic Metadata
 - Semantic Discovery und Semantic Execution
 - tatsächliche Ausführung registrierter Conversion Capabilities
-- NovaFS: echtes Copy-on-Write, Checkpoints/Snapshots, Nutzdatenprüfsummen,
+- NovaFS: echtes Copy-on-Write, Checkpoints/Snapshots,
   Zusammenlegen leerer Blätter und Baumhöhe > 2 (Transaction Log/Crash
-  Recovery, Löschen, Umbenennen und Zeitstempel sind umgesetzt, siehe
-  Abschnitt 16, `dev_detail.md` Abschnitte 101–106)
+  Recovery, Löschen, Umbenennen, Zeitstempel und Nutzdatenprüfsummen sind
+  umgesetzt, siehe Abschnitt 16, `dev_detail.md` Abschnitte 101–107)
 - persistenter Userspace und Trust-Provider (Boot Health erreicht derzeit
   `SystemRootReady`, bleibt ohne Trust aber `Pending`)
 - Tests auf realer UEFI-Hardware
@@ -570,13 +571,23 @@ Reihenfolge an:
 2. ~~NovaFS Phase 2: Transaction Log und Crash Recovery, damit ein
    abgebrochener Schreibvorgang automatisch repariert statt nur read-only
    gemountet wird; anschließend Zeitstempel~~ — umgesetzt (`dev_detail.md`
-   Abschnitte 101 und 106). Echtes Copy-on-Write und Checkpoints/Snapshots
-   bleiben offen,
-3. normativen Kernel-Signaturcontainer sowie Schlüssel- und Revocation-Policy
+   Abschnitte 101 und 106); ~~Nutzdatenprüfsummen~~ — umgesetzt (Abschnitt
+   107). Echtes Copy-on-Write und Checkpoints/Snapshots bleiben offen,
+3. ~~normativen Kernel-Signaturcontainer sowie Schlüssel- und Revocation-Policy
    spezifizieren beziehungsweise implementieren (Trust-Provider für Boot
-   Health),
-4. autorisierte Candidate-Staging-Schnittstelle; danach VirtualBox-UEFI und
-   reale Hardware mit dem GPT-Image (ESP + NovaFS) erneut validieren.
+   Health)~~ — umgesetzt (Abschnitt 108, NKI v2 mit DevSign-Block, Trust- und
+   Session-Provider; Boot Health erreicht jetzt HealthConfirmed),
+4. ~~autorisierte Candidate-Staging-Schnittstelle~~ — umgesetzt (Abschnitt 109,
+   `firmware_runtime_health_commit` schreibt HEALTHY-Wire nach HealthConfirmed;
+   198948 Bytes Kernel); ~~`test-uefi-kernel-validation.ps1`: NKI-v2-Testfall
+   ergänzen~~ — umgesetzt (Abschnitt 110: Positivfall DevSign-Verifizierung,
+   ungültige sig_size, abgeschnittener DevSign-Block); ~~Revocation-Policy:
+   `revocation_gen > 0` ablehnen~~ — umgesetzt (Abschnitt 111:
+   `kernel_loader.c` hart abgewiesen + `bad-nki-v2-devsign-revoked` Testfall);
+   ~~`test-uefi-boot-control.ps1` für §109 aktualisieren~~ — umgesetzt
+   (Abschnitt 112: bridge-consume erwartet COMMITTED, bridge-candidate prüft
+   HEALTHY-Wire-Log); danach VirtualBox-UEFI und reale Hardware mit dem
+   GPT-Image (ESP + NovaFS) erneut validieren.
 
 Die Health-Evidence-Brücke aus dem früheren Schritt 2 ist inzwischen umgesetzt
 (siehe „UEFI-Runtime-Transport für Boot Health“).
@@ -1349,10 +1360,10 @@ Spezifikation `docs/NPSPEC/NPSPEC-NOVAFS-ONDISK-0001.md`.
   Kernel, Backup-Superblock mit Reparatur, DIRTY-Volume, unformatierte
   Partition) und `make novafs-check` (Host-Werkzeug mit `fsck`).
 - **offen:** echtes Copy-on-Write, Checkpoints/Snapshots,
-  Nutzdatenprüfsummen, Zusammenlegen leerer Blätter, Baumhöhe > 2.
+  Zusammenlegen leerer Blätter, Baumhöhe > 2.
   Transaction Log/Crash Recovery (Phase 2, `dev_detail.md` Abschnitt 101),
-  Löschen und Umbenennen (Abschnitte 102–105) sowie Zeitstempel
-  (Abschnitt 106) sind inzwischen umgesetzt.
+  Löschen und Umbenennen (Abschnitte 102–105), Zeitstempel (Abschnitt 106)
+  und Nutzdatenprüfsummen (Abschnitt 107) sind inzwischen umgesetzt.
 
 ### VFS-Syscalls auf NovaFS (VFS ABI 1.1)
 
@@ -1427,7 +1438,7 @@ NOVA: NovaFS ist persistentes SystemRoot unter /
 NOVA: Boot Health SystemRoot bereit, wartet auf Trust
 ```
 
-Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 106.
+Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 107.
 
 ### NovaFS-/Semantic-Core-Abgleich `/Solutions`
 
@@ -1692,62 +1703,30 @@ Technische Details stehen in `dev_detail.md`, Abschnitte 95 bis 106.
   lesenden Zugriff (bewusste Vereinfachung, um nicht bei jedem Lesen eine
   journalisierte Schreibtransaktion auszulösen); Jahrhundert-Register
   0x32 wird nur im Bereich 19–21 akzeptiert (sonst wird 20 angenommen);
-  Nutzdatenprüfsummen bleiben weiterhin offen (siehe Abschnitt 10).
+  Nutzdatenprüfsummen sind in §107 umgesetzt.
 
 Details in `dev_detail.md`, Abschnitt 102 (Löschen), Abschnitt 103
 (Öffnen), Abschnitt 104 (Codebudget-Erweiterung), Abschnitt 105
 (Umbenennen) und Abschnitt 106 (Zeitstempel).
 
-## Time-Core-Grundlage aus den neuen TIME-NPSPECs
+### NovaFS: Nutzdatenprüfsummen (CRC32C-Datenabsicherung)
 
-- **neu eingelesen:** Die zuletzt hinzugekommenen NPSPECs unter
-  `docs/NPSPEC/sysarchitecture/044-TIME` und `045-TEXT`. Für den aktuellen
-  Kernelpfad ist zuerst der TIME-Block relevant, weil PIT-Ticks, Deadlines und
-  NovaFS-Zeitstempel bereits existieren, aber bisher keine gemeinsame
-  Clock-Source-/Clock-Domain-Introspection hatten.
-- **implementiert:** `entry32.asm` besitzt jetzt einen frühen `Time Core ABI
-  1.0` mit registrierter PIT-Clock-Source, separater monotoner Kernelzeit-
-  Domain und separater Wall-Clock-Domain im bewussten `Unknown`-Zustand. Damit
-  sind monotone Zeit und Wall Clock explizit getrennt; Deadlines bleiben auf
-  der monotonen PIT-Domain.
-- **Selftest:** Der Kernel prüft beim Booten, dass die PIT-Quelle registriert,
-  validiert und aktiv ist, dass die monotone Domain nicht rückwärts läuft, dass
-  die Wall-Clock-Domain nicht fälschlich als monotone/valide Quelle behandelt
-  wird und dass Clock-Domains nicht implizit miteinander kompatibel sind.
-- **Deadline-Anbindung:** Task-Deadlines speichern jetzt zusätzlich
-  `ClockDomainID`, Toleranz, effektiven Wakeup-Tick und Miss-Tick. IO-Requests
-  erben den effektiven Deadline-Zeitpunkt, und der Deadline-Selftest prüft die
-  monotone Domain sowie die Miss-Introspection. Damit greifen
-  `NPSPEC-TIME-DEADLINE-0001`, `NPSPEC-TIME-COALESCING-0001` und
-  `NPSPEC-TIME-INTROSPECTION-0001` erstmals in die bestehende
-  Scheduler-/IO-Deadline-Schicht hinein.
-- **Coalescing-Basis:** `task_deadline_set_tolerant` erlaubt jetzt explizite
-  Toleranzen für Firm/Soft/Advisory-Deadlines und berechnet daraus einen
-  `EffectiveTick`. Hard-Deadlines mit Toleranz werden abgewiesen; von einem
-  Hard-Parent geerbte Deadlines verlieren ihre Toleranz automatisch. Der
-  Selftest prüft beide Fälle.
-- **Introspection:** Der Deadline-Manager zählt jetzt angewendete
-  Coalescing-Entscheidungen und abgewiesene Hard-Deadline-Toleranzen. Diese
-  Zähler hängen an der internen Deadline-ABI und werden im Selftest geprüft,
-  damit Coalescing nicht nur implizit über `EffectiveTick`, sondern auch als
-  erklärbare Entscheidung sichtbar ist.
-- **Next-Deadline:** Zusätzlich berechnet der Deadline-Manager die nächste
-  aktive Deadline (`next_effective_tick`, Task-ID, Klasse, Toleranz und
-  ClockDomain). Polling aktualisiert diese Sicht nach Misses; Setzen einer
-  Deadline aktualisiert sie sofort. Das bereitet die spätere tickless/one-shot
-  Timerprogrammierung aus `NPSPEC-TIME-TICKLESS-0001` vor.
-- **Miss-Lateness:** Deadline-Misses speichern jetzt nicht nur den
-  Erkennungszeitpunkt, sondern auch den Verzug in monotonen Ticks. Der Manager
-  führt `last`, `max` und `total` Lateness als Diagnosewerte und prüft sie im
-  Selftest mit einer bewusst überfälligen Firm-Deadline.
-- **Clock-Source-Health:** Der Time-Core sampled die PIT-Clock-Source bei
-  jedem Timer-IRQ passiv mit. Erfasst werden letztes Tick-Delta, maximales
-  Delta, Sample-Anzahl, Stillstandszähler und Health-Zustand (`Unknown`,
-  `OK`, `Degraded`). Der Selftest prüft, dass Tick-Fortschritt sichtbar wird.
-- **Degrade/Recover:** Die PIT-Clock-Source verliert bei Stillstand oder
-  ungewöhnlich großem Delta ihr `STABLE`-Flag und zählt den Degrade-Übergang.
-  Bei wieder stabilen Samples wird sie auf `OK` gesetzt, `STABLE` wieder
-  hergestellt und ein Recover-Zähler erhöht. Damit ist die erste
-  Clock-Source-Degradation aus `NPSPEC-TIME-CLOCKSOURCE-0001` umgesetzt.
-- **Build:** UEFI-Image neu erstellt und validiert: Kernel Build-ID
-  `33B81ED3E7FD41D95AC5F09AA556870300FBF865`, NKI CRC32 `8F8B1C08`.
+Implementiert in `dev_detail.md` Abschnitt 107 (§107).
+
+Die zweite explizit genannte Phase-1-Grenze aus `NPSPEC-NOVAFS-ONDISK-0001`
+§8 ist jetzt umgesetzt: Jeder geschriebene Datei-Inhalts-Block erhält einen
+CRC32C-Eintrag in einem flachen Prüfsummen-Array auf dem Volume; beim Lesen
+wird der CRC32C nachgerechnet und bei Abweichung `NOVAFS_ERR_CORRUPT` (Kernel)
+bzw. eine Warnung auf stderr (Userspace-Tool) ausgegeben.
+
+**Kernel (`novafs32.inc`):** Zwei neue Subroutinen
+`novafs_data_checksum_write` und `novafs_data_checksum_verify` flankieren
+`novafs_write`/`novafs_read`; separater Page-Slot `nfs_checksum_page`.
+
+**Userspace-Tool (`novafs.c`):** `checksum_store`/`checksum_verify` in
+`file_write`/`file_read`; `cmd_mkfs` alloziert `ceil(N/1024)` Array-Blöcke;
+`cmd_fsck` markiert diese als belegt.
+
+Rückwärtskompatibel: Alte Volumes mit `checksum_tree_block = 0` erhalten
+keine Prüfsummen-Operationen (No-op). Kernel-Binary: 198113 Byte
+(Spielraum ~59 KB bis zur Decke 258048 Byte).

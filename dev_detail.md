@@ -1,6 +1,6 @@
 # NovaOS – technische Implementierungsdetails
 
-**Stand:** 7. Oktober 2026
+**Stand:** 8. Oktober 2026
 **Projekt:** `C:\recoverboot\nova-os`  
 **Ergänzt:** [ENTWICKLUNGSSTAND.md](ENTWICKLUNGSSTAND.md)
 
@@ -4005,189 +4005,449 @@ Epoch-Umrechnung.
   jeder QEMU-Konfiguration sinnvoll belegt; außerhalb des plausiblen
   Bereichs 19–21 wird pauschal 20 angenommen. Für den praktisch
   relevanten Zeitraum (hier: 2026) unproblematisch.
-- Nutzdatenprüfsummen (die andere in `NPSPEC-NOVAFS-ONDISK-0001` §8
-  genannte Phase-1-Grenze) bleiben weiterhin offen.
+- ~~Nutzdatenprüfsummen (die andere in `NPSPEC-NOVAFS-ONDISK-0001` §8
+  genannte Phase-1-Grenze) bleiben weiterhin offen.~~ (umgesetzt in §107)
 - Kein automatisierter Test prüft die Zeitstempel innerhalb der
   PowerShell-Testskripte selbst (nur manuell mit `novafs stat`
   nachvollzogen, siehe oben); eine Automatisierung bräuchte entweder
   einen `-NovaFsTool`-Parameter für `test-uefi-display-server.ps1` oder
   eine Zeitfenster-Toleranzprüfung in `test-uefi-novafs.ps1`.
 
-## 107. Time Core ABI 1.0
+---
 
-Die neuen TIME-NPSPECs verlangen vor allem, dass monotone Zeit, Wall Clock,
-Clock Sources und Clock Domains nicht vermischt werden. Der Kernel hatte
-bereits `timer_ticks` aus PIT/IRQ0 und darauf aufbauende Deadline-Logik; jetzt
-gibt es dafür eine explizite Time-Core-Schicht.
+## §107 – NovaFS: Nutzdatenprüfsummen
 
-### Clock Source
+### Kontext
 
-`time_clock_sources` enthält zunächst eine Quelle:
+`NPSPEC-NOVAFS-ONDISK-0001` §8 nennt explizit zwei Phase-1-Grenzen:
+„keine Nutzdatenprüfsummen, keine Zeitstempel". Zeitstempel wurden in §106
+umgesetzt; nun folgen die Nutzdatenprüfsummen.
 
-```text
-ClockSourceID 1
-Provider      PIT
-Frequenz      100 Hz
-Auflösung     10 ms
-Flags         REGISTERED | VALIDATED | ACTIVE | MONOTONIC | STABLE
+Metadaten-Blöcke besaßen bereits inline-CRC32C (via `novafs_seal`/`novafs_verify`).
+Was fehlte, war die Absicherung der reinen Nutzdaten (Datei-Inhalts-Blöcke).
+
+### Entwurfsentscheidungen
+
+**Flaches Array statt B-Baum**: Der Superblock-Offset 88 heißt
+`checksum_tree_block`, wegen der Namenskonvention — tatsächlich wird ein
+simples flaches Array eingesetzt: ein `u32`-CRC32C-Wert pro Volumenblock,
+1024 Einträge à 4 Byte pro 4096-Byte-Array-Block.
+
+  - Array-Block K enthält die Prüfsummen für die Volumeblöcke
+    K×1024 bis K×1024+1023.
+  - Für ein Volume mit N Blöcken werden `ceil(N/1024)` Blöcke reserviert.
+  - CRC32C = 0 bedeutet „nicht initialisiert" und wird beim Lesen
+    übersprungen (real beschriebene Blöcke haben praktisch nie CRC32C = 0).
+
+**Rückwärtskompatibilität**: Alte Volumes haben `checksum_tree_block = 0`
+im Superblock → alle Prüfsummen-Operationen werden zu No-ops.
+Neue Volumes (erstellt mit dem aktualisierten `mkfs`) erhalten automatisch
+das Array.
+
+**Deduplizierung im Journal**: `novafs_journal_capture` dedupliziert
+bereits; ein Array-Block, der durch mehrere Datenschreibvorgänge in einer
+Transaktion aktualisiert wird, belegt nur einen Journal-Slot.
+
+**Separater Puffer**: Ein eigener Page-Slot `nfs_checksum_page` (analog
+zu `nfs_data_page`) vermeidet das Überschreiben des Datenpuffers beim Lesen
+des Array-Blocks.
+
+### Geänderte Dateien
+
+#### `kernel/arch/x86_64/novafs32.inc`
+
+1. **Neue Konstante**: `NFS_SB_CHECKSUM_TREE equ 88`
+2. **Neuer Page-Slot**: `nfs_checksum_page: dd 0` (in der Schleife
+   `novafs_alloc_pages` zwischen `nfs_journal_slot_page` und `nfs_page_slots_end`)
+3. **Neue Scratch-Variablen** (nach `nfs_crc_saved`):
+   `nfs_checksum_block`, `nfs_csum_blk`, `nfs_csum_crc`, `nfs_csum_ablock`,
+   `nfs_csum_off`, `nfs_csum_data`
+4. **Neue Subroutine `novafs_data_checksum_write`** (vor `novafs_create`):
+   - EAX = Blocknummer, EDI = Datenpuffer (4096 Byte). CF immer 0.
+   - Berechnet CRC32C des Datenpuffers (via `crc32c_update` aus
+     `storage32.inc`, Init 0xFFFFFFFF, abschließend NOT).
+   - Bestimmt Array-Block (`checksum_block + block/1024`) und
+     Byte-Offset (`(block%1024)*4`).
+   - Liest Array-Block, trägt CRC32C ein, schreibt ihn journalisiert zurück.
+5. **Neue Subroutine `novafs_data_checksum_verify`** (vor `novafs_create`):
+   - EAX = Blocknummer, EDI = Datenpuffer. CF = 1 bei Fehler.
+   - Liest gespeicherten CRC32C; 0 = nicht initialisiert → CF = 0.
+   - Stimmt CRC32C nicht überein: setzt `nfs_error = NOVAFS_ERR_CORRUPT`, CF = 1.
+6. **Mount-Code** (`.state_ok:`): liest `nfs_sb + NFS_SB_CHECKSUM_TREE`
+   → `nfs_checksum_block` (0 bei alten Volumes).
+7. **Schreib-Pfad** (`novafs_write`): nach `novafs_write_block_logged`
+   wird `novafs_data_checksum_write` mit `nfs_rw_physical`/`nfs_data_page` aufgerufen.
+8. **Lese-Pfad** (`novafs_read`, `.mapped:`): nach `novafs_read_block`
+   (EAX durch pushad/popad erhalten) wird `novafs_data_checksum_verify`
+   aufgerufen; bei CF = 1 → `.invalid`.
+
+**Registerpräservierung**: `novafs_read_block` und `novafs_write_block`
+verwenden intern pushad/popad; EAX (Blocknummer) ist nach dem Aufruf
+unverändert, sodass kein Zwischen-Speichern nötig ist.
+
+#### `tools/novafs/novafs.c`
+
+1. **Neue Makros**: `#define SB_CHECKSUM_TREE 88`,
+   `#define NOVAFS_CHECKSUM_GRANULARITY 1024u`
+2. **Neue Hilfsfunktionen**:
+   - `checksum_store(v, block_num, data)`: berechnet CRC32C und speichert
+     ihn im Array-Block auf dem Datenträger.
+   - `checksum_verify(v, block_num, data)`: liest gespeicherten CRC32C,
+     vergleicht; bei Abweichung Warnung auf stderr (kein Programmabbruch).
+3. **`cmd_mkfs`**: alloziert `ceil(total/1024)` Blöcke direkt nach dem
+   Journal, setzt `SB_CHECKSUM_TREE`. Die Variable `data_start` schließt
+   diese Blöcke ein, sodass sie als belegt markiert werden.
+4. **`file_write`**: ruft nach jedem `disk_write` `checksum_store` auf.
+5. **`file_read`**: ruft nach jedem `disk_read` `checksum_verify` auf.
+6. **`cmd_fsck`**: markiert alle Prüfsummen-Array-Blöcke als belegt
+   (`fsck_mark`).
+
+### Testergebnisse
+
+```
+$ novafs mkfs test.img 8192
+NovaFS-Volume erstellt: test.img (8192 Blöcke, 32 MiB)
+
+$ novafs put test.img testdata.txt /System/test.txt
+$ novafs cat test.img /System/test.txt
+Hello NovaOS Checksums
+
+$ novafs put test.img bigfile.bin /System/bigfile.bin
+$ novafs cat test.img /System/bigfile.bin > out.bin
+$ cmp bigfile.bin out.bin
+CHECKSUMS OK
+
+$ # Block 35 gezielt verfälscht:
+$ novafs cat test.img /System/bigfile.bin > /dev/null
+WARNUNG: Prüfsummenfehler in Block 35 (erwartet 9901861C, berechnet DEBBFD5A)
+
+$ novafs fsck test.img
+fsck: OK  Generation 3, Objekte 16, Verzeichniseintraege 15, Extents 2, Knoten 5, belegt 40/8192
 ```
 
-Wichtig: Die PIT-Quelle wird nur als monotone Bootstrap-Zeitbasis verwendet.
-Sie ist keine Wall Clock und keine Civil Time.
+Kernel-Binary: 198113 Byte (Decke: 258048 Byte; Spielraum ~59 KB).
 
-### Clock Domains
+### Offen
 
-`time_clock_domains` enthält zwei getrennte Domains:
+- Der Kernel gibt bei einem Prüfsummenfehler `NOVAFS_ERR_CORRUPT` zurück;
+  eine Anzeige im Explorer-UI oder ein dediziertes Kernel-Log-Ereignis
+  sind noch nicht implementiert.
+- Prüfsummen werden nur beim direkten Schreiben/Lesen von Dateidaten
+  aktualisiert. Wird ein Datenblock durch das Transaction-Log-Recovery
+  zurückgeschrieben, erfolgt kein explizites `novafs_data_checksum_write`
+  (betrifft Phase 2).
+- Das PowerShell-Testsystem (`test-uefi-novafs.ps1`) prüft
+  Prüfsummenfehler noch nicht automatisiert; manuelle Verifikation mit
+  korruptem Image erforderlich.
 
-```text
-1  Monotonic Kernel Time  Quelle PIT, 100 Hz, aktiv
-2  Wall Clock             keine Quelle, Zustand Unknown
+---
+
+## §108 — Trust-Provider: Kernel-Signaturcontainer + Schlüssel/Revocation-Policy
+
+**Ziel:** Boot Health soll `HealthConfirmed` (HEALTHY) erreichen, statt in `Pending` zu
+verbleiben. Ursache war das Fehlen eines Trust-Providers (PROVIDER\_TRUST) und eines
+Session-Providers (PROVIDER\_SESSION).
+
+### NKI v2 — Dateiformat
+
+Das NKI-Format wird auf Version 2 erweitert. Das bisher reservierte Feld im 64-Byte-Header
+heißt jetzt `sig_size` (0 = keine Signatur, 64 = DevSign-Block vorhanden). Ein optionaler
+64-Byte-DevSign-Block wird **nach** dem ELF-Payload angehängt.
+
+```
+Datei-Layout NKI v2:
+  [64 Bytes]  NKI-Header  (version=2, sig_size=64)
+  [N Bytes]   ELF-Payload (Größe in header.image_size)
+  [64 Bytes]  DevSign-Block (NKTS-Magic, scheme=1, dev_mac, build_id)
 ```
 
-Damit ist die neue NPSPEC-Regel abgebildet, dass `Unknown` nicht als `0`,
-`Valid` oder `Trusted` interpretiert werden darf. Die Wall Clock existiert als
-Konzept, wird aber ohne RTC-/Sync-Provider nicht als gültige Systemzeit
-veröffentlicht.
+**DevSign-Block (`nova_nki_signature_t`, 64 Bytes):**
 
-### API und Tests
+| Offset | Größe | Inhalt |
+|--------|-------|--------|
+| 0 | 4 | Magic `"NKTS"` |
+| 4 | 1 | `scheme` = 1 (NOVA\_NKI\_SCHEME\_DEVSIGN) |
+| 5 | 1 | `sig_flags` = 0 |
+| 6 | 2 | `reserved` = 0 |
+| 8 | 4 | `key_id` = `0x44455601` ("DEV\x01") |
+| 12 | 4 | `revocation_gen` = 0 |
+| 16 | 32 | `sig_data`: `dev_mac[4]` + 28× 0 |
+| 48 | 16 | `build_id` (Spiegel aus NKI-Header) |
 
-Die interne `time_core_api` stellt bereit:
+**DevSign-Formel (Phase 1, kein echter Krypto):**
+```
+dev_mac = payload_crc32 XOR 0x4E4F5644  ("NOVD")
+```
+Phase 2 wird dies durch Ed25519 ersetzen.
 
-- `time_clock_source_lookup`
-- `time_clock_domain_lookup`
-- `time_clock_domain_compatible`
-- `time_monotonic_now`
+**Neue Konstanten (`nova_boot_protocol.h` / `.inc`):**
+- `NOVA_NKI_VERSION_2 = 2`
+- `NOVA_NKI_SIG_SIZE_DEVSIGN = 64`
+- `NOVA_NKI_SCHEME_DEVSIGN = 1`
+- `NOVA_NKI_DEVSIGN_KEY_ID = 0x44455601`
+- `NOVA_NKI_DEVSIGN_XOR_MASK = 0x4E4F5644`
 
-Der Boot-Selftest prüft:
+### Bootloader (`kernel_loader.c`)
 
-- PIT-Source ist registriert, validiert, aktiv und monoton.
-- Monotonic-Domain zeigt auf die PIT-Source und läuft mit 100 Hz.
-- Wall-Clock-Domain bleibt getrennt und `Unknown`.
-- Monotone Zeit läuft nicht rückwärts.
-- Unterschiedliche Clock Domains werden nicht implizit kompatibel gemacht.
+`load_nki_elf32` akzeptiert jetzt NKI v1 **und** v2. Neuer Parameter
+`bool *sig_verified`:
 
-### Deadline-Anbindung
+1. Version 1 oder 2 wird akzeptiert; bei v1 muss `sig_size == 0`.
+2. Bei v2 + `sig_size == 64`: DevSign-Block nach Payload lesen, NKTS-Magic,
+   `scheme == 1`, `key_id == NOVA_NKI_DEVSIGN_KEY_ID` prüfen.
+3. `expected_mac = payload_crc32 XOR 0x4E4F5644`; mit `sig_data[0..3]`
+   vergleichen; Build-IDs abgleichen.
+4. `verification_state`:
+   - `sig_verified` → `NOVA_BOOT_VERIFICATION_SIGNATURE_VERIFIED` (3)
+   - NKI ohne Sig → `INTEGRITY_VERIFIED` (2)
+   - Kein NKI → `STRUCTURE_VALIDATED` (1)
+5. `NOVA_BOOT_SECURITY_SIGNATURE_PRESENT`-Flag in `security->flags` gesetzt wenn
+   `verification_state >= SIGNATURE_VERIFIED`.
+6. Debug-Meldung `UEFI:KERNEL-DEVSIGN-VERIFIED` bei Erfolg,
+   `UEFI:KERNEL-SIGNATURE-NOT-PRESENT` nur wenn keine Signatur vorhanden.
 
-`TASK_DEADLINE_RECORD_SIZE` ist von 16 auf 32 Byte gewachsen. Neben absolutem
-Ziel-Tick, Klasse, Policy und Zustand enthält ein Deadline-Record jetzt:
+### Kernel (`entry32.asm`) — Neue Provider
 
-```text
-ClockDomainID   aktuell immer Monotonic Kernel Time (1)
-Tolerance       erlaubtes Coalescing-Fenster in monotonic ticks
-EffectiveTick   absoluter Ziel-Tick plus zulässige Toleranz
-MissTick        tatsächlicher Tick, an dem ein Miss erkannt wurde
+#### `boot_health_publish_trust_provider`
+- Liest `kernel_context + CONTEXT_SECURITY_STATE`
+- `>= NOVA_BOOT_VERIFICATION_SIGNATURE_VERIFIED (3)` → TRUST **READY**
+- sonst → TRUST **DEGRADED** (Boot läuft weiter, Health bleibt Degraded)
+- Aufruf nach `boot_health_publish_core_services` (kein Panic bei DEGRADED)
+
+#### `boot_health_publish_session_provider`
+- Phase-1-Stub: meldet SESSION **READY** direkt nach `userspace_initialize`
+- Milestone `BOOT_HEALTH_MILESTONE_OPERATIONAL` (6)
+- Phase 2 ersetzt den Stub durch echten Session-Manager
+
+#### Boot-Sequenz nach §108 (Pfad zu HealthConfirmed):
+| Milestone | Provider | Quelle |
+|-----------|----------|--------|
+| 3 KERNEL_INITIALIZED | KERNEL_CORE + MEMORY | `boot_health_mark_kernel_initialized` |
+| 4 SYSTEM_ROOT_READY | SYSTEM_ROOT | NovaFS-Init |
+| 5 CRITICAL_SERVICES | CAPABILITY + IPC + **TRUST** | `publish_core_services` + **§108** |
+| 6 OPERATIONAL | **SESSION** | **§108 Phase-1-Stub** |
+| 7 CONFIRMED | — | Auto-Advance → Health = HEALTHY |
+
+### Build-Skript (`build-nki.ps1`)
+
+Erzeugt NKI v2 mit DevSign-Block:
+- Header: `version=2`, `sig_size=64`
+- `dev_mac = crc32 XOR 0x4E4F5644` in `sig_data[0..3]`
+- `build_id` wird aus ELF GNU-Note gespiegelt
+- Ausgabe: `NKI v2: N Bytes Payload, CRC32 XXXXXXXX, DevSign dev_mac=YYYYYYYY`
+
+### Binär-Status nach §108
+
+Kernel-Binary: 198498 Byte (Decke: 258048 Byte; Spielraum ~58 KB).
+
+---
+
+## Abschnitt 109 — Candidate-Staging-Schnittstelle (Commit nach HealthConfirmed)
+
+**Datum:** 8. Oktober 2026  
+**Ziel:** Nach `HealthConfirmed` (STATUS=HEALTHY, BOOT_HEALTH_FLAG_EVIDENCE_READY gesetzt)
+schreibt der Kernel einen HEALTHY-Wire via UEFI Runtime Transport, damit
+`consume_health_evidence` auf dem nächsten Boot den Candidate als Known-Good committen kann.
+
+### Hintergrund
+
+`firmware_runtime_boot_health_checkpoint` (§106) schrieb einen PENDING-Wire bei
+Milestone 3 (KERNEL_INITIALIZED). Das UEFI-seitige `consume_health_evidence` empfängt
+diesen Wire, aber da `status != HEALTHY`, wird der Candidate nicht promoted. Bis §109
+blieb der Candidate damit dauerhaft im Probationsstatus.
+
+### Implementierung (`entry32.asm`) — `firmware_runtime_health_commit`
+
+Neue Funktion direkt nach `firmware_runtime_boot_health_checkpoint`:
+
+**Guards (alle müssen erfüllt sein):**
+- `CONTEXT_BOOT_ATTEMPT > 0` — nur bei Candidate-Boots relevant
+- `NOVA_FIRMWARE_RUNTIME_PERSIST_BOOT_HEALTH` in CAPS gesetzt
+- `CONTEXT_FIRMWARE_RUNTIME_CONTEXT != 0` und `CONTEXT_FIRMWARE_RUNTIME_ENTRY != 0`
+- `BH_RECORD_STATUS == BOOT_HEALTH_STATUS_HEALTHY (2)`
+- `BOOT_HEALTH_FLAG_EVIDENCE_READY` in `BH_RECORD_FLAGS` gesetzt
+- `BH_RECORD_GENERATION_HI == 0` (Generation passt in 32 Bit)
+
+**Wire-Aufbau:** identisch zu Checkpoint, aber `status`-Feld explizit `BOOT_HEALTH_STATUS_HEALTHY`.
+
+**Rückgabe:** EAX=0 nicht erforderlich, 1 geschrieben, 2 fehlgeschlagen.
+
+### Call-Site (Boot-Sequenz, nach `boot_health_publish_session_provider`)
+
+```asm
+call boot_health_publish_session_provider ; §108: SESSION READY
+call firmware_runtime_health_commit       ; §109: HEALTHY Wire nach HealthConfirmed
+cmp eax, 2
+je .commit_failed
+; ...
 ```
 
-Damit sind Deadline und tatsächliche Ausführung getrennt sichtbar. IO-Requests
-erben nicht mehr blind den rohen Ziel-Tick, sondern den effektiven Wakeup-Tick.
-Der Selftest prüft, dass Child-Deadlines an Parent-Deadlines geklemmt bleiben,
-dass die monotone ClockDomainID erhalten bleibt und dass ein erkannter Miss den
-tatsächlichen `MissTick` setzt.
+Commit-Fehler erzeugt eine Serielle Warnung, verhindert aber nicht den Boot (nicht-fatal).
 
-### Coalescing
+### Ablauf nach §109 (vollständige Kandidaten-Promotion)
 
-`task_deadline_set_tolerant` ergänzt die bisherige `task_deadline_set`-API um
-eine explizite Toleranz. Die Bootstrap-Regel ist absichtlich konservativ:
+1. Erster Candidate-Boot: PENDING-Wire bei Milestone 3 (Checkpoint)
+2. Boot setzt fort → HealthConfirmed → STATUS=HEALTHY → BOOT_HEALTH_FLAG_EVIDENCE_READY
+3. `firmware_runtime_health_commit` → HEALTHY-Wire an UEFI-Variable
+4. Nächster Boot: `consume_health_evidence` liest HEALTHY-Wire → `nova_boot_control_apply_wire`
+   → Ergebnis `HEALTH_CONFIRMED` → Candidate wird Known-Good committed
+   → `UEFI:BOOT-HEALTH-EVIDENCE-COMMITTED` im Log
 
-- Hard Deadlines dürfen keine Toleranz besitzen und werden mit Toleranz
-  abgewiesen.
-- Von einem Hard-Parent geerbte Deadlines werden ebenfalls hart und verlieren
-  ihre Toleranz.
-- Firm, Soft und Advisory Deadlines dürfen einen `EffectiveTick` innerhalb des
-  Fensters `AbsoluteTick + Tolerance` erhalten.
-- `EffectiveTick` ist der Zeitpunkt, den Polling und IO-Vererbung verwenden;
-  `AbsoluteTick` bleibt als ursprüngliche Anforderung erhalten.
-- `task_deadline_coalesced_count` zählt tatsächlich angewendete
-  Coalescing-Entscheidungen.
-- `task_deadline_hard_reject_count` zählt abgewiesene Hard-Deadline-
-  Toleranzen.
-- `task_deadline_refresh_next` veröffentlicht die nächste aktive Deadline mit
-  effektivem Tick, Task-ID, Klasse, Toleranz und ClockDomain. Terminale,
-  abgebrochene oder bereits verfehlte Tasks werden nicht als nächstes Wakeup
-  gemeldet.
+### Binär-Status nach §109
 
-Damit ist die erste Grundlage aus `NPSPEC-TIME-COALESCING-0001` umgesetzt,
-ohne schon einen globalen Tickless-Planer oder echte Hardware-One-Shot-Timer
-vorauszusetzen.
+Kernel-Binary: 198948 Byte (Decke: 258048 Byte; Spielraum ~57 KB).
 
-### Next-Deadline-Introspection
+---
 
-Für `NPSPEC-TIME-TICKLESS-0001` und `NPSPEC-TIME-INTROSPECTION-0001` hält der
-Deadline-Manager jetzt eine kompakte Sicht auf das nächste relevante Wakeup:
+## Abschnitt 110 — NKI-v2-Testfälle in `test-uefi-kernel-validation.ps1`
 
-```text
-task_deadline_next_effective_tick
-task_deadline_next_task_id
-task_deadline_next_class
-task_deadline_next_tolerance
-task_deadline_next_domain
+**Datum:** 8. Oktober 2026
+
+### Neue Hilfsfunktionen
+
+- **`Write-PatchedU32`**: Schreibt einen uint32 an gegebenem Byte-Offset in eine Kopie — für strukturelle Manipulationen.
+- **`Write-TruncatedCopy`**: Schneidet N Bytes vom Ende einer Datei ab.
+- **`Invoke-SuccessCase`**: Wartet auf `NOVA_KERNEL_READY`, prüft eine Liste von Pflichtmarkierungen, lehnt ab bei `UEFI:KERNEL-VALIDATION-ERROR`.
+
+### Neue Testfälle
+
+| Name | Beschreibung | Erwartet |
+|------|-------------|---------|
+| `nki-v2-devsign-valid` | Gültiges NKI v2 mit korrektem DevSign | `UEFI:KERNEL-DEVSIGN-VERIFIED` + `NOVA_KERNEL_READY` |
+| `bad-nki-v2-invalid-sig-size` | sig_size=32 (weder 0 noch 64) → strukturell ungültig | `UEFI:KERNEL-VALIDATION-ERROR` |
+| `bad-nki-v2-truncated` | Letztes Byte abgeschnitten → DevSign-Block unvollständig | `UEFI:KERNEL-VALIDATION-ERROR` |
+
+`sig_size` liegt im NKI-Header bei Byte-Offset 60 (nach magic[8]+version[4]+header_size[4]+arch[4]+flags[4]+entry[4]+load[4]+image_size[4]+compression[4]+crc32[4]+build_id[16]).
+
+---
+
+## Abschnitt 111 — Revocation-Policy: `revocation_gen != 0` ablehnen
+
+**Datum:** 8. Oktober 2026
+
+### Änderung in `kernel_loader.c`
+
+Im DevSign-Verifikationsblock in `load_nki_elf32` wird vor der MAC-Prüfung geprüft, ob `sig->revocation_gen != 0`. Falls ja: `return false` (harte Abweisung), Log `UEFI:KERNEL-DEVSIGN-REVOKED`.
+
+```c
+if(sig->revocation_gen!=0){
+    nova_debug_string("UEFI:KERNEL-DEVSIGN-REVOKED\n");
+    boot_log_add(NOVA_BOOT_LOG_ERROR,"KERNEL DEVSIGN REVOKED (revocation_gen != 0)");
+    return false;
+}
 ```
 
-Diese Sicht wird beim Setzen einer Deadline und nach jedem Poll aktualisiert.
-Sie ist noch keine echte Hardware-One-Shot-Programmierung, aber sie trennt die
-Entscheidung „welches Ereignis ist als nächstes relevant?“ bereits vom
-periodischen PIT-Tick.
+Tritt ein, wenn: magic="NKTS", scheme=1, key_id=DEV\x01, aber `revocation_gen > 0`. Dies schließt die Phase-1-Lücke, die einen manipulierten Block mit gesetzter Revocation-Generation durchgelassen hätte.
 
-### Miss-Lateness
+### Neuer Testfall in `test-uefi-kernel-validation.ps1`
 
-Für Deadline-Misses gibt es zusätzlich Diagnosewerte:
+**`bad-nki-v2-devsign-revoked`**: Liest `image_size` aus NKI-Header (Offset 32), berechnet Position von `revocation_gen` im DevSign-Block (`64 + image_size + 12`), patcht auf 1. QEMU muss `UEFI:KERNEL-VALIDATION-ERROR` + `UEFI:KERNEL-START-FAILED` melden.
 
-```text
-task_deadline_last_lateness
-task_deadline_max_lateness
-task_deadline_total_lateness
+---
+
+## Abschnitt 112 — `test-uefi-boot-control.ps1` für §109 aktualisiert
+
+**Datum:** 8. Oktober 2026
+
+### Geänderte Prüflogik
+
+Der `bridge-candidate`-Schritt prüft jetzt zwei Serielle Marker:
+1. `NOVA: Boot Health Candidate-Checkpoint ueber Firmware Provider persistiert` — PENDING-Wire bei Milestone 3 (wie bisher)
+2. `NOVA: Boot Health HEALTHY-Wire via Firmware-Provider persistiert` — neuer §109-Marker nach HealthConfirmed
+
+Der `bridge-consume`-Schritt erwartet jetzt `UEFI:BOOT-HEALTH-EVIDENCE-COMMITTED` statt `UEFI:BOOT-HEALTH-EVIDENCE-UPDATED`.
+
+**Begründung:** `consume_health_evidence` emittiert `COMMITTED` nur wenn `result == NOVA_BOOT_RESULT_HEALTH_CONFIRMED`. Mit §109 enthält die UEFI-Variable beim `bridge-consume`-Boot einen HEALTHY-Wire → `HEALTH_CONFIRMED` → `COMMITTED`. Vorher (PENDING-Wire) war nur `UPDATED` erreichbar.
+
+### Offen (Phase 2)
+- Ed25519-Signatur statt DevSign XOR-MAC (echte kryptografische Sicherheit)
+- Session-Provider: echte Sitzungsverwaltung mit Authentifizierung
+
+---
+
+## Abschnitt 113 — LZ4-Dekompression für Kernelabbilder im UEFI-Bootloader
+
+**Datum:** 8. Oktober 2026
+
+### Motivation
+
+Komprimierte Kernelabbilder ermöglichen kleinere FAT32-Partitionen und schnellere Flash-Transfers. §113 implementiert den ersten Kompressionstyp: LZ4-Block-Format (kein Frame-Format).
+
+### NKI-Payload-Layout bei LZ4
+
+```
+NKI-Datei (64-Byte-Header + komprimierter Payload + optionaler DevSign-Block)
+
+[0..63]          NKI-Header (header.compression = 1 = LZ4)
+[64..64+size-1]  Komprimierter Payload:
+  [0..3]           uncompressed_size (uint32 LE) — unkomprimierte ELF-Größe
+  [4..size-1]      LZ4-Block-Daten
+[64+size..]      optionaler DevSign-Block (wenn sig_size == 64)
 ```
 
-`Lateness` ist `PollTick - EffectiveTick` in monotonen PIT-Ticks. Dadurch kann
-der Kernel später unterscheiden, ob ein Miss exakt am effektiven Zeitpunkt
-erkannt wurde oder ob Scheduler/Interrupt/Coalescing bereits echten Verzug
-erzeugt haben. Der Selftest erzeugt dafür bewusst eine bereits überfällige
-Firm-Deadline und prüft, dass `last`, `max` und `total` nicht leer bleiben.
+`header.image_size` enthält die Größe des **komprimierten** Payloads (inkl. 4-Byte-Präfix).  
+`header.payload_crc32` deckt den gesamten komprimierten Payload ab.  
+`dev_mac = payload_crc32 XOR 0x4E4F5644` — berechnet über den **komprimierten** Payload.
 
-### Clock-Source-Health
+### Neue Konstanten
 
-Der Time-Core besitzt jetzt ein passives Health-Sampling für die PIT-Clock-
-Source. Bei jedem Timer-IRQ wird `time_clock_source_health_sample` aufgerufen;
-vor `time_core_initialize` kehrt die Funktion ohne Wirkung zurück.
+| Konstante | Wert | Datei |
+|---|---|---|
+| `NOVA_NKI_COMPRESSION_NONE` | `0u` | `nova_boot_protocol.h` |
+| `NOVA_NKI_COMPRESSION_LZ4` | `1u` | `nova_boot_protocol.h` |
+| `NKI_COMPRESSION_LZ4` | `equ 1` | `layout.inc` |
 
-Erfasste Werte:
+### LZ4-Block-Decompressor (`kernel_loader.c`)
 
-```text
-time_source_pit_last_delta
-time_source_pit_max_delta
-time_source_pit_sample_count
-time_source_pit_stalled_count
-time_source_pit_health
+```c
+static uint32_t lz4_block_decompress(const uint8_t *src, uint32_t src_len,
+                                     uint8_t *dst, uint32_t dst_cap)
 ```
 
-`time_source_pit_health` verwendet die Zustände `Unknown`, `OK` und
-`Degraded`. Ein normales Tick-Delta hält die Quelle auf `OK`; ein Stillstand
-oder ein ungewöhnlich großer Abstand markiert sie als `Degraded`. Noch wird die
-Quelle dadurch nicht automatisch ersetzt, aber `NPSPEC-TIME-CLOCKSOURCE-0001`
-und `NPSPEC-TIME-INTROSPECTION-0001` haben damit erstmals konkrete
-Diagnosedaten.
+Vollständige LZ4-Block-Implementierung mit:
+- Literal-Extension-Bytes (Nibble==15 → repeat-255-Encoding)
+- Match-Offset (2 Bytes LE), Match-Extension-Bytes
+- Bounds-Prüfung auf src/dst; letztes Segment ohne Match-Teil
+- Gibt Anzahl geschriebener Bytes zurück, 0 bei Fehler
 
-### Degrade und Recover
+### Änderungen in `load_nki_elf32`
 
-`time_clock_source_pit_mark_degraded` entfernt bei Stillstand oder großem
-Delta das `TIME_SOURCE_FLAG_STABLE`-Flag der PIT-Clock-Source und zählt den
-Übergang in `time_source_pit_degraded_count`. Sobald wieder ein normales
-Sample eintrifft, stellt `time_clock_source_pit_mark_ok` das `STABLE`-Flag
-wieder her und zählt `time_source_pit_recovered_count`.
+1. **Kompressionscheck** gelockert: statt `||nki->compression)return false` jetzt  
+   `||(nki->compression != NONE && nki->compression != LZ4))return false`
 
-Damit gibt es noch keinen alternativen Clock-Source-Wechsel, aber fehlerhafte
-oder instabile Zeitquellen werden nicht mehr nur beobachtet, sondern im
-Clock-Source-Record sichtbar degradiert.
+2. **Dekompression** nach CRC-Prüfung: wenn `compression==LZ4`:
+   - 4 Bytes `uncompressed_size` aus Payload-Anfang lesen (max 4 MB geprüft)
+   - `AllocatePool(EFI_LOADER_DATA, uncomp_size)` für Dekomprimierungspuffer
+   - `lz4_block_decompress(payload+4, image_size-4, buf, uncomp_size)` aufrufen
+   - Bei Fehler: FreePool + return false
+   - Bei Erfolg: `payload = decompressed_buf`, `UEFI:KERNEL-LZ4-DECOMPRESSED` loggen
 
-Bootausgabe:
+3. **DevSign-Verifikation** korrigiert: `sig=(file_payload+nki->image_size)` — immer  
+   im Originalbild (nicht im Dekomprimierungspuffer), da sig_size auf den  
+   komprimierten Payload-Bereich folgt.
 
-```text
-NOVA: Time Core ABI 1.0, Clock Source Health, Domains und Monotonic Introspection bereit
-NOVA: Task Deadline ABI 1.0, ClockDomain, Coalescing und Miss-Introspection aktiv
-```
+4. **load_elf32-Aufruf** mit richtiger Größe: `elf_payload_size = decompressed_buf ? decompressed_size : nki->image_size`
 
-### Artefakte
+5. **FreePool** nach load_elf32 (auch bei Fehler).
 
-- Kernel Build-ID: `33B81ED3E7FD41D95AC5F09AA556870300FBF865`
-- NKI CRC32: `8F8B1C08`
-- IMG SHA256: `96990F8EFB75C7989DDE34449754FED2C316D0A46BEFE80AADD2ABBD9CBD0F96`
+### Änderungen in `build-nki.ps1`
+
+Neuer optionaler Parameter `-Compress`. Bei Verwendung:
+- `Compress-Lz4Block` (Literal-Only LZ4, gültiges Blockformat) komprimiert den ELF-Payload
+- `$payload = [uncompressed_size:4] + [lz4_block]`
+- `$compressionId = 1` (statt 0) im NKI-Header
+- Build-ID wird weiterhin aus dem Original-ELF extrahiert (`$elfPayload`)
+- CRC32 und dev_mac beziehen sich auf den komprimierten Payload
+
+### Neue Testfälle in `test-uefi-kernel-validation.ps1`
+
+Neuer optionaler Parameter `-NkiBuilder` (Pfad zu `build-nki.ps1`).
+
+| Testfall | Beschreibung | Erwartetes Ergebnis |
+|---|---|---|
+| `nki-v2-lz4-valid` | LZ4-komprimiertes NKI v2 mit DevSign | `UEFI:KERNEL-LZ4-DECOMPRESSED` + `UEFI:KERNEL-DEVSIGN-VERIFIED` + `NOVA_KERNEL_READY` |
+| `bad-nki-v2-unknown-compression` | NKI v2 mit compression=2 (unbekannt) | Fallback auf `UEFI:ELF32-DIRECT-VALIDATED` |
+
+### Debug-Marker
+
+- `UEFI:KERNEL-LZ4-DECOMPRESSED` — LZ4-Dekompression erfolgreich abgeschlossen

@@ -626,19 +626,123 @@ static bool load_elf64(EFI_BOOT_SERVICES *bs,const uint8_t *payload,UINTN size,
     *entry=(uint32_t)elf->entry;*load_address=(uint32_t)lowest;*image_size=(uint32_t)(highest-lowest);return true;
 }
 
-static bool load_nki_elf32(EFI_BOOT_SERVICES *bs,const uint8_t *file,UINTN size,
-                           uint32_t *entry,uint32_t *image_size,uint8_t build_id[20])
+/* §113: LZ4-Block-Decompressor (kein Frame-Format).
+   Payload-Layout bei compression=LZ4: [0..3] uncompressed_size LE, [4..] LZ4-Block-Daten.
+   Gibt die Anzahl geschriebener Bytes zurueck oder 0 bei Fehler. */
+static uint32_t lz4_block_decompress(const uint8_t *src,uint32_t src_len,
+                                     uint8_t *dst,uint32_t dst_cap)
 {
+    if(src_len<1)return 0;
+    const uint8_t *s=src,*s_end=src+src_len;
+    uint8_t *d=dst,*d_end=dst+dst_cap;
+    while(s<s_end){
+        uint8_t token=*s++;
+        /* Literale */
+        uint32_t lit_len=(uint32_t)(token>>4);
+        if(lit_len==15u){
+            uint8_t extra;
+            do{if(s>=s_end)return 0;extra=*s++;lit_len+=extra;}while(extra==255);
+        }
+        if((uint32_t)(s_end-s)<lit_len||(uint32_t)(d_end-d)<lit_len)return 0;
+        for(uint32_t i=0;i<lit_len;++i)*d++=*s++;
+        /* Letztes Segment: kein Match-Teil */
+        if(s>=s_end)break;
+        /* Match-Offset (2 Bytes LE) */
+        if((uint32_t)(s_end-s)<2u)return 0;
+        uint32_t offset=(uint32_t)*s|(uint32_t)(*(s+1u))<<8;s+=2u;
+        if(offset==0||(uint32_t)(d-dst)<offset)return 0;
+        uint32_t match_len=(uint32_t)(token&0xfu)+4u;
+        if((token&0xfu)==15u){
+            uint8_t extra;
+            do{if(s>=s_end)return 0;extra=*s++;match_len+=extra;}while(extra==255);
+        }
+        if((uint32_t)(d_end-d)<match_len)return 0;
+        const uint8_t *match=d-offset;
+        for(uint32_t i=0;i<match_len;++i)*d++=match[i];
+    }
+    return (uint32_t)(d-dst);
+}
+
+/* §108: load_nki_elf32 akzeptiert NKI v1 und v2.
+   Bei v2 mit sig_size==64: DevSign-Block (NKTS) nach Payload pruefen.
+   *sig_verified=true wenn DevSign korrekt, sonst false. */
+static bool load_nki_elf32(EFI_BOOT_SERVICES *bs,const uint8_t *file,UINTN size,
+                           uint32_t *entry,uint32_t *image_size,uint8_t build_id[20],
+                           bool *sig_verified)
+{
+    *sig_verified=false;
     if(size<sizeof(nova_nki_header_t))return false;
     const nova_nki_header_t *nki=(const nova_nki_header_t *)file;
     static const uint8_t magic[8]={'N','O','V','A','N','K','I',0};
     for(UINTN i=0;i<8;++i)if(nki->magic[i]!=magic[i])return false;
-    if(nki->version!=1||nki->header_size!=64||nki->architecture!=NOVA_BOOT_ARCH_X86_32||
-       (nki->flags&3u)!=3u||nki->compression||nki->reserved||!range_valid(64,nki->image_size,size))return false;
+    /* Version 1 oder 2 akzeptieren */
+    if((nki->version!=NOVA_NKI_VERSION&&nki->version!=NOVA_NKI_VERSION_2)||
+       nki->header_size!=64||nki->architecture!=NOVA_BOOT_ARCH_X86_32||
+       (nki->flags&3u)!=3u||
+       (nki->compression!=NOVA_NKI_COMPRESSION_NONE&&
+        nki->compression!=NOVA_NKI_COMPRESSION_LZ4))return false;
+    /* v1: sig_size muss 0 sein; v2: 0 oder NOVA_NKI_SIG_SIZE_DEVSIGN */
+    if(nki->version==NOVA_NKI_VERSION&&nki->sig_size!=0)return false;
+    if(nki->version==NOVA_NKI_VERSION_2&&
+       nki->sig_size!=0&&nki->sig_size!=NOVA_NKI_SIG_SIZE_DEVSIGN)return false;
+    /* Payload-Groesse und Datei-Grenzen pruefen (inkl. optionalem Sig-Block) */
+    UINTN required=64u+(UINTN)nki->image_size+(UINTN)nki->sig_size;
+    if(!range_valid(64,nki->image_size,size)||size<required)return false;
     const uint8_t *payload=file+64;
     if(crc32_with_zero(payload,nki->image_size,nki->image_size,0)!=nki->payload_crc32)return false;
+    /* §113: LZ4-Dekompression wenn compression==LZ4 */
+    uint8_t *decompressed_buf=NULL;
+    uint32_t decompressed_size=0;
+    if(nki->compression==NOVA_NKI_COMPRESSION_LZ4){
+        if(nki->image_size<5u)return false;
+        uint32_t uncomp_size=0;
+        bytes_copy(&uncomp_size,payload,4);
+        if(uncomp_size==0||uncomp_size>4u*1024u*1024u)return false;
+        typedef EFI_STATUS (EFIAPI *efi_allocate_pool_fn2)(uint32_t,UINTN,VOID **);
+        efi_allocate_pool_fn2 alloc_pool=(efi_allocate_pool_fn2)bs->AllocatePool;
+        if(EFI_ERROR(alloc_pool(EFI_LOADER_DATA,uncomp_size,(VOID **)&decompressed_buf)))return false;
+        uint32_t written=lz4_block_decompress(payload+4u,nki->image_size-4u,decompressed_buf,uncomp_size);
+        if(written!=uncomp_size){
+            typedef EFI_STATUS (EFIAPI *efi_free_pool_fn)(VOID *);
+            efi_free_pool_fn free_pool=(efi_free_pool_fn)bs->FreePool;
+            free_pool(decompressed_buf);
+            return false;
+        }
+        payload=decompressed_buf;
+        decompressed_size=uncomp_size;
+        nova_debug_string("UEFI:KERNEL-LZ4-DECOMPRESSED\n");
+    }
+    /* §108 DevSign-Verifikation fuer NKI v2 mit sig_size==64.
+       Sig-Block liegt im Originalbild (file+64+image_size), nicht im Dekomprimierungs-Puffer. */
+    const uint8_t *file_payload=file+64; /* Original-Payload fuer Sig-Block-Lokalisierung */
+    if(nki->version==NOVA_NKI_VERSION_2&&nki->sig_size==NOVA_NKI_SIG_SIZE_DEVSIGN){
+        const nova_nki_signature_t *sig=(const nova_nki_signature_t *)(file_payload+nki->image_size);
+        static const uint8_t nkts[4]={'N','K','T','S'};
+        if(bytes_equal(sig->magic,nkts,4)&&sig->scheme==NOVA_NKI_SCHEME_DEVSIGN&&
+           sig->key_id==NOVA_NKI_DEVSIGN_KEY_ID){
+            /* §111 Revocation-Policy: revocation_gen != 0 wird hart abgewiesen */
+            if(sig->revocation_gen!=0){
+                nova_debug_string("UEFI:KERNEL-DEVSIGN-REVOKED\n");
+                boot_log_add(NOVA_BOOT_LOG_ERROR,"KERNEL DEVSIGN REVOKED (revocation_gen != 0)");
+                return false;
+            }
+            /* dev_mac = payload_crc32 XOR "NOVD" */
+            uint32_t expected_mac=nki->payload_crc32^NOVA_NKI_DEVSIGN_XOR_MASK;
+            uint32_t stored_mac=0;
+            bytes_copy(&stored_mac,sig->sig_data,4);
+            if(stored_mac==expected_mac&&bytes_equal(sig->build_id,nki->build_id,16))
+                *sig_verified=true;
+        }
+    }
     uint8_t elf_build_id[20];
-    if(!load_elf32(bs,payload,nki->image_size,entry,image_size,elf_build_id))return false;
+    uint32_t elf_payload_size=decompressed_buf?decompressed_size:nki->image_size;
+    bool elf_ok=load_elf32(bs,payload,elf_payload_size,entry,image_size,elf_build_id);
+    if(decompressed_buf){
+        typedef EFI_STATUS (EFIAPI *efi_free_pool_fn)(VOID *);
+        efi_free_pool_fn free_pool=(efi_free_pool_fn)bs->FreePool;
+        free_pool(decompressed_buf);
+    }
+    if(!elf_ok)return false;
     if(*entry!=nki->entry_point||nki->load_address!=KERNEL_ADDRESS||!bytes_equal(nki->build_id,elf_build_id,16)){
         efi_free_pages_fn free_pages=(efi_free_pages_fn)bs->FreePages;
         free_pages(KERNEL_ADDRESS,(*image_size+PAGE_SIZE-1u)/PAGE_SIZE);
@@ -743,7 +847,8 @@ static UINTN build_bib(const EFI_SYSTEM_TABLE *st,const VOID *map,UINTN map_size
     kernel->load_address=load_address;kernel->image_size=image_size;kernel->entry_point=entry;at=value+32;
     value=append_tlv(at,NOVA_BIB_TLV_SECURITY,NOVA_BIB_TLV_FLAG_REQUIRED,16);nova_bib_security_t *security=(nova_bib_security_t *)value;
     security->verification_state=verification_state;
-    security->flags=NOVA_BOOT_SECURITY_ELF_BUILD_ID_VALID|(nki_container?NOVA_BOOT_SECURITY_NKI_CRC32_VALID:0u);
+    security->flags=NOVA_BOOT_SECURITY_ELF_BUILD_ID_VALID|(nki_container?NOVA_BOOT_SECURITY_NKI_CRC32_VALID:0u)|
+                   (verification_state>=NOVA_BOOT_VERIFICATION_SIGNATURE_VERIFIED?NOVA_BOOT_SECURITY_SIGNATURE_PRESENT:0u);
     security->secure_boot_state=current_secure_boot_state(&security->flags);
     security->entropy_quality=1;at=value+16;
     value=append_tlv(at,NOVA_BIB_TLV_BOOT_OPTIONS,NOVA_BIB_TLV_FLAG_REQUIRED,16);
@@ -804,9 +909,9 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
         }
     }
     uint32_t entry=0,load_address=KERNEL_ADDRESS,image_size=0;uint8_t build_id[20];bytes_zero(build_id,sizeof(build_id));
-    bool loaded=false;
+    bool loaded=false;bool sig_verified=false;
     if(!EFI_ERROR(status)){
-        if(nki_container)loaded=load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
+        if(nki_container)loaded=load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id,&sig_verified);
         else if(kernel_format==NOVA_KERNEL_FORMAT_ELF32)loaded=load_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
         else loaded=load_elf64(st->BootServices,file,size,&entry,&load_address,&image_size,build_id);
     }
@@ -829,7 +934,7 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
             (requested_slot==NOVA_BOOT_GENERATION_PRIMARY?NOVA_BOOT_GENERATION_BACKUP:NOVA_BOOT_GENERATION_PRIMARY);
         CHAR16 *fallback_path=fallback_slot==NOVA_BOOT_GENERATION_BACKUP?backup_nki_path:nki_path;
         status=read_kernel_file(image_handle,st,fallback_path,&file,&size);
-        if(!EFI_ERROR(status))loaded=load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
+        if(!EFI_ERROR(status))loaded=load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id,&sig_verified);
         if(loaded){automatic_rollback=true;selected_generation=fallback_slot;fallback_level=1;}
         else{
             if(file)st->BootServices->FreePool(file);
@@ -843,7 +948,7 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
         entry=0;load_address=KERNEL_ADDRESS;image_size=0;bytes_zero(build_id,sizeof(build_id));
         architecture=NOVA_BOOT_ARCH_X86_32;kernel_format=NOVA_KERNEL_FORMAT_ELF32;
         status=read_kernel_file(image_handle,st,recovery_nki_path,&file,&size);
-        if(!EFI_ERROR(status))loaded=load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id);
+        if(!EFI_ERROR(status))loaded=load_nki_elf32(st->BootServices,file,size,&entry,&image_size,build_id,&sig_verified);
     }
     if(!loaded){
         if(file)st->BootServices->FreePool(file);
@@ -858,8 +963,10 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
         else nova_debug_string("UEFI:BOOT-CONTROL-CANDIDATE-ATTEMPT\n");
     }
     if(EFI_ERROR(allocate_fixed(st->BootServices,BIB_ADDRESS,2))){nova_debug_string("UEFI:BIB-MEMORY-ERROR\n");return 1;}
-    uint32_t verification_state=nki_container?NOVA_BOOT_VERIFICATION_INTEGRITY_VERIFIED:
-                                              NOVA_BOOT_VERIFICATION_STRUCTURE_VALIDATED;
+    /* §108: Verifikationsstufe haengt davon ab, ob DevSign erfolgreich war */
+    uint32_t verification_state=sig_verified?NOVA_BOOT_VERIFICATION_SIGNATURE_VERIFIED:
+                                (nki_container?NOVA_BOOT_VERIFICATION_INTEGRITY_VERIFIED:
+                                               NOVA_BOOT_VERIFICATION_STRUCTURE_VALIDATED);
     uint32_t stack_top=0;
     if(!allocate_kernel_stack(st->BootServices,&stack_top)){nova_debug_string("UEFI:KERNEL-STACK-MEMORY-ERROR\n");return 1;}
     st->BootServices->FreePool(file);
@@ -879,9 +986,15 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     }else if(nki_container)nova_debug_string("UEFI:NKI-VALIDATED\n");
     else nova_debug_string(kernel_format==NOVA_KERNEL_FORMAT_ELF32?"UEFI:ELF32-DIRECT-VALIDATED\n":"UEFI:ELF64-DIRECT-VALIDATED\n");
     nova_debug_string(nki_container?"UEFI:KERNEL-INTEGRITY-VERIFIED\n":"UEFI:KERNEL-STRUCTURE-VALIDATED\n");
-    nova_debug_string("UEFI:KERNEL-SIGNATURE-NOT-PRESENT\n");
+    /* §108: Signaturmeldung nur ausgeben wenn kein DevSign verifiziert */
+    if(sig_verified){
+        nova_debug_string("UEFI:KERNEL-DEVSIGN-VERIFIED\n");
+        boot_log_add(NOVA_BOOT_LOG_INFO,"KERNEL DEVSIGN SIGNATURE VERIFIED");
+    }else{
+        nova_debug_string("UEFI:KERNEL-SIGNATURE-NOT-PRESENT\n");
+        boot_log_add(NOVA_BOOT_LOG_WARN,"KERNEL SIGNATURE NOT PRESENT");
+    }
     boot_log_add(NOVA_BOOT_LOG_INFO,nki_container?"NKI KERNEL IMAGE VALIDATED":"ELF KERNEL IMAGE VALIDATED");
-    boot_log_add(NOVA_BOOT_LOG_WARN,"KERNEL SIGNATURE NOT PRESENT");
     boot_set_progress(450);
     boot_refresh_boot_status(image_handle,st);
     boot_view_switch_window(image_handle,st,24);

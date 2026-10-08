@@ -58,6 +58,7 @@ NKI_MAGIC_HIGH             equ 0x00494B4E ; "NKI\0"
 NKI_VERSION                equ 1
 NKI_ARCH_X86_32            equ 1
 NKI_COMPRESSION_NONE       equ 0
+NKI_COMPRESSION_LZ4        equ 1
 
 NKI_OFF_MAGIC_LOW          equ 0
 NKI_OFF_MAGIC_HIGH         equ 4

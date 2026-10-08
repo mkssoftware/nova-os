@@ -3,7 +3,10 @@ param(
     [string]$InputFile,
 
     [Parameter(Mandatory = $true)]
-    [string]$OutputFile
+    [string]$OutputFile,
+
+    # §113: LZ4-Blockformat-Kompression (Literal-Only, kein echter Back-Reference-Kompressor)
+    [switch]$Compress
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,33 +38,63 @@ function Get-Crc32 {
     return [uint32]($crc -bxor [uint32]::MaxValue)
 }
 
+# §113: LZ4-Block-Kompressor (Literal-Only — gültiges LZ4-Blockformat, kein Back-Reference-Kompressor)
+# Payload-Layout bei -Compress: [0..3] uncompressed_size LE + [4..] LZ4-Block-Daten
+function Compress-Lz4Block([byte[]]$data) {
+    $n = $data.Length
+    $out = [Collections.Generic.List[byte]]::new()
+    # Literal-Extension-Präfix: gesamte Daten als eine einzige Sequenz ohne Match
+    $litNibble = [Math]::Min($n, 15)
+    $out.Add([byte]($litNibble -shl 4))   # Token: lit_nibble | match_nibble=0
+    if ($n -ge 15) {
+        $rem = $n - 15
+        while ($rem -ge 255) { $out.Add([byte]255); $rem -= 255 }
+        $out.Add([byte]$rem)
+    }
+    foreach ($b in $data) { $out.Add($b) }
+    return $out.ToArray()
+}
+
+$elfPayload = $payload   # Original-ELF für Build-ID-Extraktion behalten
+
+$compressionId = [uint32]0   # NOVA_NKI_COMPRESSION_NONE
+if ($Compress) {
+    $lz4Block  = Compress-Lz4Block -data $payload
+    $sizePrefix = [BitConverter]::GetBytes([uint32]$payload.Length)
+    $compressed = [byte[]]::new(4 + $lz4Block.Length)
+    [Array]::Copy($sizePrefix, 0, $compressed, 0, 4)
+    [Array]::Copy($lz4Block,   0, $compressed, 4, $lz4Block.Length)
+    $payload = $compressed
+    $compressionId = [uint32]1   # NOVA_NKI_COMPRESSION_LZ4
+}
+
 $crc32 = Get-Crc32 -Data $payload
 function Get-U16([byte[]]$Data, [int]$Offset) { return [BitConverter]::ToUInt16($Data, $Offset) }
 function Get-U32([byte[]]$Data, [int]$Offset) { return [BitConverter]::ToUInt32($Data, $Offset) }
 
 $buildId = $null
-if ($payload.Length -ge 52 -and (Get-U32 $payload 0) -eq 0x464C457F) {
-    $phoff = Get-U32 $payload 28
-    $phentsize = Get-U16 $payload 42
-    $phnum = Get-U16 $payload 44
+if ($elfPayload.Length -ge 52 -and (Get-U32 $elfPayload 0) -eq 0x464C457F) {
+    $phoff = Get-U32 $elfPayload 28
+    $phentsize = Get-U16 $elfPayload 42
+    $phnum = Get-U16 $elfPayload 44
     for ($index = 0; $index -lt $phnum; $index++) {
         $ph = $phoff + ($index * $phentsize)
-        if (($ph + 32) -gt $payload.Length) { break }
-        if ((Get-U32 $payload $ph) -ne 4) { continue }
-        $note = Get-U32 $payload ($ph + 4)
-        $noteEnd = $note + (Get-U32 $payload ($ph + 16))
-        while (($note + 12) -le $noteEnd -and $noteEnd -le $payload.Length) {
-            $nameSize = Get-U32 $payload $note
-            $descSize = Get-U32 $payload ($note + 4)
-            $noteType = Get-U32 $payload ($note + 8)
+        if (($ph + 32) -gt $elfPayload.Length) { break }
+        if ((Get-U32 $elfPayload $ph) -ne 4) { continue }
+        $note = Get-U32 $elfPayload ($ph + 4)
+        $noteEnd = $note + (Get-U32 $elfPayload ($ph + 16))
+        while (($note + 12) -le $noteEnd -and $noteEnd -le $elfPayload.Length) {
+            $nameSize = Get-U32 $elfPayload $note
+            $descSize = Get-U32 $elfPayload ($note + 4)
+            $noteType = Get-U32 $elfPayload ($note + 8)
             $namePadded = ($nameSize + 3) -band -4
             $descPadded = ($descSize + 3) -band -4
             $next = $note + 12 + $namePadded + $descPadded
             if ($next -gt $noteEnd) { break }
             if ($noteType -eq 3 -and $nameSize -eq 4 -and $descSize -ge 16 -and
-                [Text.Encoding]::ASCII.GetString($payload, $note + 12, 3) -eq 'GNU') {
+                [Text.Encoding]::ASCII.GetString($elfPayload, $note + 12, 3) -eq 'GNU') {
                 $start = $note + 12 + $namePadded
-                $buildId = $payload[$start..($start + 15)]
+                $buildId = $elfPayload[$start..($start + 15)]
                 break
             }
             $note = $next
@@ -78,26 +111,55 @@ if ($outputDirectory -and -not (Test-Path -LiteralPath $outputDirectory)) {
     New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 }
 
+# §108 NKI v2: DevSign-Block (64 Bytes) nach Payload anfügen
+# dev_mac = payload_crc32 XOR "NOVD" (0x4E4F5644) — Phase-1-Platzhalter, kein echter Krypto
+$sigSize      = [uint32]64
+$devsignMagic = [byte[]][Text.Encoding]::ASCII.GetBytes("NKTS")
+$devsignScheme      = [byte]1         # NOVA_NKI_SCHEME_DEVSIGN
+$devsignFlags       = [byte]0
+$devsignReserved    = [byte[]]@(0, 0)
+$devsignKeyId       = [uint32]0x44455601   # NOVA_NKI_DEVSIGN_KEY_ID  "DEV\x01"
+$devsignRevGen      = [uint32]0            # Revocation-Generation 0 = aktuell
+$devMac             = [uint32]($crc32 -bxor [uint32]0x4E4F5644)
+# sig_data: dev_mac[4] dann 28 Null-Bytes
+$sigData = [byte[]]::new(32)
+$devMacBytes = [BitConverter]::GetBytes($devMac)
+[Array]::Copy($devMacBytes, 0, $sigData, 0, 4)
+# build_id (16 Bytes) — Spiegel des NKI-Header-Feldes
+$sigBuildId = [byte[]]$buildId
+
 $stream = [IO.File]::Open($OutputFile, [IO.FileMode]::Create, [IO.FileAccess]::Write)
 $writer = [IO.BinaryWriter]::new($stream)
 try {
+    # NKI v2 Header (64 Bytes)
     $writer.Write([Text.Encoding]::ASCII.GetBytes("NOVANKI"))
     $writer.Write([byte]0)
-    $writer.Write([uint32]1)                  # Formatversion
+    $writer.Write([uint32]2)                  # Formatversion 2
     $writer.Write([uint32]$headerSize)
     $writer.Write([uint32]1)                  # x86-32
     $writer.Write([uint32]3)                  # Build-ID und Nova-Metadaten verbindlich
     $writer.Write($entryPoint)
     $writer.Write($entryPoint)
     $writer.Write([uint32]$payload.Length)
-    $writer.Write([uint32]0)                  # keine Kompression
+    $writer.Write($compressionId)             # §113: 0=keine Kompression, 1=LZ4
     $writer.Write($crc32)
     $writer.Write([byte[]]$buildId)
-    $writer.Write([uint32]0)                  # reserviert
+    $writer.Write($sigSize)                   # v2: sig_size = 64 (DevSign-Block)
+    # ELF-Payload
     $writer.Write($payload)
+    # DevSign-Block (64 Bytes) — NKTS-Signaturcontainer
+    $writer.Write($devsignMagic)              # "NKTS" [4]
+    $writer.Write($devsignScheme)             # scheme=1 [1]
+    $writer.Write($devsignFlags)              # sig_flags=0 [1]
+    $writer.Write($devsignReserved)           # reserved[2]
+    $writer.Write($devsignKeyId)              # key_id "DEV\x01" [4]
+    $writer.Write($devsignRevGen)             # revocation_gen=0 [4]
+    $writer.Write($sigData)                   # sig_data[32]: dev_mac[4] + zeros[28]
+    $writer.Write($sigBuildId)                # build_id[16]
 } finally {
     $writer.Dispose()
     $stream.Dispose()
 }
 
-Write-Host ("NKI v1: {0} Bytes Payload, CRC32 {1:X8}" -f $payload.Length, $crc32)
+$compressLabel = if ($Compress) { "LZ4-komprimiert, unkomprimiert=$($elfPayload.Length)" } else { "unkomprimiert" }
+Write-Host ("NKI v2: {0} Bytes Payload ({1}), CRC32 {2:X8}, DevSign dev_mac={3:X8}" -f $payload.Length, $compressLabel, $crc32, $devMac)
