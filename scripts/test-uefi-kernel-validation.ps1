@@ -270,10 +270,10 @@ try {
             'NOVA_KERNEL_READY'
         )
 
-        # Negativfall: NKI v2 mit compression=3 (unbekannt) muss abgelehnt werden
-        # NKI-Header: compression liegt bei Offset 36; Wert 3 ist nach §113/§114 nicht definiert
+        # Negativfall: NKI v2 mit compression=255 (dauerhaft unbekannt) muss abgelehnt werden
+        # NKI-Header: compression liegt bei Offset 36; 0xFF ist kein definierter Kompressions-ID
         $badCompNki=[IO.Path]::Combine($tempDir,'nki-v2-bad-compression.nki')
-        Write-PatchedU32 $lz4Nki $badCompNki 36 3
+        Write-PatchedU32 $lz4Nki $badCompNki 36 255
         $badCompImage=[IO.Path]::Combine($tempDir,'bad-nki-v2-compression.img')
         & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $badCompNki -KernelElf $Elf32 -OutputImage $badCompImage | Out-Null
         Invoke-ValidationCase 'bad-nki-v2-unknown-compression' $badCompImage 'UEFI:ELF32-DIRECT-VALIDATED'
@@ -298,6 +298,39 @@ try {
         $zstdAsLz4Image=[IO.Path]::Combine($tempDir,'bad-nki-v2-zstd-as-lz4.img')
         & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $zstdAsLz4Nki -KernelElf $Elf32 -OutputImage $zstdAsLz4Image | Out-Null
         Invoke-ValidationCase 'bad-nki-v2-zstd-as-lz4' $zstdAsLz4Image 'UEFI:ELF32-DIRECT-VALIDATED'
+
+        # §115 GZIP-Kompression: Testfälle
+        # Positivfall: GZIP-komprimiertes NKI v2 muss erfolgreich dekomprimiert und geladen werden
+        $gzipNki=[IO.Path]::Combine($tempDir,'nki-v2-gzip.nki')
+        & $NkiBuilder -InputFile $Elf32 -OutputFile $gzipNki -CompressGzip | Out-Null
+        $gzipImage=[IO.Path]::Combine($tempDir,'nki-v2-gzip.img')
+        & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $gzipNki -KernelElf $Elf32 -OutputImage $gzipImage | Out-Null
+        Invoke-SuccessCase 'nki-v2-gzip-valid' $gzipImage @(
+            'UEFI:KERNEL-GZIP-DECOMPRESSED',
+            'UEFI:KERNEL-DEVSIGN-VERIFIED',
+            'UEFI:KERNEL-HANDOFF-READY',
+            'NOVA_KERNEL_READY'
+        )
+
+        # Negativfall: GZIP-komprimiertes NKI v2 mit falschem compression-Feld (2=ZSTD)
+        # ZSTD-Decompressor versucht GZIP-Frame als ZSTD-Frame zu parsen und schlaegt fehl
+        $gzipAsZstdNki=[IO.Path]::Combine($tempDir,'nki-v2-gzip-as-zstd.nki')
+        Write-PatchedU32 $gzipNki $gzipAsZstdNki 36 2
+        $gzipAsZstdImage=[IO.Path]::Combine($tempDir,'bad-nki-v2-gzip-as-zstd.img')
+        & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $gzipAsZstdNki -KernelElf $Elf32 -OutputImage $gzipAsZstdImage | Out-Null
+        Invoke-ValidationCase 'bad-nki-v2-gzip-as-zstd' $gzipAsZstdImage 'UEFI:ELF32-DIRECT-VALIDATED'
+
+        # §116: NKI v2 mit echtem GZIP-DEFLATE (BTYPE=10 Dynamic-Huffman via .NET GZipStream)
+        $gzipRealNki=[IO.Path]::Combine($tempDir,'nki-v2-gzip-real.nki')
+        & $NkiBuilder -InputFile $Elf32 -OutputFile $gzipRealNki -CompressGzipReal | Out-Null
+        $gzipRealImage=[IO.Path]::Combine($tempDir,'nki-v2-gzip-real.img')
+        & $ImageBuilder -EfiApplication $EfiApplication -KernelImage $gzipRealNki -KernelElf $Elf32 -OutputImage $gzipRealImage | Out-Null
+        Invoke-SuccessCase 'nki-v2-gzip-dyn-valid' $gzipRealImage @(
+            'UEFI:KERNEL-GZIP-DECOMPRESSED',
+            'UEFI:KERNEL-DEVSIGN-VERIFIED',
+            'UEFI:KERNEL-HANDOFF-READY',
+            'NOVA_KERNEL_READY'
+        )
     }
 } finally {
     $env:TMP=$oldTmp;$env:TEMP=$oldTemp

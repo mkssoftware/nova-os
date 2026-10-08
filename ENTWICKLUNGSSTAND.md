@@ -532,7 +532,8 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
 
 - ~~LZ4-Dekompression für Kernelabbilder~~ (§113: LZ4-Block-Decompressor in `kernel_loader.c`, `build-nki.ps1 -Compress`, zwei Testfälle in `test-uefi-kernel-validation.ps1`)
 - ~~ZSTD-Dekompression für Kernelabbilder~~ (§114: ZSTD-Frame-Decompressor in `kernel_loader.c`, `build-nki.ps1 -CompressZstd`, zwei Testfälle in `test-uefi-kernel-validation.ps1`)
-- GZIP-Dekompression für Kernelabbilder (folgt)
+- ~~GZIP-Dekompression für Kernelabbilder~~ (§115: `gzip_decompress` in `kernel_loader.c`, DEFLATE Stored + Fixed-Huffman, CRC32-Footer-Verifikation; `-CompressGzip` in `build-nki.ps1`)
+- ~~DEFLATE Dynamic-Huffman (BTYPE=10) für GZIP-Decompressor~~ (§116: `dht_t`/`dht_build`/`dht_decode`/`dht_fixed`/`dht_read_dynamic`/`dht_inflate_block` in `kernel_loader.c`; `-CompressGzipReal`/`Compress-GzipReal` in `build-nki.ps1`; `nki-v2-gzip-dyn-valid` Testfall in `test-uefi-kernel-validation.ps1`)
 - kryptografischer Kernelsignaturcontainer, Schlüssel-/Revocation-Policy und
   vollständige NovaOS-Trustentscheidung; der UEFI-Secure-Boot- und
   Integritätszustand wird bereits getrennt in den BIB übertragen

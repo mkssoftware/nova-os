@@ -731,6 +731,149 @@ static uint32_t zstd_decompress(const uint8_t *src,uint32_t src_len,
     return written;
 }
 
+/* §115: GZIP-Frame-Decompressor (DEFLATE Stored und Fixed-Huffman-Bloecke; RFC 1952/1951).
+   Payload-Layout bei compression=GZIP: [0..3] uncompressed_size LE, [4..] GZIP-Frame.
+   Gibt die Anzahl geschriebener Bytes zurueck oder 0 bei Fehler. */
+typedef struct{const uint8_t*src;uint32_t len,pos,buf,nbits;}deflate_bits_t;
+static void dbits_fill(deflate_bits_t*b){while(b->nbits<=24u&&b->pos<b->len){b->buf|=(uint32_t)b->src[b->pos++]<<b->nbits;b->nbits+=8u;}}
+static uint32_t dbits_read(deflate_bits_t*b,uint32_t n){dbits_fill(b);uint32_t v=b->buf&((1u<<n)-1u);b->buf>>=n;b->nbits-=n;return v;}
+/* §116: Kanonischer Huffman-Dekodierer (RFC 1951) fuer Fixed- und Dynamic-Huffman-Bloecke.
+   Ersetzt die alte fixed_lit/fixed_dst-Implementierung aus §115. */
+#define DHT_MAX_BITS 15u
+#define DHT_MAX_SYMS 288u
+typedef struct{uint16_t count[DHT_MAX_BITS+1u];uint16_t first[DHT_MAX_BITS+1u];uint16_t sym[DHT_MAX_SYMS];uint16_t nsyms;}dht_t;
+/* Baut kanonischen Huffman-Baum aus Codelaengen-Array. lens[i]=0: Symbol i nicht verwendet. */
+static bool dht_build(dht_t*t,const uint8_t*lens,uint16_t nsyms){
+    uint16_t start[DHT_MAX_BITS+1u],pos[DHT_MAX_BITS+1u];
+    for(uint32_t i=0;i<=DHT_MAX_BITS;++i){t->count[i]=0;t->first[i]=0;pos[i]=0;}
+    t->nsyms=nsyms;
+    for(uint16_t i=0;i<nsyms;++i)if(lens[i]&&lens[i]<=DHT_MAX_BITS)t->count[lens[i]]++;
+    uint32_t code=0;
+    for(uint32_t len=1;len<=DHT_MAX_BITS;++len){t->first[len]=(uint16_t)code;code=(code+t->count[len])<<1;}
+    uint16_t off=0;
+    for(uint32_t i=0;i<=DHT_MAX_BITS;++i){start[i]=off;off=(uint16_t)(off+t->count[i]);}
+    for(uint16_t i=0;i<nsyms;++i){uint8_t len=lens[i];if(len&&len<=DHT_MAX_BITS)t->sym[start[len]+pos[len]++]=i;}
+    return true;
+}
+/* Dekodiert naechstes Symbol (LSB-first Strom, kanonische MSB-first Codes). */
+static int dht_decode(const dht_t*t,deflate_bits_t*b){
+    dbits_fill(b);uint32_t code=0;uint16_t off=0;
+    for(uint32_t len=1;len<=DHT_MAX_BITS;++len){
+        if(b->nbits<len)return -1;
+        code=(code<<1u)|((b->buf>>(len-1u))&1u);
+        if(t->count[len]&&code>=(uint32_t)t->first[len]&&code<(uint32_t)t->first[len]+(uint32_t)t->count[len]){
+            b->buf>>=len;b->nbits-=len;
+            return (int)t->sym[off+(uint16_t)(code-t->first[len])];
+        }
+        off=(uint16_t)(off+t->count[len]);dbits_fill(b);
+    }
+    return -1;
+}
+/* Baut Fixed-Huffman-Baeume gemaess RFC 1951 §3.2.6. */
+static void dht_fixed(dht_t*lt,dht_t*dt){
+    uint8_t ll[288];
+    for(int i=  0;i<=143;++i)ll[i]=8;
+    for(int i=144;i<=255;++i)ll[i]=9;
+    for(int i=256;i<=279;++i)ll[i]=7;
+    for(int i=280;i<=287;++i)ll[i]=8;
+    dht_build(lt,ll,288);
+    uint8_t dl[30];for(int i=0;i<30;++i)dl[i]=5;dht_build(dt,dl,30);
+}
+/* Liest Dynamic-Huffman-Baeume aus dem Bitstrom (RFC 1951 §3.2.7). */
+static bool dht_read_dynamic(deflate_bits_t*b,dht_t*lt,dht_t*dt){
+    dbits_fill(b);if(b->nbits<14u)return false;
+    uint32_t hlit=dbits_read(b,5u)+257u;
+    uint32_t hdist=dbits_read(b,5u)+1u;
+    uint32_t hclen=dbits_read(b,4u)+4u;
+    if(hlit>286u||hdist>30u||hclen>19u)return false;
+    static const uint8_t cl_order[19]={16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15};
+    uint8_t cl_lens[19];for(uint32_t i=0;i<19u;++i)cl_lens[i]=0;
+    for(uint32_t i=0;i<hclen;++i){dbits_fill(b);if(b->nbits<3u)return false;cl_lens[cl_order[i]]=(uint8_t)dbits_read(b,3u);}
+    dht_t ct;dht_build(&ct,cl_lens,19);
+    uint8_t lens[288u+30u];uint32_t total=hlit+hdist,idx=0;uint8_t prev=0;
+    while(idx<total){
+        int sym=dht_decode(&ct,b);if(sym<0)return false;
+        if(sym<16){lens[idx++]=(uint8_t)sym;prev=(uint8_t)sym;}
+        else if(sym==16){dbits_fill(b);if(b->nbits<2u)return false;uint32_t rep=dbits_read(b,2u)+3u;if(idx+rep>total)return false;for(uint32_t j=0;j<rep;++j)lens[idx++]=prev;}
+        else if(sym==17){dbits_fill(b);if(b->nbits<3u)return false;uint32_t rep=dbits_read(b,3u)+3u;if(idx+rep>total)return false;for(uint32_t j=0;j<rep;++j)lens[idx++]=0;prev=0;}
+        else{dbits_fill(b);if(b->nbits<7u)return false;uint32_t rep=dbits_read(b,7u)+11u;if(idx+rep>total)return false;for(uint32_t j=0;j<rep;++j)lens[idx++]=0;prev=0;}
+    }
+    dht_build(lt,lens,(uint16_t)hlit);dht_build(dt,lens+hlit,(uint16_t)hdist);return true;
+}
+/* Schreibt Literal/Laengen+Distanz-Inhalt eines Huffman-Blocks in dst. */
+static bool dht_inflate_block(deflate_bits_t*b,const dht_t*lt,const dht_t*dt,uint8_t*dst,uint32_t cap,uint32_t*wr){
+    for(;;){
+        int sym=dht_decode(lt,b);if(sym<0)return false;
+        if(sym<256){if(*wr>=cap)return false;dst[(*wr)++]=(uint8_t)sym;}
+        else if(sym==256){break;}
+        else{uint32_t li=(uint32_t)sym-257u;if(li>=29u)return false;
+            dbits_fill(b);uint32_t length=g_lb[li]+dbits_read(b,g_le[li]);
+            int di=dht_decode(dt,b);if(di<0||di>=30)return false;
+            dbits_fill(b);uint32_t dist=g_db[di]+dbits_read(b,g_de[di]);
+            if(dist>*wr||*wr+length>cap)return false;
+            const uint8_t*m=dst+*wr-dist;for(uint32_t j=0;j<length;++j)dst[(*wr)++]=m[j];
+        }
+    }
+    return true;
+}
+/* RFC 1951 Laengen- und Distanztabellen (shared fuer Fixed- und Dynamic-Huffman) */
+static const uint8_t  g_le[29]={0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0};
+static const uint16_t g_lb[29]={3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258};
+static const uint8_t  g_de[30]={0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13};
+static const uint16_t g_db[30]={1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,
+                                  1025,1537,2049,3073,4097,6145,8193,12289,16385,24577};
+static uint32_t gzip_decompress(const uint8_t*src,uint32_t src_len,uint8_t*dst,uint32_t dst_cap){
+    if(src_len<18u)return 0;
+    if(src[0]!=0x1Fu||src[1]!=0x8Bu||src[2]!=8u)return 0;   /* GZIP Magic + CM=DEFLATE */
+    uint8_t flg=src[3];uint32_t p=10u;                        /* Fester 10-Byte-Header */
+    if(flg&0x04u){                                            /* FEXTRA: xlen + xlen Bytes ueberspringen */
+        if(p+2u>src_len)return 0;
+        uint32_t xlen=(uint32_t)src[p]|(uint32_t)src[p+1u]<<8;p+=2u;
+        if(p+xlen>src_len)return 0;p+=xlen;
+    }
+    if(flg&0x08u){while(p<src_len&&src[p])++p;if(p>=src_len)return 0;++p;}  /* FNAME */
+    if(flg&0x10u){while(p<src_len&&src[p])++p;if(p>=src_len)return 0;++p;}  /* FCOMMENT */
+    if(flg&0x02u){p+=2u;}                                     /* FHCRC: 2 Bytes */
+    if(p+8u>src_len)return 0;
+    /* DEFLATE-Stream: [p .. src_len-8), Footer: [src_len-8 .. src_len) */
+    uint32_t dlen=src_len-8u-p;
+    deflate_bits_t b={src+p,dlen,0,0,0};
+    uint32_t written=0u;
+    for(;;){
+        uint32_t bfinal=dbits_read(&b,1u);
+        uint32_t btype =dbits_read(&b,2u);
+        if(btype==0u){                                        /* BTYPE=00: Stored Block */
+            /* Bit-Puffer auf naechste Byte-Grenze ausrichten */
+            uint32_t skip=b.nbits&7u;b.buf>>=skip;b.nbits-=skip;
+            /* Byte-Position rekonstruieren: gepufferte Bytes zurueckrechnen */
+            uint32_t bp=b.pos-b.nbits/8u;b.buf=0;b.nbits=0;b.pos=bp;
+            if(bp+4u>dlen)return 0;
+            uint32_t bl=(uint32_t)b.src[bp]|(uint32_t)b.src[bp+1u]<<8;
+            uint32_t nl=(uint32_t)b.src[bp+2u]|(uint32_t)b.src[bp+3u]<<8;
+            if((bl^nl)!=0xFFFFu)return 0;
+            bp+=4u;if(bp+bl>dlen)return 0;
+            if(written+bl>dst_cap)return 0;
+            for(uint32_t i=0;i<bl;++i)dst[written++]=b.src[bp+i];
+            bp+=bl;b.pos=bp;
+        } else if(btype==1u||btype==2u){                     /* §116: BTYPE=01: Fixed-Huffman, BTYPE=10: Dynamic-Huffman */
+            static dht_t lt,dt;
+            if(btype==1u){dht_fixed(&lt,&dt);}
+            else{if(!dht_read_dynamic(&b,&lt,&dt))return 0;}
+            if(!dht_inflate_block(&b,&lt,&dt,dst,dst_cap,&written))return 0;
+        } else {return 0;}                                    /* BTYPE=11: reserviert */
+        if(bfinal)break;
+    }
+    /* GZIP-Footer: CRC32 (4 Bytes LE) + ISIZE (4 Bytes LE) */
+    const uint8_t*ft=src+src_len-8u;
+    uint32_t sc=(uint32_t)ft[0]|(uint32_t)ft[1]<<8|(uint32_t)ft[2]<<16|(uint32_t)ft[3]<<24;
+    uint32_t si=(uint32_t)ft[4]|(uint32_t)ft[5]<<8|(uint32_t)ft[6]<<16|(uint32_t)ft[7]<<24;
+    if(si!=written)return 0;
+    uint32_t crc=0xFFFFFFFFu;
+    for(uint32_t i=0;i<written;++i){crc^=dst[i];for(uint32_t j=0;j<8u;++j)crc=(crc>>1)^((crc&1u)?0xEDB88320u:0u);}
+    if((crc^0xFFFFFFFFu)!=sc)return 0;
+    return written;
+}
+
 /* §108: load_nki_elf32 akzeptiert NKI v1 und v2.
    Bei v2 mit sig_size==64: DevSign-Block (NKTS) nach Payload pruefen.
    *sig_verified=true wenn DevSign korrekt, sonst false. */
@@ -749,7 +892,8 @@ static bool load_nki_elf32(EFI_BOOT_SERVICES *bs,const uint8_t *file,UINTN size,
        (nki->flags&3u)!=3u||
        (nki->compression!=NOVA_NKI_COMPRESSION_NONE&&
         nki->compression!=NOVA_NKI_COMPRESSION_LZ4&&
-        nki->compression!=NOVA_NKI_COMPRESSION_ZSTD))return false;
+        nki->compression!=NOVA_NKI_COMPRESSION_ZSTD&&
+        nki->compression!=NOVA_NKI_COMPRESSION_GZIP))return false;
     /* v1: sig_size muss 0 sein; v2: 0 oder NOVA_NKI_SIG_SIZE_DEVSIGN */
     if(nki->version==NOVA_NKI_VERSION&&nki->sig_size!=0)return false;
     if(nki->version==NOVA_NKI_VERSION_2&&
@@ -800,6 +944,26 @@ static bool load_nki_elf32(EFI_BOOT_SERVICES *bs,const uint8_t *file,UINTN size,
         payload=decompressed_buf;
         decompressed_size=uncomp_size;
         nova_debug_string("UEFI:KERNEL-ZSTD-DECOMPRESSED\n");
+    }
+    /* §115: GZIP-Dekompression wenn compression==GZIP */
+    else if(nki->compression==NOVA_NKI_COMPRESSION_GZIP){
+        if(nki->image_size<5u)return false;
+        uint32_t uncomp_size=0;
+        bytes_copy(&uncomp_size,payload,4);
+        if(uncomp_size==0||uncomp_size>4u*1024u*1024u)return false;
+        typedef EFI_STATUS (EFIAPI *efi_allocate_pool_fn4)(uint32_t,UINTN,VOID **);
+        efi_allocate_pool_fn4 alloc_pool=(efi_allocate_pool_fn4)bs->AllocatePool;
+        if(EFI_ERROR(alloc_pool(EFI_LOADER_DATA,uncomp_size,(VOID **)&decompressed_buf)))return false;
+        uint32_t written=gzip_decompress(payload+4u,nki->image_size-4u,decompressed_buf,uncomp_size);
+        if(written!=uncomp_size){
+            typedef EFI_STATUS (EFIAPI *efi_free_pool_fn4)(VOID *);
+            efi_free_pool_fn4 free_pool=(efi_free_pool_fn4)bs->FreePool;
+            free_pool(decompressed_buf);
+            return false;
+        }
+        payload=decompressed_buf;
+        decompressed_size=uncomp_size;
+        nova_debug_string("UEFI:KERNEL-GZIP-DECOMPRESSED\n");
     }
     /* §108 DevSign-Verifikation fuer NKI v2 mit sig_size==64.
        Sig-Block liegt im Originalbild (file+64+image_size), nicht im Dekomprimierungs-Puffer. */

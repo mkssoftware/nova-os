@@ -4546,3 +4546,188 @@ Neue statische Funktion `zstd_decompress(src, src_len, dst, dst_cap)` direkt vor
 ### Debug-Marker
 
 - `UEFI:KERNEL-ZSTD-DECOMPRESSED` — ZSTD-Dekompression erfolgreich abgeschlossen
+
+---
+
+## Abschnitt 115 — GZIP-Dekompression für Kernelabbilder im UEFI-Bootloader
+
+**Betroffene Dateien:**
+- `boot/include/nova_boot_protocol.h`
+- `boot/bootloader/include/layout.inc`
+- `boot/bootloader/uefi/kernel_loader.c`
+- `scripts/build-nki.ps1`
+- `scripts/test-uefi-kernel-validation.ps1`
+
+### Überblick
+
+§115 ergänzt den dritten Kompressionstyp: GZIP-Frame-Format (RFC 1952) mit DEFLATE-Datenstrom (RFC 1951). GZIP ist der meistverbreitete Kompressionsstandard auf Unix/Linux-Systemen und wird von GRUB, systemd-boot und zahlreichen Build-Systemen nativ erzeugt. Die Unterstützung ermöglicht, Standard-GZIP-komprimierte Kernel direkt als NKI v2 zu verpacken.
+
+### GZIP-Frame-Format (RFC 1952)
+
+| Feld | Bytes | Wert |
+|---|---|---|
+| ID1, ID2 | 2 | 0x1F, 0x8B |
+| CM (Compression Method) | 1 | 8 (DEFLATE) |
+| FLG | 1 | Bitfeld: FTEXT(0), FHCRC(1), FEXTRA(2), FNAME(3), FCOMMENT(4) |
+| MTIME | 4 | Änderungszeitstempel (LE) |
+| XFL | 1 | Compressor-Flags |
+| OS | 1 | Betriebssystem-ID (0xFF = unbekannt) |
+| optionale Felder | variabel | FEXTRA, FNAME, FCOMMENT, FHCRC je nach FLG |
+| DEFLATE-Stream | variabel | LSB-first gepackte Blöcke |
+| CRC32 | 4 | CRC32 über unkomprimierte Daten (LE) |
+| ISIZE | 4 | Unkomprimierte Größe mod 2^32 (LE) |
+
+### DEFLATE-Bitstream (RFC 1951)
+
+DEFLATE packt Bits LSB-first aus Bytes. Jeder Block beginnt mit einem 3-Bit-Header:
+- Bit 0: BFINAL (1 = letzter Block)
+- Bits 1–2: BTYPE (00=Stored, 01=Fixed Huffman, 10=Dynamic Huffman, 11=Reserviert)
+
+**Implementierte Block-Typen:**
+- **BTYPE=00 (Stored):** Nach Byte-Ausrichtung folgen LEN (2 Bytes LE) + NLEN (=~LEN) + LEN Datenbytes
+- **BTYPE=01 (Fixed Huffman):** Literal/Längen-Symbole mit festen Huffman-Codes, Distanz-Symbole 5-Bit MSB-first
+
+**Fixed-Huffman Code-Ranges (RFC 1951 §3.2.6):**
+
+| Symbol-Bereich | Code-Länge | Code-Range (reversed) |
+|---|---|---|
+| 256–279 | 7 Bit | 0–23 |
+| 0–143 | 8 Bit | 48–191 |
+| 280–287 | 8 Bit | 192–199 |
+| 144–255 | 9 Bit | 400–511 |
+
+Da Huffman-Codes MSB-first innerhalb des LSB-first-Bitstreams kodiert sind, wird der Peek-Wert per `rev_bits()` gespiegelt, bevor er gegen die Code-Ranges geprüft wird.
+
+### Neue Konstanten
+
+| Konstante | Wert | Datei |
+|---|---|---|
+| `NOVA_NKI_COMPRESSION_GZIP` | 3 | `nova_boot_protocol.h` |
+| `NKI_COMPRESSION_GZIP` | 3 | `layout.inc` |
+
+### Änderungen in `kernel_loader.c`
+
+**Neue Hilfsfunktionen (vor `gzip_decompress`):**
+- `deflate_bits_t` — Bit-Reader-Struct: `{src, len, pos, buf, nbits}`
+- `dbits_fill()` — füllt `buf` bis zu 25 Bits auf (LSB-first, byte-weise)
+- `dbits_read(n)` — liest n Bits und gibt Wert zurück
+- `rev_bits(v, n)` — spiegelt n Bits (LSB↔MSB) für Huffman-Dekodierung
+- `fixed_lit()` — dekodiert Fixed-Huffman Literal/Längen-Symbol (7/8/9 Bit)
+- `fixed_dst()` — dekodiert Fixed-Huffman Distanz-Symbol (5 Bit MSB-first)
+- Statische Tabellen `g_le[29]`, `g_lb[29]`, `g_de[30]`, `g_db[30]` (RFC 1951)
+
+**`gzip_decompress(src, src_len, dst, dst_cap)`:**
+1. GZIP-Header-Validierung: Magic 0x1F/0x8B, CM=8
+2. FLG-Parsing: FEXTRA, FNAME, FCOMMENT, FHCRC überspringen
+3. DEFLATE-Blockschleife (BTYPE=00 Stored, BTYPE=01 Fixed Huffman)
+4. GZIP-Footer: CRC32 + ISIZE verifizieren
+
+**`load_nki_elf32`-Änderungen:**
+- Komprimierungsprüfung um `NOVA_NKI_COMPRESSION_GZIP` erweitert
+- Neues `else if`-Dekompressions-Segment mit `gzip_decompress(payload+4, image_size-4, buf, uncomp_size)`
+- Debug-Marker: `UEFI:KERNEL-GZIP-DECOMPRESSED`
+- Gleiche Pool-Alloc/Free-Pattern wie LZ4/ZSTD
+
+### Änderungen in `build-nki.ps1`
+
+- Neuer Parameter `-CompressGzip` (Switch)
+- Gegenseitige-Ausschluss-Prüfung auf alle drei Schalter erweitert
+- Neue Funktion `Compress-GzipStored`: erzeugt RFC-1952-konformen GZIP-Frame mit DEFLATE-Stored-Blöcken (kein eigentlicher Kompressor)
+
+**GZIP-Stored-Kompressor-Layout:**
+- 10-Byte GZIP-Header: Magic + CM=8 + FLG=0 + MTIME=0 + XFL=0 + OS=0xFF
+- DEFLATE Stored-Blöcke je ≤65535 Bytes: `BFINAL | 0x00, LEN(LE), ~LEN(LE), Daten`
+- GZIP-Footer: `Get-Crc32` + ISIZE
+
+### Testfälle
+
+| Testfall | Beschreibung | Erwartetes Ergebnis |
+|---|---|---|
+| `nki-v2-gzip-valid` | GZIP-komprimiertes NKI v2 mit DevSign | `UEFI:KERNEL-GZIP-DECOMPRESSED` + `UEFI:KERNEL-DEVSIGN-VERIFIED` + `NOVA_KERNEL_READY` |
+| `bad-nki-v2-gzip-as-zstd` | GZIP-Payload mit compression=2 (ZSTD) | ZSTD-Decompressor schlägt fehl → Fallback auf `UEFI:ELF32-DIRECT-VALIDATED` |
+
+**Anmerkung:** Der `bad-nki-v2-unknown-compression`-Test wurde von compression=3 auf compression=255 (0xFF) aktualisiert — permanent ungültig, kein zukünftiger Konflikt.
+
+### Debug-Marker
+
+- `UEFI:KERNEL-GZIP-DECOMPRESSED` — GZIP-Dekompression erfolgreich abgeschlossen
+
+---
+
+## §116 – DEFLATE Dynamic-Huffman (BTYPE=10) für GZIP-Decompressor
+
+**Ziel:** Vollständige RFC-1951-DEFLATE-Unterstützung im UEFI-GZIP-Decompressor. §115 implementierte Stored-Blöcke (BTYPE=00) und Fixed-Huffman (BTYPE=01). Echte GZIP-Kompressoren (z. B. .NET `GZipStream`, `gzip`-CLI) erzeugen ausschließlich BTYPE=10 (Dynamic-Huffman-Blöcke). §116 ergänzt die kanonische Huffman-Infrastruktur und vereinheitlicht Fixed- und Dynamic-Huffman-Verarbeitung.
+
+### Kanonischer Huffman-Algorithmus (RFC 1951 §3.2.2)
+
+DEFLATE-Huffman-Codes sind MSB-first kanonisch. Im LSB-first Bitstrom werden sie durch inkrementelle Bit-Extraktion dekodiert:
+
+```
+code = 0
+for len = 1..15:
+    code = (code << 1) | ((buf >> (len-1)) & 1)
+    if count[len] > 0 and code >= first[len] and code < first[len] + count[len]:
+        symbol = sym[offset[len] + (code - first[len])]
+        consume len bits
+        return symbol
+    offset += count[len]
+```
+
+`buf >> (len-1)` liest das Bit an Position `len-1`, sodass MSB-first aus dem LSB-first-Puffer rekonstruiert wird — ohne separaten `rev_bits`-Schritt.
+
+### Neue Datenstruktur: `dht_t`
+
+```c
+#define DHT_MAX_BITS 15u
+#define DHT_MAX_SYMS 288u
+typedef struct {
+    uint16_t count[DHT_MAX_BITS+1u];   // Anzahl Codes je Länge
+    uint16_t first[DHT_MAX_BITS+1u];   // erster kanonischer Code je Länge
+    uint16_t sym[DHT_MAX_SYMS];        // Symboltabelle (nach Länge sortiert)
+    uint16_t nsyms;                    // Gesamtzahl Symbole
+} dht_t;
+```
+
+### Neue Funktionen in `kernel_loader.c`
+
+| Funktion | Zweck |
+|---|---|
+| `dht_build(t, lens, nsyms)` | Baut kanonischen Huffman-Baum aus Codelängen-Array |
+| `dht_decode(t, b)` | Dekodiert nächstes Symbol aus LSB-first Bitstrom |
+| `dht_fixed(lt, dt)` | Initialisiert Fixed-Huffman-Bäume (RFC 1951 §3.2.6) |
+| `dht_read_dynamic(b, lt, dt)` | Liest Dynamic-Huffman-Bäume aus Bitstrom (RFC 1951 §3.2.7) |
+| `dht_inflate_block(b, lt, dt, dst, cap, wr)` | Schreibt Lit/Len+Dist-Inhalt eines Huffman-Blocks in `dst` |
+
+**`dht_read_dynamic`-Ablauf:**
+1. HLIT(5)+257 Literal/Längen-Symbole, HDIST(5)+1 Distanz-Symbole, HCLEN(4)+4 Code-Längen-Symbole
+2. Code-Längen-Alphabet in Reihenfolge `{16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15}` einlesen
+3. Code-Längen-Baum (`ct`) aufbauen und damit HLIT+HDIST Code-Längen dekodieren
+4. Run-Length-Codes: 16=Wiederholung prev (2+3 Bits), 17=Nullen (3+3 Bits), 18=Nullen (7+11 Bits)
+5. Literal/Längen-Baum (`lt`) und Distanz-Baum (`dt`) aus dekodiertem Array aufbauen
+
+**`gzip_decompress`-Änderung (BTYPE-Zweig):**
+```c
+} else if (btype == 1u || btype == 2u) {     /* §116: Fixed- oder Dynamic-Huffman */
+    static dht_t lt, dt;
+    if (btype == 1u) { dht_fixed(&lt, &dt); }
+    else             { if (!dht_read_dynamic(&b, &lt, &dt)) return 0; }
+    if (!dht_inflate_block(&b, &lt, &dt, dst, dst_cap, &written)) return 0;
+} else { return 0; }                          /* BTYPE=11: reserviert */
+```
+
+### Änderungen in `build-nki.ps1`
+
+- Neuer Parameter `-CompressGzipReal` (Switch)
+- Neue Funktion `Compress-GzipReal`: verwendet .NET `GZipStream` mit `CompressionLevel::Optimal` → erzeugt echte BTYPE=10 Dynamic-Huffman-Blöcke
+- Gegenseitige-Ausschluss-Prüfung auf alle vier Schalter erweitert
+- `$compressLabel` unterscheidet `GZIP-Stored-komprimiert` von `GZIP-DEFLATE-komprimiert`
+
+### Testfall
+
+| Testfall | Beschreibung | Erwartetes Ergebnis |
+|---|---|---|
+| `nki-v2-gzip-dyn-valid` | NKI v2 mit echtem GZIP-DEFLATE (BTYPE=10 via .NET GZipStream) | `UEFI:KERNEL-GZIP-DECOMPRESSED` + `UEFI:KERNEL-DEVSIGN-VERIFIED` + `UEFI:KERNEL-HANDOFF-READY` + `NOVA_KERNEL_READY` |
+
+### Debug-Marker
+
+- `UEFI:KERNEL-GZIP-DECOMPRESSED` — gilt für BTYPE=00/01/10 (unveränderter Marker aus §115)

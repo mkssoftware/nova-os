@@ -9,12 +9,19 @@ param(
     [switch]$Compress,
 
     # §114: ZSTD-Frame-Kompression (Raw-Block-Only, kein Huffman/FSE-Kompressor)
-    [switch]$CompressZstd
+    [switch]$CompressZstd,
+
+    # §115: GZIP-Frame-Kompression (DEFLATE Stored-Blocks, kein eigentlicher Kompressor)
+    [switch]$CompressGzip,
+
+    # §116: GZIP-Frame-Kompression mit echtem DEFLATE-Kompressor (.NET GZipStream, erzeugt BTYPE=10)
+    [switch]$CompressGzipReal
 )
 
 $ErrorActionPreference = 'Stop'
-if ($Compress -and $CompressZstd) {
-    throw 'Die Schalter -Compress (LZ4) und -CompressZstd (ZSTD) schliessen sich gegenseitig aus.'
+$compressionSwitches = @($Compress.IsPresent, $CompressZstd.IsPresent, $CompressGzip.IsPresent, $CompressGzipReal.IsPresent) | Where-Object { $_ }
+if ($compressionSwitches.Count -gt 1) {
+    throw 'Die Schalter -Compress (LZ4), -CompressZstd (ZSTD), -CompressGzip (GZIP) und -CompressGzipReal schliessen sich gegenseitig aus.'
 }
 
 $headerSize = 64
@@ -86,6 +93,50 @@ function Compress-ZstdRaw([byte[]]$data) {
     return $out.ToArray()
 }
 
+# §115: GZIP-Kompressor (DEFLATE Stored-Blocks — gueltige RFC-1952-Frame, kein eigentlicher Kompressor)
+# Frame-Layout: GZIP-Header(10) + DEFLATE-Stored-Bloecke + GZIP-Footer(CRC32+ISIZE)
+# DEFLATE Stored-Block-Layout: Byte=(BFINAL|0x00), LEN(2 LE), NLEN=~LEN(2 LE), Daten
+function Compress-GzipStored([byte[]]$data) {
+    $n = $data.Length
+    $out = [Collections.Generic.List[byte]]::new()
+    # GZIP-Header (10 Bytes): Magic(2) + CM=8(1) + FLG=0(1) + MTIME=0(4) + XFL=0(1) + OS=0xFF(1)
+    $out.Add(0x1F); $out.Add(0x8B)    # Magic
+    $out.Add(0x08)                     # CM = DEFLATE
+    $out.Add(0x00)                     # FLG = 0 (keine optionalen Felder)
+    $out.Add(0x00); $out.Add(0x00); $out.Add(0x00); $out.Add(0x00)  # MTIME = 0
+    $out.Add(0x00)                     # XFL = 0
+    $out.Add(0xFF)                     # OS = 0xFF (unbekannt)
+    # DEFLATE Stored-Bloecke (max 65535 Bytes pro Block)
+    $offset = 0
+    do {
+        $chunk = [Math]::Min(65535, $n - $offset)
+        $isLast = ($offset + $chunk -ge $n)
+        $out.Add([byte](if ($isLast) { 1 } else { 0 }))  # BFINAL | BTYPE=00
+        $out.Add([byte]($chunk -band 0xFF))               # LEN lo
+        $out.Add([byte](($chunk -shr 8) -band 0xFF))      # LEN hi
+        $nlenVal = $chunk -bxor 0xFFFF                    # NLEN = ~LEN
+        $out.Add([byte]($nlenVal -band 0xFF))             # NLEN lo
+        $out.Add([byte](($nlenVal -shr 8) -band 0xFF))    # NLEN hi
+        for ($i = 0; $i -lt $chunk; $i++) { $out.Add($data[$offset + $i]) }
+        $offset += $chunk
+    } while ($offset -lt $n)
+    # GZIP-Footer: CRC32 (LE) + ISIZE = unkomprimierte Groesse (LE)
+    $crcBytes = [BitConverter]::GetBytes((Get-Crc32 -Data $data))
+    $isizeBytes = [BitConverter]::GetBytes([uint32]$n)
+    foreach ($b in $crcBytes)  { $out.Add($b) }
+    foreach ($b in $isizeBytes) { $out.Add($b) }
+    return $out.ToArray()
+}
+
+# §116: GZIP-Kompressor mit echtem DEFLATE (.NET GZipStream — erzeugt BTYPE=10 Dynamic-Huffman-Bloecke)
+function Compress-GzipReal([byte[]]$data) {
+    $ms = [IO.MemoryStream]::new()
+    $gz = [IO.Compression.GZipStream]::new($ms, [IO.Compression.CompressionLevel]::Optimal)
+    $gz.Write($data, 0, $data.Length)
+    $gz.Dispose()
+    return $ms.ToArray()
+}
+
 $compressionId = [uint32]0   # NOVA_NKI_COMPRESSION_NONE
 if ($Compress) {
     $lz4Block  = Compress-Lz4Block -data $payload
@@ -104,6 +155,24 @@ if ($CompressZstd) {
     [Array]::Copy($zstdFrame,  0, $compressed, 4, $zstdFrame.Length)
     $payload = $compressed
     $compressionId = [uint32]2   # NOVA_NKI_COMPRESSION_ZSTD
+}
+if ($CompressGzip) {
+    $gzipFrame  = Compress-GzipStored -data $payload
+    $sizePrefix = [BitConverter]::GetBytes([uint32]$payload.Length)
+    $compressed = [byte[]]::new(4 + $gzipFrame.Length)
+    [Array]::Copy($sizePrefix, 0, $compressed, 0, 4)
+    [Array]::Copy($gzipFrame,  0, $compressed, 4, $gzipFrame.Length)
+    $payload = $compressed
+    $compressionId = [uint32]3   # NOVA_NKI_COMPRESSION_GZIP
+}
+if ($CompressGzipReal) {
+    $gzipFrame  = Compress-GzipReal -data $payload
+    $sizePrefix = [BitConverter]::GetBytes([uint32]$payload.Length)
+    $compressed = [byte[]]::new(4 + $gzipFrame.Length)
+    [Array]::Copy($sizePrefix, 0, $compressed, 0, 4)
+    [Array]::Copy($gzipFrame,  0, $compressed, 4, $gzipFrame.Length)
+    $payload = $compressed
+    $compressionId = [uint32]3   # NOVA_NKI_COMPRESSION_GZIP
 }
 
 $crc32 = Get-Crc32 -Data $payload
@@ -201,5 +270,7 @@ try {
 
 $compressLabel = if ($Compress) { "LZ4-komprimiert, unkomprimiert=$($elfPayload.Length)" } `
                  elseif ($CompressZstd) { "ZSTD-komprimiert, unkomprimiert=$($elfPayload.Length)" } `
+                 elseif ($CompressGzip) { "GZIP-Stored-komprimiert, unkomprimiert=$($elfPayload.Length)" } `
+                 elseif ($CompressGzipReal) { "GZIP-DEFLATE-komprimiert, unkomprimiert=$($elfPayload.Length)" } `
                  else { "unkomprimiert" }
 Write-Host ("NKI v2: {0} Bytes Payload ({1}), CRC32 {2:X8}, DevSign dev_mac={3:X8}" -f $payload.Length, $compressLabel, $crc32, $devMac)
