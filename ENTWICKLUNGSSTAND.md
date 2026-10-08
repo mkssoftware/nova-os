@@ -635,8 +635,13 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
   Blatt-Verschmelzung per `novafs_try_leaf_merge`; Transaction Log/Crash
   Recovery, Löschen, Umbenennen, Zeitstempel und Nutzdatenprüfsummen waren
   bereits umgesetzt, siehe Abschnitt 16, `dev_detail.md` Abschnitte 101–107)
-- persistenter Userspace und Trust-Provider (Boot Health erreicht derzeit
-  `SystemRootReady`, bleibt ohne Trust aber `Pending`)
+- ~~persistenter Userspace und Trust-Provider~~ (§126: `boot_health_publish_system_root`
+  meldet SYSTEM_ROOT READY/DEGRADED nach `novafs_initialize`; `boot_health_advance`
+  wertet DEGRADED-Provider als erfüllt — Meilensteine werden auch via Degraded-Pfad
+  durchlaufen; `boot_health_provider_degraded`-Tabelle parallel zu `provider_ready`;
+  `.provider_degraded`-Pfad in `submit_report` ruft jetzt `boot_health_advance` auf;
+  serielle Meldungen für HealthConfirmed / DegradedConfirmed / not-confirmed;
+  Boot Health erreicht `CONFIRMED` auch mit unsigniertem Kernel, Status dann DEGRADED)
 - Tests auf realer UEFI-Hardware
 - erneute End-to-End-Prüfung des aktuellen Images in VirtualBox
 - pixelgenauer visueller Vergleich aller Bootmanagerseiten mit sämtlichen
@@ -1813,3 +1818,36 @@ bzw. eine Warnung auf stderr (Userspace-Tool) ausgegeben.
 Rückwärtskompatibel: Alte Volumes mit `checksum_tree_block = 0` erhalten
 keine Prüfsummen-Operationen (No-op). Kernel-Binary: 198113 Byte
 (Spielraum ~59 KB bis zur Decke 258048 Byte).
+
+---
+
+## §127 VFS.Query v2 — Zeitstempel (2026-10-08)
+
+**Ziel:** Die vier NovaFS-Zeitstempel (Created, Modified, Accessed, Changed),
+die seit §106 auf Disk gespeichert werden, über den VFS.Query-Syscall an
+Userspace exponieren. Sichtbare Nutzung: Explorer-Dateivorschau zeigt ab jetzt
+"YYYY-MM-DD [Inhalt]" statt nur Dateiinhalt.
+
+**Kernel (`vfs32.inc`):**
+`VFS_INFO_SIZE` von 48 → 80 Byte (acht neue Felder à 4 Byte).
+`vfs_op_query` füllt nach Generation (Offset +40) die vier Timestamps:
+`Created` (+48), `Modified` (+56), `Accessed` (+64), `Changed` (+72),
+je als little-endian u64. Interner `vfs_args`-Puffer von 64 → 80 Byte.
+Struct-Kommentar aktualisiert auf `NovaVfsObjectInfoV2`.
+
+**Ring-3 (`entry32.asm`):**
+`ufs_preview_nth` ruft jetzt vor dem VFS.Read einen `ufs_query`-Syscall auf,
+liest `UFS_ARGS+56` (Modified-Timestamp, low 32 Bit) und übergibt ihn an die
+neue Hilfsfunktion `ufs_format_date`. Diese berechnet Gregorianisches Datum
+via `/ 86400` + Jahres-/Monatsschleife und schreibt "YYYY-MM-DD " (11 Byte) in
+`UFS_VIEW+40`. Dateiinhalt folgt in `UFS_VIEW+51` (max. 45 Byte). Die Gesamtlänge
+im View wird als `11 + bytes_read` eingetragen. Neue Datentabelle `ufs_month_days`
+(12 Byte) für die Monatslängen.
+
+`VFS_INFO_SIZE`-Konstante ist per `%include` geteilt → `ufs_query` (Ring-3)
+nutzt automatisch den neuen Wert 80; kein gesonderter Ring-3-Patch nötig.
+Schaltjahre: `% 4 == 0`-Test reicht für 1970–2099 (32-Bit-Timestamps laufen
+spätestens 2106 über). UFS_ARGS-Puffer (96 Byte, USER_STACK_ADDRESS-1408) hat
+ausreichend Platz für 80 Byte.
+
+Kernel-Binary: 245760 Byte (~239 KB; Spielraum ~13 KB bis zur Decke 258048 Byte).

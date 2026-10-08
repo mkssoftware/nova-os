@@ -480,6 +480,7 @@ kernel_entry:
     mov esi, message_boot_health_root_ready
 .root_health_message:
     call serial_write_string
+    call boot_health_publish_system_root    ; §126: SYSTEM_ROOT Provider melden
 
     call network_manager_initialize
     jc panic_network_manager
@@ -517,6 +518,22 @@ kernel_entry:
     call userspace_initialize
     jc panic_userspace
     call boot_health_publish_session_provider ; §108: SESSION READY (Phase-1 Stub)
+    ; §126: HealthConfirmed-Status seriell ausgeben
+    cmp dword [boot_health_record + BH_RECORD_LAST], BOOT_HEALTH_MILESTONE_CONFIRMED
+    jne .health_not_confirmed
+    cmp dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_DEGRADED
+    je .health_confirmed_degraded
+    mov esi, message_boot_health_confirmed
+    call serial_write_string
+    jmp .health_confirmed_done
+.health_confirmed_degraded:
+    mov esi, message_boot_health_confirmed_degraded
+    call serial_write_string
+    jmp .health_confirmed_done
+.health_not_confirmed:
+    mov esi, message_boot_health_not_confirmed
+    call serial_write_string
+.health_confirmed_done:
     call firmware_runtime_health_commit       ; §109: HEALTHY Wire nach HealthConfirmed
     cmp eax, 2
     je .commit_failed
@@ -14223,9 +14240,9 @@ ufs_delete_nth:
 .return:
     ret
 
-; EBX=Index (n-te Datei im aktuellen Verzeichnis) -> EAX=Status. Liest bis
-; zu EXPLORER_PATH_MAX Bytes ihres Inhalts und zeigt sie anstelle des
-; Breadcrumbs an (einfache Dateivorschau, kein eigenes Anzeigeelement).
+; EBX=Index (n-te Datei im aktuellen Verzeichnis) -> EAX=Status. Zeigt
+; "YYYY-MM-DD [erste 45 Byte Inhalt]" anstelle des Breadcrumbs an.
+; Datum stammt aus dem VFS.Query-Timestamp (Modified), Inhalt per VFS.Read.
 ufs_preview_nth:
     mov eax, NOVAFS_TYPE_FILE
     call ufs_find_nth
@@ -14239,10 +14256,18 @@ ufs_preview_nth:
     test eax, eax
     jnz .return
     mov [UFS_H_NEW], ebx
+    ; Zeitstempel per VFS.Query holen
+    mov edx, ebx
+    call ufs_query
+    ; Datum (Modified) als "YYYY-MM-DD " in UFS_VIEW + 40 formatieren
+    mov eax, [UFS_ARGS + 56]        ; Modified-Timestamp (low 32 Bit)
+    mov edi, UFS_VIEW + 40
+    call ufs_format_date             ; schreibt 11 Byte "YYYY-MM-DD "
+    ; Dateiinhalt in UFS_VIEW + 51 lesen (45 Byte nach dem Datum)
     mov ebx, SYSCALL_VFS_READ
     mov edx, [UFS_H_NEW]
-    mov esi, UFS_VIEW + 40
-    mov ecx, EXPLORER_PATH_MAX
+    mov esi, UFS_VIEW + 51
+    mov ecx, 45
     xor edi, edi
     call ufs_io
     push eax
@@ -14253,6 +14278,7 @@ ufs_preview_nth:
     pop eax
     test eax, eax
     jnz .return
+    add ecx, 11                      ; Gesamtlänge = Datum (11) + Inhalt
     mov [UFS_VIEW + 28], ecx
     mov eax, SYSCALL_SERVICE_DISPLAY
     mov ebx, SYSCALL_DISPLAY_SUBMIT_EXPLORER_VIEW
@@ -14263,6 +14289,115 @@ ufs_preview_nth:
     xor eax, eax
 .return:
     ret
+
+; EAX=Unix-Timestamp (32-Bit), EDI=Ausgabepuffer -> 11 Byte "YYYY-MM-DD ".
+; Verändert EAX, ECX, EDX; erhält EBX, ESI, EDI (nach dem Schreiben).
+ufs_format_date:
+    push ebx
+    push esi
+    push edx
+    push ecx
+    ; Tage seit Epoch = Timestamp / 86400
+    xor edx, edx
+    mov ecx, 86400
+    div ecx                         ; EAX = Tage seit 1970-01-01
+    ; Jahr bestimmen (EBX = laufendes Jahr, EAX = verbleibende Tage)
+    mov ebx, 1970
+.fd_year_loop:
+    mov ecx, 365
+    mov esi, ebx
+    and esi, 3
+    jnz .fd_not_leap
+    mov ecx, 366
+.fd_not_leap:
+    cmp eax, ecx
+    jb .fd_year_done
+    sub eax, ecx
+    inc ebx
+    jmp .fd_year_loop
+.fd_year_done:
+    ; EBX = Jahr, EAX = Tag des Jahres (0-basiert)
+    ; Jahr als 4 Ziffern ausgeben
+    push eax
+    mov eax, ebx
+    xor edx, edx
+    mov ecx, 1000
+    div ecx
+    add al, '0'
+    stosb
+    mov eax, edx
+    xor edx, edx
+    mov ecx, 100
+    div ecx
+    add al, '0'
+    stosb
+    mov eax, edx
+    xor edx, edx
+    mov ecx, 10
+    div ecx
+    add al, '0'
+    stosb
+    add dl, '0'
+    mov al, dl
+    stosb
+    mov al, '-'
+    stosb
+    pop eax
+    ; Monat aus Tabelle bestimmen
+    mov esi, ufs_month_days
+    mov ecx, 1
+.fd_month_loop:
+    movzx edx, byte [esi]
+    cmp ecx, 2
+    jne .fd_check_days
+    ; Februar: Schaltjahr? (vereinfacht % 4 für 1970–2099)
+    push eax
+    mov eax, ebx
+    and eax, 3
+    pop eax
+    jnz .fd_check_days
+    mov edx, 29
+.fd_check_days:
+    cmp eax, edx
+    jb .fd_month_done
+    sub eax, edx
+    inc ecx
+    inc esi
+    jmp .fd_month_loop
+.fd_month_done:
+    ; ECX = Monat (1-basiert), EAX = Tag des Monats (0-basiert)
+    push eax
+    mov eax, ecx
+    xor edx, edx
+    mov ecx, 10
+    div ecx
+    add al, '0'
+    stosb
+    add dl, '0'
+    mov al, dl
+    stosb
+    mov al, '-'
+    stosb
+    pop eax
+    inc eax                         ; 1-basierter Tag
+    xor edx, edx
+    mov ecx, 10
+    div ecx
+    add al, '0'
+    stosb
+    add dl, '0'
+    mov al, dl
+    stosb
+    mov al, ' '
+    stosb
+    pop ecx
+    pop edx
+    pop esi
+    pop ebx
+    ret
+
+ufs_month_days:
+    db 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
 
 ; Zeichnet den aktuellen Umbenennen-Puffer (UFS_RENAME_BUF/_LEN) anstelle
 ; des Breadcrumbs, analog zu ufs_preview_nth oben. Wird nach jeder
@@ -16878,6 +17013,9 @@ boot_health_submit_report:
 .provider_degraded:
     or dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_DEGRADED_SEEN
     mov dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_DEGRADED
+    ; Provider als degradiert markieren, damit advance ihn als erfüllt wertet
+    or [boot_health_provider_degraded + ecx * 4], eax
+    call boot_health_advance
     popad
     popfd
     clc
@@ -16903,7 +17041,10 @@ boot_health_advance:
     cmp ecx, BOOT_HEALTH_MILESTONE_OPERATIONAL
     ja .done
     mov eax, [boot_health_provider_required + ecx * 4]
+    ; READY-Bits: exakt erfüllt
     mov edx, [boot_health_provider_ready + ecx * 4]
+    ; DEGRADED-Bits zählen ebenfalls als erfüllt (aber Status bleibt DEGRADED)
+    or  edx, [boot_health_provider_degraded + ecx * 4]
     and edx, eax
     cmp edx, eax
     jne .done
@@ -16913,7 +17054,11 @@ boot_health_advance:
 .done:
     cmp dword [boot_health_record + BH_RECORD_LAST], BOOT_HEALTH_MILESTONE_OPERATIONAL
     jne .return
+    ; Status nur auf HEALTHY setzen wenn bisher kein DEGRADED-Pfad
+    cmp dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_DEGRADED
+    je .mark_confirmed
     mov dword [boot_health_record + BH_RECORD_STATUS], BOOT_HEALTH_STATUS_HEALTHY
+.mark_confirmed:
     bts dword [boot_health_record + BH_RECORD_REACHED], BOOT_HEALTH_MILESTONE_CONFIRMED
     mov dword [boot_health_record + BH_RECORD_LAST], BOOT_HEALTH_MILESTONE_CONFIRMED
     or dword [boot_health_record + BH_RECORD_FLAGS], BOOT_HEALTH_FLAG_EVIDENCE_READY
@@ -17028,6 +17173,41 @@ boot_health_publish_session_provider:
     call boot_health_submit_report
     mov esi, message_boot_health_session_ready
     call serial_write_string
+    clc
+    ret
+
+; §126: SystemRoot-Provider melden — READY wenn NovaFS rw gemountet,
+; DEGRADED wenn read-only oder gar nicht gemountet.
+boot_health_publish_system_root:
+    pushad
+    mov ebx, BOOT_HEALTH_PROVIDER_READY
+    cmp dword [nfs_mounted], 1
+    je .mounted
+    ; kein Volume: DEGRADED
+    mov ebx, BOOT_HEALTH_PROVIDER_DEGRADED
+    jmp .report
+.mounted:
+    cmp dword [nfs_readonly], 0
+    je .report                      ; rw → bleibt READY
+    mov ebx, BOOT_HEALTH_PROVIDER_DEGRADED
+.report:
+    mov edx, BOOT_HEALTH_MILESTONE_SYSTEM_ROOT_READY
+    mov ecx, BOOT_HEALTH_PROVIDER_SYSTEM_ROOT
+    call boot_health_prepare_report
+    mov eax, 1
+    mov esi, boot_health_temp_report
+    call boot_health_submit_report  ; CF ignorieren (best-effort)
+    cmp ebx, BOOT_HEALTH_PROVIDER_READY
+    je .msg_ready
+    mov esi, message_boot_health_system_root_degraded
+    call serial_write_string
+    popad
+    clc
+    ret
+.msg_ready:
+    mov esi, message_boot_health_system_root_ready
+    call serial_write_string
+    popad
     clc
     ret
 
@@ -17378,8 +17558,9 @@ align 4
 boot_health_ready:           dd 0
 boot_health_temp_pid:        dd 0
 boot_health_selftest_result: dd 0
-boot_health_provider_ready:  times 8 dd 0
-boot_health_saved_providers: times 8 dd 0
+boot_health_provider_ready:    times 8 dd 0
+boot_health_provider_degraded: times 8 dd 0
+boot_health_saved_providers:   times 8 dd 0
 boot_health_temp_report:     times BOOT_HEALTH_REPORT_SIZE db 0
 boot_health_record:          times BOOT_HEALTH_RECORD_SIZE db 0
 boot_health_saved_record:    times BOOT_HEALTH_RECORD_SIZE db 0
@@ -23948,6 +24129,16 @@ message_boot_health_root_ready:
     db "NOVA: Boot Health SystemRoot bereit, wartet auf Trust", 13, 10, 0
 message_boot_health_root_degraded:
     db "NOVA: Boot Health SystemRoot nur Read-only verfuegbar (degradiert)", 13, 10, 0
+message_boot_health_system_root_ready:
+    db "NOVA: Boot Health SystemRoot Provider READY (NovaFS rw gemountet)", 13, 10, 0
+message_boot_health_system_root_degraded:
+    db "NOVA: Boot Health SystemRoot Provider DEGRADED (kein rw-Volume)", 13, 10, 0
+message_boot_health_confirmed:
+    db "NOVA: Boot Health HealthConfirmed (alle Meilensteine HEALTHY erreicht)", 13, 10, 0
+message_boot_health_confirmed_degraded:
+    db "NOVA: Boot Health DegradedConfirmed (Meilensteine via DEGRADED-Pfad erreicht)", 13, 10, 0
+message_boot_health_not_confirmed:
+    db "NOVA: Boot Health OPERATIONAL nicht erreicht, Status bleibt Pending", 13, 10, 0
 message_storage_ahci_ok:
     db "NOVA: Storage ABI 1.0, AHCI-Controller (Polling) aktiv, Datentraeger 0x", 0
 message_storage_no_ahci:
