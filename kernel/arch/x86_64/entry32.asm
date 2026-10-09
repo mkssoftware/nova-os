@@ -435,9 +435,13 @@ kernel_entry:
     jc panic_smp
     call smp_self_test
     jc panic_smp
+    call smp_stress_test
+    jc panic_smp
     mov esi, message_smp_ok
     call serial_write_string
     mov esi, message_smp_runtime_ok
+    call serial_write_string
+    mov esi, message_smp_stress_ok
     call serial_write_string
 
     mov dword [boot_phase_last_success], BOOT_PHASE_SCHEDULER_SMP
@@ -18822,6 +18826,105 @@ smp_self_test:
     stc
     ret
 
+; ---------------------------------------------------------------------------
+; §62 – SMP-Stresstests (NPSPEC-KERNEL-0027)
+; Prüft smp_call_function, TLB-Shootdown und gemischte Last unter realen
+; SMP-Bedingungen.  UP-Systeme bestehen automatisch (CF=0).
+; ---------------------------------------------------------------------------
+smp_stress_test:
+    ; UP: keine Remote-CPUs, Stresstest entfällt
+    cmp dword [cpu_discovered_count], 1
+    je .pass
+
+    ; -----------------------------------------------------------------------
+    ; Test 1: smp_call_function-Last – 16 Aufrufe auf alle APs
+    ; Erwartetes Ergebnis: smp_stress_counter == (N_APs) * 16
+    ; -----------------------------------------------------------------------
+    mov dword [smp_stress_counter], 0
+    mov ecx, 16
+.call_loop:
+    push ecx
+    mov eax, [cpu_online_set]
+    and eax, ~1                      ; BSP-Bit entfernen, nur AP-Bits
+    mov ecx, smp_stress_inc
+    mov edx, smp_stress_counter
+    call smp_call_function
+    jc .pop_fail
+    pop ecx
+    dec ecx
+    jnz .call_loop
+
+    ; Zähler muss exakt (cpu_discovered_count - 1) * 16 sein
+    mov eax, [cpu_discovered_count]
+    dec eax
+    imul eax, 16
+    cmp [smp_stress_counter], eax
+    jne .fail
+
+    ; -----------------------------------------------------------------------
+    ; Test 2: TLB-Shootdown-Last – 8 Vollsystem-Shootdowns (BSP + alle APs)
+    ; smp_rejected_remote_shootdowns darf sich nicht erhöhen.
+    ; -----------------------------------------------------------------------
+    mov eax, [smp_rejected_remote_shootdowns]
+    mov [smp_stress_saved_rejects], eax
+    mov dword [smp_local_tlb_flushes], 0
+    mov ecx, 8
+.tlb_loop:
+    push ecx
+    mov eax, KERNEL_ENTRY_ADDRESS
+    mov edx, [cpu_active_set]
+    call smp_tlb_shootdown_page
+    jc .pop_fail
+    pop ecx
+    dec ecx
+    jnz .tlb_loop
+
+    cmp dword [smp_local_tlb_flushes], 8
+    jb .fail
+    mov eax, [smp_rejected_remote_shootdowns]
+    cmp eax, [smp_stress_saved_rejects]
+    jne .fail                        ; Timeout oder ungültige Maske
+
+    ; -----------------------------------------------------------------------
+    ; Test 3: Gemischte Last – 4 Runden (Call + Shootdown abwechselnd)
+    ; -----------------------------------------------------------------------
+    mov ecx, 4
+.mixed_loop:
+    push ecx
+    mov eax, [cpu_online_set]
+    and eax, ~1
+    mov ecx, smp_stress_inc
+    mov edx, smp_stress_counter
+    call smp_call_function
+    jc .pop_fail
+    mov eax, KERNEL_ENTRY_ADDRESS + 0x1000
+    mov edx, [cpu_active_set]
+    call smp_tlb_shootdown_page
+    jc .pop_fail
+    pop ecx
+    dec ecx
+    jnz .mixed_loop
+
+.pass:
+    clc
+    ret
+.pop_fail:
+    pop ecx
+.fail:
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; smp_stress_inc – atomischer Zählerinkrement auf AP (Interrupt-Kontext)
+; ECX = Zeiger auf den Zähler (via smp_call_function-Kontext übergeben)
+; ---------------------------------------------------------------------------
+smp_stress_inc:
+    lock inc dword [ecx]
+    ret
+
+smp_stress_counter:          dd 0
+smp_stress_saved_rejects:    dd 0
+
 align 4
 smp_api:
     dd SMP_API_SIZE
@@ -25038,6 +25141,8 @@ message_smp_ok:
     db "NOVA: SMP-Grundlage ABI 1.0, BSP-Barriere und lokaler TLB-Pfad bereit", 13, 10, 0
 message_smp_runtime_ok:
     db "NOVA: SMP AP-LAPIC-Timer und AP-Scheduler aktiv", 13, 10, 0
+message_smp_stress_ok:
+    db "NOVA: SMP-Stresstest (§62) bestanden: Call, TLB-Shootdown, gemischte Last", 13, 10, 0
 message_smp_error:
     db "NOVA PANIC: SMP-Grundlagen-Selbsttest fehlgeschlagen", 13, 10, 0
 message_panic_begin:

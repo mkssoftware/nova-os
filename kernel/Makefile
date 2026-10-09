@@ -23,8 +23,8 @@ $(KERNEL_BINARY): $(KERNEL_SOURCE) $(KERNEL_INCLUDES) $(LAYOUT_INCLUDE) $(PROTOC
 
 verify: $(KERNEL_BINARY)
 	test "$$(wc -c < $(KERNEL_BINARY))" -gt 0
-	# 252 KiB Kernelcode plus 4 KiB ELF-Payloadoffset bleiben im 256-KiB-NKI-Limit.
-	test "$$(wc -c < $(KERNEL_BINARY))" -le 258048
+	# 1 MiB Kernelcode-Budget; BIOS-Slot (layout.inc) und UEFI-Loader setzen keine engere Grenze.
+	test "$$(wc -c < $(KERNEL_BINARY))" -le 1048576
 
 clean:
 	rm -f $(KERNEL_BINARY)
