@@ -13,6 +13,7 @@
 #include <shlobj.h>
 #include <richedit.h>
 #include <dwmapi.h>
+#include <windowsx.h>
 #include <vector>
 #include <string>
 #include <functional>

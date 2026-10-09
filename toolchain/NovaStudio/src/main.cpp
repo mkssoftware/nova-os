@@ -917,37 +917,37 @@ static HACCEL CreateAccelerators() {
 static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
 
-    /* ---- Custom title bar: claim caption area as client ---- */
-    case WM_NCCALCSIZE:
-        if (wp) {
-            NCCALCSIZE_PARAMS *p = (NCCALCSIZE_PARAMS*)lp;
-            RECT wr = p->rgrc[0];
-            DefWindowProcW(hw, WM_NCCALCSIZE, wp, lp);
-            /* Extend client area upward to cover caption */
-            p->rgrc[0].top -= TITLEBAR_H;
-            /* Floor: don't go above the resize border */
-            int borderH = GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
-            int minTop = wr.top + (IsMaximized(hw) ? 0 : borderH);
-            if (p->rgrc[0].top < minTop) p->rgrc[0].top = minTop;
-            return 0;
-        }
-        return DefWindowProcW(hw, msg, wp, lp);
-
+    /* ---- Custom title bar ---- */
     case WM_NCHITTEST: {
-        POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        RECT wr; GetWindowRect(hw, &wr);
-        int borderH = IsMaximized(hw) ? 0
-            : GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
-        int relY = pt.y - wr.top - borderH;
-        int relX = pt.x - wr.left;
-        int winW = wr.right - wr.left;
-        if (relY >= 0 && relY < TITLEBAR_H) {
-            if (relX >= winW - 46)  return HTCLOSE;
-            if (relX >= winW - 92)  return HTMAXBUTTON;
-            if (relX >= winW - 138) return HTMINBUTTON;
-            return HTCAPTION;
+        /* Let DefWindowProc handle resize borders (WS_THICKFRAME) */
+        LRESULT hit = DefWindowProcW(hw, msg, wp, lp);
+        if (hit == HTCLIENT) {
+            POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            ScreenToClient(hw, &pt);
+            if (pt.y >= 0 && pt.y < TITLEBAR_H) {
+                RECT cl2; GetClientRect(hw, &cl2);
+                int X = pt.x, W2 = cl2.right;
+                if (X >= W2 - 46)  return HTCLOSE;
+                if (X >= W2 - 92)  return HTMAXBUTTON;
+                if (X >= W2 - 138) return HTMINBUTTON;
+                return HTCAPTION;
+            }
         }
-        return DefWindowProcW(hw, msg, wp, lp);
+        return hit;
+    }
+
+    case WM_GETMINMAXINFO: {
+        /* Prevent maximized window covering taskbar */
+        MONITORINFO mi = {sizeof(mi)};
+        GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
+        MINMAXINFO *mmi = (MINMAXINFO*)lp;
+        mmi->ptMaxPosition.x = mi.rcWork.left;
+        mmi->ptMaxPosition.y = mi.rcWork.top;
+        mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+        mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+        mmi->ptMinTrackSize.x = 600;
+        mmi->ptMinTrackSize.y = 400;
+        return 0;
     }
 
     case WM_NCMOUSEMOVE: {
@@ -961,6 +961,12 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_NCMOUSELEAVE:
         if (g_tbHover) { g_tbHover = 0; InvalidateTitleBar(hw); UpdateWindow(hw); }
         return DefWindowProcW(hw, msg, wp, lp);
+
+    case WM_NCACTIVATE:
+        /* Return TRUE so Windows doesn't redraw a default NC caption */
+        g_tbActive = (wp != FALSE);
+        InvalidateTitleBar(hw);
+        return TRUE;
 
     case WM_ACTIVATE:
         g_tbActive = (LOWORD(wp) != WA_INACTIVE);
@@ -1092,7 +1098,7 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
             HWND hOutSearch = CreateWindowExW(WS_EX_CLIENTEDGE,
                 L"EDIT", L"Symbole suchen (Strg+Alt+S)",
                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                5, HDR_H + 2, outW - 10, 22,
+                5, 28 + 2, outW - 10, 22,
                 hOutCont, (HMENU)(ID_DOCOUTLINE + 1),
                 GetModuleHandleW(nullptr), nullptr);
             HFONT fntSm = CreateFontW(12,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
@@ -1105,7 +1111,7 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
                 WC_TREEVIEWW, nullptr,
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | TVS_HASLINES |
                 TVS_HASBUTTONS | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
-                1, HDR_H + 28, outW - 1, outH - HDR_H - 28,
+                1, 28 + 28, outW - 1, outH - 28 - 28,
                 hOutCont, (HMENU)ID_DOCOUTLINE,
                 GetModuleHandleW(nullptr), nullptr);
 
@@ -1146,6 +1152,11 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         RECT rEd = {g_explorerWidth, TITLEBAR_H + RIBBON_HEIGHT,
                     cl.right - g_outlineWidth, cl.bottom};
         EditorCreate(hw, rEd);
+
+        /* Tell DWM our frame extends TITLEBAR_H into client area
+           → removes system caption, keeps drop shadow */
+        MARGINS m = {0, 0, TITLEBAR_H, 0};
+        DwmExtendFrameIntoClientArea(hw, &m);
         break;
     }
 
@@ -1304,11 +1315,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     wc.lpszClassName = STUDIO_CLASS;
     RegisterClassExW(&wc);
 
-    /* Create main window (ohne HMENU – Ribbon übernimmt die Navigation) */
+    /* Create main window – WS_POPUP+WS_THICKFRAME: custom title bar,
+       resize borders via DWM, no system caption */
     g_hMain = CreateWindowExW(
         WS_EX_APPWINDOW,
-        STUDIO_CLASS, STUDIO_NAME L" " STUDIO_VERSION,
-        WS_OVERLAPPEDWINDOW,
+        STUDIO_CLASS, STUDIO_NAME,
+        WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, 1340, 820,
         nullptr, nullptr, hInst, nullptr);
 
