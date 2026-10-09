@@ -241,6 +241,18 @@ void LayoutCompute(HWND hw, RECT *rExp, RECT *rEd, RECT *rOut, RECT *rTab);
 void LayoutApply(HWND hw);
 
 /* -------------------------------------------------------------------------
+ * Ribbon (NPSPEC-STUDIO-RIBBON-0001)
+ * ---------------------------------------------------------------------- */
+#define RIBBON_HEIGHT  102   /* total ribbon height in px */
+
+extern HWND g_hRibbon;
+
+void RibbonCreate(HWND hParent, int width);
+void RibbonResize(int x, int y, int width);
+void RibbonApplyTheme();
+void RibbonSetTab(int idx);
+
+/* -------------------------------------------------------------------------
  * Build
  * ---------------------------------------------------------------------- */
 void DoBuild(bool rebuild);

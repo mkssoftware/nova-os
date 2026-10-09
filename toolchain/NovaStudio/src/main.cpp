@@ -7,6 +7,7 @@ HWND g_hMain       = nullptr;
 HWND g_hExplorer   = nullptr;
 HWND g_hStatusBar  = nullptr;
 HWND g_hToolBar    = nullptr;
+/* g_hRibbon ist in ribbon.cpp definiert */
 
 Theme g_theme      = {};
 
@@ -177,17 +178,21 @@ void LayoutCompute(HWND hw, RECT *rExp, RECT *rEd, RECT *rOut, RECT *rTab) {
     if (g_hStatusBar) GetWindowRect(g_hStatusBar, &sbrc);
     int sbH = sbrc.bottom - sbrc.top;
 
-    int h = cl.bottom - sbH;
-    int w = cl.right;
+    int top = RIBBON_HEIGHT;      /* Ribbon belegt die oberen 102 px */
+    int h   = cl.bottom - sbH;
+    int w   = cl.right;
 
     int expW = g_showExplorer ? g_explorerWidth : 0;
 
-    if (rExp) { rExp->left = 0; rExp->top = 0; rExp->right = expW; rExp->bottom = h; }
+    if (rExp) {
+        rExp->left = 0; rExp->top = top;
+        rExp->right = expW; rExp->bottom = h;
+    }
 
     int outH = g_showOutput ? g_outputHeight : 0;
     if (rEd) {
         rEd->left   = expW;
-        rEd->top    = 0;
+        rEd->top    = top;
         rEd->right  = w;
         rEd->bottom = h;
     }
@@ -201,6 +206,9 @@ void LayoutCompute(HWND hw, RECT *rExp, RECT *rEd, RECT *rOut, RECT *rTab) {
 }
 
 void LayoutApply(HWND hw) {
+    RECT cl; GetClientRect(hw, &cl);
+    RibbonResize(0, 0, cl.right);
+
     RECT rExp, rEd, rOut, rTab;
     LayoutCompute(hw, &rExp, &rEd, &rOut, &rTab);
 
@@ -559,6 +567,7 @@ static void OnCommand(HWND hw, WPARAM wp) {
         ApplyDwmTheme(hw);
         EditorApplyTheme();
         ExplorerApplyTheme();
+        RibbonApplyTheme();
         InvalidateRect(hw, nullptr, TRUE);
         break;
 
@@ -567,6 +576,7 @@ static void OnCommand(HWND hw, WPARAM wp) {
         ApplyDwmTheme(hw);
         EditorApplyTheme();
         ExplorerApplyTheme();
+        RibbonApplyTheme();
         InvalidateRect(hw, nullptr, TRUE);
         break;
 
@@ -661,18 +671,20 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
 
     case WM_CREATE: {
-        /* Status bar */
+        RECT cl; GetClientRect(hw, &cl);
+
+        /* Ribbon (oben) */
+        RibbonCreate(hw, cl.right);
+
+        /* Status bar (unten) */
         StatusCreate(hw);
 
-        /* Layout: compute initial rects */
-        RECT cl; GetClientRect(hw, &cl);
-        RECT rExp = {0, 0, g_explorerWidth, cl.bottom};
-        RECT rEd  = {g_explorerWidth, 0, cl.right, cl.bottom};
-
         /* Explorer */
+        RECT rExp = {0, RIBBON_HEIGHT, g_explorerWidth, cl.bottom};
         ExplorerCreate(hw, rExp);
 
         /* Editor */
+        RECT rEd  = {g_explorerWidth, RIBBON_HEIGHT, cl.right, cl.bottom};
         EditorCreate(hw, rEd);
         break;
     }
@@ -832,13 +844,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShow) {
     wc.lpszClassName = STUDIO_CLASS;
     RegisterClassExW(&wc);
 
-    /* Create main window */
+    /* Create main window (ohne HMENU – Ribbon übernimmt die Navigation) */
     g_hMain = CreateWindowExW(
         WS_EX_APPWINDOW,
         STUDIO_CLASS, STUDIO_NAME L" " STUDIO_VERSION,
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 1340, 820,
-        nullptr, CreateStudioMenu(), hInst, nullptr);
+        nullptr, nullptr, hInst, nullptr);
 
     if (!g_hMain) return 1;
 
