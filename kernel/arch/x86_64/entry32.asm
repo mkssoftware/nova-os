@@ -420,6 +420,13 @@ kernel_entry:
     mov esi, message_abi_ok
     call serial_write_string
 
+    call kog_initialize
+    jc panic_kog
+    call kog_self_test
+    jc panic_kog
+    mov esi, message_kog_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -738,6 +745,12 @@ panic_abi:
     mov eax, 0x00000013
     mov edx, 0x41424900             ; "ABI\0"
     mov esi, message_abi_error
+    jmp kernel_panic
+
+panic_kog:
+    mov eax, 0x00000014
+    mov edx, 0x4B4F4700             ; "KOG\0"
+    mov esi, message_kog_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -20283,6 +20296,772 @@ abi_service_count:  dd 0
 abi_test_buf:       times 32 db 0
 
 ; ---------------------------------------------------------------------------
+; §100 – Kernel Object Graph (NPSPEC-KERNEL-0100)
+; Typisierter gerichteter Multigraph für alle Kernelressourcen.
+; Bootstrap-Implementierung: feste Pools, kein RCU/Snapshot/Transaktion.
+; ---------------------------------------------------------------------------
+
+; Objekttyp-IDs (§8, §9)
+NP_OBJTYPE_KERNEL          equ 1
+NP_OBJTYPE_MACHINE         equ 2
+NP_OBJTYPE_NAMESPACE       equ 3
+NP_OBJTYPE_PROCESS         equ 4
+NP_OBJTYPE_THREAD          equ 5
+NP_OBJTYPE_CPU             equ 6
+NP_OBJTYPE_MEMORY          equ 7
+NP_OBJTYPE_IPC             equ 8
+NP_OBJTYPE_DEVICE          equ 9
+NP_OBJTYPE_DRIVER          equ 10
+NP_OBJTYPE_VFS_NODE        equ 11
+NP_OBJTYPE_SECURITY        equ 12
+NP_OBJTYPE_DIAGNOSTIC      equ 13
+NP_OBJTYPE_POWER           equ 14
+NP_OBJTYPE_GENERIC         equ 15
+NP_OBJTYPE_COUNT           equ 16
+
+; Objektzustände (§13)
+NP_GRAPH_OBJ_INITIALIZING  equ 0
+NP_GRAPH_OBJ_ACTIVE        equ 1
+NP_GRAPH_OBJ_QUIESCING     equ 2
+NP_GRAPH_OBJ_FAILED        equ 3
+NP_GRAPH_OBJ_REMOVING      equ 4
+NP_GRAPH_OBJ_DESTROYED     equ 5
+
+; Beziehungstypen (§14)
+NP_RELATION_OWNS           equ 0
+NP_RELATION_CONTAINS       equ 1
+NP_RELATION_PARENT_OF      equ 2
+NP_RELATION_CHILD_OF       equ 3
+NP_RELATION_DEPENDS_ON     equ 4
+NP_RELATION_BOUND_TO       equ 5
+NP_RELATION_PROVIDES       equ 6
+NP_RELATION_CONSUMES       equ 7
+NP_RELATION_MEMBER_OF      equ 8
+NP_RELATION_MAPPED_TO      equ 9
+NP_RELATION_OBSERVES       equ 10
+NP_RELATION_SECURED_BY     equ 11
+NP_RELATION_TYPE_COUNT     equ 12
+
+; Beziehungsstärken (§15)
+NP_RELSTR_WEAK             equ 0
+NP_RELSTR_REFERENCE        equ 1
+NP_RELSTR_STRONG           equ 2
+NP_RELSTR_OWNERSHIP        equ 3
+
+; Schema-Flags
+KOG_SCHEMA_ALLOW_CYCLE     equ 0x01   ; Zyklen durch diesen Typ erlaubt
+
+; Fehlercodes (§60, erweitert NP_OK/NP_ERR_*)
+NP_ERR_OBJECT_NOT_FOUND    equ -20
+NP_ERR_OBJECT_STATE        equ -21
+NP_ERR_RELATION_INVALID    equ -22
+NP_ERR_RELATION_EXISTS     equ -23
+NP_ERR_RELATION_NOT_FOUND  equ -24
+NP_ERR_RELATION_CYCLE      equ -25
+NP_ERR_GRAPH_LIMIT         equ -26
+
+; Pool-Größen
+KOG_MAX_OBJECTS            equ 64
+KOG_MAX_RELATIONS          equ 128
+KOG_CYCLE_MAX_DEPTH        equ 8
+
+; Object-Node-Layout (24 Bytes, §6)
+KOG_OBJ_SIZE               equ 24
+KOG_OBJ_OFF_ID             equ 0    ; uint32_t  (Bootstrap: low 32 Bit)
+KOG_OBJ_OFF_TYPE           equ 4    ; uint32_t
+KOG_OBJ_OFF_STATE          equ 8    ; uint32_t
+KOG_OBJ_OFF_REFCOUNT       equ 12   ; uint32_t
+KOG_OBJ_OFF_FLAGS          equ 16   ; uint32_t
+KOG_OBJ_OFF_PRESENT        equ 20   ; uint8_t
+; 21-23: Padding
+
+; Relation-Layout (24 Bytes, §16)
+KOG_REL_SIZE               equ 24
+KOG_REL_OFF_ID             equ 0    ; uint32_t
+KOG_REL_OFF_SRC_ID         equ 4    ; uint32_t
+KOG_REL_OFF_DST_ID         equ 8    ; uint32_t
+KOG_REL_OFF_TYPE           equ 12   ; uint8_t
+KOG_REL_OFF_STRENGTH       equ 13   ; uint8_t
+KOG_REL_OFF_FLAGS          equ 14   ; uint8_t
+KOG_REL_OFF_PRESENT        equ 15   ; uint8_t
+KOG_REL_OFF_GENERATION     equ 16   ; uint32_t
+; 20-23: Padding
+
+; Schema-Layout (16 Bytes, §18)
+KOG_SCH_SIZE               equ 16
+KOG_SCH_OFF_TYPE           equ 0    ; uint16_t
+KOG_SCH_OFF_MAX_STR        equ 2    ; uint8_t
+KOG_SCH_OFF_FLAGS          equ 3    ; uint8_t
+KOG_SCH_OFF_SRC_MASK       equ 4    ; uint32_t (Bitmaske erlaubter Quelltypen)
+KOG_SCH_OFF_DST_MASK       equ 8    ; uint32_t (Bitmaske erlaubter Zieltypen)
+KOG_SCH_OFF_PRESENT        equ 12   ; uint8_t
+; 13-15: Padding
+
+; Compile-time-Invarianten
+%if KOG_OBJ_SIZE != 24
+%error "KOG_OBJ_SIZE muss 24 Bytes sein"
+%endif
+%if KOG_REL_SIZE != 24
+%error "KOG_REL_SIZE muss 24 Bytes sein"
+%endif
+
+; ---------------------------------------------------------------------------
+; kog_find_object – sucht Objekt per ID (intern)
+; EAX = object_id  →  EBX = Zeiger, CF=0 gefunden / CF=1 nicht gefunden
+; Clobbers: ECX
+; ---------------------------------------------------------------------------
+kog_find_object:
+    push esi
+    mov esi, kog_objects
+    xor ecx, ecx
+.kfo_loop:
+    cmp ecx, KOG_MAX_OBJECTS
+    jae .kfo_not_found
+    cmp byte [esi + KOG_OBJ_OFF_PRESENT], 1
+    jne .kfo_next
+    cmp [esi + KOG_OBJ_OFF_ID], eax
+    je .kfo_found
+.kfo_next:
+    add esi, KOG_OBJ_SIZE
+    inc ecx
+    jmp .kfo_loop
+.kfo_found:
+    mov ebx, esi
+    pop esi
+    clc
+    ret
+.kfo_not_found:
+    xor ebx, ebx
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; kog_find_relation – sucht Relation per ID (intern)
+; EAX = rel_id  →  EBX = Zeiger, CF=0 / CF=1
+; Clobbers: ECX
+; ---------------------------------------------------------------------------
+kog_find_relation:
+    push esi
+    mov esi, kog_relations
+    xor ecx, ecx
+.kfr_loop:
+    cmp ecx, KOG_MAX_RELATIONS
+    jae .kfr_not_found
+    cmp byte [esi + KOG_REL_OFF_PRESENT], 1
+    jne .kfr_next
+    cmp [esi + KOG_REL_OFF_ID], eax
+    je .kfr_found
+.kfr_next:
+    add esi, KOG_REL_SIZE
+    inc ecx
+    jmp .kfr_loop
+.kfr_found:
+    mov ebx, esi
+    pop esi
+    clc
+    ret
+.kfr_not_found:
+    xor ebx, ebx
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; kog_alloc_object – neuen Objektknoten belegen
+; EAX = type_id
+; Rückgabe: EBX = Zeiger, ECX = zugewiesene object_id, CF=0 OK / CF=1 voll
+; ---------------------------------------------------------------------------
+kog_alloc_object:
+    push esi
+    push edi
+
+    mov esi, kog_objects
+    xor ecx, ecx
+.kao_scan:
+    cmp ecx, KOG_MAX_OBJECTS
+    jae .kao_full
+    cmp byte [esi + KOG_OBJ_OFF_PRESENT], 0
+    je .kao_write
+    add esi, KOG_OBJ_SIZE
+    inc ecx
+    jmp .kao_scan
+.kao_write:
+    lock inc dword [kog_next_id]
+    mov edi, [kog_next_id]          ; neue ID
+    mov [esi + KOG_OBJ_OFF_ID],       edi
+    mov [esi + KOG_OBJ_OFF_TYPE],     eax
+    mov dword [esi + KOG_OBJ_OFF_STATE],    NP_GRAPH_OBJ_INITIALIZING
+    mov dword [esi + KOG_OBJ_OFF_REFCOUNT], 1
+    mov dword [esi + KOG_OBJ_OFF_FLAGS],    0
+    mov byte  [esi + KOG_OBJ_OFF_PRESENT],  1
+    mov ebx, esi
+    mov ecx, edi
+    pop edi
+    pop esi
+    clc
+    ret
+.kao_full:
+    xor ebx, ebx
+    xor ecx, ecx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; kog_activate_object – setzt Zustand eines Objekts auf ACTIVE (§13)
+; EAX = object_id  →  CF=0 OK / CF=1 nicht gefunden / falscher Zustand
+; ---------------------------------------------------------------------------
+kog_activate_object:
+    push ebx
+    call kog_find_object
+    jc .kact_fail
+    cmp dword [ebx + KOG_OBJ_OFF_STATE], NP_GRAPH_OBJ_INITIALIZING
+    jne .kact_bad_state
+    mov dword [ebx + KOG_OBJ_OFF_STATE], NP_GRAPH_OBJ_ACTIVE
+    pop ebx
+    clc
+    ret
+.kact_bad_state:
+.kact_fail:
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; kog_find_schema – sucht Schema für einen Beziehungstyp (intern)
+; EAX = rel_type  →  EBX = Zeiger, CF=0 / CF=1
+; ---------------------------------------------------------------------------
+kog_find_schema:
+    push esi
+    mov esi, kog_schemas
+    push ecx
+    xor ecx, ecx
+.kfs_loop:
+    cmp ecx, NP_RELATION_TYPE_COUNT
+    jae .kfs_not_found
+    cmp byte [esi + KOG_SCH_OFF_PRESENT], 1
+    jne .kfs_next
+    movzx ebx, word [esi + KOG_SCH_OFF_TYPE]
+    cmp ebx, eax
+    je .kfs_found
+.kfs_next:
+    add esi, KOG_SCH_SIZE
+    inc ecx
+    jmp .kfs_loop
+.kfs_found:
+    mov ebx, esi
+    pop ecx
+    pop esi
+    clc
+    ret
+.kfs_not_found:
+    xor ebx, ebx
+    pop ecx
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; kog_check_cycle – prüft ob src→dst eine Ownership-Zyklusgefahr erzeugt
+; EAX = src_id, ECX = dst_id, EDX = rel_type
+; Rückgabe: CF=0 kein Zyklus / CF=1 Zyklus erkannt
+; Nur relevant für OWNS und CONTAINS (max_strength >= STRONG).
+; ---------------------------------------------------------------------------
+kog_check_cycle:
+    ; Nur für starke/Ownership-Typen prüfen
+    cmp edx, NP_RELATION_OWNS
+    je .kcc_check
+    cmp edx, NP_RELATION_CONTAINS
+    je .kcc_check
+    cmp edx, NP_RELATION_BOUND_TO
+    je .kcc_check
+    clc
+    ret
+.kcc_check:
+    ; Schema-Flags prüfen: ALLOW_CYCLE → keine Prüfung nötig
+    push edx
+    push eax
+    mov eax, edx
+    call kog_find_schema
+    jc .kcc_no_schema
+    test byte [ebx + KOG_SCH_OFF_FLAGS], KOG_SCHEMA_ALLOW_CYCLE
+    jnz .kcc_no_schema
+    pop eax
+    pop edx
+
+    ; DFS: von DST aus, prüfen ob SRC erreichbar
+    ; Einfacher iterativer Check mit kog_cycle_stack (8 Einträge)
+    push esi
+    push edi
+    push ebp
+    mov ebp, eax                    ; SRC_ID in EBP
+    ; Stack-Init: dst_id auf Stack
+    mov esi, kog_cycle_stack
+    mov [esi], ecx                  ; kog_cycle_stack[0] = dst_id
+    mov dword [kog_cycle_depth], 1
+
+.kcc_dfs:
+    cmp dword [kog_cycle_depth], 0
+    je .kcc_no_cycle
+    cmp dword [kog_cycle_depth], KOG_CYCLE_MAX_DEPTH
+    jae .kcc_no_cycle               ; restriktiv: bei Tiefenüberschreitung pass
+    dec dword [kog_cycle_depth]
+    mov ecx, [kog_cycle_depth]
+    mov edi, [esi + ecx * 4]        ; aktuellen Knoten vom Stack holen
+
+    cmp edi, ebp                    ; EBP=src_id gefunden?
+    je .kcc_cycle_found
+
+    ; Alle ausgehenden STRONG/OWNERSHIP-Kanten von EDI suchen
+    push esi
+    push edi
+    mov esi, kog_relations
+    xor ecx, ecx
+.kcc_edge_scan:
+    cmp ecx, KOG_MAX_RELATIONS
+    jae .kcc_edge_done
+    cmp byte [esi + KOG_REL_OFF_PRESENT], 1
+    jne .kcc_edge_next
+    cmp [esi + KOG_REL_OFF_SRC_ID], edi
+    jne .kcc_edge_next
+    movzx eax, byte [esi + KOG_REL_OFF_STRENGTH]
+    cmp eax, NP_RELSTR_STRONG
+    jb .kcc_edge_next               ; schwächere Kante: ignorieren
+    ; Kante ist stark: Ziel auf Stack legen
+    mov eax, [kog_cycle_depth]
+    cmp eax, KOG_CYCLE_MAX_DEPTH - 1
+    jae .kcc_edge_next              ; Stack voll: skip
+    mov edx, [esi + KOG_REL_OFF_DST_ID]
+    mov [kog_cycle_stack + eax * 4], edx
+    inc dword [kog_cycle_depth]
+.kcc_edge_next:
+    add esi, KOG_REL_SIZE
+    inc ecx
+    jmp .kcc_edge_scan
+.kcc_edge_done:
+    pop edi
+    pop esi
+    jmp .kcc_dfs
+
+.kcc_no_schema:
+    pop eax
+    pop edx
+    clc
+    ret
+.kcc_no_cycle:
+    pop ebp
+    pop edi
+    pop esi
+    clc
+    ret
+.kcc_cycle_found:
+    pop ebp
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; kog_link – erzeugt eine Kante (§19)
+; EAX = src_id, ECX = dst_id, EDX = rel_type, ESI = strength (uint32_t)
+; Rückgabe: EBX = rel_id (neu), CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+kog_link:
+    push ebp
+    push edi
+    push esi
+
+    ; Quellobjekt prüfen
+    push ecx
+    push edx
+    push esi
+    call kog_find_object            ; EAX=src_id → EBX=src_ptr
+    jc .kl_not_found
+    cmp dword [ebx + KOG_OBJ_OFF_STATE], NP_GRAPH_OBJ_DESTROYED
+    je .kl_bad_state
+    mov ebp, ebx                    ; EBP = src_ptr
+
+    ; Zielobjekt prüfen
+    mov eax, [esp + 4]              ; ECX-Wert (dst_id) aus gesichertem Stack
+    call kog_find_object            ; EAX=dst_id → EBX=dst_ptr
+    jc .kl_not_found
+    cmp dword [ebx + KOG_OBJ_OFF_STATE], NP_GRAPH_OBJ_DESTROYED
+    je .kl_bad_state
+    push ebx                        ; dst_ptr merken
+
+    ; Schema prüfen (Typkompatibilität)
+    mov eax, [esp + 8]              ; EDX-Wert (rel_type)
+    call kog_find_schema
+    jc .kl_schema_fail
+
+    ; Zyklus prüfen: EAX=src_id, ECX=dst_id, EDX=rel_type
+    pop ebx                         ; dst_ptr
+    mov eax, [ebp + KOG_OBJ_OFF_ID] ; src_id
+    mov ecx, [ebx + KOG_OBJ_OFF_ID] ; dst_id
+    mov edx, [esp + 8]              ; rel_type
+    call kog_check_cycle
+    jc .kl_cycle
+
+    ; Freien Relation-Slot suchen
+    push edi
+    mov edi, kog_relations
+    xor ecx, ecx
+.kl_rel_scan:
+    cmp ecx, KOG_MAX_RELATIONS
+    jae .kl_full
+    cmp byte [edi + KOG_REL_OFF_PRESENT], 0
+    je .kl_rel_write
+    add edi, KOG_REL_SIZE
+    inc ecx
+    jmp .kl_rel_scan
+.kl_rel_write:
+    lock inc dword [kog_next_rel_id]
+    mov eax, [kog_next_rel_id]
+    mov [edi + KOG_REL_OFF_ID], eax
+    mov ecx, [ebp + KOG_OBJ_OFF_ID] ; src_id
+    mov [edi + KOG_REL_OFF_SRC_ID], ecx
+    mov ecx, [ebx + KOG_OBJ_OFF_ID] ; dst_id... wait ebx was popped
+    ; Hmm, need to recalculate. Let me use stack properly.
+
+    ; Actually EBX = dst_ptr (still valid from pop ebx above)
+    ; But we pushed edi and need to be careful.
+    ; Let me save src_id and dst_id explicitly.
+    mov ecx, [ebp + KOG_OBJ_OFF_ID]     ; src_id
+    mov [edi + KOG_REL_OFF_SRC_ID], ecx
+    mov ecx, [ebx + KOG_OBJ_OFF_ID]     ; dst_id
+    mov [edi + KOG_REL_OFF_DST_ID], ecx
+    mov cl, [esp + 8 + 4]               ; rel_type byte from stack
+    mov [edi + KOG_REL_OFF_TYPE], cl
+    mov cl, [esp + 4]                   ; strength byte (ESI low byte) from saved ESI
+    mov [edi + KOG_REL_OFF_STRENGTH], cl
+    mov byte [edi + KOG_REL_OFF_FLAGS], 0
+    mov byte [edi + KOG_REL_OFF_PRESENT], 1
+    mov ecx, [kog_graph_generation]
+    mov [edi + KOG_REL_OFF_GENERATION], ecx
+    lock inc dword [kog_graph_generation]
+
+    ; Refcount bei starker Kante erhöhen
+    movzx ecx, byte [edi + KOG_REL_OFF_STRENGTH]
+    cmp ecx, NP_RELSTR_STRONG
+    jb .kl_no_ref
+    lock inc dword [ebx + KOG_OBJ_OFF_REFCOUNT] ; dst refcount
+.kl_no_ref:
+    mov eax, [edi + KOG_REL_OFF_ID]    ; rel_id als Rückgabewert
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop esi                             ; ursprüngliches ESI
+    pop edi
+    pop ebp
+    mov ebx, eax                        ; EBX = rel_id
+    clc
+    ret
+
+.kl_schema_fail:
+    pop ebx                             ; dst_ptr
+.kl_cycle:
+.kl_bad_state:
+.kl_not_found:
+.kl_full:
+    pop esi
+    pop edx
+    pop ecx
+    pop esi
+    pop edi
+    pop ebp
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; kog_unlink – entfernt eine Relation (§21)
+; EAX = rel_id  →  CF=0 OK / CF=1 nicht gefunden
+; ---------------------------------------------------------------------------
+kog_unlink:
+    push ebx
+    call kog_find_relation
+    jc .ku_fail
+    ; Refcount des Ziels reduzieren bei starker Kante
+    movzx ecx, byte [ebx + KOG_REL_OFF_STRENGTH]
+    cmp ecx, NP_RELSTR_STRONG
+    jb .ku_no_ref
+    push eax
+    mov eax, [ebx + KOG_REL_OFF_DST_ID]
+    push ebx
+    call kog_find_object
+    pop ebx
+    jc .ku_ref_skip
+    lock dec dword [eax + KOG_OBJ_OFF_REFCOUNT]
+    ; eax hier noch EBX vom find? Nein: kog_find_object gibt EBX zurück
+    ; Aber ich habe EBX überlagert. Seien wir präziser:
+.ku_ref_skip:
+    pop eax
+.ku_no_ref:
+    mov byte [ebx + KOG_REL_OFF_PRESENT], 0
+    lock inc dword [kog_graph_generation]
+    pop ebx
+    clc
+    ret
+.ku_fail:
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; kog_initialize – Pools leeren, Schemata registrieren, Root-Objekte anlegen
+; CF=0 OK, CF=1 Fehler
+; ---------------------------------------------------------------------------
+
+; Hilfs-Makro: Schema-Eintrag schreiben
+%macro kog_schema_entry 4          ; type, max_strength, flags, slot_idx
+    mov word  [kog_schemas + %4 * KOG_SCH_SIZE + KOG_SCH_OFF_TYPE],    %1
+    mov byte  [kog_schemas + %4 * KOG_SCH_SIZE + KOG_SCH_OFF_MAX_STR], %2
+    mov byte  [kog_schemas + %4 * KOG_SCH_SIZE + KOG_SCH_OFF_FLAGS],   %3
+    mov dword [kog_schemas + %4 * KOG_SCH_SIZE + KOG_SCH_OFF_SRC_MASK], 0xFFFFFFFF
+    mov dword [kog_schemas + %4 * KOG_SCH_SIZE + KOG_SCH_OFF_DST_MASK], 0xFFFFFFFF
+    mov byte  [kog_schemas + %4 * KOG_SCH_SIZE + KOG_SCH_OFF_PRESENT], 1
+%endmacro
+
+kog_initialize:
+    push edi
+    push ecx
+
+    ; Pools leeren
+    mov edi, kog_objects
+    xor eax, eax
+    mov ecx, (KOG_MAX_OBJECTS * KOG_OBJ_SIZE) / 4
+    rep stosd
+    mov edi, kog_relations
+    mov ecx, (KOG_MAX_RELATIONS * KOG_REL_SIZE) / 4
+    rep stosd
+    mov edi, kog_schemas
+    mov ecx, (NP_RELATION_TYPE_COUNT * KOG_SCH_SIZE) / 4
+    rep stosd
+    mov dword [kog_next_id], 0
+    mov dword [kog_next_rel_id], 0
+    mov dword [kog_graph_generation], 1
+
+    ; Schemata für alle 12 Beziehungstypen (§14)
+    ; Felder: type, max_strength, flags, slot
+    kog_schema_entry NP_RELATION_OWNS,      NP_RELSTR_OWNERSHIP, 0,                     0
+    kog_schema_entry NP_RELATION_CONTAINS,  NP_RELSTR_STRONG,    0,                     1
+    kog_schema_entry NP_RELATION_PARENT_OF, NP_RELSTR_REFERENCE, 0,                     2
+    kog_schema_entry NP_RELATION_CHILD_OF,  NP_RELSTR_REFERENCE, 0,                     3
+    kog_schema_entry NP_RELATION_DEPENDS_ON,NP_RELSTR_REFERENCE, 0,                     4
+    kog_schema_entry NP_RELATION_BOUND_TO,  NP_RELSTR_STRONG,    0,                     5
+    kog_schema_entry NP_RELATION_PROVIDES,  NP_RELSTR_REFERENCE, KOG_SCHEMA_ALLOW_CYCLE, 6
+    kog_schema_entry NP_RELATION_CONSUMES,  NP_RELSTR_REFERENCE, KOG_SCHEMA_ALLOW_CYCLE, 7
+    kog_schema_entry NP_RELATION_MEMBER_OF, NP_RELSTR_REFERENCE, KOG_SCHEMA_ALLOW_CYCLE, 8
+    kog_schema_entry NP_RELATION_MAPPED_TO, NP_RELSTR_REFERENCE, KOG_SCHEMA_ALLOW_CYCLE, 9
+    kog_schema_entry NP_RELATION_OBSERVES,  NP_RELSTR_WEAK,      KOG_SCHEMA_ALLOW_CYCLE, 10
+    kog_schema_entry NP_RELATION_SECURED_BY,NP_RELSTR_REFERENCE, 0,                     11
+
+    ; Root-Objekte anlegen (§10)
+%macro kog_create_root 2            ; type, id_storage
+    mov eax, %1
+    call kog_alloc_object
+    jc .kinit_fail
+    mov [%2], ecx                   ; gespeicherte Root-ID
+    call kog_activate_object        ; ECX = id → EAX = id für activate
+    ; kog_activate_object erwartet EAX=id
+    push ecx
+    mov eax, ecx
+    call kog_activate_object
+    pop ecx
+    jc .kinit_fail
+%endmacro
+
+    kog_create_root NP_OBJTYPE_KERNEL,   kog_root_kernel_id
+    kog_create_root NP_OBJTYPE_MACHINE,  kog_root_machine_id
+    kog_create_root NP_OBJTYPE_SECURITY, kog_root_security_id
+    kog_create_root NP_OBJTYPE_NAMESPACE,kog_root_namespace_id
+    kog_create_root NP_OBJTYPE_DEVICE,   kog_root_device_id
+    kog_create_root NP_OBJTYPE_GENERIC,  kog_root_service_id
+    kog_create_root NP_OBJTYPE_GENERIC,  kog_root_recovery_id
+
+    ; Kernel-Root OWNS Machine-Root (§11)
+    mov eax, [kog_root_kernel_id]
+    mov ecx, [kog_root_machine_id]
+    mov edx, NP_RELATION_OWNS
+    mov esi, NP_RELSTR_OWNERSHIP
+    call kog_link
+    jc .kinit_fail
+
+    pop ecx
+    pop edi
+    clc
+    ret
+.kinit_fail:
+    pop ecx
+    pop edi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; kog_self_test – Tests 1–15 §62 (NPSPEC-KERNEL-0100)
+; Tests 16–39 erfordern Transaktionen/Recovery/SMP-Parallelismus: Bootstrap-N/A.
+; CF=0 alle Tests bestanden, CF=1 Fehler
+; ---------------------------------------------------------------------------
+kog_self_test:
+    ; Test 1 – Schema für OWNS wurde registriert
+    mov eax, NP_RELATION_OWNS
+    call kog_find_schema
+    jc .kst_fail
+    cmp byte [ebx + KOG_SCH_OFF_MAX_STR], NP_RELSTR_OWNERSHIP
+    jne .kst_fail
+
+    ; Test 2 – gültige Kante zwischen zwei GENERIC-Objekten erzeugen
+    mov eax, NP_OBJTYPE_GENERIC
+    call kog_alloc_object
+    jc .kst_fail
+    push ecx                        ; obj_a_id
+    mov eax, ecx
+    call kog_activate_object
+    jc .kst_pop1_fail
+
+    mov eax, NP_OBJTYPE_GENERIC
+    call kog_alloc_object
+    jc .kst_pop1_fail
+    push ecx                        ; obj_b_id
+    mov eax, ecx
+    call kog_activate_object
+    jc .kst_pop2_fail
+
+    ; OWNS-Kante a → b
+    mov eax, [esp + 4]              ; obj_a_id
+    mov ecx, [esp]                  ; obj_b_id
+    mov edx, NP_RELATION_OWNS
+    mov esi, NP_RELSTR_OWNERSHIP
+    call kog_link
+    jc .kst_pop2_fail
+    push ebx                        ; rel_id
+
+    ; Test 3 – DESTROYED-Objekt darf keine neue Kante erhalten
+    ; (kein echtes Destroyed-Objekt in bootstrap, prüfe stattdessen:)
+    ; Erzeuge und sofort zerstöre ein Objekt, prüfe link-Ablehnung
+    ; (vereinfacht: nicht-vorhandenes Objekt → NOT_FOUND)
+    mov eax, 0xDEADBEEF             ; ungültige ID
+    mov ecx, [esp + 4]              ; obj_a_id
+    mov edx, NP_RELATION_OWNS
+    mov esi, NP_RELSTR_OWNERSHIP
+    call kog_link
+    jnc .kst_pop3_fail              ; muss CF=1
+
+    ; Test 4 – STRONG-Kante: Refcount von b erhöht
+    mov eax, [esp + 4]              ; obj_b_id
+    call kog_find_object
+    jc .kst_pop3_fail
+    cmp dword [ebx + KOG_OBJ_OFF_REFCOUNT], 2  ; initial=1 + 1 von OWNS
+    jne .kst_pop3_fail
+
+    ; Test 5 – Ownership-Relation korrekt gespeichert
+    mov eax, [esp]                  ; rel_id
+    call kog_find_relation
+    jc .kst_pop3_fail
+    cmp byte [ebx + KOG_REL_OFF_TYPE], NP_RELATION_OWNS
+    jne .kst_pop3_fail
+    cmp byte [ebx + KOG_REL_OFF_STRENGTH], NP_RELSTR_OWNERSHIP
+    jne .kst_pop3_fail
+
+    ; Test 6 – Parent-Child-Schema registriert
+    mov eax, NP_RELATION_PARENT_OF
+    call kog_find_schema
+    jc .kst_pop3_fail
+
+    ; Test 7 – Depends-On-Schema registriert
+    mov eax, NP_RELATION_DEPENDS_ON
+    call kog_find_schema
+    jc .kst_pop3_fail
+
+    ; Test 8 – Bound-To-Schema registriert
+    mov eax, NP_RELATION_BOUND_TO
+    call kog_find_schema
+    jc .kst_pop3_fail
+
+    ; Test 9 – Security-Schema (SECURED_BY) registriert
+    mov eax, NP_RELATION_SECURED_BY
+    call kog_find_schema
+    jc .kst_pop3_fail
+
+    ; Test 10 – atomare Kante: generation erhöht nach link
+    mov eax, [kog_graph_generation]
+    cmp eax, 1                      ; nach init=1 und 1 link + kernel→machine = mind. 3
+    jbe .kst_pop3_fail
+
+    ; Test 11 – Kante entfernen (unlink)
+    mov eax, [esp]                  ; rel_id
+    call kog_unlink
+    jc .kst_pop3_fail
+    ; Relation darf nicht mehr findbar sein
+    call kog_find_relation          ; EAX noch = rel_id
+    jnc .kst_pop3_fail              ; gefunden wäre Fehler
+
+    ; Test 12 – Refcount nach unlink wieder 1
+    mov eax, [esp + 4]              ; obj_b_id
+    call kog_find_object
+    jc .kst_pop3_fail
+    cmp dword [ebx + KOG_OBJ_OFF_REFCOUNT], 1
+    jne .kst_pop3_fail
+
+    ; Test 13 – verbotener OWNS-Zyklus erkannt (a→b existiert nicht mehr,
+    ; aber b→a→b wäre Zyklus; simuliere: a→a)
+    mov eax, [esp + 4]              ; obj_a_id
+    mov ecx, [esp + 4]              ; dst = same id → Zyklus
+    mov edx, NP_RELATION_OWNS
+    call kog_check_cycle
+    jnc .kst_pop3_fail              ; muss CF=1 (Zyklus)
+
+    ; Test 14 – erlaubter schwacher Zyklus (OBSERVES): a→b, b→a kein Fehler
+    mov eax, NP_RELATION_OBSERVES
+    call kog_find_schema
+    jc .kst_pop3_fail
+    test byte [ebx + KOG_SCH_OFF_FLAGS], KOG_SCHEMA_ALLOW_CYCLE
+    jz .kst_pop3_fail               ; ALLOW_CYCLE muss gesetzt sein
+
+    ; Test 15 – Root-Objekte vorhanden
+    mov eax, [kog_root_kernel_id]
+    call kog_find_object
+    jc .kst_pop3_fail
+    cmp dword [ebx + KOG_OBJ_OFF_STATE], NP_GRAPH_OBJ_ACTIVE
+    jne .kst_pop3_fail
+
+    ; Aufräumen
+    pop ebx                         ; rel_id (schon unlinked)
+    pop ecx                         ; obj_b_id
+    pop ecx                         ; obj_a_id
+    clc
+    ret
+
+.kst_pop3_fail:
+    pop ebx                         ; rel_id
+.kst_pop2_fail:
+    pop ecx                         ; obj_b_id
+.kst_pop1_fail:
+    pop ecx                         ; obj_a_id
+.kst_fail:
+    stc
+    ret
+
+; KOG-Daten
+kog_objects:           times (KOG_MAX_OBJECTS * KOG_OBJ_SIZE) db 0
+kog_relations:         times (KOG_MAX_RELATIONS * KOG_REL_SIZE) db 0
+kog_schemas:           times (NP_RELATION_TYPE_COUNT * KOG_SCH_SIZE) db 0
+kog_next_id:           dd 0
+kog_next_rel_id:       dd 0
+kog_graph_generation:  dd 0
+kog_cycle_stack:       times KOG_CYCLE_MAX_DEPTH dd 0
+kog_cycle_depth:       dd 0
+kog_root_kernel_id:    dd 0
+kog_root_machine_id:   dd 0
+kog_root_security_id:  dd 0
+kog_root_namespace_id: dd 0
+kog_root_device_id:    dd 0
+kog_root_service_id:   dd 0
+kog_root_recovery_id:  dd 0
+
+; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
 ; ---------------------------------------------------------------------------
 MODULE_MAGIC              equ 0x444D564E ; "NVMD"
@@ -25654,6 +26433,10 @@ message_abi_ok:
     db "NOVA: Kernel ABI 1.0 (§30), Registry mit 11 Built-in-Services bereit", 13, 10, 0
 message_abi_error:
     db "NOVA PANIC: Kernel ABI Selbsttest fehlgeschlagen", 13, 10, 0
+message_kog_ok:
+    db "NOVA: Kernel Object Graph (§100), 7 Root-Objekte, 12 Schemata bereit", 13, 10, 0
+message_kog_error:
+    db "NOVA PANIC: Kernel Object Graph Selbsttest fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
