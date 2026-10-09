@@ -181,6 +181,8 @@ extern Project                g_project;
 extern FINDREPLACEW g_fr;
 extern HWND         g_hFindDlg;
 extern UINT         g_msgFindReplace;
+extern wchar_t      g_szFindBuf[512];
+extern wchar_t      g_szReplaceBuf[512];
 
 /* -------------------------------------------------------------------------
  * Editor API
@@ -205,6 +207,7 @@ int  EditorReplaceAll(const wchar_t *findText, const wchar_t *replaceText, DWORD
 void EditorCommentToggle();
 void EditorUpdateStatusBar();
 void EditorGetCaretPos(int *pLine, int *pCol);
+void EditorOnSelChange();
 
 /* -------------------------------------------------------------------------
  * Explorer API
