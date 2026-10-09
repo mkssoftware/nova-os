@@ -261,6 +261,11 @@ void LayoutCompute(HWND hw, RECT *rExp, RECT *rEd, RECT *rOut, RECT *rTab);
 void LayoutApply(HWND hw);
 
 /* -------------------------------------------------------------------------
+ * Custom title bar
+ * ---------------------------------------------------------------------- */
+#define TITLEBAR_H     32    /* custom title bar height in px */
+
+/* -------------------------------------------------------------------------
  * Ribbon (NPSPEC-STUDIO-RIBBON-0001)
  * ---------------------------------------------------------------------- */
 #define RIBBON_HEIGHT  102   /* total ribbon height in px */

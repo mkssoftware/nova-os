@@ -1,4 +1,5 @@
 #include "studio.h"
+#include <cmath>
 
 /* =========================================================================
  * Globals defined here
@@ -183,6 +184,182 @@ static HMENU CreateStudioMenu() {
 }
 
 /* =========================================================================
+ * Custom Title Bar
+ * ====================================================================== */
+static int  g_tbHover  = 0;     /* 0=none 1=min 2=max 3=close */
+static bool g_tbActive = true;
+
+static void InvalidateTitleBar(HWND hw) {
+    RECT rc; GetClientRect(hw, &rc);
+    rc.bottom = TITLEBAR_H;
+    InvalidateRect(hw, &rc, FALSE);
+}
+
+/* Draw 6-arm asterisk logo */
+static void DrawLogo(HDC hdc, int cx, int cy) {
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(0x89, 0xB4, 0xFA));
+    HPEN old = (HPEN)SelectObject(hdc, pen);
+    for (int i = 0; i < 6; i++) {
+        double a = i * 3.14159265 / 3.0;
+        int x2 = cx + (int)(9.0 * cos(a));
+        int y2 = cy + (int)(9.0 * sin(a));
+        MoveToEx(hdc, cx, cy, nullptr);
+        LineTo(hdc, x2, y2);
+    }
+    SelectObject(hdc, old);
+    DeleteObject(pen);
+    /* Center dot */
+    HBRUSH br = CreateSolidBrush(RGB(0x89, 0xB4, 0xFA));
+    HPEN   np = CreatePen(PS_NULL, 0, 0);
+    SelectObject(hdc, br); SelectObject(hdc, np);
+    Ellipse(hdc, cx-2, cy-2, cx+3, cy+3);
+    SelectObject(hdc, old);
+    DeleteObject(br); DeleteObject(np);
+}
+
+static void DrawTitleBar(HDC hdc, HWND hw) {
+    RECT cl; GetClientRect(hw, &cl);
+    int W = cl.right;
+    int H = TITLEBAR_H;
+
+    /* ---- Background ---- */
+    COLORREF tbBg = RGB(0x18, 0x18, 0x27);
+    HBRUSH brBg = CreateSolidBrush(tbBg);
+    RECT tb = {0, 0, W, H};
+    FillRect(hdc, &tb, brBg);
+    DeleteObject(brBg);
+
+    /* ---- Bottom separator ---- */
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(0x2E, 0x2E, 0x45));
+    HPEN opn = (HPEN)SelectObject(hdc, pen);
+    MoveToEx(hdc, 0, H - 1, nullptr);
+    LineTo(hdc, W - 138, H - 1);
+    SelectObject(hdc, opn); DeleteObject(pen);
+
+    /* ---- Logo (x=14, vertically centered) ---- */
+    DrawLogo(hdc, 16, H / 2);
+
+    /* ---- "NovaStudio" text ---- */
+    HFONT fBold = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HFONT fNorm = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HFONT old = (HFONT)SelectObject(hdc, fBold);
+    SetBkMode(hdc, TRANSPARENT);
+    COLORREF textClr = g_tbActive ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x88, 0x88, 0xA0);
+    SetTextColor(hdc, textClr);
+    RECT rNS = {30, 0, 150, H};
+    DrawTextW(hdc, L"NovaStudio", -1, &rNS, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    /* ---- Separator "|" ---- */
+    SelectObject(hdc, fNorm);
+    SetTextColor(hdc, RGB(0x44, 0x44, 0x60));
+    RECT rSep = {148, 0, 162, H};
+    DrawTextW(hdc, L"|", -1, &rSep, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    /* ---- "ProjektName - Debug  ∨" ---- */
+    std::wstring proj;
+    if (g_project.open && !g_project.name.empty())
+        proj = g_project.name + L" - Debug  ⌄";
+    else
+        proj = L"NovaStudio  ⌄";
+    SetTextColor(hdc, g_tbActive ? RGB(0xA0, 0xA8, 0xBE) : RGB(0x66, 0x66, 0x80));
+    RECT rProj = {162, 0, 162 + 240, H};
+    DrawTextW(hdc, proj.c_str(), -1, &rProj, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    /* ---- Search box ---- */
+    int sbW = 300, sbH = 20;
+    /* center between project label end and buttons; minimum x=420 */
+    int sbX = (W - sbW) / 2;
+    if (sbX < 420) sbX = 420;
+    /* don't overlap buttons (138px from right) */
+    if (sbX + sbW > W - 150) sbX = W - 150 - sbW;
+    int sbY = (H - sbH) / 2;
+
+    if (sbX > 410 && sbX + sbW < W - 140) {
+        /* Background pill */
+        HBRUSH srBr = CreateSolidBrush(RGB(0x26, 0x26, 0x3C));
+        HPEN   srPn = CreatePen(PS_SOLID, 1, RGB(0x3A, 0x3A, 0x54));
+        SelectObject(hdc, srBr); SelectObject(hdc, srPn);
+        RoundRect(hdc, sbX, sbY, sbX + sbW, sbY + sbH, 10, 10);
+        SelectObject(hdc, old); DeleteObject(srBr); DeleteObject(srPn);
+
+        /* Search icon: simple magnifier drawn with GDI */
+        int icx = sbX + 11, icy = sbY + sbH/2;
+        HPEN icPen = CreatePen(PS_SOLID, 1, RGB(0x80, 0x88, 0xA0));
+        SelectObject(hdc, icPen);
+        HBRUSH noBr = (HBRUSH)GetStockObject(NULL_BRUSH);
+        SelectObject(hdc, noBr);
+        Ellipse(hdc, icx-4, icy-4, icx+4, icy+4);
+        MoveToEx(hdc, icx+3, icy+3, nullptr);
+        LineTo(hdc, icx+6, icy+6);
+        SelectObject(hdc, old); DeleteObject(icPen);
+
+        /* Placeholder text */
+        SelectObject(hdc, fNorm);
+        SetTextColor(hdc, RGB(0x60, 0x68, 0x80));
+        RECT rST = {sbX + 18, sbY, sbX + sbW - 6, sbY + sbH};
+        DrawTextW(hdc, L"Suchen (Strg+Q)", -1, &rST, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    /* ---- Window control buttons (min / max / close) ---- */
+    int btnW = 46;
+    int clsX = W - btnW,         maxX = W - btnW*2, minX = W - btnW*3;
+
+    auto fillBtn = [&](int x, int hover, COLORREF hoverClr) {
+        COLORREF c = (g_tbHover == hover) ? hoverClr : tbBg;
+        HBRUSH b = CreateSolidBrush(c);
+        RECT r = {x, 0, x + btnW, H};
+        FillRect(hdc, &r, b);
+        DeleteObject(b);
+    };
+    fillBtn(clsX, 3, RGB(0xC4, 0x2B, 0x1A));
+    fillBtn(maxX, 2, RGB(0x30, 0x30, 0x4A));
+    fillBtn(minX, 1, RGB(0x30, 0x30, 0x4A));
+
+    /* Draw icons via GDI (no font dependency) */
+    COLORREF icActive = g_tbActive ? RGB(0xCC, 0xD4, 0xE4) : RGB(0x66, 0x66, 0x80);
+    auto iconPen = [&](int hover) -> HPEN {
+        COLORREF c = (g_tbHover == hover && hover == 3)
+            ? RGB(0xFF,0xFF,0xFF) : icActive;
+        return CreatePen(PS_SOLID, 1, c);
+    };
+
+    int iy = H / 2;
+    /* Minimize: horizontal bar */
+    {   HPEN p2 = iconPen(1); SelectObject(hdc, p2);
+        MoveToEx(hdc, minX+16, iy, nullptr);
+        LineTo(hdc, minX+30, iy);
+        DeleteObject(SelectObject(hdc, old)); }
+
+    /* Maximize / Restore: square or overlapping squares */
+    {   HPEN p2 = iconPen(2); HBRUSH nb = (HBRUSH)GetStockObject(NULL_BRUSH);
+        SelectObject(hdc, p2); SelectObject(hdc, nb);
+        bool maxed = IsZoomed(hw) != 0;
+        if (!maxed) {
+            Rectangle(hdc, maxX+16, iy-6, maxX+30, iy+6);
+        } else {
+            /* two overlapping squares for "restore" */
+            Rectangle(hdc, maxX+18, iy-4, maxX+30, iy+6);
+            MoveToEx(hdc, maxX+16, iy-6, nullptr); LineTo(hdc, maxX+28, iy-6);
+            LineTo(hdc, maxX+28, iy+4);
+        }
+        DeleteObject(SelectObject(hdc, old)); }
+
+    /* Close: X */
+    {   HPEN p2 = iconPen(3); SelectObject(hdc, p2);
+        MoveToEx(hdc, clsX+16, iy-6, nullptr); LineTo(hdc, clsX+30, iy+6);
+        MoveToEx(hdc, clsX+30, iy-6, nullptr); LineTo(hdc, clsX+16, iy+6);
+        DeleteObject(SelectObject(hdc, old)); }
+
+    /* Cleanup fonts */
+    SelectObject(hdc, old);
+    DeleteObject(fBold); DeleteObject(fNorm);
+}
+
+/* =========================================================================
  * Layout
  * ====================================================================== */
 void LayoutCompute(HWND hw, RECT *rExp, RECT *rEd, RECT *rOut, RECT *rTab) {
@@ -193,7 +370,7 @@ void LayoutCompute(HWND hw, RECT *rExp, RECT *rEd, RECT *rOut, RECT *rTab) {
     if (g_hStatusBar) GetWindowRect(g_hStatusBar, &sbrc);
     int sbH = sbrc.bottom - sbrc.top;
 
-    int top = RIBBON_HEIGHT;
+    int top = TITLEBAR_H + RIBBON_HEIGHT;
     int h   = cl.bottom - sbH;
     int w   = cl.right;
 
@@ -228,7 +405,7 @@ static void OutlineResize(HWND hw) {
     RECT sbrc = {};
     if (g_hStatusBar) GetWindowRect(g_hStatusBar, &sbrc);
     int sbH  = sbrc.bottom - sbrc.top;
-    int top  = RIBBON_HEIGHT;
+    int top  = TITLEBAR_H + RIBBON_HEIGHT;
     int h    = cl.bottom - sbH;
     int outW = g_showOutline ? g_outlineWidth : 0;
     SetWindowPos(hOutCont, nullptr,
@@ -240,7 +417,7 @@ static void OutlineResize(HWND hw) {
 
 void LayoutApply(HWND hw) {
     RECT cl; GetClientRect(hw, &cl);
-    RibbonResize(0, 0, cl.right);
+    RibbonResize(0, TITLEBAR_H, cl.right);
 
     RECT rExp, rEd, rOut, rTab;
     LayoutCompute(hw, &rExp, &rEd, &rOut, &rTab);
@@ -470,6 +647,7 @@ static void OpenProject(const wchar_t *folder) {
     g_project.open     = true;
     ExplorerSetRoot(folder);
     EditorUpdateTitle();
+    InvalidateTitleBar(g_hMain);
 
     wchar_t msg[MAX_PATH + 32];
     swprintf_s(msg, L"Projekt '%s' geöffnet.", g_project.name.c_str());
@@ -739,6 +917,85 @@ static HACCEL CreateAccelerators() {
 static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
 
+    /* ---- Custom title bar: claim caption area as client ---- */
+    case WM_NCCALCSIZE:
+        if (wp) {
+            NCCALCSIZE_PARAMS *p = (NCCALCSIZE_PARAMS*)lp;
+            RECT wr = p->rgrc[0];
+            DefWindowProcW(hw, WM_NCCALCSIZE, wp, lp);
+            /* Extend client area upward to cover caption */
+            p->rgrc[0].top -= TITLEBAR_H;
+            /* Floor: don't go above the resize border */
+            int borderH = GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            int minTop = wr.top + (IsMaximized(hw) ? 0 : borderH);
+            if (p->rgrc[0].top < minTop) p->rgrc[0].top = minTop;
+            return 0;
+        }
+        return DefWindowProcW(hw, msg, wp, lp);
+
+    case WM_NCHITTEST: {
+        POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        RECT wr; GetWindowRect(hw, &wr);
+        int borderH = IsMaximized(hw) ? 0
+            : GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+        int relY = pt.y - wr.top - borderH;
+        int relX = pt.x - wr.left;
+        int winW = wr.right - wr.left;
+        if (relY >= 0 && relY < TITLEBAR_H) {
+            if (relX >= winW - 46)  return HTCLOSE;
+            if (relX >= winW - 92)  return HTMAXBUTTON;
+            if (relX >= winW - 138) return HTMINBUTTON;
+            return HTCAPTION;
+        }
+        return DefWindowProcW(hw, msg, wp, lp);
+    }
+
+    case WM_NCMOUSEMOVE: {
+        int newH = 0;
+        if      (wp == HTCLOSE)     newH = 3;
+        else if (wp == HTMAXBUTTON) newH = 2;
+        else if (wp == HTMINBUTTON) newH = 1;
+        if (newH != g_tbHover) { g_tbHover = newH; InvalidateTitleBar(hw); UpdateWindow(hw); }
+        return DefWindowProcW(hw, msg, wp, lp);
+    }
+    case WM_NCMOUSELEAVE:
+        if (g_tbHover) { g_tbHover = 0; InvalidateTitleBar(hw); UpdateWindow(hw); }
+        return DefWindowProcW(hw, msg, wp, lp);
+
+    case WM_ACTIVATE:
+        g_tbActive = (LOWORD(wp) != WA_INACTIVE);
+        InvalidateTitleBar(hw);
+        break;
+
+    case WM_NCLBUTTONDBLCLK:
+        if (wp == HTCAPTION) {
+            SendMessageW(hw, WM_SYSCOMMAND,
+                IsZoomed(hw) ? SC_RESTORE : SC_MAXIMIZE, lp);
+            return 0;
+        }
+        return DefWindowProcW(hw, msg, wp, lp);
+
+    case WM_ERASEBKGND: {
+        /* Fill only the title bar strip; child windows handle the rest */
+        HDC hdc2 = (HDC)wp;
+        RECT tb2 = {0, 0, 9999, TITLEBAR_H};
+        RECT cl2; GetClientRect(hw, &cl2);
+        tb2.right = cl2.right;
+        HBRUSH b2 = CreateSolidBrush(RGB(0x18, 0x18, 0x27));
+        FillRect(hdc2, &tb2, b2);
+        DeleteObject(b2);
+        return 1;
+    }
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc2 = BeginPaint(hw, &ps);
+        if (ps.rcPaint.top < TITLEBAR_H)
+            DrawTitleBar(hdc2, hw);
+        EndPaint(hw, &ps);
+        return 0;
+    }
+
     case WM_CREATE: {
         RECT cl; GetClientRect(hw, &cl);
 
@@ -749,14 +1006,14 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         StatusCreate(hw);
 
         /* === Explorer-Panel (links) === */
-        RECT rExp = {0, RIBBON_HEIGHT, g_explorerWidth, cl.bottom};
+        RECT rExp = {0, TITLEBAR_H + RIBBON_HEIGHT, g_explorerWidth, cl.bottom};
         ExplorerCreate(hw, rExp);
 
         /* === Document-Outline-Panel (rechts) mit Header + Suche + Tree === */
         {
             int outW = g_showOutline ? g_outlineWidth : 0;
             int outX = cl.right - outW;
-            int outH = cl.bottom - RIBBON_HEIGHT;
+            int outH = cl.bottom - (TITLEBAR_H + RIBBON_HEIGHT);
 
             /* Äußeres Container-Fenster */
             WNDCLASSEXW wcOut = {};
@@ -828,7 +1085,7 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
 
             HWND hOutCont = CreateWindowExW(0, L"NovaDocOutlineContainer", nullptr,
                 WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-                outX, RIBBON_HEIGHT, outW, outH,
+                outX, TITLEBAR_H + RIBBON_HEIGHT, outW, outH,
                 hw, nullptr, GetModuleHandleW(nullptr), nullptr);
 
             /* Suchfeld */
@@ -886,7 +1143,7 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         /* === Editor (Mitte) === */
-        RECT rEd = {g_explorerWidth, RIBBON_HEIGHT,
+        RECT rEd = {g_explorerWidth, TITLEBAR_H + RIBBON_HEIGHT,
                     cl.right - g_outlineWidth, cl.bottom};
         EditorCreate(hw, rEd);
         break;
