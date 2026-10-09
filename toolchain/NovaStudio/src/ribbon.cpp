@@ -37,6 +37,8 @@ enum RbnIcon {
     RI_ZOOMIN, RI_ZOOMOUT, RI_ZOOMRESET,
     RI_DARKMODE, RI_LIGHTMODE,
     RI_ABOUT,
+    RI_DEBUG_START, RI_DEBUG_STOP,
+    RI_GIT_COMMIT, RI_GIT_PUSH, RI_GIT_PULL, RI_GIT_MORE,
     RI_COUNT
 };
 
@@ -81,90 +83,104 @@ static RECT                 s_appRect;
 static void InitTabs() {
     s_tabs.clear();
 
-    /* === Tab 0: Datei === */
-    s_tabs.push_back({ L"Datei", {
-        { L"Solution", {
-            { IDM_FILE_NEW_PROJECT,   L"Neues\nProjekt",  RI_NEWPROJ,  true  },
-            { IDM_FILE_OPEN_PROJECT,  L"Projekt\nöffnen", RI_OPENPROJ, true  },
+    /* === Tab 0: Home – NPSPEC-STUDIO-RIBBON-HOME-0001 === */
+    s_tabs.push_back({ L"Home", {
+        { L"Project", {
+            { IDM_FILE_NEW_PROJECT,   L"New\nProject",    RI_NEWPROJ,  true  },
+            { IDM_FILE_NEW,           L"New\nFile",       RI_NEW,      true  },
+            { IDM_FILE_OPEN,          L"Open",            RI_OPEN,     true  },
+            { IDM_FILE_SAVE,          L"Save",            RI_SAVE,     true  },
+            { IDM_FILE_SAVE_ALL,      L"Save All",        RI_SAVEALL,  true  },
         }},
-        { L"Dateien", {
-            { IDM_FILE_NEW,           L"Neu",             RI_NEW,      true  },
-            { IDM_FILE_OPEN,          L"Öffnen",          RI_OPEN,     true  },
-            { IDM_FILE_SAVE,          L"Speichern",       RI_SAVE,     true  },
-            { IDM_FILE_SAVEAS,        L"Sichern\nunter",  RI_SAVEALL,  false },
-            { IDM_FILE_CLOSE_TAB,     L"Tab\nschließen",  RI_CUT,      false },
+        { L"Edit", {
+            { IDM_EDIT_CUT,           L"Cut",             RI_CUT,      true  },
+            { IDM_EDIT_COPY,          L"Copy",            RI_COPY,     true  },
+            { IDM_EDIT_PASTE,         L"Paste",           RI_PASTE,    true  },
+            { IDM_EDIT_UNDO,          L"Undo",            RI_UNDO,     true  },
+            { IDM_EDIT_REDO,          L"Redo",            RI_REDO,     true  },
         }},
-        { L"Studio", {
-            { IDM_FILE_EXIT,          L"Beenden",         RI_EXIT,     false },
+        { L"Build", {
+            { IDM_BUILD_BUILD,        L"Build\nSolution", RI_BUILD,    true  },
+            { IDM_BUILD_REBUILD,      L"Rebuild",         RI_REBUILD,  true  },
+            { IDM_BUILD_CLEAN,        L"Clean",           RI_CLEAN,    true  },
         }},
-    }});
-
-    /* === Tab 1: Start (Home) – NPSPEC-STUDIO-RIBBON-HOME-0001 === */
-    s_tabs.push_back({ L"Start", {
-        { L"Zwischenablage", {
-            { IDM_EDIT_PASTE,         L"Einfügen",        RI_PASTE,    true  },
-            { IDM_EDIT_CUT,           L"Ausschneiden",    RI_CUT,      false },
-            { IDM_EDIT_COPY,          L"Kopieren",        RI_COPY,     false },
+        { L"Debug", {
+            { IDM_DEBUG_START,        L"Start\nDebugging",RI_DEBUG_START, true },
+            { IDM_DEBUG_START_NO_DBG, L"Start Without\nDebugging", RI_RUN, false },
+            { IDM_DEBUG_STOP,         L"Stop",            RI_DEBUG_STOP, false },
         }},
-        { L"Verlauf", {
-            { IDM_EDIT_UNDO,          L"Rückgängig",      RI_UNDO,     true  },
-            { IDM_EDIT_REDO,          L"Wiederholen",     RI_REDO,     true  },
-        }},
-        { L"Suchen", {
-            { IDM_EDIT_FIND,          L"Suchen",          RI_FIND,     true  },
-            { IDM_EDIT_FINDNEXT,      L"Weiter\nsuchen",  RI_FIND,     false },
-            { IDM_EDIT_REPLACE,       L"Ersetzen",        RI_REPLACE,  false },
+        { L"Git", {
+            { IDM_GIT_COMMIT,         L"Commit",          RI_GIT_COMMIT, true  },
+            { IDM_GIT_PUSH,           L"Push",            RI_GIT_PUSH,   true  },
+            { IDM_GIT_PULL,           L"Pull",            RI_GIT_PULL,   true  },
         }},
     }});
 
-    /* === Tab 2: Bearbeiten – NPSPEC-STUDIO-RIBBON-EDIT-0001 === */
-    s_tabs.push_back({ L"Bearbeiten", {
-        { L"Bearbeiten", {
-            { IDM_EDIT_FIND,          L"Suchen",          RI_FIND,     true  },
-            { IDM_EDIT_REPLACE,       L"Ersetzen",        RI_REPLACE,  true  },
-            { IDM_EDIT_GOTO,          L"Gehe zu\nZeile",  RI_GOTO,     true  },
+    /* === Tab 1: Edit === */
+    s_tabs.push_back({ L"Edit", {
+        { L"Edit", {
+            { IDM_EDIT_FIND,          L"Find",            RI_FIND,     true  },
+            { IDM_EDIT_REPLACE,       L"Replace",         RI_REPLACE,  true  },
+            { IDM_EDIT_GOTO,          L"Go to\nLine",     RI_GOTO,     true  },
         }},
-        { L"Auswahl", {
-            { IDM_EDIT_SELECTALL,     L"Alles\nmarkieren",RI_SELECTALL,true  },
+        { L"Selection", {
+            { IDM_EDIT_SELECTALL,     L"Select\nAll",     RI_SELECTALL,true  },
         }},
         { L"Code", {
-            { IDM_EDIT_COMMENT,       L"Kommentar\numschalten", RI_COMMENT, true },
+            { IDM_EDIT_COMMENT,       L"Toggle\nComment", RI_COMMENT,  true  },
         }},
     }});
 
-    /* === Tab 3: Ansicht – NPSPEC-STUDIO-RIBBON-VIEW-0001 === */
-    s_tabs.push_back({ L"Ansicht", {
-        { L"Fenster", {
+    /* === Tab 2: View === */
+    s_tabs.push_back({ L"View", {
+        { L"Panels", {
             { IDM_VIEW_EXPLORER,      L"Explorer",        RI_EXPLORER, true  },
-            { IDM_VIEW_OUTPUT,        L"Ausgabe",         RI_OUTPUT,   true  },
+            { IDM_VIEW_OUTPUT,        L"Output",          RI_OUTPUT,   true  },
         }},
         { L"Zoom", {
-            { IDM_VIEW_ZOOMIN,        L"Größer",          RI_ZOOMIN,   true  },
-            { IDM_VIEW_ZOOMRESET,     L"Normal",          RI_ZOOMRESET,true  },
-            { IDM_VIEW_ZOOMOUT,       L"Kleiner",         RI_ZOOMOUT,  true  },
+            { IDM_VIEW_ZOOMIN,        L"Zoom In",         RI_ZOOMIN,   true  },
+            { IDM_VIEW_ZOOMRESET,     L"Reset",           RI_ZOOMRESET,true  },
+            { IDM_VIEW_ZOOMOUT,       L"Zoom Out",        RI_ZOOMOUT,  true  },
         }},
-        { L"Design", {
-            { IDM_VIEW_DARKMODE,      L"Dunkel",          RI_DARKMODE, true  },
-            { IDM_VIEW_LIGHTMODE,     L"Hell",            RI_LIGHTMODE,true  },
-        }},
-    }});
-
-    /* === Tab 4: Kompilieren – NPSPEC-STUDIO-RIBBON-BUILD-0001 === */
-    s_tabs.push_back({ L"Kompilieren", {
-        { L"Erstellen", {
-            { IDM_BUILD_BUILD,        L"Erstellen",       RI_BUILD,    true  },
-            { IDM_BUILD_REBUILD,      L"Neu\nerstellen",  RI_REBUILD,  true  },
-            { IDM_BUILD_CLEAN,        L"Bereinigen",      RI_CLEAN,    true  },
-        }},
-        { L"Ausführen", {
-            { IDM_BUILD_RUN,          L"Ausführen",       RI_RUN,      true  },
+        { L"Theme", {
+            { IDM_VIEW_DARKMODE,      L"Dark",            RI_DARKMODE, true  },
+            { IDM_VIEW_LIGHTMODE,     L"Light",           RI_LIGHTMODE,true  },
         }},
     }});
 
-    /* === Tab 5: Hilfe === */
-    s_tabs.push_back({ L"Hilfe", {
-        { L"Info", {
-            { IDM_HELP_ABOUT,         L"Über\nNova Studio", RI_ABOUT,  true  },
+    /* === Tab 3: Build === */
+    s_tabs.push_back({ L"Build", {
+        { L"Build", {
+            { IDM_BUILD_BUILD,        L"Build\nSolution", RI_BUILD,    true  },
+            { IDM_BUILD_REBUILD,      L"Rebuild",         RI_REBUILD,  true  },
+            { IDM_BUILD_CLEAN,        L"Clean",           RI_CLEAN,    true  },
+        }},
+    }});
+
+    /* === Tab 4: Debug === */
+    s_tabs.push_back({ L"Debug", {
+        { L"Run", {
+            { IDM_DEBUG_START,        L"Start\nDebugging",RI_DEBUG_START, true },
+            { IDM_DEBUG_START_NO_DBG, L"Start Without\nDebugging", RI_RUN, true },
+            { IDM_DEBUG_STOP,         L"Stop",            RI_DEBUG_STOP,  true },
+        }},
+    }});
+
+    /* === Tab 5: Git === */
+    s_tabs.push_back({ L"Git", {
+        { L"Repository", {
+            { IDM_GIT_COMMIT,         L"Commit",          RI_GIT_COMMIT, true },
+            { IDM_GIT_PUSH,           L"Push",            RI_GIT_PUSH,   true },
+            { IDM_GIT_PULL,           L"Pull",            RI_GIT_PULL,   true },
+        }},
+    }});
+
+    /* === Tab 6: Tools === */
+    s_tabs.push_back({ L"Tools", {
+        { L"Options", {
+            { IDM_VIEW_DARKMODE,      L"Dark\nTheme",     RI_DARKMODE, true  },
+            { IDM_VIEW_LIGHTMODE,     L"Light\nTheme",    RI_LIGHTMODE,true  },
+            { IDM_HELP_ABOUT,         L"About\nNovaStudio", RI_ABOUT,  true  },
         }},
     }});
 }
@@ -497,6 +513,78 @@ static void DrawRbnIcon(HDC hdc, int x, int y, int sz, RbnIcon ico, COLORREF fg)
         SEL_K();
         MoveToEx(hdc, x+sz/2, y+sz*2/5, nullptr);
         LineTo  (hdc, x+sz/2, y+sz*4/5);
+        break;
+    }
+
+    case RI_DEBUG_START: {
+        /* Solid green play triangle */
+        HBRUSH greenBr = CreateSolidBrush(RGB(0x16, 0xC6, 0x0A));
+        HBRUSH oldBr2  = (HBRUSH)SelectObject(hdc, greenBr);
+        HPEN   greenPn = CreatePen(PS_SOLID, 1, RGB(0x0A, 0xA0, 0x05));
+        HPEN   oldP2   = (HPEN)SelectObject(hdc, greenPn);
+        POINT  tri[3] = {
+            {x+sz/6,   y+sz/8  },
+            {x+sz*5/6, y+sz/2  },
+            {x+sz/6,   y+sz*7/8}
+        };
+        Polygon(hdc, tri, 3);
+        SelectObject(hdc, oldBr2); DeleteObject(greenBr);
+        SelectObject(hdc, oldP2);  DeleteObject(greenPn);
+        break;
+    }
+
+    case RI_DEBUG_STOP: {
+        /* Red square */
+        HBRUSH redBr = CreateSolidBrush(RGB(0xE5, 0x1A, 0x1A));
+        HBRUSH oldBr2 = (HBRUSH)SelectObject(hdc, redBr);
+        Rectangle(hdc, x+sz/5, y+sz/5, x+sz*4/5, y+sz*4/5);
+        SelectObject(hdc, oldBr2); DeleteObject(redBr);
+        break;
+    }
+
+    case RI_GIT_COMMIT: {
+        /* Circle with lines (commit node) */
+        SEL_NO(); SEL_K();
+        int r = sz/4, cx2 = x+sz/2, cy2 = y+sz/2;
+        Ellipse(hdc, cx2-r, cy2-r, cx2+r, cy2+r);
+        MoveToEx(hdc, cx2, y,    nullptr); LineTo(hdc, cx2, cy2-r);
+        MoveToEx(hdc, cx2, cy2+r,nullptr); LineTo(hdc, cx2, y+sz);
+        break;
+    }
+
+    case RI_GIT_PUSH: {
+        /* Arrow up with base line */
+        SEL_K();
+        int mx = x+sz/2;
+        MoveToEx(hdc, mx, y+sz, nullptr); LineTo(hdc, mx, y+sz/4);
+        SEL_FG();
+        POINT arr[3] = {{mx-sz/4, y+sz/3},{mx+sz/4, y+sz/3},{mx, y}};
+        Polygon(hdc, arr, 3);
+        SEL_T();
+        MoveToEx(hdc, x+sz/8, y+sz*7/8, nullptr); LineTo(hdc, x+sz*7/8, y+sz*7/8);
+        break;
+    }
+
+    case RI_GIT_PULL: {
+        /* Arrow down with base line */
+        SEL_K();
+        int mx = x+sz/2;
+        MoveToEx(hdc, mx, y, nullptr); LineTo(hdc, mx, y+sz*3/4);
+        SEL_FG();
+        POINT arr[3] = {{mx-sz/4, y+sz*2/3},{mx+sz/4, y+sz*2/3},{mx, y+sz}};
+        Polygon(hdc, arr, 3);
+        SEL_T();
+        MoveToEx(hdc, x+sz/8, y+sz/8, nullptr); LineTo(hdc, x+sz*7/8, y+sz/8);
+        break;
+    }
+
+    case RI_GIT_MORE: {
+        /* Three dots */
+        SEL_FG();
+        int cy2 = y+sz/2, r2 = sz/8 > 2 ? sz/8 : 2;
+        Ellipse(hdc, x+sz/8-r2,   cy2-r2, x+sz/8+r2,   cy2+r2);
+        Ellipse(hdc, x+sz/2-r2,   cy2-r2, x+sz/2+r2,   cy2+r2);
+        Ellipse(hdc, x+sz*7/8-r2, cy2-r2, x+sz*7/8+r2, cy2+r2);
         break;
     }
 

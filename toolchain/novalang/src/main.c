@@ -90,14 +90,14 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    /* Derive default output path: replace .nova → .nlb */
+    /* Derive default output path: replace .nova → .exe */
     char auto_out[4096];
     if (!output_path && out_kind == NL_OUT_BYTECODE) {
         strncpy(auto_out, input_path, sizeof(auto_out) - 5);
         auto_out[sizeof(auto_out) - 5] = '\0';
         char *dot = strrchr(auto_out, '.');
         if (dot) *dot = '\0';
-        strcat(auto_out, ".nlb");
+        strcat(auto_out, ".exe");
         output_path = auto_out;
     }
 

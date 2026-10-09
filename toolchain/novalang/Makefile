@@ -16,7 +16,8 @@ SRCS = src/main.c \
        src/diagnostic.c \
        src/typechecker.c \
        src/ir.c \
-       src/bytecode.c
+       src/bytecode.c \
+       src/codegen.c
 
 TARGET  = novalang.exe
 STUDIO  = ../NovaStudio/$(TARGET)

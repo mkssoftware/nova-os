@@ -3,18 +3,21 @@
 /* =========================================================================
  * Globals defined here
  * ====================================================================== */
-HWND g_hMain       = nullptr;
-HWND g_hExplorer   = nullptr;
-HWND g_hStatusBar  = nullptr;
-HWND g_hToolBar    = nullptr;
+HWND g_hMain        = nullptr;
+HWND g_hExplorer    = nullptr;
+HWND g_hStatusBar   = nullptr;
+HWND g_hToolBar     = nullptr;
+HWND g_hDocOutline  = nullptr;
 /* g_hRibbon ist in ribbon.cpp definiert */
 
-Theme g_theme      = {};
+Theme g_theme       = {};
 
-int  g_explorerWidth = 220;
+int  g_explorerWidth = 240;
 int  g_outputHeight  = 160;
+int  g_outlineWidth  = 220;
 bool g_showExplorer  = true;
 bool g_showOutput    = true;
+bool g_showOutline   = true;
 
 /* =========================================================================
  * Theme
@@ -74,26 +77,41 @@ static void StatusCreate(HWND hParent) {
         0, 0, 0, 0,
         hParent, (HMENU)ID_STATUSBAR, GetModuleHandleW(nullptr), nullptr);
 
-    int parts[3];
     RECT rc; GetClientRect(hParent, &rc);
-    parts[0] = 240;
-    parts[1] = 360;
-    parts[2] = -1;
-    SendMessageW(g_hStatusBar, SB_SETPARTS, 3, (LPARAM)parts);
+    int W = rc.right;
+    /* Parts: Ready | Ln/Col | Spaces | Encoding | EOL | Language | Pre-Release */
+    int parts[7];
+    parts[0] = 200;
+    parts[1] = parts[0] + 130;
+    parts[2] = parts[1] + 90;
+    parts[3] = parts[2] + 70;
+    parts[4] = parts[3] + 60;
+    parts[5] = W - 130;
+    parts[6] = -1;
+    SendMessageW(g_hStatusBar, SB_SETPARTS, 7, (LPARAM)parts);
 
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)L"  Bereit");
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 1, (LPARAM)L"  NovaLang");
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 2, (LPARAM)L"  100%");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)L"  Ready");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 1, (LPARAM)L"  Ln 1, Col 1");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 2, (LPARAM)L"  Spaces: 4");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 3, (LPARAM)L"  UTF-8");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 4, (LPARAM)L"  CRLF");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 5, (LPARAM)L"  NovaLang");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 6, (LPARAM)L"  Pre-Release");
 }
 
 static void StatusResize(HWND hParent) {
     if (!g_hStatusBar) return;
     RECT rc; GetClientRect(hParent, &rc);
-    int parts[3];
-    parts[0] = 240;
-    parts[1] = 360;
-    parts[2] = -1;
-    SendMessageW(g_hStatusBar, SB_SETPARTS, 3, (LPARAM)parts);
+    int W = rc.right;
+    int parts[7];
+    parts[0] = 200;
+    parts[1] = parts[0] + 130;
+    parts[2] = parts[1] + 90;
+    parts[3] = parts[2] + 70;
+    parts[4] = parts[3] + 60;
+    parts[5] = W - 130;
+    parts[6] = -1;
+    SendMessageW(g_hStatusBar, SB_SETPARTS, 7, (LPARAM)parts);
     SendMessageW(g_hStatusBar, WM_SIZE, 0, MAKELPARAM(rc.right, rc.bottom));
 }
 
@@ -178,31 +196,46 @@ void LayoutCompute(HWND hw, RECT *rExp, RECT *rEd, RECT *rOut, RECT *rTab) {
     if (g_hStatusBar) GetWindowRect(g_hStatusBar, &sbrc);
     int sbH = sbrc.bottom - sbrc.top;
 
-    int top = RIBBON_HEIGHT;      /* Ribbon belegt die oberen 102 px */
+    int top = RIBBON_HEIGHT;
     int h   = cl.bottom - sbH;
     int w   = cl.right;
 
     int expW = g_showExplorer ? g_explorerWidth : 0;
+    int outW = g_showOutline  ? g_outlineWidth  : 0;
+    int outH = g_showOutput   ? g_outputHeight  : 0;
 
     if (rExp) {
         rExp->left = 0; rExp->top = top;
         rExp->right = expW; rExp->bottom = h;
     }
-
-    int outH = g_showOutput ? g_outputHeight : 0;
     if (rEd) {
         rEd->left   = expW;
         rEd->top    = top;
-        rEd->right  = w;
+        rEd->right  = w - outW;
         rEd->bottom = h;
     }
     if (rOut) {
         rOut->left   = expW;
         rOut->top    = h - outH;
-        rOut->right  = w;
+        rOut->right  = w - outW;
         rOut->bottom = h;
     }
     if (rTab) { *rTab = *rEd; }
+}
+
+static void OutlineResize(HWND hw) {
+    if (!g_hDocOutline) return;
+    RECT cl; GetClientRect(hw, &cl);
+    RECT sbrc = {};
+    if (g_hStatusBar) GetWindowRect(g_hStatusBar, &sbrc);
+    int sbH  = sbrc.bottom - sbrc.top;
+    int top  = RIBBON_HEIGHT;
+    int h    = cl.bottom - sbH;
+    int outW = g_showOutline ? g_outlineWidth : 0;
+    SetWindowPos(g_hDocOutline, nullptr,
+                 cl.right - outW, top, outW, h - top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(g_hDocOutline, g_showOutline ? SW_SHOW : SW_HIDE);
 }
 
 void LayoutApply(HWND hw) {
@@ -216,6 +249,7 @@ void LayoutApply(HWND hw) {
         ExplorerResize(rExp);
 
     EditorResize(rEd);
+    OutlineResize(hw);
 }
 
 /* =========================================================================
@@ -596,6 +630,10 @@ static void OnCommand(HWND hw, WPARAM wp) {
         EditorSetZoom(100);
         break;
 
+    case IDM_FILE_SAVE_ALL:
+        EditorSaveFile();
+        break;
+
     /* ----- Kompilieren ----- */
     case IDM_BUILD_BUILD:
         if (!g_showOutput) {
@@ -623,6 +661,37 @@ static void OnCommand(HWND hw, WPARAM wp) {
 
     case IDM_BUILD_RUN:
         DoRun();
+        break;
+
+    /* ----- Debug ----- */
+    case IDM_DEBUG_START:
+        if (!g_showOutput) { g_showOutput = true; LayoutApply(hw); }
+        DoBuild(false);
+        DoRun();
+        break;
+
+    case IDM_DEBUG_START_NO_DBG:
+        DoRun();
+        break;
+
+    case IDM_DEBUG_STOP:
+        EditorOutput(L"Debug gestoppt.");
+        break;
+
+    /* ----- Git ----- */
+    case IDM_GIT_COMMIT:
+        MessageBoxW(hw, L"Git Commit ist noch nicht implementiert.",
+                    L"Git", MB_OK | MB_ICONINFORMATION);
+        break;
+
+    case IDM_GIT_PUSH:
+        MessageBoxW(hw, L"Git Push ist noch nicht implementiert.",
+                    L"Git", MB_OK | MB_ICONINFORMATION);
+        break;
+
+    case IDM_GIT_PULL:
+        MessageBoxW(hw, L"Git Pull ist noch nicht implementiert.",
+                    L"Git", MB_OK | MB_ICONINFORMATION);
         break;
 
     /* ----- Hilfe ----- */
@@ -679,12 +748,52 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         /* Status bar (unten) */
         StatusCreate(hw);
 
-        /* Explorer */
+        /* Explorer (links) */
         RECT rExp = {0, RIBBON_HEIGHT, g_explorerWidth, cl.bottom};
         ExplorerCreate(hw, rExp);
 
-        /* Editor */
-        RECT rEd  = {g_explorerWidth, RIBBON_HEIGHT, cl.right, cl.bottom};
+        /* Document Outline (rechts) */
+        {
+            int outW = g_showOutline ? g_outlineWidth : 0;
+            RECT rOut = {cl.right - outW, RIBBON_HEIGHT, cl.right, cl.bottom};
+            g_hDocOutline = CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                WC_TREEVIEWW, nullptr,
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | TVS_HASLINES |
+                TVS_HASBUTTONS | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
+                rOut.left, rOut.top,
+                rOut.right - rOut.left, rOut.bottom - rOut.top,
+                hw, (HMENU)ID_DOCOUTLINE, GetModuleHandleW(nullptr), nullptr);
+
+            /* Populate with static placeholder items */
+            if (g_hDocOutline) {
+                TVINSERTSTRUCT tis = {};
+                tis.hParent      = TVI_ROOT;
+                tis.hInsertAfter = TVI_LAST;
+                tis.item.mask    = TVIF_TEXT;
+
+                tis.item.pszText = (LPWSTR)L"MainWindow";
+                HTREEITEM hRoot  = TreeView_InsertItem(g_hDocOutline, &tis);
+
+                struct { HTREEITEM parent; LPCWSTR name; } items[] = {
+                    {hRoot, L"Fields"},
+                    {hRoot, L"Constructors"},
+                    {hRoot, L"Methods"},
+                    {hRoot, L"Properties"},
+                    {hRoot, L"Events"},
+                };
+                for (auto &it : items) {
+                    tis.hParent      = it.parent;
+                    tis.item.pszText = (LPWSTR)it.name;
+                    TreeView_InsertItem(g_hDocOutline, &tis);
+                }
+                TreeView_Expand(g_hDocOutline, hRoot, TVE_EXPAND);
+            }
+        }
+
+        /* Editor (mitte) */
+        RECT rEd  = {g_explorerWidth, RIBBON_HEIGHT,
+                     cl.right - g_outlineWidth, cl.bottom};
         EditorCreate(hw, rEd);
         break;
     }

@@ -24,7 +24,7 @@
 /* -------------------------------------------------------------------------
  * Identity
  * ---------------------------------------------------------------------- */
-#define STUDIO_NAME     L"Nova Studio"
+#define STUDIO_NAME     L"NovaStudio"
 #define STUDIO_VERSION  L"2.0"
 #define STUDIO_CLASS    L"NovaStudioWnd"
 
@@ -37,6 +37,8 @@
 #define ID_TABBAR       103
 #define ID_EDITOR       104
 #define ID_OUTPUT       105
+#define ID_DOCOUTLINE   106
+#define ID_BOTTOMPANEL  107
 
 /* -------------------------------------------------------------------------
  * Menu IDs
@@ -81,6 +83,19 @@
 
 // Hilfe
 #define IDM_HELP_ABOUT       9001
+
+// Debug
+#define IDM_DEBUG_START         5001
+#define IDM_DEBUG_START_NO_DBG  5002
+#define IDM_DEBUG_STOP          5003
+
+// Git
+#define IDM_GIT_COMMIT          6001
+#define IDM_GIT_PUSH            6002
+#define IDM_GIT_PULL            6003
+
+// Datei: Alle speichern
+#define IDM_FILE_SAVE_ALL       1009
 
 /* -------------------------------------------------------------------------
  * Timers
@@ -166,12 +181,15 @@ extern HWND g_hExplorer;
 extern HWND g_hOutput;
 extern HWND g_hTabBar;
 extern HWND g_hStatusBar;
+extern HWND g_hDocOutline;
 extern HFONT g_hCodeFont;
 
 extern int  g_explorerWidth;
 extern int  g_outputHeight;
+extern int  g_outlineWidth;
 extern bool g_showExplorer;
 extern bool g_showOutput;
+extern bool g_showOutline;
 extern int  g_zoomPercent;
 
 extern std::vector<EditorTab> g_tabs;

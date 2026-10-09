@@ -11,6 +11,7 @@
 #include "typechecker.h"
 #include "ir.h"
 #include "bytecode.h"
+#include "codegen.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,7 +117,7 @@ NlCompileResult nl_compile(const NlCompilerOptions *opts)
         goto cleanup;
     }
 
-    /* ---- 5. IR generation ---- */
+    /* ---- 5. IR generation (stub, kept for --ir dump) ---- */
     NlIrModule ir;
     nl_ir_module_init(&ir, &arena);
 
@@ -126,10 +127,25 @@ NlCompileResult nl_compile(const NlCompilerOptions *opts)
         goto cleanup;
     }
 
-    /* ---- 6. Emit bytecode ---- */
+    /* ---- 6. Code generation: AST → C → GCC → .exe ---- */
     if (opts->output_path) {
-        if (nl_bytecode_write(&ir, opts->output_path) != 0) {
-            fprintf(stderr, "Fehler: Ausgabedatei konnte nicht geschrieben werden: %s\n",
+        /* Derive a temp .c path alongside the output */
+        char tmp_c[4096];
+        strncpy(tmp_c, opts->output_path, sizeof(tmp_c) - 5);
+        tmp_c[sizeof(tmp_c) - 5] = '\0';
+        /* strip trailing extension if any */
+        char *dot = strrchr(tmp_c, '.');
+        if (dot && (dot > strrchr(tmp_c, '/') && dot > strrchr(tmp_c, '\\')))
+            *dot = '\0';
+        strcat(tmp_c, "_cg_tmp.c");
+
+        NlCgOptions cg;
+        cg.input_path  = opts->input_path;
+        cg.output_c    = tmp_c;
+        cg.output_exe  = opts->output_path;
+
+        if (nl_codegen(unit, &lex, &tc, &cg) != 0) {
+            fprintf(stderr, "Fehler: Codegenerierung fehlgeschlagen: %s\n",
                     opts->output_path);
             res.error_count = 1;
             goto cleanup;

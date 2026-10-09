@@ -230,13 +230,16 @@ void EditorUpdateStatusBar() {
     int line, col;
     EditorGetCaretPos(&line, &col);
 
-    wchar_t buf[128];
-    swprintf_s(buf, L"  Zeile %d, Spalte %d", line, col);
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)buf);
+    /* Part 0: Ready */
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)L"  Ready");
 
-    wchar_t zoom[32];
-    swprintf_s(zoom, L"  %d%%", g_zoomPercent);
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 2, (LPARAM)zoom);
+    /* Part 1: Ln / Col */
+    wchar_t buf[128];
+    swprintf_s(buf, L"  Ln %d, Col %d", line, col);
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 1, (LPARAM)buf);
+
+    /* Parts 2-5 are static (set in StatusCreate), just refresh language */
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 5, (LPARAM)L"  NovaLang");
 }
 
 /* Called from WM_NOTIFY EN_SELCHANGE */
@@ -311,7 +314,7 @@ bool EditorOpenFile(const wchar_t *path) {
     EditorHighlight();
     EditorUpdateTitle();
 
-    /* Show file type in status bar */
+    /* Show file type in status bar (part 5 = language) */
     const wchar_t *ext = PathFindExtensionW(name);
     wchar_t ft[64];
     if      (_wcsicmp(ext, L".nova") == 0) wcscpy_s(ft, L"  NovaLang");
@@ -319,8 +322,8 @@ bool EditorOpenFile(const wchar_t *path) {
     else if (_wcsicmp(ext, L".nui")  == 0) wcscpy_s(ft, L"  NovaUI");
     else if (_wcsicmp(ext, L".xml")  == 0) wcscpy_s(ft, L"  XML");
     else if (_wcsicmp(ext, L".md")   == 0) wcscpy_s(ft, L"  Markdown");
-    else                                    wcscpy_s(ft, L"  Textdatei");
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 1, (LPARAM)ft);
+    else                                    wcscpy_s(ft, L"  Text");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 5, (LPARAM)ft);
 
     return true;
 }
@@ -353,7 +356,7 @@ bool EditorSaveFile() {
     tab.modified = false;
     TabSetTitle(g_activeTab, tab.title.c_str());
     EditorUpdateTitle();
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)L"  Gespeichert");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)L"  Saved");
     SetTimer(g_hMain, TIMER_STATUS, 2000, nullptr);
     return true;
 }
@@ -407,15 +410,18 @@ void EditorCloseTab(int idx) {
 
 void EditorUpdateTitle() {
     if (g_activeTab < 0 || g_activeTab >= (int)g_tabs.size()) {
-        SetWindowTextW(g_hMain, STUDIO_NAME);
+        SetWindowTextW(g_hMain, STUDIO_NAME L" " STUDIO_VERSION);
         return;
     }
     auto &tab = g_tabs[g_activeTab];
-    std::wstring title = tab.title;
-    if (tab.modified) title += L" ●";  /* filled circle for modified */
+    /* Format: "ProjectName - Debug | NovaStudio" or "file.nova | NovaStudio" */
+    std::wstring title;
     if (!g_project.name.empty())
-        title += L" – " + g_project.name;
-    title += L" – " STUDIO_NAME;
+        title = g_project.name + L" - Debug";
+    else
+        title = tab.title;
+    if (tab.modified) title += L" ●";
+    title += L" | " STUDIO_NAME;
     SetWindowTextW(g_hMain, title.c_str());
 }
 
