@@ -18058,7 +18058,7 @@ cpu_records:             times CPU_CAPACITY * CPU_RECORD_SIZE db 0
 ; INIT-SIPI-SIPI-Sequenz, AP-Trampoline (Real→Protected Mode),
 ; Cross-CPU-IPI-Versand, Remote-TLB-Shootdowns.
 ; ---------------------------------------------------------------------------
-SMP_API_SIZE                equ 64
+SMP_API_SIZE                equ 72
 SMP_PHASE_ARCH_READY        equ 0
 SMP_PHASE_MEMORY_READY      equ 1
 SMP_PHASE_INTERRUPTS_READY  equ 2
@@ -18099,6 +18099,7 @@ AP_TRAMPOLINE_BASE      equ 0x8000      ; physische Adresse < 1 MB
 AP_TRAMPOLINE_VECTOR    equ 0x08        ; SIPI-Vektor = Base >> 12
 AP_STACK_SIZE           equ 0x1000      ; 4 KiB Stack pro AP
 AP_BOOT_TIMEOUT_LOOPS   equ 20000000    ; Spin-Limit beim Warten auf AP-Start
+SMP_CALL_TIMEOUT        equ AP_BOOT_TIMEOUT_LOOPS  ; Spin-Limit für smp_call_function und TLB-ACK-Warten
 
 ; ---------------------------------------------------------------------------
 ; AP-Trampoline-Blob (16-Bit Real-Mode-Code, wird nach 0x8000 kopiert)
@@ -18524,23 +18525,139 @@ smp_tlb_shootdown_page:
     inc dword [smp_local_tlb_flushes]
 .skip_local:
 
-    ; Remote-APs: IPI mit TLB_SHOOTDOWN-Typ senden (Fire-and-Forget §124)
+    ; Remote-APs: IPI mit TLB_SHOOTDOWN-Typ senden, auf ACK warten (§30/§124)
     mov [smp_shootdown_addr], eax    ; Zieladresse für remote INVLPG sichern
     push eax
-    mov eax, edx
-    and eax, ~1             ; BSP-Bit ausblenden → nur APs
-    test eax, eax
+    push ebx
+    mov ebx, edx
+    and ebx, ~1                      ; BSP-Bit ausblenden → nur APs
+    test ebx, ebx
     jz .skip_remote
-    push ecx
+    ; Popcount der AP-Maske → smp_tlb_ack_pending setzen
+    push ebx
+    xor ecx, ecx
+.tlb_count_bits:
+    test ebx, ebx
+    jz .tlb_count_bits_done
+    mov eax, ebx
+    dec eax
+    and ebx, eax
+    inc ecx
+    jmp .tlb_count_bits
+.tlb_count_bits_done:
+    mov [smp_tlb_ack_pending], ecx
+    pop ebx                          ; EBX = AP-Maske wiederherstellen
+    ; IPI senden (EAX = AP-Maske, ECX = IPI-Typ)
+    mov eax, ebx
     mov ecx, SMP_IPI_TLB_SHOOTDOWN
     call smp_send_ipi
-    pop ecx
+    ; Auf ACKs aller Remote-CPUs warten (mit Timeout)
+    mov eax, SMP_CALL_TIMEOUT
+.tlb_ack_wait:
+    cmp dword [smp_tlb_ack_pending], 0
+    je .skip_remote
+    pause
+    dec eax
+    jnz .tlb_ack_wait
+    ; Timeout: statistisch erfassen ohne Panic (Aufrufer kann eskalieren)
+    inc dword [smp_rejected_remote_shootdowns]
 .skip_remote:
+    pop ebx
     pop eax
     clc
     ret
 .invalid:
     inc dword [smp_rejected_remote_shootdowns]
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; smp_call_function – ruft eine Funktion synchron auf Remote-CPUs auf (§27/§28)
+; EAX = Zielmaske (Bit 0 = BSP darf nicht gesetzt sein; nur online APs)
+; ECX = Funktionszeiger  void fn(uint32_t ctx)  – ECX als erstes Argument
+; EDX = Kontextzeiger, wird in ECX beim Aufruf auf dem AP bereitgestellt
+; CF=0 OK, CF=1 ungültige Argumente oder Timeout
+; ---------------------------------------------------------------------------
+smp_call_function:
+    ; Zielmaske: BSP-Bit verboten, darf nicht leer sein
+    test eax, 1
+    jnz .cf_reject
+    test eax, eax
+    jz .cf_reject
+    ; Funktionszeiger darf nicht null sein
+    test ecx, ecx
+    jz .cf_reject
+    ; Zielmaske darf nur online CPUs enthalten
+    push edx
+    push ebx
+    mov ebx, [cpu_online_set]
+    not ebx
+    test eax, ebx
+    pop ebx
+    pop edx
+    jnz .cf_reject
+
+    ; Spinlock erwerben (serialisiert gleichzeitige Cross-CPU-Calls)
+.cf_spin:
+    lock bts dword [smp_call_fn_lock], 0
+    jnc .cf_locked
+    pause
+    jmp .cf_spin
+.cf_locked:
+
+    ; Funktion und Kontext veröffentlichen (vor IPI-Versand, Acquire-Semantik
+    ; auf AP-Seite via LAPIC-Schreib-Synchronisation ausreichend für x86)
+    mov [smp_call_fn_ptr], ecx
+    mov [smp_call_fn_ctx], edx
+
+    ; Anzahl der Ziel-CPUs bestimmen (Popcount der Maske → ACK-Zähler)
+    push eax
+    push ecx
+    push esi
+    mov esi, eax
+    xor ecx, ecx
+.cf_count:
+    test esi, esi
+    jz .cf_count_done
+    mov eax, esi
+    dec eax
+    and esi, eax
+    inc ecx
+    jmp .cf_count
+.cf_count_done:
+    mov [smp_call_fn_ack], ecx
+    pop esi
+    pop ecx
+    pop eax
+
+    ; CALL_FUNCTION-IPI an alle Ziel-CPUs senden
+    push eax
+    push ecx
+    mov ecx, SMP_IPI_CALL_FUNCTION
+    call smp_send_ipi               ; EAX=Maske, ECX=Typ
+    pop ecx
+    pop eax
+
+    ; Auf ACK aller Ziel-CPUs warten
+    push ebx
+    mov ebx, SMP_CALL_TIMEOUT
+.cf_ack_wait:
+    cmp dword [smp_call_fn_ack], 0
+    je .cf_ack_done
+    pause
+    dec ebx
+    jnz .cf_ack_wait
+    ; Timeout
+    pop ebx
+    lock btr dword [smp_call_fn_lock], 0
+    stc
+    ret
+.cf_ack_done:
+    pop ebx
+    lock btr dword [smp_call_fn_lock], 0
+    clc
+    ret
+.cf_reject:
     stc
     ret
 
@@ -18649,6 +18766,34 @@ smp_self_test:
     jae .invalid
 
 .phase_test:
+    ; smp_call_function: Ablehnung ungültiger Masken (UP und SMP)
+    push eax
+    push ecx
+    push edx
+    xor eax, eax                    ; leere Maske → CF=1
+    mov ecx, smp_self_test
+    xor edx, edx
+    call smp_call_function
+    jnc .cf_test_fail
+    mov eax, 1                      ; BSP-Bit in Maske → CF=1
+    mov ecx, smp_self_test
+    call smp_call_function
+    jnc .cf_test_fail
+    xor eax, eax                    ; Funktionszeiger null → CF=1
+    mov eax, 2
+    xor ecx, ecx
+    call smp_call_function
+    jnc .cf_test_fail
+    pop edx
+    pop ecx
+    pop eax
+    jmp .phase_continue
+.cf_test_fail:
+    pop edx
+    pop ecx
+    pop eax
+    jmp .invalid
+.phase_continue:
     ; smp_publish_phase: Rückschritt nicht erlaubt
     mov eax, SMP_PHASE_MEMORY_READY
     call smp_publish_phase
@@ -18683,6 +18828,7 @@ smp_api:
     dd lapic_timer_count        ; Zeiger auf kalibrierten LAPIC-ICR-Wert (§129)
     dd ap_current_frames        ; Zeiger auf per-CPU ISR-Kontext-Frame-Array (§131)
     dd per_cpu_current_thread   ; Zeiger auf per-CPU Thread-Slot-Array (§131)
+    dd smp_call_function        ; Cross-CPU-Funktionsaufruf (§27)
 smp_boot_phase:                 dd 0
 smp_local_tlb_generation:       dd 0
 smp_local_tlb_flushes:          dd 0
@@ -18696,6 +18842,11 @@ ap_timer_ticks:                 times CPU_CAPACITY dd 0   ; per-CPU LAPIC-Timer-
 lapic_timer_count:              dd 0                      ; kalibrierter LAPIC-ICR-Wert für 100 Hz
 ap_current_frames:              times CPU_CAPACITY dd 0   ; per-CPU Zeiger auf letzten ISR-Kontext-Frame (§131)
 per_cpu_current_thread:         times CPU_CAPACITY dd 0   ; per-CPU laufender Thread-Slot (-1 = Idle, §131)
+smp_tlb_ack_pending:            dd 0    ; ausstehende TLB-Shootdown-ACKs von Remote-CPUs (§30)
+smp_call_fn_lock:               dd 0    ; Mutex: serialisiert gleichzeitige smp_call_function-Aufrufe
+smp_call_fn_ptr:                dd 0    ; Zeiger auf aufzurufende Funktion (§27)
+smp_call_fn_ctx:                dd 0    ; Kontextzeiger für die aufzurufende Funktion (§27)
+smp_call_fn_ack:                dd 0    ; verbleibende ACKs; AP zählt nach Ausführung atomar runter (§27)
 
 ; ---------------------------------------------------------------------------
 ; isr_ipi – generischer IPI-Empfänger (Vektor SMP_IPI_VECTOR = 0xFE)
@@ -18726,11 +18877,23 @@ isr_ipi:
     ; Mailbox atomar lesen und leeren
     xor edx, edx
     xchg edx, [smp_ipi_mailbox + ecx * 4]
-    ; TLB_SHOOTDOWN: INVLPG der gemeldeten Adresse
+    ; TLB_SHOOTDOWN: INVLPG der gemeldeten Adresse, ACK an BSP (§30)
     test edx, (1 << SMP_IPI_TLB_SHOOTDOWN)
-    jz .ipi_check_stop
+    jz .ipi_check_call
     mov eax, [smp_shootdown_addr]
     invlpg [eax]
+    lock dec dword [smp_tlb_ack_pending]
+.ipi_check_call:
+    ; CALL_FUNCTION: registrierte Funktion ausführen, ACK zurückmelden (§27)
+    test edx, (1 << SMP_IPI_CALL_FUNCTION)
+    jz .ipi_check_stop
+    mov eax, [smp_call_fn_ptr]
+    test eax, eax
+    jz .ipi_call_done
+    mov ecx, [smp_call_fn_ctx]      ; Kontext als erstes Argument (ECX-Konvention)
+    call eax                         ; fn(ctx) – AP-seitiger Interrupt-Kontext, kurz halten
+.ipi_call_done:
+    lock dec dword [smp_call_fn_ack]
 .ipi_check_stop:
     ; CPU_STOP / PANIC_STOP: AP sicher anhalten
     test edx, (1 << SMP_IPI_CPU_STOP) | (1 << SMP_IPI_PANIC_STOP)

@@ -282,7 +282,7 @@ Die Startdiagnose meldet aktuell funktionsfähige Grundlagen für:
 - Module Loader mit Trust-, ABI- und W^X-Prüfungen
 - Thread Manager
 - Scheduler mit zwei Testthreads
-- SMP-Grundlage, BSP-Barriere und lokaler TLB-Pfad
+- SMP vollständig: AP-Start (§124), Cross-CPU-Calls (§27/§28), ACK-basierter TLB-Shootdown (§30)
 - Device Manager
 - VFS, Mount-Namespace und Bootstrap-Root
 - Netzwerkgrundlage für IPv4, IPv6, UDP, ICMP und TCP
@@ -332,14 +332,27 @@ weiteren APs werden per INIT-SIPI-SIPI-Sequenz hochgefahren (§124).
   `smp_boot_ap` auf und wartet je AP auf `cpu_online_count`.
 - **`smp_send_ipi`**: iteriert über Ziel-Bitmask, schlägt APIC-ID per Slot nach,
   schreibt Fixed-IPI (Vektor 0xFE) in ICR – tatsächliches Senden statt Stub.
-- **`smp_tlb_shootdown_page`**: lokales `invlpg` für BSP-Bit, danach
-  `smp_send_ipi` mit `SMP_IPI_TLB_SHOOTDOWN` für entfernte APs (fire-and-forget).
-- **`smp_self_test`**: prüft UP- und SMP-Pfad; erwartet `(1 << cpu_discovered_count) - 1`
-  als `cpu_online_set`/`cpu_active_set`; im SMP-Fall wird geprüft, dass ein IPI
-  an CPU 1 tatsächlich `smp_remote_ipis_sent` inkrementiert.
+- **`smp_tlb_shootdown_page`** (§30): lokales `invlpg` für BSP-Bit; für entfernte
+  APs wird Popcount der Zielmaske in `smp_tlb_ack_pending` gespeichert, dann IPI
+  gesendet und auf ACK-Nullstand gewartet; Timeout zählt in
+  `smp_rejected_remote_shootdowns`; `isr_ipi` führt `invlpg` aus und dekrementiert
+  `smp_tlb_ack_pending` per `lock dec` – ACK-basiert, nicht mehr fire-and-forget.
+- **`smp_call_function`** (§27/§28): EAX=Zielmaske (nur online, kein BSP),
+  ECX=Funktionszeiger, EDX=Kontext; Spinlock via `lock bts/btr`; Popcount in
+  `smp_call_fn_ack`; IPI `SMP_IPI_CALL_FUNCTION` gesendet; warten auf Null;
+  CF=0 OK, CF=1 Timeout oder ungültige Maske.
+- **`isr_ipi`** erweitert: TLB-Handler ruft `lock dec [smp_tlb_ack_pending]` nach
+  `invlpg`; neuer Zweig `ipi_check_call` führt registrierte Funktion aus und
+  ruft `lock dec [smp_call_fn_ack]` auf.
+- **Neue Datenvariablen**: `smp_tlb_ack_pending`, `smp_call_fn_lock`,
+  `smp_call_fn_ptr`, `smp_call_fn_ctx`, `smp_call_fn_ack`.
+- **`smp_api`**: `SMP_API_SIZE` auf 72 Bytes korrigiert; `smp_call_function`-Zeiger
+  als letztes Feld ergänzt (§54).
+- **`smp_self_test`** erweitert: Ablehnung ungültiger Masken für `smp_call_function`
+  (leere Maske, BSP-Bit, Null-Funktionszeiger) als automatisierte Prüfung.
 - **Stapelspeicher**: `ap_stack_area` – 7 × 4 KiB, page-aligned nach dem
   Datensegment; `ap_alive_count` – atomarer Zähler.
-- Assembly-Verifikation: NASM 2.16.01, 239 268 Bytes, kein Assemblerfehler.
+- Assembly-Verifikation: NASM 2.16.01, 240 524 Bytes, kein Assemblerfehler.
 
 ## 7. Semantic Types
 
@@ -621,6 +634,7 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
   die CRC-beschädigte neueste Kopie und der Rückfall auf die ältere Kopie sind
   bereits in QEMU geprüft
 - ~~vollständige AP-Aktivierung und echter SMP-Betrieb~~ (§124: INIT-SIPI-SIPI, `ap_trampoline_blob`, `ap_entry32_pm`, `smp_boot_ap`, `smp_start_aps`; `smp_send_ipi` und `smp_tlb_shootdown_page` senden echte IPIs; `smp_self_test` prüft UP- und SMP-Pfad)
+- ~~Cross-CPU-Funktionsaufruf und ACK-basierter TLB-Shootdown~~ (§27/§28/§30: `smp_call_function` mit Spinlock, Popcount-ACK und Timeout; `smp_tlb_shootdown_page` wartet auf `smp_tlb_ack_pending`; `isr_ipi` mit `lock dec` für beide ACK-Pfade; `SMP_API_SIZE`=72, `smp_call_function` in `smp_api`)
 - ~~vollständige Semantic Relationships, Subtypes und Traits~~ (§121: `semantic_register_subtype`, `semantic_register_trait`; Subtype/Trait-Scans in `semantic_compatibility`; dritter Typ `nova.kernel.trait.readable`; DIAGNOSTIC < INLINE_DATA, INLINE_DATA implements readable; `semantic_self_test` aktualisiert)
 - ~~mehrere kompatible Semantic Types pro Ressource~~ (§119: `object_semantic_attach_secondary`, `object_semantic_has_type`, `object_semantic_query_secondary`, `object_semantic_secondary_count`, `object_semantic_clear_secondary`; bis zu 4 Secondary Types pro Ressource; Secondary-Sidecar-Arrays in `semantic32.inc`; `semantic_initialize` löscht Secondary-Felder; `object_semantic_attach` setzt Secondary-Count zurück; erweiterter `semantic_self_test`)
 - ~~Typed Files und persistente Semantic Metadata~~ (§123: `novafs_typed_file_create`, `novafs_typed_file_read`, `novafs_typed_file_write`; Semantic-Type-Handle in NovaFS-Inode; `semantic_self_test` erweitert)
