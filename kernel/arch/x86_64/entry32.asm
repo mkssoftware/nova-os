@@ -427,6 +427,13 @@ kernel_entry:
     mov esi, message_kog_ok
     call serial_write_string
 
+    call evbus_initialize
+    jc panic_evbus
+    call evbus_self_test
+    jc panic_evbus
+    mov esi, message_evbus_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -751,6 +758,12 @@ panic_kog:
     mov eax, 0x00000014
     mov edx, 0x4B4F4700             ; "KOG\0"
     mov esi, message_kog_error
+    jmp kernel_panic
+
+panic_evbus:
+    mov eax, 0x00000015
+    mov edx, 0x45564200             ; "EVB\0"
+    mov esi, message_evbus_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -21062,6 +21075,537 @@ kog_root_service_id:   dd 0
 kog_root_recovery_id:  dd 0
 
 ; ---------------------------------------------------------------------------
+; §101 – Event Bus (NPSPEC-KERNEL-0101)
+; Publish-Subscribe-Infrastruktur für Kernelkomponenten.
+; Bootstrap: synchrone Callback-Zustellung, statische Pools, kein Scheduler.
+; Re-Entrant-Publish gesperrt (evbus_depth); evbus_pub_* single-threaded sicher.
+; ---------------------------------------------------------------------------
+
+; Eventklassen (§7)
+NP_EVENT_CLASS_STATE        equ 0
+NP_EVENT_CLASS_LIFECYCLE    equ 1
+NP_EVENT_CLASS_RESOURCE     equ 2
+NP_EVENT_CLASS_SECURITY     equ 3
+NP_EVENT_CLASS_ERROR        equ 4
+NP_EVENT_CLASS_DIAGNOSTIC   equ 5
+NP_EVENT_CLASS_COMPLETION   equ 6
+NP_EVENT_CLASS_NOTIFICATION equ 7
+
+; Event-Flags (§15)
+NP_EVENT_SYNCHRONOUS        equ 0x001
+NP_EVENT_ASYNCHRONOUS       equ 0x002
+NP_EVENT_RELIABLE           equ 0x004
+NP_EVENT_COALESCABLE        equ 0x008
+NP_EVENT_HIGH_PRIORITY      equ 0x010
+NP_EVENT_REPLAYABLE         equ 0x020
+NP_EVENT_AUDITED            equ 0x040
+NP_EVENT_SENSITIVE          equ 0x080
+NP_EVENT_KERNEL_ONLY        equ 0x100
+
+; Prioritäten (§34)
+NP_EVENT_PRIORITY_LOW       equ 0
+NP_EVENT_PRIORITY_NORMAL    equ 1
+NP_EVENT_PRIORITY_HIGH      equ 2
+NP_EVENT_PRIORITY_CRITICAL  equ 3
+
+; Zustellungsarten (§21)
+NP_EVENT_DELIVERY_CALLBACK  equ 0
+NP_EVENT_DELIVERY_QUEUE     equ 1
+NP_EVENT_DELIVERY_IPC       equ 2
+NP_EVENT_DELIVERY_SIGNAL    equ 3
+NP_EVENT_DELIVERY_WAITABLE  equ 4
+
+; Subscription-Zustände (§20)
+NP_SUB_CREATED              equ 0
+NP_SUB_ACTIVE               equ 1
+NP_SUB_PAUSED               equ 2
+NP_SUB_CLOSING              equ 3
+NP_SUB_CLOSED               equ 4
+
+; Fehlercodes (§59)
+NP_ERR_EVENT_TYPE_UNKNOWN   equ -40
+NP_ERR_EVENT_SCHEMA         equ -41
+NP_ERR_EVENT_TOO_LARGE      equ -42
+NP_ERR_SUBSCRIPTION_INVALID equ -43
+NP_ERR_SUBSCRIPTION_CLOSED  equ -44
+NP_ERR_EVENT_QUEUE_FULL     equ -45
+NP_ERR_EVENT_DROPPED        equ -46
+
+; Eingebaute Event-Type-IDs (§6, kernel.* Namespaces)
+NP_EVENT_BOOT_READY         equ 1
+NP_EVENT_BOOT_PANIC         equ 2
+NP_EVENT_OBJ_CREATED        equ 3
+NP_EVENT_OBJ_ACTIVATED      equ 4
+NP_EVENT_OBJ_DESTROYED      equ 5
+NP_EVENT_OBJ_STATE_CHANGED  equ 6
+NP_EVENT_OBJ_LINK_ADDED     equ 7
+NP_EVENT_OBJ_LINK_REMOVED   equ 8
+NP_EVENT_BUILTIN_COUNT      equ 8
+
+; Pool-Größen
+EVBUS_MAX_SCHEMAS           equ 32
+EVBUS_MAX_SUBS              equ 16
+
+; Schema-Layout (16 Bytes, §8)
+EVBUS_SCH_SIZE              equ 16
+EVBUS_SCH_OFF_TYPE_ID       equ 0    ; uint32_t
+EVBUS_SCH_OFF_CLASS         equ 4    ; uint8_t
+EVBUS_SCH_OFF_MIN_PL        equ 5    ; uint8_t
+EVBUS_SCH_OFF_MAX_PL        equ 6    ; uint16_t
+EVBUS_SCH_OFF_FLAGS         equ 8    ; uint32_t
+EVBUS_SCH_OFF_PRESENT       equ 12   ; uint8_t
+; 13-15: Padding
+
+; Subscription-Layout (24 Bytes, §19)
+EVBUS_SUB_SIZE              equ 24
+EVBUS_SUB_OFF_ID            equ 0    ; uint32_t
+EVBUS_SUB_OFF_TYPE_FILTER   equ 4    ; uint32_t (0 = alle Typen)
+EVBUS_SUB_OFF_HANDLER       equ 8    ; uint32_t (Callback-Zeiger)
+EVBUS_SUB_OFF_STATE         equ 12   ; uint8_t
+EVBUS_SUB_OFF_DELIVERY      equ 13   ; uint8_t
+EVBUS_SUB_OFF_FLAGS         equ 14   ; uint8_t
+EVBUS_SUB_OFF_PRESENT       equ 15   ; uint8_t
+EVBUS_SUB_OFF_QUEUED        equ 16   ; uint32_t
+EVBUS_SUB_OFF_LOST          equ 20   ; uint32_t
+
+; Compile-time-Invarianten
+%if EVBUS_SCH_SIZE != 16
+%error "EVBUS_SCH_SIZE muss 16 Bytes sein"
+%endif
+%if EVBUS_SUB_SIZE != 24
+%error "EVBUS_SUB_SIZE muss 24 Bytes sein"
+%endif
+
+; ---------------------------------------------------------------------------
+; evbus_find_schema – Schema per type_id suchen (intern)
+; EAX = type_id  →  EBX = Zeiger, CF=0 / CF=1
+; Clobbers: EBX (ECX intern gepusht/gepoppt)
+; ---------------------------------------------------------------------------
+evbus_find_schema:
+    push esi
+    push ecx
+    mov esi, evbus_schemas
+    xor ecx, ecx
+.evfs_loop:
+    cmp ecx, EVBUS_MAX_SCHEMAS
+    jae .evfs_not_found
+    cmp byte [esi + EVBUS_SCH_OFF_PRESENT], 1
+    jne .evfs_next
+    cmp [esi + EVBUS_SCH_OFF_TYPE_ID], eax
+    je .evfs_found
+.evfs_next:
+    add esi, EVBUS_SCH_SIZE
+    inc ecx
+    jmp .evfs_loop
+.evfs_found:
+    mov ebx, esi
+    pop ecx
+    pop esi
+    clc
+    ret
+.evfs_not_found:
+    xor ebx, ebx
+    pop ecx
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; evbus_register_schema – neues Schema registrieren (§9)
+; EAX=type_id, ECX=event_class, EDX=max_payload_size, ESI=flags
+; CF=0 OK / CF=1 Fehler (doppelt/voll)
+; ---------------------------------------------------------------------------
+evbus_register_schema:
+    push ebx
+    push esi
+    push edi
+    push ecx    ; [esp+0]=ECX(class), nach weiteren Pushes verschoben
+    push edx    ; Stack: [esp]=EDX(max_pl), [esp+4]=ECX(class),
+                ;        [esp+8]=old_EDI, [esp+12]=old_ESI(flags), [esp+16]=old_EBX
+
+    ; Doppelte type_id ablehnen
+    call evbus_find_schema      ; EAX unveränderter type_id
+    jnc .ers_fail               ; CF=0 = bereits vorhanden
+
+    ; Freien Slot suchen
+    mov edi, evbus_schemas
+    xor ecx, ecx
+.ers_scan:
+    cmp ecx, EVBUS_MAX_SCHEMAS
+    jae .ers_fail
+    cmp byte [edi + EVBUS_SCH_OFF_PRESENT], 0
+    je .ers_write
+    add edi, EVBUS_SCH_SIZE
+    inc ecx
+    jmp .ers_scan
+.ers_write:
+    mov [edi + EVBUS_SCH_OFF_TYPE_ID], eax
+    movzx ebx, byte [esp + 4]           ; event_class aus gesichertem ECX
+    mov [edi + EVBUS_SCH_OFF_CLASS], bl
+    mov byte [edi + EVBUS_SCH_OFF_MIN_PL], 0
+    movzx ebx, word [esp]               ; max_payload aus gesichertem EDX
+    mov [edi + EVBUS_SCH_OFF_MAX_PL], bx
+    mov ebx, [esp + 12]                 ; flags aus gesichertem ESI
+    mov [edi + EVBUS_SCH_OFF_FLAGS], ebx
+    mov byte [edi + EVBUS_SCH_OFF_PRESENT], 1
+    pop edx
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+.ers_fail:
+    pop edx
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; evbus_subscribe – Subscription anlegen (§18)
+; EAX=type_id_filter (0=alle), ECX=handler_fn, EDX=delivery_mode
+; EBX = sub_id (Rückgabe), CF=0 OK / CF=1 voll
+; ---------------------------------------------------------------------------
+evbus_subscribe:
+    push esi
+    push edi
+    push ecx    ; [esp+0]=ECX(handler_fn), nach push edx verschoben
+    push edx    ; Stack: [esp]=EDX(mode), [esp+4]=ECX(handler_fn),
+                ;        [esp+8]=old_EDI, [esp+12]=old_ESI
+    mov edi, evbus_subs
+    xor ecx, ecx
+.esub_scan:
+    cmp ecx, EVBUS_MAX_SUBS
+    jae .esub_fail
+    cmp byte [edi + EVBUS_SUB_OFF_PRESENT], 0
+    je .esub_write
+    add edi, EVBUS_SUB_SIZE
+    inc ecx
+    jmp .esub_scan
+.esub_write:
+    lock inc dword [evbus_next_sub_id]
+    mov ebx, [evbus_next_sub_id]
+    mov [edi + EVBUS_SUB_OFF_ID], ebx
+    mov [edi + EVBUS_SUB_OFF_TYPE_FILTER], eax
+    mov ecx, [esp + 4]                  ; handler_fn
+    mov [edi + EVBUS_SUB_OFF_HANDLER], ecx
+    mov byte [edi + EVBUS_SUB_OFF_STATE], NP_SUB_ACTIVE
+    mov cl, [esp]                       ; delivery_mode
+    mov [edi + EVBUS_SUB_OFF_DELIVERY], cl
+    mov byte [edi + EVBUS_SUB_OFF_FLAGS], 0
+    mov byte [edi + EVBUS_SUB_OFF_PRESENT], 1
+    mov dword [edi + EVBUS_SUB_OFF_QUEUED], 0
+    mov dword [edi + EVBUS_SUB_OFF_LOST], 0
+    pop edx
+    pop ecx
+    pop edi
+    pop esi
+    clc
+    ret
+.esub_fail:
+    pop edx
+    pop ecx
+    pop edi
+    pop esi
+    xor ebx, ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; evbus_publish – Ereignis veröffentlichen (§16)
+; EAX=type_id, ECX=source_obj_id, EDX=subject_obj_id,
+; ESI=payload_ptr (0=kein Payload), EDI=payload_size
+; CF=0 OK / CF=1 Fehler (unbekannt/zu groß/Rekursion)
+; Bootstrap: nur DELIVERY_CALLBACK; kein re-entrant publish (depth=0→1 max).
+; ---------------------------------------------------------------------------
+evbus_publish:
+    ; Argumente in statischen Temps speichern (single-threaded bootstrap)
+    mov [evbus_pub_type],   eax
+    mov [evbus_pub_src],    ecx
+    mov [evbus_pub_subj],   edx
+    mov [evbus_pub_payload],esi
+    mov [evbus_pub_plsize], edi
+
+    push ebx
+    push esi
+    push edi
+
+    ; Re-Entrant-Schutz (§23, §61)
+    cmp byte [evbus_depth], 1
+    jae .ep_fail
+
+    ; Schema prüfen (§16 Schritt 1+3)
+    mov eax, [evbus_pub_type]
+    call evbus_find_schema
+    jc .ep_fail
+
+    ; Payload-Größe gegen Schema-Maximum prüfen (§13)
+    movzx eax, word [ebx + EVBUS_SCH_OFF_MAX_PL]
+    cmp [evbus_pub_plsize], eax
+    ja .ep_fail
+
+    ; Sequence erhöhen, Tiefe setzen
+    lock inc dword [evbus_sequence]
+    mov byte [evbus_depth], 1
+
+    ; Alle aktiven Subscriptions durchlaufen
+    mov esi, evbus_subs
+    xor ecx, ecx
+.ep_loop:
+    cmp ecx, EVBUS_MAX_SUBS
+    jae .ep_done
+    cmp byte [esi + EVBUS_SUB_OFF_PRESENT], 1
+    jne .ep_next
+    cmp byte [esi + EVBUS_SUB_OFF_STATE], NP_SUB_ACTIVE
+    jne .ep_next
+
+    ; Typ-Filter (§18): 0 = alle Typen akzeptieren
+    mov edi, [esi + EVBUS_SUB_OFF_TYPE_FILTER]
+    test edi, edi
+    jz .ep_deliver
+    cmp edi, [evbus_pub_type]
+    jne .ep_next
+
+.ep_deliver:
+    cmp byte [esi + EVBUS_SUB_OFF_DELIVERY], NP_EVENT_DELIVERY_CALLBACK
+    jne .ep_lost            ; Bootstrap: kein Queue-/IPC-Deliver → lost++
+
+    mov ebx, [esi + EVBUS_SUB_OFF_HANDLER]
+    test ebx, ebx
+    jz .ep_lost
+    ; Callback: fn(EAX=type_id, ECX=src, EDX=subj) – CF ignoriert
+    mov eax, [evbus_pub_type]
+    mov ecx, [evbus_pub_src]
+    mov edx, [evbus_pub_subj]
+    call ebx
+    lock inc dword [evbus_stat_delivered]
+    lock inc dword [evbus_stat_sync]
+    jmp .ep_next
+
+.ep_lost:
+    lock inc dword [esi + EVBUS_SUB_OFF_LOST]
+
+.ep_next:
+    add esi, EVBUS_SUB_SIZE
+    inc ecx
+    jmp .ep_loop
+
+.ep_done:
+    mov byte [evbus_depth], 0
+    lock inc dword [evbus_stat_published]
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+
+.ep_fail:
+    lock inc dword [evbus_stat_rejected]
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; evbus_initialize – Pools leeren, 8 Built-in-Schemata registrieren (§38)
+; CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+
+%macro evbus_reg_builtin 4          ; type_id, class, max_payload, flags
+    mov eax, %1
+    mov ecx, %2
+    mov edx, %3
+    mov esi, %4
+    call evbus_register_schema
+    jc .einit_fail
+%endmacro
+
+evbus_initialize:
+    push edi
+    push ecx
+
+    mov edi, evbus_schemas
+    xor eax, eax
+    mov ecx, (EVBUS_MAX_SCHEMAS * EVBUS_SCH_SIZE) / 4
+    rep stosd
+    mov edi, evbus_subs
+    mov ecx, (EVBUS_MAX_SUBS * EVBUS_SUB_SIZE) / 4
+    rep stosd
+    mov dword [evbus_next_sub_id], 0
+    mov dword [evbus_sequence],    0
+    mov byte  [evbus_depth],       0
+    mov dword [evbus_stat_published], 0
+    mov dword [evbus_stat_delivered], 0
+    mov dword [evbus_stat_sync],      0
+    mov dword [evbus_stat_rejected],  0
+
+    evbus_reg_builtin NP_EVENT_BOOT_READY,        NP_EVENT_CLASS_LIFECYCLE, 0,  NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+    evbus_reg_builtin NP_EVENT_BOOT_PANIC,        NP_EVENT_CLASS_ERROR,     4,  NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+    evbus_reg_builtin NP_EVENT_OBJ_CREATED,       NP_EVENT_CLASS_LIFECYCLE, 8,  NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+    evbus_reg_builtin NP_EVENT_OBJ_ACTIVATED,     NP_EVENT_CLASS_LIFECYCLE, 8,  NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+    evbus_reg_builtin NP_EVENT_OBJ_DESTROYED,     NP_EVENT_CLASS_LIFECYCLE, 8,  NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+    evbus_reg_builtin NP_EVENT_OBJ_STATE_CHANGED, NP_EVENT_CLASS_STATE,     8,  NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+    evbus_reg_builtin NP_EVENT_OBJ_LINK_ADDED,    NP_EVENT_CLASS_STATE,     8,  NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+    evbus_reg_builtin NP_EVENT_OBJ_LINK_REMOVED,  NP_EVENT_CLASS_STATE,     8,  NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+
+    pop ecx
+    pop edi
+    clc
+    ret
+.einit_fail:
+    pop ecx
+    pop edi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; evbus_self_test – §62 Tests 1,2,3,7,11,12,14 (Bootstrap-Implementierung)
+; Tests 4-6,8-10,13,15-38: Bootstrap-N/A (Queue/IPC/SMP/Subtree).
+; CF=0 alle Tests bestanden / CF=1 Fehler
+; ---------------------------------------------------------------------------
+evbus_self_test:
+    push ebx
+    push esi
+    push edi
+
+    ; Test 1 – BOOT_READY-Schema registriert (§62.1)
+    mov eax, NP_EVENT_BOOT_READY
+    call evbus_find_schema
+    jc .est_fail
+    cmp byte [ebx + EVBUS_SCH_OFF_CLASS], NP_EVENT_CLASS_LIFECYCLE
+    jne .est_fail
+
+    ; Test 2 – Doppelte type_id ablehnen (§62.2)
+    mov eax, NP_EVENT_BOOT_READY
+    mov ecx, NP_EVENT_CLASS_LIFECYCLE
+    mov edx, 0
+    mov esi, 0
+    call evbus_register_schema
+    jnc .est_fail                       ; muss CF=1
+
+    ; Test 3 – Synchrone Callback-Zustellung (§62.3)
+    mov dword [evbus_test_flag], 0
+    mov eax, NP_EVENT_BOOT_READY
+    mov ecx, evbus_test_callback
+    mov edx, NP_EVENT_DELIVERY_CALLBACK
+    call evbus_subscribe
+    jc .est_fail
+    push ebx                            ; sub1_id
+
+    mov eax, NP_EVENT_BOOT_READY
+    xor ecx, ecx
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    call evbus_publish
+    jc .est_pop1_fail
+    cmp dword [evbus_test_flag], 0xCAFEBABE
+    jne .est_pop1_fail
+
+    ; Test 7 – Filter nach Eventtyp (§62.7)
+    ; Sub2 abonniert nur OBJ_CREATED; publish OBJ_CREATED → sub2 feuert
+    mov dword [evbus_test_flag], 0
+    mov eax, NP_EVENT_OBJ_CREATED
+    mov ecx, evbus_test_callback
+    mov edx, NP_EVENT_DELIVERY_CALLBACK
+    call evbus_subscribe
+    jc .est_pop1_fail
+    push ebx                            ; sub2_id
+
+    mov eax, NP_EVENT_OBJ_CREATED
+    mov ecx, 1
+    mov edx, 2
+    xor esi, esi
+    xor edi, edi
+    call evbus_publish
+    jc .est_pop2_fail
+    cmp dword [evbus_test_flag], 0xCAFEBABE
+    jne .est_pop2_fail
+
+    ; Test 11 – Gültige Payload-Größe (§62.11): OBJ_CREATED max=8, size=4 → OK
+    mov eax, NP_EVENT_OBJ_CREATED
+    xor ecx, ecx
+    xor edx, edx
+    mov esi, evbus_test_buf
+    mov edi, 4
+    call evbus_publish
+    jc .est_pop2_fail
+
+    ; Test 12 – Ungültige Payload-Größe (§62.12): size=64 > max=8 → CF=1
+    mov eax, NP_EVENT_OBJ_CREATED
+    xor ecx, ecx
+    xor edx, edx
+    mov esi, evbus_test_buf
+    mov edi, 64
+    call evbus_publish
+    jnc .est_pop2_fail                  ; muss CF=1
+
+    ; Test 14 – Eventreihenfolge: sequence steigt pro Publish (§62.14)
+    mov eax, [evbus_sequence]
+    push eax                            ; seq_before
+    mov eax, NP_EVENT_BOOT_READY
+    xor ecx, ecx
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    call evbus_publish
+    jc .est_pop3_fail
+    pop eax                             ; seq_before
+    cmp [evbus_sequence], eax
+    jbe .est_pop2_fail
+
+    ; Aufräumen
+    pop ebx                             ; sub2_id (ungenutzt)
+    pop ebx                             ; sub1_id (ungenutzt)
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+
+.est_pop3_fail:
+    pop eax                             ; seq_before
+    jmp .est_pop2_fail
+.est_pop2_fail:
+    pop ebx                             ; sub2_id
+.est_pop1_fail:
+    pop ebx                             ; sub1_id
+.est_fail:
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; Test-Callback: setzt evbus_test_flag = 0xCAFEBABE
+evbus_test_callback:
+    mov dword [evbus_test_flag], 0xCAFEBABE
+    ret
+
+; Event-Bus-Daten
+evbus_schemas:          times (EVBUS_MAX_SCHEMAS * EVBUS_SCH_SIZE) db 0
+evbus_subs:             times (EVBUS_MAX_SUBS * EVBUS_SUB_SIZE) db 0
+evbus_next_sub_id:      dd 0
+evbus_sequence:         dd 0
+evbus_depth:            db 0
+                        db 0, 0, 0              ; Alignment
+evbus_stat_published:   dd 0
+evbus_stat_delivered:   dd 0
+evbus_stat_sync:        dd 0
+evbus_stat_rejected:    dd 0
+evbus_pub_type:         dd 0
+evbus_pub_src:          dd 0
+evbus_pub_subj:         dd 0
+evbus_pub_payload:      dd 0
+evbus_pub_plsize:       dd 0
+evbus_test_flag:        dd 0
+evbus_test_buf:         times 16 db 0
+
+; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
 ; ---------------------------------------------------------------------------
 MODULE_MAGIC              equ 0x444D564E ; "NVMD"
@@ -26437,6 +26981,10 @@ message_kog_ok:
     db "NOVA: Kernel Object Graph (§100), 7 Root-Objekte, 12 Schemata bereit", 13, 10, 0
 message_kog_error:
     db "NOVA PANIC: Kernel Object Graph Selbsttest fehlgeschlagen", 13, 10, 0
+message_evbus_ok:
+    db "NOVA: Event Bus 1.0 (§101), 8 Built-in-Schemata, Pub/Sub bereit", 13, 10, 0
+message_evbus_error:
+    db "NOVA PANIC: Event Bus Selbsttest fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
