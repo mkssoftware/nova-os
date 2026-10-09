@@ -24336,7 +24336,7 @@ vsvc_register:
     xor edx, edx
     xor esi, esi
     xor edi, edi
-    call evbus_publish              ; EBX intern gespeichert/wiederhergestellt
+    call evbus_publish              ; Achtung: evbus_publish clobbered EBX (nur ESI/EDI werden wiederhergestellt)
 
     pop edi
     pop esi
@@ -24502,6 +24502,7 @@ vsvc_quiesce:
     cmp byte [ebx + VSVC_OFF_STATE], VSVC_STATE_ACTIVE
     jne .vq_invalid
     mov byte [ebx + VSVC_OFF_STATE], VSVC_STATE_QUIESCING
+    mov [vsvc_quiesce_tmp], ebx    ; EBX retten: evbus_publish clobbered EBX
     push eax
     push ecx
     push edx
@@ -24518,6 +24519,9 @@ vsvc_quiesce:
     pop edx
     pop ecx
     pop eax
+    ; EBX nach evbus_publish wiederherstellen (evbus_publish clobbered EBX)
+    ; vsvc_quiesce_tmp enthält desc_ptr, der vor dem ersten evbus_publish gesetzt wurde
+    mov ebx, [vsvc_quiesce_tmp]
     ; refcnt=0 → sofort OFFLINE
     cmp dword [ebx + VSVC_OFF_REFCNT], 0
     jne .vq_done
@@ -24745,6 +24749,8 @@ vsvc_tmp_find0:     dd 0
 vsvc_tmp_find1:     dd 0
 vsvc_tmp_find2:     dd 0
 vsvc_tmp_find3:     dd 0
+; Temp für vsvc_quiesce (EBX-Rettung über evbus_publish-Aufruf)
+vsvc_quiesce_tmp:    dd 0
 ; Temp für vsvc_acquire
 vsvc_tmp_acq_minmaj: dd 0
 vsvc_tmp_acq_maxmaj: dd 0
@@ -24841,9 +24847,8 @@ NP_ERR_SYNC_INVAL     equ -104
 ; Atomare Lade-/Speicheroperationen (§8)
 ; ---------------------------------------------------------------------------
 
-; np_atomic_load_u32: EAX=ptr → EAX=value (ACQUIRE-Semantik via MFENCE)
+; np_atomic_load_u32: EAX=ptr → EAX=value (ACQUIRE-Semantik; auf x86 TSO implizit)
 np_atomic_load_u32:
-    mfence
     mov eax, [eax]
     ret
 
@@ -25052,7 +25057,7 @@ np_seqlock_read_begin:
 
 ; np_seqlock_read_retry: EAX=seqlock_ptr, ECX=snapshot → CF=0 ok / CF=1 wiederholen
 np_seqlock_read_retry:
-    mfence
+    lfence
     cmp [eax], ecx
     je .srr_ok
     stc
