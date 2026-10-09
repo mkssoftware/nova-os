@@ -480,6 +480,13 @@ kernel_entry:
     mov esi, message_sync_ok
     call serial_write_string
 
+    call irq_manager_initialize
+    jc panic_irq_manager
+    call irq_manager_self_test
+    jc panic_irq_manager
+    mov esi, message_irq_manager_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -846,6 +853,12 @@ panic_sync:
     mov eax, 0x0000001C
     mov edx, 0x53594E43             ; "SYNC"
     mov esi, message_sync_error
+    jmp kernel_panic
+
+panic_irq_manager:
+    mov eax, 0x0000001E
+    mov edx, 0x49525147             ; "IRQG"
+    mov esi, message_irq_manager_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -25690,6 +25703,447 @@ sync_st_rcu_called:  dd 0
 align 4
 
 ; ---------------------------------------------------------------------------
+; ===========================================================================
+; §009 – Interrupt Manager 1.0 (NPSPEC-KERNEL-0009)
+; Bootstrap: Handler-Registrierung, Vektor-Allokation, Statistiken.
+; Baut auf dem bestehenden IDT/PIC/APIC-Setup (interrupt_initialize) auf.
+; ===========================================================================
+
+; Interrupt-Klassen (§4)
+NP_INTERRUPT_EXCEPTION  equ 0
+NP_INTERRUPT_HARDWARE   equ 1
+NP_INTERRUPT_MSI        equ 2
+NP_INTERRUPT_IPI        equ 3
+NP_INTERRUPT_TIMER      equ 4
+NP_INTERRUPT_SOFTWARE   equ 5
+NP_INTERRUPT_SPURIOUS   equ 6
+
+; Handler-Ergebnisse (§13)
+NP_IRQ_NOT_HANDLED      equ 0
+NP_IRQ_HANDLED          equ 1
+NP_IRQ_WAKE_THREAD      equ 2
+NP_IRQ_DISABLE_SOURCE   equ 3
+NP_IRQ_FATAL            equ 4
+
+; Interrupt-Flags (§16)
+NP_IRQ_SHARED           equ 0x00000001
+NP_IRQ_EDGE             equ 0x00000002
+NP_IRQ_LEVEL            equ 0x00000004
+NP_IRQ_THREADED         equ 0x00000008
+NP_IRQ_ONESHOT          equ 0x00000010
+NP_IRQ_WAKE_CAPABLE     equ 0x00000020
+NP_IRQ_PER_CPU          equ 0x00000040
+NP_IRQ_NO_BALANCE       equ 0x00000080
+
+; Handler-Slot (§14)
+IRQH_OFF_HANDLER        equ 0   ; dd function ptr (0 = frei)
+IRQH_OFF_CONTEXT        equ 4   ; dd context ptr
+IRQH_OFF_FLAGS          equ 8   ; dd NP_IRQ_* Flags
+IRQH_OFF_IRQ            equ 12  ; dd IRQ-Nummer (0-15)
+IRQH_SIZE               equ 16
+
+IRQ_MANAGER_SLOTS       equ 16  ; ein Slot pro Legacy-IRQ-Leitung
+IRQ_VECTOR_PIC_BASE     equ 32  ; Erstes PIC-Vektor (0x20)
+IRQ_VECTOR_DYN_BASE     equ 48  ; Dynamisch ab 0x30
+
+; VSVC-UUID für nova.irq.manager
+VSVC_ID_IRQM_0          equ 0x4E4F5641   ; "NOVA"
+VSVC_ID_IRQM_1          equ 0x4952514D   ; "IRQM"
+VSVC_ID_IRQM_2          equ 0x434F5245   ; "CORE"
+VSVC_ID_IRQM_3          equ 0x00000001
+
+; Fehlercodes §50
+NP_ERR_IRQ_INVALID_VECTOR   equ -110
+NP_ERR_IRQ_INVALID_SOURCE   equ -111
+NP_ERR_IRQ_VECTOR_EXHAUSTED equ -112
+NP_ERR_IRQ_ALREADY_BOUND    equ -113
+NP_ERR_IRQ_NOT_SHARED       equ -114
+NP_ERR_IRQ_TRIGGER_CONFLICT equ -115
+NP_ERR_IRQ_ACCESS_DENIED    equ -116
+NP_ERR_IRQ_SOURCE_DISABLED  equ -119
+
+; ---------------------------------------------------------------------------
+; irq_register_handler: EAX=irq_num(0–15), EBX=handler_ptr,
+;                        ECX=context_ptr, EDX=flags
+;   → CF=0 / CF=1 EAX=fehler
+; ---------------------------------------------------------------------------
+irq_register_handler:
+    cmp eax, IRQ_MANAGER_SLOTS
+    jae .irh_inval
+    push esi
+    imul eax, IRQH_SIZE
+    mov esi, irq_handler_table
+    add esi, eax
+    cmp dword [esi + IRQH_OFF_HANDLER], 0
+    jne .irh_busy
+    mov [esi + IRQH_OFF_HANDLER], ebx
+    mov [esi + IRQH_OFF_CONTEXT], ecx
+    mov [esi + IRQH_OFF_FLAGS],   edx
+    pop esi
+    clc
+    ret
+.irh_busy:
+    pop esi
+    mov eax, NP_ERR_IRQ_ALREADY_BOUND
+    stc
+    ret
+.irh_inval:
+    mov eax, NP_ERR_IRQ_INVALID_SOURCE
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; irq_unregister_handler: EAX=irq_num(0–15) → CF=0 / CF=1
+; ---------------------------------------------------------------------------
+irq_unregister_handler:
+    cmp eax, IRQ_MANAGER_SLOTS
+    jae .iru_inval
+    push esi
+    imul eax, IRQH_SIZE
+    mov esi, irq_handler_table
+    add esi, eax
+    mov dword [esi + IRQH_OFF_HANDLER], 0
+    mov dword [esi + IRQH_OFF_CONTEXT], 0
+    mov dword [esi + IRQH_OFF_FLAGS],   0
+    mov dword [esi + IRQH_OFF_IRQ],     0
+    pop esi
+    clc
+    ret
+.iru_inval:
+    mov eax, NP_ERR_IRQ_INVALID_SOURCE
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; irq_dispatch_hw: EAX=irq_num(0–15)
+; Ruft registrierten Handler auf, aktualisiert Statistiken.
+; EOI liegt beim Caller (interrupt_dispatch).
+; → EAX=NP_IRQ_HANDLED / NP_IRQ_NOT_HANDLED
+; ---------------------------------------------------------------------------
+irq_dispatch_hw:
+    cmp eax, IRQ_MANAGER_SLOTS
+    jae .idh_spurious
+    inc dword [irq_stat_total]
+    mov ecx, eax
+    inc dword [irq_counts + ecx * 4]
+    imul eax, IRQH_SIZE
+    mov [irq_tmp_slot], eax        ; Slot-Offset speichern
+    mov eax, [irq_handler_table + eax + IRQH_OFF_HANDLER]
+    test eax, eax
+    jz .idh_unhandled
+    ; Handler(context) aufrufen — Slot-Offset aus irq_tmp_slot
+    mov ecx, [irq_tmp_slot]
+    push dword [irq_handler_table + ecx + IRQH_OFF_CONTEXT]
+    call eax
+    add esp, 4
+    mov eax, NP_IRQ_HANDLED
+    ret
+.idh_unhandled:
+    inc dword [irq_stat_unhandled]
+    mov eax, NP_IRQ_NOT_HANDLED
+    ret
+.idh_spurious:
+    inc dword [irq_stat_spurious]
+    mov eax, NP_IRQ_NOT_HANDLED
+    ret
+
+; ---------------------------------------------------------------------------
+; np_interrupt_vector_allocate: EAX=count → CF=0 EAX=first_vector / CF=1
+; Sucht im dynamischen Pool (Vektoren 48–255) einen freien zusammenhängenden
+; Bereich und markiert ihn als belegt.
+; ---------------------------------------------------------------------------
+np_interrupt_vector_allocate:
+    test eax, eax
+    jz .iva_inval
+    cmp eax, 208            ; max allokierbar (256 - 48)
+    ja .iva_inval
+    mov [irq_tmp_alloc_cnt], eax
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+    mov edi, IRQ_VECTOR_DYN_BASE    ; Suchstart
+.iva_scan:
+    mov ecx, [irq_tmp_alloc_cnt]
+    ; Prüfen ob ab EDI count Vektoren frei sind
+    mov esi, edi
+.iva_check:
+    cmp esi, 256
+    jae .iva_fail
+    cmp byte [irq_vector_used + esi], 0
+    jne .iva_next
+    dec ecx
+    jz .iva_found
+    inc esi
+    jmp .iva_check
+.iva_next:
+    inc edi
+    cmp edi, 256
+    jb .iva_scan
+.iva_fail:
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    mov eax, NP_ERR_IRQ_VECTOR_EXHAUSTED
+    stc
+    ret
+.iva_found:
+    ; Vektoren [EDI .. ESI] als belegt markieren
+    mov esi, edi
+    mov ecx, [irq_tmp_alloc_cnt]
+.iva_mark:
+    mov byte [irq_vector_used + esi], 1
+    inc esi
+    dec ecx
+    jnz .iva_mark
+    mov eax, edi
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.iva_inval:
+    mov eax, NP_ERR_IRQ_INVALID_VECTOR
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; np_interrupt_vector_free: EAX=first_vector, ECX=count → CF=0 / CF=1
+; ---------------------------------------------------------------------------
+np_interrupt_vector_free:
+    cmp eax, IRQ_VECTOR_DYN_BASE
+    jb .ivf_inval
+    test ecx, ecx
+    jz .ivf_inval
+    ; Endvektor berechnen: EAX + ECX <= 256
+    push ebx
+    mov ebx, eax
+    add eax, ecx
+    cmp eax, 257
+    jae .ivf_inval_pop
+.ivf_clear:
+    mov byte [irq_vector_used + ebx], 0
+    inc ebx
+    dec ecx
+    jnz .ivf_clear
+    pop ebx
+    clc
+    ret
+.ivf_inval_pop:
+    pop ebx
+.ivf_inval:
+    mov eax, NP_ERR_IRQ_INVALID_VECTOR
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; irq_manager_initialize – Tabellen nullen, VSVC registrieren
+; CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+irq_manager_initialize:
+    push ebx
+    push esi
+    push edi
+
+    ; Handler-Tabelle nullen
+    mov edi, irq_handler_table
+    xor eax, eax
+    mov ecx, (IRQ_MANAGER_SLOTS * IRQH_SIZE) / 4
+    rep stosd
+
+    ; Statistiken nullen
+    mov dword [irq_stat_total],     0
+    mov dword [irq_stat_spurious],  0
+    mov dword [irq_stat_unhandled], 0
+    mov edi, irq_counts
+    mov ecx, IRQ_MANAGER_SLOTS
+    rep stosd
+
+    ; Vektor-Nutzungstabelle: 0-47 als belegt markieren
+    mov edi, irq_vector_used
+    xor eax, eax
+    mov ecx, 256
+    rep stosb                       ; erst alles auf 0 (1 Byte pro Vektor)
+    mov ecx, IRQ_VECTOR_DYN_BASE   ; Vektoren 0-47 reservieren
+    mov edi, irq_vector_used
+.imi_reserve:
+    mov byte [edi], 1
+    inc edi
+    dec ecx
+    jnz .imi_reserve
+
+    ; VSVC "nova.irq.manager" registrieren
+    mov dword [vsvc_tmp_maj],      1
+    mov dword [vsvc_tmp_min],      0
+    mov dword [vsvc_tmp_pat],      0
+    mov dword [vsvc_tmp_table],    irq_vsvc_tbl
+    mov dword [vsvc_tmp_tabsz],    VSVC_TBL_HDR_SIZE
+    mov dword [vsvc_tmp_features], 0
+    mov dword [vsvc_tmp_reqcap],   0
+    mov dword [vsvc_tmp_arch],     VSVC_ARCH_X86_32
+    mov dword [vsvc_tmp_stab],     VSVC_STAB_STABLE
+    mov dword [vsvc_tmp_name],     irq_name_irqm
+    mov dword [vsvc_tmp_flags],    VSVC_FLAG_EARLY_BOOT | VSVC_FLAG_PANIC_SAFE
+    mov eax, VSVC_ID_IRQM_0
+    mov ebx, VSVC_ID_IRQM_1
+    mov ecx, VSVC_ID_IRQM_2
+    mov edx, VSVC_ID_IRQM_3
+    call vsvc_register
+    jc .imi_fail
+
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+.imi_fail:
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; irq_manager_self_test – 10 Tests
+; CF=0 alle bestanden / CF=1 Fehler
+; ---------------------------------------------------------------------------
+irq_manager_self_test:
+    push ebx
+    push esi
+    push edi
+
+    ; === Test 1: IDT geladen – sidt → base == idt_table ===
+    sidt [irq_st_idtr_buf]
+    mov eax, [irq_st_idtr_buf + 2]  ; Basisadresse
+    cmp eax, idt_table
+    jne .imst_fail
+
+    ; === Test 2: IDT-Limit = (IDT_ENTRY_COUNT * 8) - 1 ===
+    movzx eax, word [irq_st_idtr_buf]
+    cmp eax, (IDT_ENTRY_COUNT * 8) - 1
+    jne .imst_fail
+
+    ; === Test 3: PIC-Mastermaske (0x21) lesbar, nicht komplett maskiert ===
+    in al, 0x21
+    cmp al, 0xFF
+    je .imst_fail                   ; alle IRQs maskiert → Fehler
+
+    ; === Test 4: irq_register_handler → Handler in Slot ===
+    mov eax, 5                      ; Test-IRQ 5
+    mov ebx, irq_st_test_handler
+    xor ecx, ecx
+    xor edx, edx
+    call irq_register_handler
+    jc .imst_fail
+    ; Slot prüfen
+    mov eax, [irq_handler_table + 5 * IRQH_SIZE + IRQH_OFF_HANDLER]
+    cmp eax, irq_st_test_handler
+    jne .imst_fail
+
+    ; === Test 5: Doppel-Registrierung ohne SHARED → NP_ERR_IRQ_ALREADY_BOUND ===
+    mov eax, 5
+    mov ebx, irq_st_test_handler
+    xor ecx, ecx
+    xor edx, edx
+    call irq_register_handler
+    jnc .imst_fail                  ; muss CF=1 zurückgeben
+    cmp eax, NP_ERR_IRQ_ALREADY_BOUND
+    jne .imst_fail
+
+    ; === Test 6: irq_dispatch_hw → Handler aufgerufen ===
+    mov dword [irq_st_cb_called], 0
+    mov eax, 5
+    call irq_dispatch_hw
+    cmp dword [irq_st_cb_called], 1
+    jne .imst_fail
+    cmp eax, NP_IRQ_HANDLED
+    jne .imst_fail
+
+    ; === Test 7: irq_stat_total und irq_counts[5] inkrementiert ===
+    cmp dword [irq_stat_total], 1
+    jne .imst_fail
+    cmp dword [irq_counts + 5 * 4], 1
+    jne .imst_fail
+
+    ; === Test 8: irq_unregister_handler → Slot geleert ===
+    mov eax, 5
+    call irq_unregister_handler
+    jc .imst_fail
+    cmp dword [irq_handler_table + 5 * IRQH_SIZE + IRQH_OFF_HANDLER], 0
+    jne .imst_fail
+
+    ; === Test 9: np_interrupt_vector_allocate(1) → Vektor ≥ 48 ===
+    mov eax, 1
+    call np_interrupt_vector_allocate
+    jc .imst_fail
+    cmp eax, IRQ_VECTOR_DYN_BASE
+    jb .imst_fail
+    mov [irq_st_alloc_vec], eax
+
+    ; === Test 10: np_interrupt_vector_free → anschließend wieder allokierbar ===
+    mov ecx, 1
+    call np_interrupt_vector_free
+    jc .imst_fail
+    mov eax, 1
+    call np_interrupt_vector_allocate
+    jc .imst_fail
+    ; Freigeben (Aufräumen)
+    mov ecx, 1
+    call np_interrupt_vector_free
+
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+
+.imst_fail:
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; Selbsttest-Callback
+irq_st_test_handler:
+    mov dword [irq_st_cb_called], 1
+    mov eax, NP_IRQ_HANDLED
+    ret
+
+; ---------------------------------------------------------------------------
+; §009 Daten
+; ---------------------------------------------------------------------------
+align 4
+irq_handler_table:   times (IRQ_MANAGER_SLOTS * IRQH_SIZE / 4) dd 0
+irq_counts:          times IRQ_MANAGER_SLOTS dd 0
+irq_stat_total:      dd 0
+irq_stat_spurious:   dd 0
+irq_stat_unhandled:  dd 0
+irq_tmp_slot:        dd 0
+irq_tmp_alloc_cnt:   dd 0
+irq_st_alloc_vec:    dd 0
+irq_st_cb_called:    dd 0
+align 2
+irq_st_idtr_buf:     dw 0, 0, 0   ; 6 Byte: limit(2) + base(4)
+align 4
+; Vektor-Nutzungstabelle: 1 Byte pro Vektor, 0=frei, 1=belegt
+irq_vector_used:     times 256 db 0
+; VSVC-Tabelle
+align 4
+irq_vsvc_tbl:
+    dd VSVC_TBL_HDR_SIZE
+    dw 1, 0
+    dd 0, 0
+    dd VSVC_CALL_EARLY_BOOT | VSVC_CALL_PANIC_SAFE
+    dd 0
+irq_name_irqm:  db "nova.irq.manager", 0
+align 4
+
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
 ; ---------------------------------------------------------------------------
 MODULE_MAGIC              equ 0x444D564E ; "NVMD"
@@ -31093,6 +31547,10 @@ message_sync_ok:
     db "NOVA: Synchronisation 1.0 (SS016), Spinlocks/Sema/Completion/SeqLock/Refcount", 13, 10, 0
 message_sync_error:
     db "NOVA PANIC: Synchronisation Selbsttest fehlgeschlagen", 13, 10, 0
+message_irq_manager_ok:
+    db "NOVA: Interrupt Manager 1.0 (SS009), 16 IRQ-Slots, 208 dyn. Vektoren", 13, 10, 0
+message_irq_manager_error:
+    db "NOVA PANIC: Interrupt Manager Selbsttest fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
