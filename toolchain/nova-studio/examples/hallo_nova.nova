@@ -1,0 +1,124 @@
+' =============================================================================
+' hallo_nova.nova – NovaLang Beispielprogramm für Nova Studio
+' Kompilieren: Kompilieren → Erstellen  (oder F7)
+' =============================================================================
+
+Imports Nova.System
+Imports Nova.IO
+
+' ---------------------------------------------------------------------------
+' Einfache Hilfsstruktur
+' ---------------------------------------------------------------------------
+Structure Punkt
+    Dim X As Double
+    Dim Y As Double
+End Structure
+
+' ---------------------------------------------------------------------------
+' Hauptmodul
+' ---------------------------------------------------------------------------
+Module HalloNova
+
+    ' Globale Konstante
+    Const VERSION As String = "1.0"
+
+    ' -----------------------------------------------------------------------
+    ' Einstiegspunkt
+    ' -----------------------------------------------------------------------
+    Sub Main()
+        Console.WriteLine("=== Nova Studio Beispiel v" & VERSION & " ===")
+        Console.WriteLine("")
+
+        ' Variablen und Typen
+        Dim name    As String  = "NovaOS"
+        Dim version As Integer = 1
+        Dim pi      As Double  = 3.14159
+
+        Console.WriteLine("Projekt : " & name)
+        Console.WriteLine("Version : " & CStr(version))
+        Console.WriteLine("Pi      : " & CStr(pi))
+        Console.WriteLine("")
+
+        ' For-Schleife
+        Console.WriteLine("Zähle von 1 bis 5:")
+        For i As Integer = 1 To 5
+            Console.Write("  " & CStr(i))
+        Next i
+        Console.WriteLine("")
+        Console.WriteLine("")
+
+        ' Funktionsaufruf
+        Dim summe As Integer = Addiere(40, 2)
+        Console.WriteLine("40 + 2 = " & CStr(summe))
+
+        ' Fibonacci
+        Console.WriteLine("Fibonacci(10) = " & CStr(Fibonacci(10)))
+
+        ' Struktur
+        Dim p As Punkt
+        p.X = 3.0
+        p.Y = 4.0
+        Dim abstand As Double = Abstand(p)
+        Console.WriteLine("Abstand (3,4) vom Ursprung = " & CStr(abstand))
+
+        ' If / ElseIf
+        BewerteZahl(summe)
+
+        ' While-Schleife
+        Console.WriteLine("")
+        Console.WriteLine("Potenzen von 2:")
+        Dim wert As Integer = 1
+        Dim exp  As Integer = 0
+        While exp <= 8
+            Console.WriteLine("  2^" & CStr(exp) & " = " & CStr(wert))
+            wert = wert * 2
+            exp  = exp + 1
+        End While
+
+        Console.WriteLine("")
+        Console.WriteLine("Fertig.")
+    End Sub
+
+    ' -----------------------------------------------------------------------
+    ' Einfache Addition
+    ' -----------------------------------------------------------------------
+    Function Addiere(a As Integer, b As Integer) As Integer
+        Return a + b
+    End Function
+
+    ' -----------------------------------------------------------------------
+    ' Rekursive Fibonacci-Berechnung
+    ' -----------------------------------------------------------------------
+    Function Fibonacci(n As Integer) As Integer
+        If n <= 1 Then
+            Return n
+        End If
+        Return Fibonacci(n - 1) + Fibonacci(n - 2)
+    End Function
+
+    ' -----------------------------------------------------------------------
+    ' Euklidischer Abstand vom Ursprung
+    ' -----------------------------------------------------------------------
+    Function Abstand(p As Punkt) As Double
+        Return Nova.Math.Sqrt(p.X * p.X + p.Y * p.Y)
+    End Function
+
+    ' -----------------------------------------------------------------------
+    ' Klassifiziert eine Zahl
+    ' -----------------------------------------------------------------------
+    Sub BewerteZahl(n As Integer)
+        Console.WriteLine("")
+        If n < 0 Then
+            Console.WriteLine(CStr(n) & " ist negativ.")
+        ElseIf n = 0 Then
+            Console.WriteLine("Die Zahl ist Null.")
+        ElseIf n < 10 Then
+            Console.WriteLine(CStr(n) & " ist eine einstellige positive Zahl.")
+        ElseIf n < 100 Then
+            Console.WriteLine(CStr(n) & " ist eine zweistellige positive Zahl.")
+        Else
+            Console.WriteLine(CStr(n) & " ist groß (>= 100).")
+        End If
+    End Sub
+
+End Module

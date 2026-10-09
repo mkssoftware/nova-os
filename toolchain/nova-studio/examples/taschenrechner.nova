@@ -1,0 +1,87 @@
+' =============================================================================
+' taschenrechner.nova – Einfacher Taschenrechner in NovaLang
+' Demonstriert: Select Case, Fehlerbehandlung, Module, Functions
+' =============================================================================
+
+Imports Nova.System
+
+Module Taschenrechner
+
+    ' Verfügbare Operationen
+    Enum Operation
+        Addition      = 1
+        Subtraktion   = 2
+        Multiplikation = 3
+        Division      = 4
+    End Enum
+
+    Sub Main()
+        Console.WriteLine("=== NovaLang Taschenrechner ===")
+        Console.WriteLine("")
+
+        ' Testfälle
+        Berechne(10.0, 5.0, Operation.Addition)
+        Berechne(10.0, 5.0, Operation.Subtraktion)
+        Berechne(10.0, 5.0, Operation.Multiplikation)
+        Berechne(10.0, 5.0, Operation.Division)
+        Berechne(7.0,  0.0, Operation.Division)   ' Division durch Null
+
+        Console.WriteLine("")
+
+        ' Mehrere Ergebnisse in einer Schleife
+        Console.WriteLine("Multiplikationstabelle (1-5 mal 7):")
+        For n As Integer = 1 To 5
+            Dim ergebnis As Double = CDbl(n) * 7.0
+            Console.WriteLine("  " & CStr(n) & " x 7 = " & CStr(ergebnis))
+        Next n
+    End Sub
+
+    ' -----------------------------------------------------------------------
+    ' Führt eine Berechnung durch und gibt das Ergebnis aus
+    ' -----------------------------------------------------------------------
+    Sub Berechne(a As Double, b As Double, op As Operation)
+        Dim symbol  As String = OperationsSymbol(op)
+        Dim resultat As String
+
+        If op = Operation.Division AndAlso b = 0.0 Then
+            resultat = "Fehler: Division durch Null"
+        Else
+            Dim wert As Double = Rechne(a, b, op)
+            resultat = CStr(wert)
+        End If
+
+        Console.WriteLine(CStr(a) & " " & symbol & " " & CStr(b) & " = " & resultat)
+    End Sub
+
+    ' -----------------------------------------------------------------------
+    ' Führt die eigentliche Berechnung durch
+    ' -----------------------------------------------------------------------
+    Function Rechne(a As Double, b As Double, op As Operation) As Double
+        Select Case op
+            Case Operation.Addition
+                Return a + b
+            Case Operation.Subtraktion
+                Return a - b
+            Case Operation.Multiplikation
+                Return a * b
+            Case Operation.Division
+                Return a / b
+            Case Else
+                Return 0.0
+        End Select
+    End Function
+
+    ' -----------------------------------------------------------------------
+    ' Gibt das mathematische Symbol einer Operation zurück
+    ' -----------------------------------------------------------------------
+    Function OperationsSymbol(op As Operation) As String
+        Select Case op
+            Case Operation.Addition       : Return "+"
+            Case Operation.Subtraktion    : Return "-"
+            Case Operation.Multiplikation : Return "*"
+            Case Operation.Division       : Return "/"
+            Case Else                     : Return "?"
+        End Select
+    End Function
+
+End Module
