@@ -40,6 +40,8 @@ typedef enum NlTokenKind {
 
     /* --- Keywords ---------------------------------------------------- */
     KW_ADDHANDLER,
+    KW_REMOVEHANDLER,
+    KW_WHEN,
     KW_AND,
     KW_ANDALSO,
     KW_AS,

@@ -44,8 +44,9 @@ static const KwEntry kw_table[] = {
     {"then", KW_THEN}, {"throw", KW_THROW}, {"to", KW_TO},
     {"true", KW_TRUE}, {"try", KW_TRY}, {"uinteger", KW_UINTEGER},
     {"ulong", KW_ULONG}, {"ushort", KW_USHORT}, {"using", KW_USING},
-    {"while", KW_WHILE}, {"with", KW_WITH}, {"writeonly", KW_WRITEONLY},
-    {"xor", KW_XOR},
+    {"when", KW_WHEN}, {"while", KW_WHILE}, {"with", KW_WITH},
+    {"writeonly", KW_WRITEONLY}, {"xor", KW_XOR},
+    {"removehandler", KW_REMOVEHANDLER},
     {NULL, TK_INVALID}
 };
 
@@ -263,7 +264,7 @@ int nl_lexer_init(NlLexer *lex, const char *src, uint32_t len) {
 }
 
 int nl_lexer_run(NlLexer *lex) {
-    int pending_newline = 0; /* suppress initial newlines */
+    (void)0; /* suppress initial newlines (pending_newline removed) */
 
     while (lex->pos < lex->src_len) {
         char c = peek(lex);
@@ -430,7 +431,7 @@ int nl_lexer_run(NlLexer *lex) {
     memset(&eof, 0, sizeof(eof));
     eof.kind = TK_EOF;
     eof.range.start = eof.range.end = (NlPos){lex->pos, lex->line, lex->col};
-    add_token(lex, &eof);
+    add_token(lex, eof);
 
     return lex->error_count ? -1 : 0;
 }
