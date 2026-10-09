@@ -73,6 +73,36 @@ static NlSymbol *lookup(NlTypeChecker *tc, uint32_t name_id) {
  * Initialise with built-in types
  * ---------------------------------------------------------------------- */
 
+/* Case-insensitive string comparison (no strcasecmp on all platforms) */
+static int str_ieq(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+        char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+        if (ca != cb) return 0;
+    }
+    return *a == 0 && *b == 0;
+}
+
+/* Pre-declare standard-library identifiers that appear in the source */
+static void predeclare_builtins(NlTypeChecker *tc) {
+    static const char *const names[] = {
+        "console", "math", "environment",
+        "cdbl", "cstr", "cbool", "cint", "clng", "csng",
+        "cbyte", "cshort", "cuint", "culng", "cushort", "cdec", "cchar", "cobj",
+        "cdate", "ctype",
+        NULL
+    };
+    for (uint32_t i = 0; i < tc->string_count; i++) {
+        if (!tc->strings[i]) continue;
+        for (int j = 0; names[j]; j++) {
+            if (str_ieq(tc->strings[i], names[j])) {
+                declare(tc, i, NL_TY_OBJECT, NULL);
+                break;
+            }
+        }
+    }
+}
+
 void nl_tc_init(NlTypeChecker *tc, NlArena *a, NlDiagList *diags,
                 char **strings, uint32_t string_count) {
     memset(tc, 0, sizeof(*tc));
@@ -320,6 +350,19 @@ static void check_stmt(NlTypeChecker *tc, NlNode *n) {
         case ND_THROW_STMT:
             if (n->children.count > 0) nl_tc_check_expr(tc, n->children.items[0]);
             break;
+        case ND_SELECT_STMT: {
+            if (n->children.count > 0)
+                nl_tc_check_expr(tc, n->children.items[0]);
+            for (uint32_t i = 1; i < n->children.count; i++) {
+                NlNode *cc = n->children.items[i]; /* ND_CASE_CLAUSE */
+                for (uint32_t j = 0; j < cc->children.count; j++) {
+                    NlNode *c = cc->children.items[j];
+                    if (c->kind == ND_BLOCK) check_block(tc, c);
+                    else nl_tc_check_expr(tc, c);
+                }
+            }
+            break;
+        }
         case ND_VAR_DECL: case ND_CONST_DECL:
             check_decl(tc, n);
             break;
@@ -407,9 +450,38 @@ static void check_decl(NlTypeChecker *tc, NlNode *n) {
             tc->current_return_type = saved;
             break;
         }
+        case ND_ENUM_DECL: {
+            /* Register enum type (or reuse if already pre-declared) */
+            NlSymbol *existing = lookup(tc, n->val.str_id);
+            NlTypeRef et;
+            if (existing) {
+                et = existing->type;
+            } else {
+                et = nl_type_register(tc->table, tc->arena, TY_ENUM, n->val.str_id, 1);
+                declare(tc, n->val.str_id, et, n);
+            }
+            /* Declare each member in current scope */
+            for (uint32_t i = 0; i < n->children.count; i++) {
+                NlNode *m = n->children.items[i];
+                if (m->kind == ND_ENUM_MEMBER)
+                    declare(tc, m->val.str_id, et, m);
+            }
+            break;
+        }
         case ND_CLASS_DECL: case ND_STRUCT_DECL: case ND_MODULE_DECL:
         case ND_INTERFACE_DECL: case ND_NAMESPACE_DECL: {
             push_scope(tc);
+            /* Pass 1: forward-declare enums and callables so bodies can see them */
+            for (uint32_t i = 0; i < n->children.count; i++) {
+                NlNode *c = n->children.items[i];
+                if (c->kind == ND_ENUM_DECL) {
+                    NlTypeRef et = nl_type_register(tc->table, tc->arena, TY_ENUM, c->val.str_id, 1);
+                    declare(tc, c->val.str_id, et, c);
+                } else if (c->kind == ND_SUB_DECL || c->kind == ND_FUNCTION_DECL) {
+                    declare(tc, c->val.str_id, NL_TY_OBJECT, c);
+                }
+            }
+            /* Pass 2: full check */
             for (uint32_t i = 0; i < n->children.count; i++)
                 check_decl(tc, n->children.items[i]);
             pop_scope(tc);
@@ -426,5 +498,6 @@ static void check_decl(NlTypeChecker *tc, NlNode *n) {
 }
 
 void nl_tc_check(NlTypeChecker *tc, NlNode *unit) {
+    predeclare_builtins(tc);
     check_decl(tc, unit);
 }

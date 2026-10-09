@@ -95,8 +95,8 @@ static uint32_t parse_modifiers(NlParser *p) {
 static NlNode *parse_type_ref(NlParser *p) {
     NlRange r = cur(p)->range;
     NlNode *n = nl_node_new(p->arena, ND_TYPE_NAME, r);
-    if (!check(p, TK_IDENT) && cur_kind(p) < KW_BOOLEAN) {
-        /* built-in type keyword */
+    if (!check(p, TK_IDENT) && !check(p, TK_IDENT_ESCAPED)) {
+        /* built-in type keyword (Double, Integer, String, …) */
         n->val.op = cur_kind(p);
         advance_tok(p);
     } else {
