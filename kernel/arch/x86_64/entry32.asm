@@ -469,6 +469,13 @@ kernel_entry:
     mov esi, message_vsvc_ok
     call serial_write_string
 
+    call sync_initialize
+    jc panic_sync
+    call sync_self_test
+    jc panic_sync
+    mov esi, message_sync_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -829,6 +836,12 @@ panic_vsvc:
     mov eax, 0x0000001A
     mov edx, 0x56535643             ; "VSVC"
     mov esi, message_vsvc_error
+    jmp kernel_panic
+
+panic_sync:
+    mov eax, 0x0000001C
+    mov edx, 0x53594E43             ; "SYNC"
+    mov esi, message_sync_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -24782,6 +24795,539 @@ vsvc_name_diag:  db "nova.diagnostics.core", 0
 vsvc_name_test:  db "nova.test.service", 0
 align 4
 
+; ===========================================================================
+; §016 – Synchronisation 1.0 Bootstrap (NPSPEC-KERNEL-0016)
+; Implementiert: Atomaroperationen, Speicherbarrieren, Spinlocks (inkl. IRQ),
+; Semaphoren (try-only), Completions, Sequence Locks, Referenzzählung.
+; RCU, blockierende Mutexes und Wait Queues erfordern Scheduler-Integration.
+; ===========================================================================
+
+; Deskriptor-Größen
+SYNC_SEMA_SIZE        equ 12    ; count(dd) + maximum(dd) + flags(dd)
+SYNC_COMPL_SIZE       equ 8     ; signaled(dd) + generation(dd)
+SYNC_SEQLOCK_SIZE     equ 4     ; sequence(dd): gerade=frei, ungerade=Writer
+
+; Semaphore-Offsets
+SYNC_SEMA_OFF_COUNT   equ 0
+SYNC_SEMA_OFF_MAX     equ 4
+SYNC_SEMA_OFF_FLAGS   equ 8
+
+; Completion-Offsets
+SYNC_COMPL_OFF_SIG    equ 0
+SYNC_COMPL_OFF_GEN    equ 4
+
+; Spinlock-Zustände
+SYNC_SPIN_UNLOCKED    equ 0
+SYNC_SPIN_LOCKED      equ 1
+
+; VSVC-UUID für nova.sync.core
+VSVC_ID_SYNC_0        equ 0x4E4F5641   ; "NOVA"
+VSVC_ID_SYNC_1        equ 0x53594E43   ; "SYNC"
+VSVC_ID_SYNC_2        equ 0x434F5245   ; "CORE"
+VSVC_ID_SYNC_3        equ 0x00000001
+
+; Fehlercodes §016 (§54)
+NP_ERR_SYNC_DEADLOCK  equ -100
+NP_ERR_SYNC_NOT_OWNER equ -101
+NP_ERR_SYNC_TIMEOUT   equ -102
+NP_ERR_SYNC_OVERFLOW  equ -103
+NP_ERR_SYNC_INVAL     equ -104
+
+; ---------------------------------------------------------------------------
+; Atomare Lade-/Speicheroperationen (§8)
+; ---------------------------------------------------------------------------
+
+; np_atomic_load_u32: EAX=ptr → EAX=value (ACQUIRE-Semantik via MFENCE)
+np_atomic_load_u32:
+    mfence
+    mov eax, [eax]
+    ret
+
+; np_atomic_store_u32: EAX=ptr, ECX=value (RELEASE-Semantik via MFENCE)
+np_atomic_store_u32:
+    mov [eax], ecx
+    mfence
+    ret
+
+; np_atomic_exchange_u32: EAX=ptr, ECX=new_value → EAX=old_value
+; XCHG mit Memory hat impliziten LOCK-Präfix (x86-Garantie)
+np_atomic_exchange_u32:
+    xchg [eax], ecx
+    mov eax, ecx
+    ret
+
+; np_atomic_compare_exchange_u32: EAX=ptr, ECX=expected, EDX=desired
+; CF=0: getauscht (ZF=1) / CF=1: nicht getauscht, EAX=Ist-Wert
+np_atomic_compare_exchange_u32:
+    push ebx
+    mov ebx, eax
+    mov eax, ecx
+    lock cmpxchg [ebx], edx
+    pop ebx
+    jnz .acax_fail
+    clc
+    ret
+.acax_fail:
+    stc
+    ret
+
+; np_atomic_fetch_add_u32: EAX=ptr, ECX=increment → EAX=old_value
+np_atomic_fetch_add_u32:
+    lock xadd [eax], ecx
+    mov eax, ecx
+    ret
+
+; ---------------------------------------------------------------------------
+; Speicherbarrieren (§10)
+; ---------------------------------------------------------------------------
+
+np_memory_barrier:
+    mfence
+    ret
+
+np_read_barrier:
+    lfence
+    ret
+
+np_write_barrier:
+    sfence
+    ret
+
+np_compiler_barrier:
+    ret
+
+; ---------------------------------------------------------------------------
+; Spinlock (§11–§13): Test-and-Set, PAUSE-Hint, IRQ-sicher
+; ---------------------------------------------------------------------------
+
+; np_spin_init: EAX=spinlock_ptr (dd)
+np_spin_init:
+    mov dword [eax], SYNC_SPIN_UNLOCKED
+    ret
+
+; np_spin_lock: EAX=spinlock_ptr
+np_spin_lock:
+.nsl_spin:
+    mov ecx, SYNC_SPIN_LOCKED
+    xchg [eax], ecx         ; ECX = alter Wert, [ptr] = LOCKED
+    test ecx, ecx
+    jz .nsl_done            ; war UNLOCKED → erworben
+    pause                   ; Pipeline-Hint für HT-CPUs
+    jmp .nsl_spin
+.nsl_done:
+    ret
+
+; np_spin_try_lock: EAX=spinlock_ptr → CF=0 erworben / CF=1 belegt
+np_spin_try_lock:
+    mov ecx, SYNC_SPIN_LOCKED
+    xchg [eax], ecx
+    test ecx, ecx
+    jz .nstl_ok
+    stc
+    ret
+.nstl_ok:
+    clc
+    ret
+
+; np_spin_unlock: EAX=spinlock_ptr
+np_spin_unlock:
+    mfence
+    mov dword [eax], SYNC_SPIN_UNLOCKED
+    ret
+
+; np_spin_lock_irqsave: EAX=spinlock_ptr → EDX=saved_EFLAGS
+; Deaktiviert Interrupts atomar mit dem Erwerb (§13)
+np_spin_lock_irqsave:
+    pushfd
+    pop edx
+    cli
+    call np_spin_lock
+    ret
+
+; np_spin_unlock_irqrestore: EAX=spinlock_ptr, EDX=saved_EFLAGS
+np_spin_unlock_irqrestore:
+    call np_spin_unlock
+    push edx
+    popfd
+    ret
+
+; ---------------------------------------------------------------------------
+; Semaphore – Bootstrap: nur Try-Wait (kein Blockieren) (§25)
+; ---------------------------------------------------------------------------
+
+; np_semaphore_init: EAX=sema_ptr, ECX=initial_count, EDX=maximum
+np_semaphore_init:
+    mov [eax + SYNC_SEMA_OFF_COUNT], ecx
+    mov [eax + SYNC_SEMA_OFF_MAX],   edx
+    mov dword [eax + SYNC_SEMA_OFF_FLAGS], 0
+    ret
+
+; np_semaphore_try_wait: EAX=sema_ptr → CF=0 erworben / CF=1 leer
+; CAS-Schleife: dekrementiert Count wenn > 0
+np_semaphore_try_wait:
+    mov [sync_tmp_ptr], eax
+.sw_retry:
+    mov eax, [sync_tmp_ptr]
+    mov ecx, [eax + SYNC_SEMA_OFF_COUNT]
+    test ecx, ecx
+    jz .sw_fail
+    mov edx, ecx
+    dec edx
+    lock cmpxchg [eax + SYNC_SEMA_OFF_COUNT], edx
+    jnz .sw_retry           ; CAS fehlgeschlagen, nochmal
+    clc
+    ret
+.sw_fail:
+    stc
+    ret
+
+; np_semaphore_release: EAX=sema_ptr, ECX=release_count → CF=0 / CF=1 Überlauf
+np_semaphore_release:
+    mov [sync_tmp_ptr], eax
+    mov [sync_tmp_cnt], ecx
+.sr_retry:
+    mov eax, [sync_tmp_ptr]
+    mov ecx, [eax + SYNC_SEMA_OFF_COUNT]
+    mov edx, ecx
+    add edx, [sync_tmp_cnt]
+    cmp edx, [eax + SYNC_SEMA_OFF_MAX]
+    ja .sr_overflow
+    lock cmpxchg [eax + SYNC_SEMA_OFF_COUNT], edx
+    jnz .sr_retry
+    clc
+    ret
+.sr_overflow:
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; Completion Object (§31)
+; ---------------------------------------------------------------------------
+
+; np_completion_init: EAX=completion_ptr
+np_completion_init:
+    mov dword [eax + SYNC_COMPL_OFF_SIG], 0
+    mov dword [eax + SYNC_COMPL_OFF_GEN], 0
+    ret
+
+; np_completion_signal: EAX=completion_ptr
+np_completion_signal:
+    mov dword [eax + SYNC_COMPL_OFF_SIG], 1
+    lock inc dword [eax + SYNC_COMPL_OFF_GEN]
+    mfence
+    ret
+
+; np_completion_is_done: EAX=completion_ptr → CF=0 signalisiert / CF=1 ausstehend
+np_completion_is_done:
+    cmp dword [eax + SYNC_COMPL_OFF_SIG], 1
+    je .cid_done
+    stc
+    ret
+.cid_done:
+    clc
+    ret
+
+; ---------------------------------------------------------------------------
+; Sequence Lock (§32): Schreiber-exklusiv, Leser wiederholend
+; seqcount: gerade = kein Writer aktiv, ungerade = Writer aktiv
+; ---------------------------------------------------------------------------
+
+; np_seqlock_init: EAX=seqlock_ptr (dd)
+np_seqlock_init:
+    mov dword [eax], 0
+    ret
+
+; np_seqlock_read_begin: EAX=seqlock_ptr → ECX=snapshot (muss gerade sein)
+np_seqlock_read_begin:
+.srb_spin:
+    mov ecx, [eax]
+    test ecx, 1             ; ungerade = Writer aktiv
+    jnz .srb_spin
+    lfence
+    ret
+
+; np_seqlock_read_retry: EAX=seqlock_ptr, ECX=snapshot → CF=0 ok / CF=1 wiederholen
+np_seqlock_read_retry:
+    mfence
+    cmp [eax], ecx
+    je .srr_ok
+    stc
+    ret
+.srr_ok:
+    clc
+    ret
+
+; np_seqlock_write_lock: EAX=seqlock_ptr (macht count ungerade)
+np_seqlock_write_lock:
+    lock add dword [eax], 1
+    mfence
+    ret
+
+; np_seqlock_write_unlock: EAX=seqlock_ptr (macht count wieder gerade)
+np_seqlock_write_unlock:
+    mfence
+    lock add dword [eax], 1
+    ret
+
+; ---------------------------------------------------------------------------
+; Referenzzählung (§36): Überlauf-/Unterlaufschutz via CAS
+; ---------------------------------------------------------------------------
+
+; np_refcount_retain: EAX=refcount_ptr (dd) → CF=0 / CF=1 Objekt bereits tot (count=0)
+np_refcount_retain:
+    mov [sync_tmp_ptr], eax
+.rrn_retry:
+    mov eax, [sync_tmp_ptr]
+    mov ecx, [eax]
+    test ecx, ecx
+    jz .rrn_dead            ; Objekt ist tot, darf nicht reviviert werden
+    mov edx, ecx
+    inc edx
+    lock cmpxchg [eax], edx
+    jnz .rrn_retry
+    clc
+    ret
+.rrn_dead:
+    stc
+    ret
+
+; np_refcount_release: EAX=refcount_ptr → CF=0 noch lebendig / CF=1 auf null gefallen
+np_refcount_release:
+    lock dec dword [eax]
+    jz .rrl_zero
+    clc
+    ret
+.rrl_zero:
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; sync_initialize – Pools nullen, VSVC-Service registrieren
+; CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+sync_initialize:
+    push ebx
+    push esi
+    push edi
+
+    ; Statische Sync-Objekte für Selbsttest nullen
+    mov edi, sync_test_spin
+    xor eax, eax
+    ; spinlock(4) + sema(12) + compl(8) + seqlock(4) = 28 Byte → 7 dwords
+    mov ecx, 7
+    rep stosd
+    ; Refcount-Testinstanz
+    mov dword [sync_test_refcount], 3
+
+    ; Statistiken nullen
+    mov dword [sync_stat_acquires], 0
+    mov dword [sync_stat_releases], 0
+
+    ; VSVC-Service "nova.sync.core" registrieren
+    mov dword [vsvc_tmp_maj],      1
+    mov dword [vsvc_tmp_min],      0
+    mov dword [vsvc_tmp_pat],      0
+    mov dword [vsvc_tmp_table],    sync_vsvc_tbl
+    mov dword [vsvc_tmp_tabsz],    VSVC_TBL_HDR_SIZE
+    mov dword [vsvc_tmp_features], 0
+    mov dword [vsvc_tmp_reqcap],   0
+    mov dword [vsvc_tmp_arch],     VSVC_ARCH_X86_32
+    mov dword [vsvc_tmp_stab],     VSVC_STAB_STABLE
+    mov dword [vsvc_tmp_name],     sync_name_sync
+    mov dword [vsvc_tmp_flags],    VSVC_FLAG_EARLY_BOOT | VSVC_FLAG_PANIC_SAFE
+    mov eax, VSVC_ID_SYNC_0
+    mov ebx, VSVC_ID_SYNC_1
+    mov ecx, VSVC_ID_SYNC_2
+    mov edx, VSVC_ID_SYNC_3
+    call vsvc_register
+    jc .si_fail
+
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+.si_fail:
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; sync_self_test – 11 Tests
+; CF=0 alle bestanden / CF=1 Fehler
+; ---------------------------------------------------------------------------
+sync_self_test:
+    push ebx
+    push esi
+    push edi
+
+    ; === Test 1: np_atomic_store + np_atomic_load → read-back ===
+    mov eax, sync_st_atomic
+    mov ecx, 0xA5A5A5A5
+    call np_atomic_store_u32
+    mov eax, sync_st_atomic
+    call np_atomic_load_u32
+    cmp eax, 0xA5A5A5A5
+    jne .sst_fail
+
+    ; === Test 2: np_atomic_exchange → Rückgabe Altwert ===
+    mov eax, sync_st_atomic
+    mov ecx, 0x12345678
+    call np_atomic_exchange_u32
+    cmp eax, 0xA5A5A5A5         ; Altwert muss zurückkommen
+    jne .sst_fail
+    cmp dword [sync_st_atomic], 0x12345678
+    jne .sst_fail
+
+    ; === Test 3: np_atomic_compare_exchange – Treffer → CF=0 ===
+    mov eax, sync_st_atomic
+    mov ecx, 0x12345678         ; erwartet
+    mov edx, 0xDEADBEEF         ; gewünscht
+    call np_atomic_compare_exchange_u32
+    jc .sst_fail
+    cmp dword [sync_st_atomic], 0xDEADBEEF
+    jne .sst_fail
+
+    ; === Test 4: np_atomic_compare_exchange – Fehltreffer → CF=1 ===
+    mov eax, sync_st_atomic
+    mov ecx, 0x00000000         ; falsch erwartet
+    mov edx, 0x11111111
+    call np_atomic_compare_exchange_u32
+    jnc .sst_fail               ; muss CF=1 zurückgeben
+
+    ; === Test 5: np_atomic_fetch_add → Altwert + korrekte Summe ===
+    mov dword [sync_st_atomic], 10
+    mov eax, sync_st_atomic
+    mov ecx, 5
+    call np_atomic_fetch_add_u32
+    cmp eax, 10                 ; Altwert
+    jne .sst_fail
+    cmp dword [sync_st_atomic], 15
+    jne .sst_fail
+
+    ; === Test 6: np_spin_lock / np_spin_unlock ===
+    mov eax, sync_test_spin
+    call np_spin_init
+    call np_spin_lock
+    cmp dword [sync_test_spin], SYNC_SPIN_LOCKED
+    jne .sst_fail
+    call np_spin_unlock
+    cmp dword [sync_test_spin], SYNC_SPIN_UNLOCKED
+    jne .sst_fail
+
+    ; === Test 7: np_spin_try_lock – frei CF=0; belegt CF=1 ===
+    mov eax, sync_test_spin
+    call np_spin_try_lock
+    jc .sst_fail
+    ; jetzt belegt → zweiter try_lock muss CF=1 geben
+    call np_spin_try_lock
+    jnc .sst_fail
+    call np_spin_unlock
+
+    ; === Test 8: np_spin_lock_irqsave / np_spin_unlock_irqrestore ===
+    mov eax, sync_test_spin
+    call np_spin_lock_irqsave   ; EDX = saved EFLAGS
+    cmp dword [sync_test_spin], SYNC_SPIN_LOCKED
+    jne .sst_fail
+    call np_spin_unlock_irqrestore
+
+    ; === Test 9: Semaphore: init(2,2), try_wait×2=ok, try_wait=leer, release ===
+    mov eax, sync_test_sema
+    mov ecx, 2
+    mov edx, 2
+    call np_semaphore_init
+    call np_semaphore_try_wait
+    jc .sst_fail
+    call np_semaphore_try_wait
+    jc .sst_fail
+    ; count = 0 → muss CF=1
+    call np_semaphore_try_wait
+    jnc .sst_fail
+    ; Release(1) → count = 1
+    mov ecx, 1
+    call np_semaphore_release
+    jc .sst_fail
+    ; Overflow: Release(2) bei max=2 und count=1 → 3 > 2 → CF=1
+    mov eax, sync_test_sema
+    mov ecx, 2
+    call np_semaphore_release
+    jnc .sst_fail
+
+    ; === Test 10: Completion: init → not done; signal → done ===
+    mov eax, sync_test_compl
+    call np_completion_init
+    call np_completion_is_done  ; CF=1 (ausstehend)
+    jnc .sst_fail
+    call np_completion_signal
+    mov eax, sync_test_compl
+    call np_completion_is_done  ; CF=0 (signalisiert)
+    jc .sst_fail
+
+    ; === Test 11: Sequence Lock und Refcount ===
+    mov eax, sync_test_seqlock
+    call np_seqlock_init
+    call np_seqlock_write_lock
+    call np_seqlock_write_unlock
+    call np_seqlock_read_begin  ; ECX = snapshot (muss gerade sein)
+    test ecx, 1
+    jnz .sst_fail
+    call np_seqlock_read_retry  ; CF=0 (kein Writer seit snapshot)
+    jc .sst_fail
+    ; Refcount: 3 → retain → 4 → release×4 → 0 (CF=1 beim letzten)
+    mov eax, sync_test_refcount
+    call np_refcount_retain
+    jc .sst_fail
+    cmp dword [sync_test_refcount], 4
+    jne .sst_fail
+    call np_refcount_release    ; 4→3, CF=0
+    jc .sst_fail
+    call np_refcount_release    ; 3→2, CF=0
+    jc .sst_fail
+    call np_refcount_release    ; 2→1, CF=0
+    jc .sst_fail
+    call np_refcount_release    ; 1→0, CF=1
+    jnc .sst_fail
+
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+
+.sst_fail:
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; §016 Daten
+; ---------------------------------------------------------------------------
+align 4
+sync_test_spin:      dd 0                   ; Spinlock-Instanz (4 Byte)
+sync_test_sema:      times 3 dd 0           ; Semaphore-Instanz (12 Byte)
+sync_test_compl:     times 2 dd 0           ; Completion-Instanz (8 Byte)
+sync_test_seqlock:   dd 0                   ; SeqLock-Instanz (4 Byte)
+sync_test_refcount:  dd 0                   ; Refcount-Instanz
+sync_st_atomic:      dd 0                   ; Arbeitsspeicher für Atomartests
+sync_tmp_ptr:        dd 0                   ; Temp für CAS-Schleifen
+sync_tmp_cnt:        dd 0
+sync_stat_acquires:  dd 0
+sync_stat_releases:  dd 0
+; VSVC-Tabelle (§10, 24 Byte)
+align 4
+sync_vsvc_tbl:
+    dd VSVC_TBL_HDR_SIZE
+    dw 1, 0
+    dd 0, 0
+    dd VSVC_CALL_EARLY_BOOT | VSVC_CALL_PANIC_SAFE
+    dd 0
+sync_name_sync:  db "nova.sync.core", 0
+align 4
+
 ; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
 ; ---------------------------------------------------------------------------
@@ -30182,6 +30728,10 @@ message_vsvc_ok:
     db "NOVA: Versioned Service ABI 1.0 (SS105), 4 Bootstrap-Services, 5 Events", 13, 10, 0
 message_vsvc_error:
     db "NOVA PANIC: Versioned Service ABI Selbsttest fehlgeschlagen", 13, 10, 0
+message_sync_ok:
+    db "NOVA: Synchronisation 1.0 (SS016), Spinlocks/Sema/Completion/SeqLock/Refcount", 13, 10, 0
+message_sync_error:
+    db "NOVA PANIC: Synchronisation Selbsttest fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
