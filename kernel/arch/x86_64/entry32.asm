@@ -448,6 +448,13 @@ kernel_entry:
     mov esi, message_cap_ok
     call serial_write_string
 
+    call diag_initialize
+    jc panic_diag
+    call diag_self_test
+    jc panic_diag
+    mov esi, message_diag_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -790,6 +797,12 @@ panic_cap:
     mov eax, 0x00000017
     mov edx, 0x43415000             ; "CAP\0"
     mov esi, message_cap_error
+    jmp kernel_panic
+
+panic_diag:
+    mov eax, 0x00000018
+    mov edx, 0x44494100             ; "DIA\0"
+    mov esi, message_diag_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -23052,6 +23065,554 @@ cap_st_id1:         dd 0
 cap_st_id2:         dd 0
 cap_st_id3:         dd 0
 
+; ===========================================================================
+; §104 – Kernel Diagnostics Framework 1.0 (NPSPEC-KERNEL-0104)
+; ===========================================================================
+
+; ---------------------------------------------------------------------------
+; Diagnosestufen (§9)
+; ---------------------------------------------------------------------------
+DIAG_LEVEL_TRACE    equ 0
+DIAG_LEVEL_DEBUG    equ 1
+DIAG_LEVEL_INFO     equ 2
+DIAG_LEVEL_NOTICE   equ 3
+DIAG_LEVEL_WARNING  equ 4
+DIAG_LEVEL_ERROR    equ 5
+DIAG_LEVEL_CRITICAL equ 6
+DIAG_LEVEL_FATAL    equ 7
+
+; Health-Zustände (§35)
+DIAG_HEALTH_UNKNOWN    equ 0
+DIAG_HEALTH_HEALTHY    equ 1
+DIAG_HEALTH_DEGRADED   equ 2
+DIAG_HEALTH_UNHEALTHY  equ 3
+DIAG_HEALTH_FAILED     equ 4
+DIAG_HEALTH_RECOVERING equ 5
+DIAG_HEALTH_OFFLINE    equ 6
+
+; Built-in Diagnosequellen-IDs (§7)
+DIAG_SRC_KERNEL     equ 1
+DIAG_SRC_KOG        equ 2
+DIAG_SRC_EVBUS      equ 3
+DIAG_SRC_UOBJ       equ 4
+DIAG_SRC_CAP        equ 5
+DIAG_SRC_DIAG       equ 6
+
+; Pool-Grenzen und Deskriptorgrößen
+DIAG_MAX_SOURCES        equ 16
+DIAG_SRC_SIZE           equ 32
+DIAG_LOG_MAX_RECORDS    equ 64
+DIAG_LOG_RECORD_SIZE    equ 16
+DIAG_MAX_HEALTH         equ 16
+DIAG_HEALTH_SIZE        equ 4
+
+; Diagnosequellen-Deskriptor-Offsets (§7)
+DIAG_OFF_SRC_ID         equ 0    ; dd  source_id
+DIAG_OFF_SRC_FLAGS      equ 4    ; dd  flags
+DIAG_OFF_SRC_LEVEL      equ 8    ; db  default_level
+DIAG_OFF_SRC_PRESENT    equ 9    ; db  1 = belegt
+                                 ; dw  Padding bei Offset 10
+DIAG_OFF_SRC_NAME       equ 12   ; 20 × db  null-terminierter Name
+
+; Log-Record-Offsets (§10, §13)
+DIAG_OFF_LOG_LEVEL      equ 0    ; db  DIAG_LEVEL_*
+DIAG_OFF_LOG_SRC_ID     equ 1    ; db  source_id (Byte-Wert)
+DIAG_OFF_LOG_FLAGS      equ 2    ; dw  Flags
+DIAG_OFF_LOG_EVENT_ID   equ 4    ; dd  Event-ID
+DIAG_OFF_LOG_SEQ        equ 8    ; dd  Sequenznummer
+DIAG_OFF_LOG_VALUE      equ 12   ; dd  optionaler u32-Wert
+
+; Health-Tabellen-Offsets (§35)
+DIAG_OFF_HLTH_SRC_ID    equ 0    ; db  source_id
+DIAG_OFF_HLTH_STATE     equ 1    ; db  DIAG_HEALTH_*
+DIAG_OFF_HLTH_PRESENT   equ 2    ; db  1 = belegt
+                                 ; db  Padding
+
+; Event-Typ-ID (§44, nach CAP-Events 9–11)
+NP_EVENT_DIAG_HEALTH_CHANGED equ 12
+
+; Fehlercodes (§68)
+NP_ERR_DIAG_DISABLED    equ -70
+NP_ERR_DIAG_FILTERED    equ -71
+NP_ERR_DIAG_BUFFER_FULL equ -72
+NP_ERR_DIAG_TOO_LARGE   equ -73
+NP_ERR_DIAG_NOT_FOUND   equ -74
+NP_ERR_DIAG_LIMIT       equ -75
+
+; ---------------------------------------------------------------------------
+; Compile-Zeit-Invarianten
+; ---------------------------------------------------------------------------
+%if DIAG_SRC_SIZE != 32
+    %error "DIAG_SRC_SIZE muss 32 Bytes sein"
+%endif
+%if DIAG_LOG_RECORD_SIZE != 16
+    %error "DIAG_LOG_RECORD_SIZE muss 16 Bytes sein"
+%endif
+%if DIAG_HEALTH_SIZE != 4
+    %error "DIAG_HEALTH_SIZE muss 4 Bytes sein"
+%endif
+
+; ---------------------------------------------------------------------------
+; diag_find_source – Diagnosequelle anhand ID suchen (intern)
+; EAX=src_id → CF=0 EBX=ptr / CF=1 EAX=NP_ERR_DIAG_NOT_FOUND
+; ---------------------------------------------------------------------------
+diag_find_source:
+    push edi
+    push ecx
+    mov edi, diag_sources
+    xor ecx, ecx
+.dfs_scan:
+    cmp ecx, DIAG_MAX_SOURCES
+    jae .dfs_miss
+    cmp byte [edi + DIAG_OFF_SRC_PRESENT], 0
+    je .dfs_next
+    cmp dword [edi + DIAG_OFF_SRC_ID], eax
+    je .dfs_hit
+.dfs_next:
+    add edi, DIAG_SRC_SIZE
+    inc ecx
+    jmp .dfs_scan
+.dfs_hit:
+    mov ebx, edi
+    pop ecx
+    pop edi
+    clc
+    ret
+.dfs_miss:
+    mov eax, NP_ERR_DIAG_NOT_FOUND
+    pop ecx
+    pop edi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; diag_register_source – Diagnosequelle registrieren (§8)
+; EAX=src_id, EBX=flags, ECX=default_level
+; CF=0 OK / CF=1 Fehler (doppelt/voll)
+; ---------------------------------------------------------------------------
+diag_register_source:
+    push esi
+    push edi
+
+    mov [diag_tmp_src_id], eax
+    mov [diag_tmp_flags],  ebx
+    mov [diag_tmp_level],  ecx
+
+    ; Doppelte Registrierung ablehnen
+    call diag_find_source      ; EAX=src_id → EBX=ptr / CF=1 nicht gefunden
+    jnc .drs_dup               ; CF=0 = bereits vorhanden
+
+    ; Freien Slot suchen
+    mov edi, diag_sources
+    xor ecx, ecx
+.drs_scan:
+    cmp ecx, DIAG_MAX_SOURCES
+    jae .drs_full
+    cmp byte [edi + DIAG_OFF_SRC_PRESENT], 0
+    je .drs_found
+    add edi, DIAG_SRC_SIZE
+    inc ecx
+    jmp .drs_scan
+.drs_found:
+    mov eax, [diag_tmp_src_id]
+    mov dword [edi + DIAG_OFF_SRC_ID],  eax
+    mov eax, [diag_tmp_flags]
+    mov [edi + DIAG_OFF_SRC_FLAGS], eax
+    mov al, [diag_tmp_level]   ; Byte-Zugriff: low byte von ECX-Speicher
+    mov [edi + DIAG_OFF_SRC_LEVEL], al
+    mov byte [edi + DIAG_OFF_SRC_PRESENT], 1
+
+    pop edi
+    pop esi
+    clc
+    ret
+.drs_dup:
+    pop edi
+    pop esi
+    stc
+    ret
+.drs_full:
+    mov eax, NP_ERR_DIAG_LIMIT
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; diag_log – Log-Eintrag in Ringpuffer schreiben (§13, §21)
+; EAX=src_id, EBX=log_level, ECX=event_id, EDX=value
+; CF=0 OK / CF=1 EAX=Fehler (gefiltert/nicht gefunden)
+; ---------------------------------------------------------------------------
+diag_log:
+    push esi
+    push edi
+
+    mov [diag_tmp_src_id], eax
+    mov [diag_tmp_flags],  ebx   ; log_level
+    mov [diag_tmp_event],  ecx
+    mov [diag_tmp_value],  edx
+
+    ; Quelle prüfen
+    call diag_find_source        ; EAX=src_id → EBX=ptr
+    jc .dl_not_found
+
+    ; Filterung: log_level < source.default_level → gefiltert (§27)
+    movzx eax, byte [ebx + DIAG_OFF_SRC_LEVEL]
+    cmp [diag_tmp_flags], eax
+    jb .dl_filtered
+
+    ; Overflow-Erkennung (§24): wenn total >= MAX → Overwrite, lost++
+    mov eax, [diag_log_total]
+    cmp eax, DIAG_LOG_MAX_RECORDS
+    jb .dl_no_overflow
+    lock inc dword [diag_log_lost]
+.dl_no_overflow:
+
+    ; Slot-Adresse berechnen (Ringpuffer, §22)
+    mov edi, [diag_log_write]
+    imul esi, edi, DIAG_LOG_RECORD_SIZE
+    add esi, diag_log_buf
+
+    ; Record schreiben
+    mov al, [diag_tmp_flags]             ; log_level → byte
+    mov [esi + DIAG_OFF_LOG_LEVEL], al
+    mov al, [diag_tmp_src_id]            ; src_id → byte
+    mov [esi + DIAG_OFF_LOG_SRC_ID], al
+    mov word [esi + DIAG_OFF_LOG_FLAGS], 0
+    mov eax, [diag_tmp_event]
+    mov [esi + DIAG_OFF_LOG_EVENT_ID], eax
+    mov eax, [diag_log_seq]
+    inc dword [diag_log_seq]
+    mov [esi + DIAG_OFF_LOG_SEQ], eax
+    mov eax, [diag_tmp_value]
+    mov [esi + DIAG_OFF_LOG_VALUE], eax
+
+    ; Schreibzeiger zirkulär vorrücken
+    mov eax, edi
+    inc eax
+    cmp eax, DIAG_LOG_MAX_RECORDS
+    jb .dl_no_wrap
+    xor eax, eax
+.dl_no_wrap:
+    mov [diag_log_write], eax
+    lock inc dword [diag_log_total]
+    lock inc dword [diag_stat_logged]
+
+    pop edi
+    pop esi
+    clc
+    ret
+
+.dl_not_found:
+    mov eax, NP_ERR_DIAG_NOT_FOUND
+    pop edi
+    pop esi
+    stc
+    ret
+.dl_filtered:
+    lock inc dword [diag_stat_filtered]
+    mov eax, NP_ERR_DIAG_FILTERED
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; diag_health_report – Health-Zustand eines Subsystems setzen (§37)
+; EAX=src_id, EBX=health_state (DIAG_HEALTH_*)
+; CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+diag_health_report:
+    push esi
+    push edi
+
+    mov [diag_tmp_src_id], eax
+    mov [diag_tmp_flags],  ebx   ; health_state
+
+    ; Quelle muss registriert sein
+    call diag_find_source
+    jc .dhr_not_found
+
+    ; Gesundheitseintrag suchen oder anlegen
+    mov edi, diag_health_tab
+    xor ecx, ecx
+.dhr_scan:
+    cmp ecx, DIAG_MAX_HEALTH
+    jae .dhr_full
+    cmp byte [edi + DIAG_OFF_HLTH_PRESENT], 0
+    je .dhr_new                    ; freier Slot
+    movzx eax, byte [edi + DIAG_OFF_HLTH_SRC_ID]
+    cmp eax, [diag_tmp_src_id]
+    je .dhr_update                 ; bereits vorhanden
+    add edi, DIAG_HEALTH_SIZE
+    inc ecx
+    jmp .dhr_scan
+.dhr_new:
+    mov al, [diag_tmp_src_id]
+    mov [edi + DIAG_OFF_HLTH_SRC_ID], al
+    mov byte [edi + DIAG_OFF_HLTH_PRESENT], 1
+.dhr_update:
+    mov al, [diag_tmp_flags]
+    mov [edi + DIAG_OFF_HLTH_STATE], al
+
+    ; NP_EVENT_DIAG_HEALTH_CHANGED publizieren (§44)
+    mov eax, NP_EVENT_DIAG_HEALTH_CHANGED
+    mov ecx, [diag_tmp_src_id]
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    call evbus_publish             ; CF ignoriert
+
+    pop edi
+    pop esi
+    clc
+    ret
+.dhr_not_found:
+    pop edi
+    pop esi
+    stc
+    ret
+.dhr_full:
+    mov eax, NP_ERR_DIAG_LIMIT
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; diag_health_get – Health-Zustand abfragen
+; EAX=src_id → CF=0 EAX=DIAG_HEALTH_* / CF=1 EAX=NP_ERR_DIAG_NOT_FOUND
+; ---------------------------------------------------------------------------
+diag_health_get:
+    push edi
+    push ecx
+    mov edi, diag_health_tab
+    xor ecx, ecx
+.dhg_scan:
+    cmp ecx, DIAG_MAX_HEALTH
+    jae .dhg_miss
+    cmp byte [edi + DIAG_OFF_HLTH_PRESENT], 0
+    je .dhg_next
+    movzx ebx, byte [edi + DIAG_OFF_HLTH_SRC_ID]
+    cmp ebx, eax
+    je .dhg_hit
+.dhg_next:
+    add edi, DIAG_HEALTH_SIZE
+    inc ecx
+    jmp .dhg_scan
+.dhg_hit:
+    movzx eax, byte [edi + DIAG_OFF_HLTH_STATE]
+    pop ecx
+    pop edi
+    clc
+    ret
+.dhg_miss:
+    mov eax, NP_ERR_DIAG_NOT_FOUND
+    pop ecx
+    pop edi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; diag_initialize – Pools leeren, Quellen und Health registrieren (§63)
+; CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+%macro diag_reg_source 3           ; src_id, flags, default_level
+    mov eax, %1
+    mov ebx, %2
+    mov ecx, %3
+    call diag_register_source
+    jc .dinit_fail
+%endmacro
+
+%macro diag_set_health 2           ; src_id, health_state
+    mov eax, %1
+    mov ebx, %2
+    call diag_health_report
+    jc .dinit_fail
+%endmacro
+
+diag_initialize:
+    push esi
+    push edi
+    push ecx
+
+    ; Pools leeren
+    mov edi, diag_sources
+    xor eax, eax
+    mov ecx, (DIAG_MAX_SOURCES * DIAG_SRC_SIZE) / 4
+    rep stosd
+    mov edi, diag_log_buf
+    mov ecx, (DIAG_LOG_MAX_RECORDS * DIAG_LOG_RECORD_SIZE) / 4
+    rep stosd
+    mov edi, diag_health_tab
+    mov ecx, (DIAG_MAX_HEALTH * DIAG_HEALTH_SIZE) / 4
+    rep stosd
+    mov dword [diag_log_write],     0
+    mov dword [diag_log_total],     0
+    mov dword [diag_log_lost],      0
+    mov dword [diag_log_seq],       0
+    mov dword [diag_stat_logged],   0
+    mov dword [diag_stat_filtered], 0
+    mov dword [diag_stat_dropped],  0
+
+    ; evbus-Schema für Health-Änderungen (§44)
+    mov eax, NP_EVENT_DIAG_HEALTH_CHANGED
+    mov ecx, NP_EVENT_CLASS_STATE
+    xor edx, edx
+    mov esi, NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+    call evbus_register_schema
+    jc .dinit_fail
+
+    ; Built-in Diagnosequellen registrieren (§7, §8)
+    diag_reg_source DIAG_SRC_KERNEL, 0, DIAG_LEVEL_INFO
+    diag_reg_source DIAG_SRC_KOG,    0, DIAG_LEVEL_INFO
+    diag_reg_source DIAG_SRC_EVBUS,  0, DIAG_LEVEL_INFO
+    diag_reg_source DIAG_SRC_UOBJ,   0, DIAG_LEVEL_INFO
+    diag_reg_source DIAG_SRC_CAP,    0, DIAG_LEVEL_INFO
+    diag_reg_source DIAG_SRC_DIAG,   0, DIAG_LEVEL_INFO
+
+    ; Initiale Health-Zustände: alle HEALTHY (§35)
+    diag_set_health DIAG_SRC_KERNEL, DIAG_HEALTH_HEALTHY
+    diag_set_health DIAG_SRC_KOG,    DIAG_HEALTH_HEALTHY
+    diag_set_health DIAG_SRC_EVBUS,  DIAG_HEALTH_HEALTHY
+    diag_set_health DIAG_SRC_UOBJ,   DIAG_HEALTH_HEALTHY
+    diag_set_health DIAG_SRC_CAP,    DIAG_HEALTH_HEALTHY
+    diag_set_health DIAG_SRC_DIAG,   DIAG_HEALTH_HEALTHY
+
+    ; Ersten Diagnose-Log-Eintrag schreiben: DIAG initialisiert
+    mov eax, DIAG_SRC_DIAG
+    mov ebx, DIAG_LEVEL_INFO
+    mov ecx, 1                 ; event_id = 1 (Initialisierung)
+    xor edx, edx
+    call diag_log
+    jc .dinit_fail
+
+    pop ecx
+    pop edi
+    pop esi
+    clc
+    ret
+.dinit_fail:
+    pop ecx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; diag_self_test – Selbsttest §71 (8 Tests)
+; CF=0 alle OK / CF=1 EAX = fehlgeschlagener Testfall
+; ---------------------------------------------------------------------------
+diag_self_test:
+    push esi
+    push edi
+    push ebx
+
+    ; Test 1: Testquelle registrieren (ID=99, default_level=WARNING)
+    mov eax, 99
+    xor ebx, ebx
+    mov ecx, DIAG_LEVEL_WARNING
+    call diag_register_source
+    jc .dst_fail1
+
+    ; Test 2: Testquelle auffinden
+    mov eax, 99
+    call diag_find_source
+    jc .dst_fail2
+    cmp byte [ebx + DIAG_OFF_SRC_PRESENT], 1
+    jne .dst_fail2
+
+    ; Test 3: diag_log mit erlaubtem Level (WARNING >= WARNING) → CF=0
+    mov eax, 99
+    mov ebx, DIAG_LEVEL_WARNING
+    mov ecx, 100
+    xor edx, edx
+    call diag_log
+    jc .dst_fail3
+
+    ; Test 4: diag_log mit gefiltertem Level (DEBUG < WARNING) → CF=1 FILTERED
+    mov eax, 99
+    mov ebx, DIAG_LEVEL_DEBUG
+    mov ecx, 101
+    xor edx, edx
+    call diag_log
+    jnc .dst_fail4
+    cmp eax, NP_ERR_DIAG_FILTERED
+    jne .dst_fail4
+
+    ; Test 5: diag_health_report → CF=0
+    mov eax, 99
+    mov ebx, DIAG_HEALTH_HEALTHY
+    call diag_health_report
+    jc .dst_fail5
+
+    ; Test 6: diag_health_get → DIAG_HEALTH_HEALTHY
+    mov eax, 99
+    call diag_health_get
+    jc .dst_fail6
+    cmp eax, DIAG_HEALTH_HEALTHY
+    jne .dst_fail6
+
+    ; Test 7: diag_health_report mit neuem Zustand → CF=0
+    mov eax, 99
+    mov ebx, DIAG_HEALTH_DEGRADED
+    call diag_health_report
+    jc .dst_fail7
+
+    ; Test 8: diag_find_source mit unbekannter ID → CF=1
+    mov eax, 0xBEEF
+    call diag_find_source
+    jnc .dst_fail8
+
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+
+.dst_fail1:  mov eax, 1
+    jmp .dst_fail
+.dst_fail2:  mov eax, 2
+    jmp .dst_fail
+.dst_fail3:  mov eax, 3
+    jmp .dst_fail
+.dst_fail4:  mov eax, 4
+    jmp .dst_fail
+.dst_fail5:  mov eax, 5
+    jmp .dst_fail
+.dst_fail6:  mov eax, 6
+    jmp .dst_fail
+.dst_fail7:  mov eax, 7
+    jmp .dst_fail
+.dst_fail8:  mov eax, 8
+.dst_fail:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; diag_* Daten
+; ---------------------------------------------------------------------------
+diag_sources:       times (DIAG_MAX_SOURCES * DIAG_SRC_SIZE / 4) dd 0
+diag_log_buf:       times (DIAG_LOG_MAX_RECORDS * DIAG_LOG_RECORD_SIZE / 4) dd 0
+diag_health_tab:    times (DIAG_MAX_HEALTH * DIAG_HEALTH_SIZE / 4) dd 0
+diag_log_write:     dd 0
+diag_log_total:     dd 0
+diag_log_lost:      dd 0
+diag_log_seq:       dd 0
+diag_stat_logged:   dd 0
+diag_stat_filtered: dd 0
+diag_stat_dropped:  dd 0
+; Temp-Speicher (Single-Threaded Bootstrap)
+diag_tmp_src_id:    dd 0
+diag_tmp_flags:     dd 0
+diag_tmp_level:     dd 0
+diag_tmp_event:     dd 0
+diag_tmp_value:     dd 0
+
 ; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
 ; ---------------------------------------------------------------------------
@@ -28440,6 +29001,10 @@ message_cap_ok:
     db "NOVA: Capability Framework 1.0 (§103), 2 Boot-Caps, 3 Event-Schemata bereit", 13, 10, 0
 message_cap_error:
     db "NOVA PANIC: Capability Framework Selbsttest fehlgeschlagen", 13, 10, 0
+message_diag_ok:
+    db "NOVA: Diagnostics Framework 1.0 (§104), 6 Quellen, Ringpuffer, Health bereit", 13, 10, 0
+message_diag_error:
+    db "NOVA PANIC: Diagnostics Framework Selbsttest fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
