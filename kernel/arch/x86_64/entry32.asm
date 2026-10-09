@@ -441,6 +441,13 @@ kernel_entry:
     mov esi, message_uobj_ok
     call serial_write_string
 
+    call cap_initialize
+    jc panic_cap
+    call cap_self_test
+    jc panic_cap
+    mov esi, message_cap_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -777,6 +784,12 @@ panic_uobj:
     mov eax, 0x00000016
     mov edx, 0x554F4200             ; "UOB\0"
     mov esi, message_uobj_error
+    jmp kernel_panic
+
+panic_cap:
+    mov eax, 0x00000017
+    mov edx, 0x43415000             ; "CAP\0"
+    mov esi, message_cap_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -22384,6 +22397,661 @@ uobj_tmp_caps:        dd 0
 uobj_tmp_obj_id:      dd 0
 uobj_test_buf:        times 16 db 0
 
+; ===========================================================================
+; §103 – Capability Framework 1.0 (NPSPEC-KERNEL-0103)
+; ===========================================================================
+
+; ---------------------------------------------------------------------------
+; Capability Rights (§10) – lower 32 Bits der 64-Bit nova_capability_set_t
+; ---------------------------------------------------------------------------
+NP_CAP_QUERY        equ 0x001
+NP_CAP_MODIFY       equ 0x002
+NP_CAP_WAIT         equ 0x004
+NP_CAP_SIGNAL       equ 0x008
+NP_CAP_DUPLICATE    equ 0x010
+NP_CAP_TRANSFER     equ 0x020
+NP_CAP_SUBSCRIBE    equ 0x040
+NP_CAP_DELETE       equ 0x080
+NP_CAP_ADMIN        equ 0x100
+
+; Capability-Handle-Flags (§31)
+NP_CAP_FLAG_NO_DELEGATE equ 0x001
+NP_CAP_FLAG_EPHEMERAL   equ 0x002
+NP_CAP_FLAG_BORROWED    equ 0x004
+NP_CAP_FLAG_INHERITED   equ 0x008
+
+; Capability-Zustände
+CAP_STATE_FREE      equ 0
+CAP_STATE_VALID     equ 1
+CAP_STATE_REVOKED   equ 2
+CAP_STATE_EXPIRED   equ 3
+
+; Bootstrap-Sicherheitsdomänen (§44)
+CAP_DOMAIN_KERNEL   equ 1
+CAP_DOMAIN_BOOT     equ 2
+
+; Pool-Grenze und Deskriptorgröße
+CAP_MAX_CAPS        equ 32
+CAP_CAP_SIZE        equ 40
+
+; Deskriptor-Feld-Offsets
+CAP_OFF_ID          equ 0    ; dd  cap_id
+CAP_OFF_OBJ_ID      equ 4    ; dd  Zielobjekt-ID
+CAP_OFF_RIGHTS      equ 8    ; dd  nutzbare Rechte
+CAP_OFF_DELEGABLE   equ 12   ; dd  delegierbare Rechte
+CAP_OFF_DOMAIN      equ 16   ; dd  Besitzer-Domäne
+CAP_OFF_EXPIRATION  equ 20   ; dd  Ablaufzeit (0 = kein Limit)
+CAP_OFF_GENERATION  equ 24   ; dd  Generation
+CAP_OFF_FLAGS       equ 28   ; dd  Flags
+CAP_OFF_POLICY_ID   equ 32   ; dd  Richtlinien-ID
+CAP_OFF_STATE       equ 36   ; db  CAP_STATE_*
+CAP_OFF_PRESENT     equ 37   ; db  1 = belegt
+                             ; dw  Padding
+
+; Event-Typ-IDs (§52, Fortsetzung nach evbus-Built-ins 1–8)
+NP_EVENT_CAP_CREATED    equ 9
+NP_EVENT_CAP_REVOKED    equ 10
+NP_EVENT_CAP_DENIED     equ 11
+
+; Fehlercodes (§60)
+NP_ERR_CAP_INVALID      equ -60
+NP_ERR_CAP_REVOKED      equ -61
+NP_ERR_CAP_EXPIRED      equ -62
+NP_ERR_CAP_EXHAUSTED    equ -63
+NP_ERR_CAP_RIGHTS       equ -64
+NP_ERR_CAP_DELEGATE     equ -65
+NP_ERR_CAP_DOMAIN       equ -66
+NP_ERR_CAP_POLICY       equ -67
+NP_ERR_CAP_STALE        equ -68
+NP_ERR_CAP_LIMIT        equ -69
+
+; ---------------------------------------------------------------------------
+; Compile-Zeit-Invarianten
+; ---------------------------------------------------------------------------
+%if CAP_CAP_SIZE != 40
+    %error "CAP_CAP_SIZE muss 40 Bytes sein"
+%endif
+%if CAP_OFF_PRESENT != 37
+    %error "CAP_OFF_PRESENT Offset falsch"
+%endif
+%if CAP_OFF_STATE != 36
+    %error "CAP_OFF_STATE Offset falsch"
+%endif
+
+; ---------------------------------------------------------------------------
+; cap_find – Capability anhand ID suchen (intern)
+; EAX=cap_id → CF=0 EBX=ptr / CF=1 EAX=NP_ERR_CAP_INVALID
+; ---------------------------------------------------------------------------
+cap_find:
+    push edi
+    push ecx
+    mov edi, cap_table
+    xor ecx, ecx
+.cfind_scan:
+    cmp ecx, CAP_MAX_CAPS
+    jae .cfind_miss
+    cmp byte [edi + CAP_OFF_PRESENT], 0
+    je .cfind_next
+    cmp dword [edi + CAP_OFF_ID], eax
+    je .cfind_hit
+.cfind_next:
+    add edi, CAP_CAP_SIZE
+    inc ecx
+    jmp .cfind_scan
+.cfind_hit:
+    mov ebx, edi
+    pop ecx
+    pop edi
+    clc
+    ret
+.cfind_miss:
+    mov eax, NP_ERR_CAP_INVALID
+    pop ecx
+    pop edi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_alloc – freien Deskriptor-Slot allozieren
+; → CF=0 EBX=ptr EAX=new_cap_id / CF=1 EAX=NP_ERR_CAP_LIMIT
+; ---------------------------------------------------------------------------
+cap_alloc:
+    push edi
+    push ecx
+    mov edi, cap_table
+    xor ecx, ecx
+.calloc_scan:
+    cmp ecx, CAP_MAX_CAPS
+    jae .calloc_full
+    cmp byte [edi + CAP_OFF_PRESENT], 0
+    je .calloc_found
+    add edi, CAP_CAP_SIZE
+    inc ecx
+    jmp .calloc_scan
+.calloc_found:
+    mov eax, [cap_next_id]
+    inc dword [cap_next_id]
+    mov ebx, edi
+    pop ecx
+    pop edi
+    clc
+    ret
+.calloc_full:
+    mov eax, NP_ERR_CAP_LIMIT
+    pop ecx
+    pop edi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_create – Capability erzeugen (§13)
+; EAX=obj_id, EBX=rights, ECX=delegable_rights, EDX=owner_domain
+; CF=0 EAX=cap_id / CF=1 EAX=Fehler
+; Invariant §15: delegable_rights ⊆ rights
+; ---------------------------------------------------------------------------
+cap_create:
+    push esi
+    push edi
+
+    mov [cap_tmp_obj_id], eax
+    mov [cap_tmp_rights], ebx
+    mov [cap_tmp_deleg],  ecx
+    mov [cap_tmp_domain], edx
+
+    ; delegable ⊆ rights: (delegable & ~rights) == 0
+    mov edi, ebx               ; rights
+    not edi                    ; ~rights
+    mov eax, ecx               ; delegable
+    and eax, edi               ; delegable & ~rights
+    test eax, eax
+    jnz .cca_rights_err
+
+    call cap_alloc             ; → EBX=ptr, EAX=cap_id
+    jc .cca_limit
+
+    mov esi, eax               ; esi = new cap_id
+
+    mov dword [ebx + CAP_OFF_ID],         esi
+    mov eax, [cap_tmp_obj_id]
+    mov [ebx + CAP_OFF_OBJ_ID],     eax
+    mov eax, [cap_tmp_rights]
+    mov [ebx + CAP_OFF_RIGHTS],     eax
+    mov eax, [cap_tmp_deleg]
+    mov [ebx + CAP_OFF_DELEGABLE],  eax
+    mov eax, [cap_tmp_domain]
+    mov [ebx + CAP_OFF_DOMAIN],     eax
+    mov dword [ebx + CAP_OFF_EXPIRATION], 0
+    mov eax, [cap_next_gen]
+    inc dword [cap_next_gen]
+    mov [ebx + CAP_OFF_GENERATION], eax
+    mov dword [ebx + CAP_OFF_FLAGS],     0
+    mov dword [ebx + CAP_OFF_POLICY_ID], 0
+    mov byte  [ebx + CAP_OFF_STATE],     CAP_STATE_VALID
+    mov byte  [ebx + CAP_OFF_PRESENT],   1
+
+    lock inc dword [cap_stat_created]
+
+    ; cap_id sichern, bevor ESI für evbus_publish überschrieben wird
+    mov [cap_cca_id], esi
+
+    ; NP_EVENT_CAP_CREATED publizieren (§52)
+    mov eax, NP_EVENT_CAP_CREATED
+    mov ecx, esi               ; source = cap_id
+    xor edx, edx
+    xor esi, esi               ; kein Payload
+    xor edi, edi
+    call evbus_publish         ; CF ignoriert (Bootstrap-Event)
+
+    mov eax, [cap_cca_id]
+    pop edi
+    pop esi
+    clc
+    ret
+.cca_rights_err:
+    mov eax, NP_ERR_CAP_RIGHTS
+    pop edi
+    pop esi
+    stc
+    ret
+.cca_limit:
+    ; EAX = NP_ERR_CAP_LIMIT aus cap_alloc
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_check – Zugriffsprüfung (§19, §20, fail-closed)
+; EAX=cap_id, EBX=required_rights
+; CF=0 OK / CF=1 EAX=Fehler
+; ---------------------------------------------------------------------------
+cap_check:
+    push esi
+    push edi
+
+    mov esi, ebx               ; esi = required_rights
+
+    call cap_find              ; EAX=cap_id → EBX=ptr
+    jc .cchk_invalid           ; EAX = NP_ERR_CAP_INVALID
+
+    ; Zustand prüfen (§20 Schritt 2)
+    movzx eax, byte [ebx + CAP_OFF_STATE]
+    cmp eax, CAP_STATE_REVOKED
+    je .cchk_revoked
+    cmp eax, CAP_STATE_EXPIRED
+    je .cchk_expired
+    cmp eax, CAP_STATE_VALID
+    jne .cchk_invalid
+
+    ; Ablaufzeit: Bootstrap-Caps haben expiration=0 (kein Limit, §29)
+    ; Zeitvergleich wird in §104 (Time Services) ergänzt
+
+    ; Rechteprüfung: (cap_rights & required) == required (§20 Schritt 3)
+    mov eax, [ebx + CAP_OFF_RIGHTS]
+    and eax, esi               ; cap_rights & required
+    cmp eax, esi
+    jne .cchk_rights
+
+    pop edi
+    pop esi
+    clc
+    ret
+
+.cchk_invalid:
+    lock inc dword [cap_stat_denied]
+    mov eax, NP_ERR_CAP_INVALID
+    jmp .cchk_deny
+.cchk_revoked:
+    lock inc dword [cap_stat_denied]
+    mov eax, NP_ERR_CAP_REVOKED
+    jmp .cchk_deny
+.cchk_expired:
+    lock inc dword [cap_stat_denied]
+    mov eax, NP_ERR_CAP_EXPIRED
+    jmp .cchk_deny
+.cchk_rights:
+    lock inc dword [cap_stat_denied]
+    ; NP_EVENT_CAP_DENIED publizieren (§52)
+    mov eax, NP_EVENT_CAP_DENIED
+    xor ecx, ecx
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    call evbus_publish
+    mov eax, NP_ERR_CAP_RIGHTS
+.cchk_deny:
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_derive – Capability mit Rechteabschwächung ableiten (§14, §15)
+; EAX=src_cap_id, EBX=new_rights, ECX=new_delegable
+; CF=0 EAX=new_cap_id / CF=1 EAX=Fehler
+; ---------------------------------------------------------------------------
+cap_derive:
+    push esi
+    push edi
+
+    mov [cap_tmp_src_id], eax
+    mov [cap_tmp_rights], ebx
+    mov [cap_tmp_deleg],  ecx
+
+    call cap_find              ; EAX=src_cap_id → EBX=ptr
+    jc .cder_invalid
+
+    ; Quelle muss VALID sein
+    cmp byte [ebx + CAP_OFF_STATE], CAP_STATE_VALID
+    jne .cder_revoked
+
+    ; §15: new_rights ⊆ src_rights
+    mov edi, [ebx + CAP_OFF_RIGHTS]
+    not edi                    ; ~src_rights
+    mov eax, [cap_tmp_rights]  ; new_rights
+    mov esi, eax
+    and esi, edi               ; new_rights & ~src_rights
+    test esi, esi
+    jnz .cder_rights_err
+
+    ; §15: new_delegable ⊆ src_delegable
+    mov edi, [ebx + CAP_OFF_DELEGABLE]
+    not edi
+    mov eax, [cap_tmp_deleg]
+    mov esi, eax
+    and esi, edi               ; new_delegable & ~src_delegable
+    test esi, esi
+    jnz .cder_delegate_err
+
+    ; §15: new_delegable ⊆ new_rights
+    mov eax, [cap_tmp_deleg]
+    mov edi, [cap_tmp_rights]
+    not edi
+    mov esi, eax
+    and esi, edi
+    test esi, esi
+    jnz .cder_rights_err
+
+    ; Quell-Ptr retten (cap_alloc überschreibt EBX)
+    mov [cap_tmp_src_ptr], ebx
+
+    call cap_alloc             ; → EBX=ptr, EAX=new_cap_id
+    jc .cder_limit
+
+    mov esi, eax               ; esi = new_cap_id
+    mov edi, [cap_tmp_src_ptr] ; edi = src_ptr
+
+    mov dword [ebx + CAP_OFF_ID],         esi
+    mov eax, [edi + CAP_OFF_OBJ_ID]
+    mov [ebx + CAP_OFF_OBJ_ID],     eax
+    mov eax, [cap_tmp_rights]
+    mov [ebx + CAP_OFF_RIGHTS],     eax
+    mov eax, [cap_tmp_deleg]
+    mov [ebx + CAP_OFF_DELEGABLE],  eax
+    mov eax, [edi + CAP_OFF_DOMAIN]
+    mov [ebx + CAP_OFF_DOMAIN],     eax
+    mov eax, [edi + CAP_OFF_EXPIRATION]
+    mov [ebx + CAP_OFF_EXPIRATION], eax
+    mov eax, [cap_next_gen]
+    inc dword [cap_next_gen]
+    mov [ebx + CAP_OFF_GENERATION], eax
+    mov dword [ebx + CAP_OFF_FLAGS],     0
+    mov dword [ebx + CAP_OFF_POLICY_ID], 0
+    mov byte  [ebx + CAP_OFF_STATE],     CAP_STATE_VALID
+    mov byte  [ebx + CAP_OFF_PRESENT],   1
+
+    lock inc dword [cap_stat_created]
+
+    mov [cap_cca_id], esi
+    mov eax, NP_EVENT_CAP_CREATED
+    mov ecx, esi
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    call evbus_publish         ; CF ignoriert
+
+    mov eax, [cap_cca_id]
+    pop edi
+    pop esi
+    clc
+    ret
+.cder_invalid:
+    mov eax, NP_ERR_CAP_INVALID
+    pop edi
+    pop esi
+    stc
+    ret
+.cder_revoked:
+    mov eax, NP_ERR_CAP_REVOKED
+    pop edi
+    pop esi
+    stc
+    ret
+.cder_rights_err:
+    mov eax, NP_ERR_CAP_RIGHTS
+    pop edi
+    pop esi
+    stc
+    ret
+.cder_delegate_err:
+    mov eax, NP_ERR_CAP_DELEGATE
+    pop edi
+    pop esi
+    stc
+    ret
+.cder_limit:
+    mov eax, NP_ERR_CAP_LIMIT
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_revoke – Capability widerrufen (§25)
+; EAX=cap_id → CF=0 / CF=1 EAX=Fehler
+; ---------------------------------------------------------------------------
+cap_revoke:
+    push esi
+
+    mov esi, eax               ; esi = cap_id
+
+    call cap_find              ; EAX=cap_id → EBX=ptr
+    jc .crev_invalid           ; EAX = NP_ERR_CAP_INVALID
+
+    cmp byte [ebx + CAP_OFF_STATE], CAP_STATE_REVOKED
+    je .crev_already
+
+    mov byte [ebx + CAP_OFF_STATE], CAP_STATE_REVOKED
+    lock inc dword [cap_stat_revoked]
+
+    ; NP_EVENT_CAP_REVOKED publizieren (§52)
+    mov eax, NP_EVENT_CAP_REVOKED
+    mov ecx, esi               ; source = cap_id
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    call evbus_publish         ; CF ignoriert
+
+    pop esi
+    clc
+    ret
+.crev_invalid:
+    ; EAX = NP_ERR_CAP_INVALID aus cap_find
+    pop esi
+    stc
+    ret
+.crev_already:
+    mov eax, NP_ERR_CAP_REVOKED
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_initialize – Pools leeren, evbus-Schemata, Bootstrap-Caps (§64)
+; CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+%macro cap_reg_event 3         ; type_id, class, flags
+    mov eax, %1
+    mov ecx, %2
+    xor edx, edx               ; max_payload = 0
+    mov esi, %3
+    call evbus_register_schema
+    jc .cinit_fail
+%endmacro
+
+cap_initialize:
+    push esi
+    push edi
+    push ecx
+
+    ; Pools leeren
+    mov edi, cap_table
+    xor eax, eax
+    mov ecx, (CAP_MAX_CAPS * CAP_CAP_SIZE) / 4
+    rep stosd
+    mov dword [cap_next_id],          0
+    mov dword [cap_next_gen],         0
+    mov dword [cap_stat_created],     0
+    mov dword [cap_stat_revoked],     0
+    mov dword [cap_stat_denied],      0
+    mov dword [cap_boot_kernel_id],   0
+    mov dword [cap_boot_id],          0
+
+    ; evbus-Schemata registrieren (§52)
+    cap_reg_event NP_EVENT_CAP_CREATED, NP_EVENT_CLASS_LIFECYCLE, NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+    cap_reg_event NP_EVENT_CAP_REVOKED, NP_EVENT_CLASS_STATE,     NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+    cap_reg_event NP_EVENT_CAP_DENIED,  NP_EVENT_CLASS_SECURITY,  NP_EVENT_SYNCHRONOUS | NP_EVENT_KERNEL_ONLY
+
+    ; Bootstrap-Cap: Kernel-Root (§64) – obj_id=1, rights=ADMIN|QUERY|MODIFY, deleg=QUERY
+    mov eax, 1
+    mov ebx, NP_CAP_ADMIN | NP_CAP_QUERY | NP_CAP_MODIFY
+    mov ecx, NP_CAP_QUERY
+    mov edx, CAP_DOMAIN_KERNEL
+    call cap_create
+    jc .cinit_fail
+    mov [cap_boot_kernel_id], eax
+
+    ; Bootstrap-Cap: Boot-Kontext (§64) – obj_id=2, rights=QUERY|SUBSCRIBE, nicht delegierbar
+    mov eax, 2
+    mov ebx, NP_CAP_QUERY | NP_CAP_SUBSCRIBE
+    xor ecx, ecx
+    mov edx, CAP_DOMAIN_BOOT
+    call cap_create
+    jc .cinit_fail
+    mov [cap_boot_id], eax
+
+    pop ecx
+    pop edi
+    pop esi
+    clc
+    ret
+.cinit_fail:
+    pop ecx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_self_test – Selbsttest §67 (10 Tests)
+; CF=0 alle OK / CF=1 EAX = fehlgeschlagener Testfall
+; ---------------------------------------------------------------------------
+cap_self_test:
+    push esi
+    push edi
+    push ebx
+
+    ; Test 1: cap_create mit gültigen Rechten
+    mov eax, 42
+    mov ebx, NP_CAP_QUERY | NP_CAP_MODIFY
+    mov ecx, NP_CAP_QUERY
+    mov edx, CAP_DOMAIN_KERNEL
+    call cap_create
+    jc .cst_fail1
+    mov [cap_st_id1], eax
+
+    ; Test 2: cap_check – korrekte Rechte → CF=0
+    mov eax, [cap_st_id1]
+    mov ebx, NP_CAP_QUERY
+    call cap_check
+    jc .cst_fail2
+
+    ; Test 3: cap_check – fehlende Rechte → CF=1 RIGHTS
+    mov eax, [cap_st_id1]
+    mov ebx, NP_CAP_ADMIN
+    call cap_check
+    jnc .cst_fail3
+    cmp eax, NP_ERR_CAP_RIGHTS
+    jne .cst_fail3
+
+    ; Test 4: cap_derive – Rechteabschwächung → CF=0
+    mov eax, [cap_st_id1]
+    mov ebx, NP_CAP_QUERY
+    mov ecx, NP_CAP_QUERY
+    call cap_derive
+    jc .cst_fail4
+    mov [cap_st_id2], eax
+
+    ; Test 5: cap_derive – Rechteerweiterung → CF=1 (§15 verletzt)
+    mov eax, [cap_st_id1]
+    mov ebx, NP_CAP_QUERY | NP_CAP_MODIFY | NP_CAP_ADMIN
+    mov ecx, NP_CAP_QUERY
+    call cap_derive
+    jnc .cst_fail5
+
+    ; Test 6: cap_revoke → CF=0
+    mov eax, [cap_st_id1]
+    call cap_revoke
+    jc .cst_fail6
+
+    ; Test 7: cap_check auf widerrufene Cap → CF=1 CAP_REVOKED
+    mov eax, [cap_st_id1]
+    mov ebx, NP_CAP_QUERY
+    call cap_check
+    jnc .cst_fail7
+    cmp eax, NP_ERR_CAP_REVOKED
+    jne .cst_fail7
+
+    ; Test 8: cap_check auf nicht-existente Cap → CF=1 CAP_INVALID
+    mov eax, 0xDEAD
+    mov ebx, NP_CAP_QUERY
+    call cap_check
+    jnc .cst_fail8
+    cmp eax, NP_ERR_CAP_INVALID
+    jne .cst_fail8
+
+    ; Test 9: Ableitungskette (derive von derive) → CF=0
+    mov eax, [cap_st_id2]
+    mov ebx, NP_CAP_QUERY
+    xor ecx, ecx               ; delegable = 0 (weiter reduziert)
+    call cap_derive
+    jc .cst_fail9
+    mov [cap_st_id3], eax
+
+    ; Test 10: cap_check auf id3 mit MODIFY → CF=1 RIGHTS (id3 hat nur QUERY)
+    mov eax, [cap_st_id3]
+    mov ebx, NP_CAP_MODIFY
+    call cap_check
+    jnc .cst_fail10
+    cmp eax, NP_ERR_CAP_RIGHTS
+    jne .cst_fail10
+
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+
+.cst_fail1:   mov eax, 1
+    jmp .cst_fail
+.cst_fail2:   mov eax, 2
+    jmp .cst_fail
+.cst_fail3:   mov eax, 3
+    jmp .cst_fail
+.cst_fail4:   mov eax, 4
+    jmp .cst_fail
+.cst_fail5:   mov eax, 5
+    jmp .cst_fail
+.cst_fail6:   mov eax, 6
+    jmp .cst_fail
+.cst_fail7:   mov eax, 7
+    jmp .cst_fail
+.cst_fail8:   mov eax, 8
+    jmp .cst_fail
+.cst_fail9:   mov eax, 9
+    jmp .cst_fail
+.cst_fail10:  mov eax, 10
+.cst_fail:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_* Daten
+; ---------------------------------------------------------------------------
+cap_table:          times (CAP_MAX_CAPS * CAP_CAP_SIZE / 4) dd 0
+cap_next_id:        dd 0
+cap_next_gen:       dd 0
+cap_stat_created:   dd 0
+cap_stat_revoked:   dd 0
+cap_stat_denied:    dd 0
+cap_boot_kernel_id: dd 0
+cap_boot_id:        dd 0
+; Temp-Speicher (Single-Threaded Bootstrap)
+cap_tmp_obj_id:     dd 0
+cap_tmp_rights:     dd 0
+cap_tmp_deleg:      dd 0
+cap_tmp_domain:     dd 0
+cap_tmp_src_id:     dd 0
+cap_tmp_src_ptr:    dd 0
+cap_cca_id:         dd 0
+; Selbsttest-IDs
+cap_st_id1:         dd 0
+cap_st_id2:         dd 0
+cap_st_id3:         dd 0
+
 ; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
 ; ---------------------------------------------------------------------------
@@ -27768,6 +28436,10 @@ message_uobj_ok:
     db "NOVA: Unified Object API 1.0 (§102), 15 Typen, Handle-Tabelle bereit", 13, 10, 0
 message_uobj_error:
     db "NOVA PANIC: Unified Object API Selbsttest fehlgeschlagen", 13, 10, 0
+message_cap_ok:
+    db "NOVA: Capability Framework 1.0 (§103), 2 Boot-Caps, 3 Event-Schemata bereit", 13, 10, 0
+message_cap_error:
+    db "NOVA PANIC: Capability Framework Selbsttest fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
