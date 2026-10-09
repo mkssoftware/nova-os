@@ -455,6 +455,13 @@ kernel_entry:
     mov esi, message_diag_ok
     call serial_write_string
 
+    call cap_integration_initialize
+    jc panic_cap_integ
+    call cap_integration_self_test
+    jc panic_cap_integ
+    mov esi, message_cap_integ_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -803,6 +810,12 @@ panic_diag:
     mov eax, 0x00000018
     mov edx, 0x44494100             ; "DIA\0"
     mov esi, message_diag_error
+    jmp kernel_panic
+
+panic_cap_integ:
+    mov eax, 0x00000019
+    mov edx, 0x43494E54             ; "CINT"
+    mov esi, message_cap_integ_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -23613,6 +23626,371 @@ diag_tmp_level:     dd 0
 diag_tmp_event:     dd 0
 diag_tmp_value:     dd 0
 
+; ===========================================================================
+; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
+; ===========================================================================
+; Verbindet das Capability Framework (§103) mit:
+;   • Unified Object API §102 : Handles erhalten CAP-Deskriptoren
+;   • IPC                     : Send/Receive verlangen NP_CAP_SIGNAL/SUBSCRIBE
+;   • VFS                     : Lookup verlangt NP_CAP_QUERY
+; Alle Funktionen sind Single-Threaded-Bootstrap-sicher (statische Temps).
+; ===========================================================================
+
+CAP_INT_IPC_OBJ_ID     equ 200   ; virtuelles Objekt-ID für IPC-Endpoint-Caps
+CAP_INT_VFS_OBJ_ID     equ 201   ; virtuelles Objekt-ID für VFS-Root-Cap
+
+; ---------------------------------------------------------------------------
+; cap_uobj_create_handle – Handle + CAP-Deskriptor für bestehendes UOBJ-Objekt
+; EAX=obj_id, EBX=unused, ECX=rights(NP_CAP_*), EDX=domain(CAP_DOMAIN_*)
+; CF=0: EBX=handle_id, EAX=cap_id / CF=1 Fehler
+; Invariant: delegable_rights = rights & NP_CAP_QUERY (monoton reduziert)
+; ---------------------------------------------------------------------------
+cap_uobj_create_handle:
+    push esi
+    push edi
+
+    mov [cap_int_tmp_obj_id], eax
+    mov [cap_int_tmp_rights], ecx
+    mov [cap_int_tmp_domain], edx
+
+    ; Objekt prüfen + aktuelle Generation lesen
+    call uobj_find_object           ; EAX=obj_id → EBX=obj_ptr, CF
+    jc .cuch_fail
+    mov eax, [ebx + UOBJ_OBJ_OFF_GEN]
+    mov [cap_int_tmp_gen], eax
+
+    ; Handle allokieren (Generation + inline-caps aus CAP-Rights)
+    mov eax, [cap_int_tmp_obj_id]
+    mov ecx, [cap_int_tmp_gen]
+    mov edx, [cap_int_tmp_rights]
+    call uobj_alloc_handle          ; EAX=obj_id, ECX=gen, EDX=caps → EBX=handle_id, CF
+    jc .cuch_fail
+    mov [cap_int_tmp_hdl_id], ebx
+
+    ; Slot-Index in Parallel-Tabelle: (hdl_ptr - uobj_handles) >> 4
+    mov eax, [cap_int_tmp_hdl_id]
+    call uobj_find_handle           ; EAX=handle_id → EBX=hdl_ptr, CF
+    jc .cuch_fail
+    mov eax, ebx
+    sub eax, uobj_handles
+    shr eax, 4
+    mov [cap_int_tmp_slot], eax
+
+    ; CAP-Deskriptor erzeugen (delegable = QUERY-Subset)
+    mov eax, [cap_int_tmp_obj_id]
+    mov ebx, [cap_int_tmp_rights]
+    mov ecx, NP_CAP_QUERY
+    and ecx, ebx
+    mov edx, [cap_int_tmp_domain]
+    call cap_create                 ; → EAX=cap_id, CF
+    jc .cuch_fail
+
+    ; cap_id in Parallel-Tabelle speichern
+    mov ecx, [cap_int_tmp_slot]
+    mov [uobj_hdl_cap_tab + ecx*4], eax
+
+    mov ebx, [cap_int_tmp_hdl_id]
+    ; EAX = cap_id
+
+    pop edi
+    pop esi
+    clc
+    ret
+
+.cuch_fail:
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_uobj_access – Handle via CAP-Framework auflösen (bridge §103↔§102)
+; EAX=handle_id, EBX=required_rights(NP_CAP_*)
+; CF=0: ECX=obj_ptr / CF=1: EAX=Fehler
+; ---------------------------------------------------------------------------
+cap_uobj_access:
+    push esi
+    push edx
+
+    mov [cap_int_tmp_hdl_id], eax
+    mov [cap_int_tmp_rights], ebx
+
+    ; Handle-Slot finden → cap_id nachschlagen
+    call uobj_find_handle           ; EAX=handle_id → EBX=hdl_ptr, CF
+    jc .cuoa_invalid
+
+    mov eax, ebx
+    sub eax, uobj_handles
+    shr eax, 4
+    mov ecx, [uobj_hdl_cap_tab + eax*4]
+    test ecx, ecx
+    jz .cuoa_invalid                ; kein CAP-Deskriptor für dieses Handle
+
+    ; Capability-Prüfung (fail-closed)
+    mov eax, ecx
+    mov ebx, [cap_int_tmp_rights]
+    call cap_check                  ; EAX=cap_id, EBX=rights → CF=0/CF=1 EAX=Fehler
+    jc .cuoa_denied
+
+    ; UOBJ auflösen; ECX=0 überspringt doppelte inline-CAPS-Prüfung
+    mov eax, [cap_int_tmp_hdl_id]
+    xor ecx, ecx
+    call uobj_from_handle           ; → EBX=obj_ptr, CF
+    jc .cuoa_invalid
+
+    mov ecx, ebx                    ; ECX = obj_ptr Rückgabe
+
+    pop edx
+    pop esi
+    clc
+    ret
+
+.cuoa_invalid:
+    mov eax, NP_ERR_CAP_INVALID
+.cuoa_denied:
+    pop edx
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; ipc_send_secure – IPC-Send mit NP_CAP_SIGNAL-Prüfung (bridge §103↔IPC)
+; EAX=cap_id, ESI=msg_ptr(16 Byte)
+; CF=0 OK / CF=1 Fehler (EAX=Fehlercode oder -1 bei voller Queue)
+; ---------------------------------------------------------------------------
+ipc_send_secure:
+    push ebx
+    mov ebx, NP_CAP_SIGNAL
+    call cap_check                  ; cap_check erhält ESI
+    jc .iss_denied
+
+    call ipc_send                   ; ESI=msg_ptr → EAX=1(OK) / 0(voll)
+    test eax, eax
+    jz .iss_full
+
+    pop ebx
+    clc
+    ret
+
+.iss_full:
+    mov eax, -1
+.iss_denied:
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; ipc_receive_secure – IPC-Receive mit NP_CAP_SUBSCRIBE-Prüfung
+; EAX=cap_id, EDI=buf_ptr(16 Byte)
+; CF=0 OK / CF=1 Fehler (EAX=Fehlercode oder -1 bei leerer Queue)
+; ---------------------------------------------------------------------------
+ipc_receive_secure:
+    push ebx
+    mov ebx, NP_CAP_SUBSCRIBE
+    call cap_check                  ; cap_check erhält EDI
+    jc .irs_denied
+
+    call ipc_receive                ; EDI=buf_ptr → EAX=1(OK) / 0(leer)
+    test eax, eax
+    jz .irs_empty
+
+    pop ebx
+    clc
+    ret
+
+.irs_empty:
+    mov eax, -1
+.irs_denied:
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; vfs_lookup_secure – VFS-Root-Lookup mit NP_CAP_QUERY-Prüfung
+; EAX=cap_id, ESI=path, ECX=length
+; CF=0 EAX=node_handle / CF=1 Fehler
+; cap_check erhält ESI+ECX auf Erfolgspfad (save/restore intern)
+; ---------------------------------------------------------------------------
+vfs_lookup_secure:
+    push ebx
+    mov ebx, NP_CAP_QUERY
+    call cap_check
+    jc .vls_denied
+
+    call vfs_lookup_root            ; ESI=path, ECX=length → EAX=handle, CF=0/CF=1
+
+    pop ebx
+    ret
+
+.vls_denied:
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_integration_initialize – Bootstrap-Caps für IPC/VFS anlegen
+; CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+cap_integration_initialize:
+    push ebx
+    push esi
+    push edi
+
+    ; Parallel-Tabelle nullen
+    mov edi, uobj_hdl_cap_tab
+    xor eax, eax
+    mov ecx, UOBJ_MAX_HANDLES
+    rep stosd
+
+    ; IPC-Send-Cap (NP_CAP_SIGNAL, kein Delegat)
+    mov eax, CAP_INT_IPC_OBJ_ID
+    mov ebx, NP_CAP_SIGNAL
+    xor ecx, ecx
+    mov edx, CAP_DOMAIN_KERNEL
+    call cap_create
+    jc .ci_fail
+    mov [ipc_cap_send_id], eax
+
+    ; IPC-Recv-Cap (NP_CAP_SUBSCRIBE, kein Delegat)
+    mov eax, CAP_INT_IPC_OBJ_ID
+    mov ebx, NP_CAP_SUBSCRIBE
+    xor ecx, ecx
+    mov edx, CAP_DOMAIN_KERNEL
+    call cap_create
+    jc .ci_fail
+    mov [ipc_cap_recv_id], eax
+
+    ; VFS-Query-Cap (NP_CAP_QUERY, delegierbar)
+    mov eax, CAP_INT_VFS_OBJ_ID
+    mov ebx, NP_CAP_QUERY
+    mov ecx, NP_CAP_QUERY
+    mov edx, CAP_DOMAIN_KERNEL
+    call cap_create
+    jc .ci_fail
+    mov [vfs_cap_query_id], eax
+
+    ; Diagnose: Integration bereit
+    mov eax, DIAG_SRC_CAP
+    mov ebx, DIAG_LEVEL_INFO
+    xor ecx, ecx
+    xor edx, edx
+    call diag_log
+
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+
+.ci_fail:
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; cap_integration_self_test – 8 Tests: §103↔§102, §103↔IPC, §103↔VFS
+; CF=0 alle Tests bestanden / CF=1 Fehler
+; ---------------------------------------------------------------------------
+cap_integration_self_test:
+    push ebx
+    push esi
+    push edi
+
+    ; === Test 1: UOBJ-Objekt anlegen (Grundlage für Bridge-Test) ===
+    mov eax, NP_OBJTYPE_GENERIC
+    mov ecx, UOBJ_CAP_QUERY | UOBJ_CAP_MODIFY
+    call uobj_create                ; → EBX=handle_id0, ECX=obj_id
+    jc .cist_fail
+    mov [cap_int_st_obj1], ecx
+
+    ; === Test 2: cap_uobj_create_handle → CF=0, handle_id+cap_id ===
+    mov eax, [cap_int_st_obj1]
+    xor ebx, ebx
+    mov ecx, NP_CAP_QUERY | NP_CAP_MODIFY
+    mov edx, CAP_DOMAIN_KERNEL
+    call cap_uobj_create_handle     ; → EBX=handle_id, EAX=cap_id
+    jc .cist_fail
+    mov [cap_int_st_hdl1], ebx
+    mov [cap_int_st_cap1], eax
+
+    ; === Test 3: cap_uobj_access QUERY → CF=0 ===
+    mov eax, [cap_int_st_hdl1]
+    mov ebx, NP_CAP_QUERY
+    call cap_uobj_access
+    jc .cist_fail
+
+    ; === Test 4: cap_uobj_access ADMIN → CF=1 (kein ADMIN-Recht) ===
+    mov eax, [cap_int_st_hdl1]
+    mov ebx, NP_CAP_ADMIN
+    call cap_uobj_access
+    jnc .cist_fail
+
+    ; === Test 5: ipc_send_secure mit Send-Cap → CF=0 ===
+    mov eax, [ipc_cap_send_id]
+    mov esi, cap_int_test_msg
+    call ipc_send_secure
+    jc .cist_fail
+
+    ; === Test 6: ipc_receive_secure mit Recv-Cap → CF=0, Inhalt stimmt ===
+    mov eax, [ipc_cap_recv_id]
+    mov edi, cap_int_recv_buf
+    call ipc_receive_secure
+    jc .cist_fail
+    mov eax, [cap_int_test_msg]
+    cmp eax, [cap_int_recv_buf]
+    jne .cist_fail
+
+    ; === Test 7: vfs_lookup_secure mit Query-Cap + "/" → CF=0 ===
+    mov eax, [vfs_cap_query_id]
+    mov esi, vfs_root_path
+    mov ecx, 1
+    call vfs_lookup_secure
+    jc .cist_fail
+
+    ; === Test 8: vfs_lookup_secure mit ungültiger Cap → CF=1 ===
+    mov eax, 0xDEAD
+    mov esi, vfs_root_path
+    mov ecx, 1
+    call vfs_lookup_secure
+    jnc .cist_fail
+
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+
+.cist_fail:
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; CAP-Integration Daten
+; ---------------------------------------------------------------------------
+uobj_hdl_cap_tab:    times UOBJ_MAX_HANDLES dd 0   ; Handle-Slot → cap_id
+ipc_cap_send_id:     dd 0
+ipc_cap_recv_id:     dd 0
+vfs_cap_query_id:    dd 0
+; Temp-Speicher (Single-Threaded Bootstrap)
+cap_int_tmp_obj_id:  dd 0
+cap_int_tmp_rights:  dd 0
+cap_int_tmp_domain:  dd 0
+cap_int_tmp_gen:     dd 0
+cap_int_tmp_hdl_id:  dd 0
+cap_int_tmp_slot:    dd 0
+; Selbsttest-IDs
+cap_int_st_obj1:     dd 0
+cap_int_st_hdl1:     dd 0
+cap_int_st_cap1:     dd 0
+; Selbsttest-Nachricht (16 Byte)
+cap_int_test_msg:    dd 0xCAF10001, 0xCAF10002, 0xCAF10003, 0xCAF10004
+cap_int_recv_buf:    times IPC_MESSAGE_SIZE db 0
+
 ; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
 ; ---------------------------------------------------------------------------
@@ -29005,6 +29383,10 @@ message_diag_ok:
     db "NOVA: Diagnostics Framework 1.0 (§104), 6 Quellen, Ringpuffer, Health bereit", 13, 10, 0
 message_diag_error:
     db "NOVA PANIC: Diagnostics Framework Selbsttest fehlgeschlagen", 13, 10, 0
+message_cap_integ_ok:
+    db "NOVA: CAP-Integration 1.0, UOBJ-Bridge 32 Slots, IPC/VFS gesichert", 13, 10, 0
+message_cap_integ_error:
+    db "NOVA PANIC: CAP-Integration Selbsttest fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
