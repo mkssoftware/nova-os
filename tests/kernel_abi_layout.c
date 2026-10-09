@@ -63,7 +63,7 @@ int nova_kernel_abi_layout_is_valid(void)
            sizeof(NovaVfsLookupArgumentsV1)==32&&
            sizeof(NovaHandleEntryV1)==24&&sizeof(NovaHandleApiV1)==32&&
            sizeof(nova_process_record_t)==32&&sizeof(nova_process_api_t)==32&&
-           sizeof(nova_thread_record_t)==32&&sizeof(nova_thread_api_t)==32&&
+           sizeof(nova_thread_record_t)==32&&sizeof(nova_thread_api_t)==36&&
            sizeof(nova_task_scope_record_t)==32&&
            sizeof(nova_task_scope_api_t)==32&&
            sizeof(nova_task_record_t)==32&&sizeof(nova_task_api_t)==32&&

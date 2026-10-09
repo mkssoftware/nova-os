@@ -419,6 +419,8 @@ kernel_entry:
     call serial_write_string
     call scheduler_self_test
     jc panic_scheduler
+    mov esi, message_scheduler_dynamic_ok
+    call serial_write_string
     mov esi, message_scheduler_ok
     call serial_write_string
 
@@ -427,6 +429,8 @@ kernel_entry:
     call smp_self_test
     jc panic_smp
     mov esi, message_smp_ok
+    call serial_write_string
+    mov esi, message_smp_runtime_ok
     call serial_write_string
 
     mov dword [boot_phase_last_success], BOOT_PHASE_SCHEDULER_SMP
@@ -3090,7 +3094,7 @@ PAGING_API_ABI_MAJOR  equ 1
 PAGING_API_ABI_MINOR  equ 0
 PAGING_CAP_4K_PAGES   equ 0x00000001
 PAGING_CAP_IDENTITY   equ 0x00000002
-PAGING_LOW_LIMIT      equ 0x00800000
+PAGING_LOW_LIMIT      equ 0x01000000
 
 paging_initialize:
     call pmm_alloc_page
@@ -3103,8 +3107,9 @@ paging_initialize:
     rep stosd
 
     ; Früher Kernel, Stack, BIB, Heap und Seitentabellen bleiben identisch
-    ; abgebildet. Der Bootstrap-PMM liefert ausschließlich Seiten in diesem
-    ; Fenster.
+    ; abgebildet. Der UEFI-Kernel liegt hoeher als der BIOS-Kernel; mit 1024
+    ; Bootstrap-PMM-Seiten muss der fruehe Identity-Bereich daher bis 16 MiB
+    ; reichen, sonst koennen Heap-Seiten direkt nach 8 MiB ungeplant faulten.
     xor eax, eax
 .map_low:
     mov edx, eax
@@ -3690,6 +3695,11 @@ interrupt_dispatch:
 .timer_mouse:
     call ps2_mouse_handle_byte
 .timer_schedule:
+    ; Vor Scheduler-Initialisierung dient IRQ0 nur als PIT-Lebenszeichen.
+    ; Deadline-, I/O- und Scheduling-Pfade greifen auf Managerzustand zu, der
+    ; in der frühen Interruptphase noch nicht aufgebaut ist.
+    cmp dword [scheduler_enabled], 1
+    jne .timer_ack
     call task_deadline_poll
     call io_request_poll_deadlines
     call io_cancel_for_requested_tasks
@@ -3711,6 +3721,7 @@ interrupt_dispatch:
     pop eax
     jmp .done
 .sched_skip:
+.timer_ack:
     mov al, PIC_EOI
     out PIC1_COMMAND, al
     jmp .done
@@ -24216,6 +24227,8 @@ message_cpu_manager_error:
     db "NOVA PANIC: CPU Manager Selbsttest fehlgeschlagen", 13, 10, 0
 message_smp_ok:
     db "NOVA: SMP-Grundlage ABI 1.0, BSP-Barriere und lokaler TLB-Pfad bereit", 13, 10, 0
+message_smp_runtime_ok:
+    db "NOVA: SMP AP-LAPIC-Timer und AP-Scheduler aktiv", 13, 10, 0
 message_smp_error:
     db "NOVA PANIC: SMP-Grundlagen-Selbsttest fehlgeschlagen", 13, 10, 0
 message_panic_begin:
@@ -24531,7 +24544,9 @@ message_thread_manager_ok:
 message_thread_manager_error:
     db "NOVA PANIC: Kernel Thread Manager nicht initialisierbar", 13, 10, 0
 message_scheduler_ok:
-    db "NOVA: Scheduler ABI 1.0 und zwei Threads aktiv", 13, 10, 0
+    db "NOVA: Scheduler ABI 1.0 und Runtime-Threads aktiv", 13, 10, 0
+message_scheduler_dynamic_ok:
+    db "NOVA: Scheduler Dynamic Thread Slot 3 aktiv", 13, 10, 0
 message_scheduler_error:
     db "NOVA PANIC: praemptiver Scheduler nicht initialisierbar", 13, 10, 0
 message_novafs_mount_failed:

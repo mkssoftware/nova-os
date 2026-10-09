@@ -2149,3 +2149,75 @@ scheinbar erfolgreich ohne Integritätsprüfung weiterzulaufen.
 - `make -f Makefile.novafs novafs-check` mit deaktivierter MSYS-Argument-
   Konvertierung erfolgreich; dabei werden Baumteilungen, Löschen/Umbenennen,
   Backup-Superblock, Fehlererkennung und binäre Datei-Inhalte geprüft.
+
+## §135 Echtes SMP: dynamische Scheduler-Slots und Runtime-Threads (2026-10-09)
+
+**Ziel:** Der SMP-Scheduler soll nicht mehr nur die drei statischen
+Bootstrap-Threads kennen, sondern zusätzliche Kernel-Threads zur Laufzeit in
+freie Scheduler-Slots aufnehmen können.
+
+**Umgesetzt:**
+- `SCHEDULER_THREAD_COUNT` und `THREAD_CAPACITY` sind jetzt auf 8 Slots
+  erweitert.
+- `scheduler_initialize` initialisiert die gesamten Arrays
+  `scheduler_contexts`, `thread_cpu_affinity` und `thread_running_on`
+  deterministisch.
+- Neue Capability `SCHEDULER_CAP_DYNAMIC = 0x08`.
+- `scheduler_api` ist auf 48 Byte erweitert und exportiert zusätzlich:
+  - `scheduler_contexts`,
+  - `thread_task_ids`.
+- `thread_manager_api` ist auf 36 Byte erweitert und exportiert zusätzlich:
+  - `thread_create_dynamic`.
+- `thread_create_dynamic(entry, pid, affinity)`:
+  - sucht unter `scheduler_lock` einen freien Scheduler-Slot,
+  - erzeugt per `scheduler_create_frame` einen vollständigen Thread-Kontext,
+  - setzt CPU-Affinität (`-1` = beliebige CPU),
+  - veröffentlicht Slot, Task und Thread-Datensatz erst nach vollständiger
+    Initialisierung.
+- Der Thread-Manager-Selbsttest erzeugt einen zusätzlichen dynamischen
+  Testthread in Slot 3.
+- `scheduler_self_test` wartet jetzt auch darauf, dass der dynamische Thread
+  mindestens einmal gelaufen ist.
+
+**SMP-Effekt:** BSP und APs können neben den statischen Bootstrap-Threads nun
+auch zur Laufzeit erzeugte Threads übernehmen. Der bestehende
+`thread_running_on[]`-Guard verhindert weiterhin Doppel-Ausführung desselben
+Slots auf mehreren CPUs; `thread_cpu_affinity[]` bleibt für Pinning erhalten.
+
+**Header/ABI:**
+- `kernel/include/nova/thread.h`: `NOVA_THREAD_CAPACITY = 8`,
+  `nova_thread_api_t = 36`.
+- `kernel/include/nova/scheduler.h`: Scheduler-Capabilities enthalten
+  Affinity und Dynamic Threads; `NovaSchedulerApiV1 = 48`.
+- `tests/kernel_abi_layout.c` erwartet die neue Thread-API-Größe.
+
+**Validierung:** `make kernel` und `make abi-check` laufen erfolgreich durch.
+
+## §136 UEFI-SMP: sichtbare Runtime-Marker im NUMA-Test (2026-10-09)
+
+**Ziel:** Der UEFI-Test soll nicht nur bis `NOVA_KERNEL_READY` warten, sondern
+auch nachweisen, dass dynamische Scheduler-Threads und der AP-LAPIC-Timer-Pfad
+im SMP-Betrieb erreicht wurden.
+
+**Umgesetzt:**
+- Nach erfolgreichem `scheduler_self_test` wird zusätzlich ausgegeben:
+  `NOVA: Scheduler Dynamic Thread Slot 3 aktiv`.
+- Nach erfolgreichem `smp_self_test` wird zusätzlich ausgegeben:
+  `NOVA: SMP AP-LAPIC-Timer und AP-Scheduler aktiv`.
+- Die Scheduler-Statuszeile spricht nun allgemein von Runtime-Threads statt
+  nur von zwei statischen Threads.
+- `scripts/test-uefi-numa.ps1` prüft neben SRAT/NUMA jetzt auch diese beiden
+  Runtime-Marker.
+
+**Effekt:** Ein QEMU/UEFI-Lauf mit `-smp 4` bricht künftig im Test ab, wenn der
+dynamische Thread nicht läuft oder der SMP-Selbsttest den AP-LAPIC-Timer-Pfad
+nicht bestätigt.
+
+**Zusätzliche UEFI-Korrektur:** Die frühe Identity-Map des Kernels reicht jetzt
+bis 16 MiB. Damit sind auch die durch den Bootstrap-PMM verwalteten Heap-Seiten
+erreichbar, wenn der UEFI-Loader den Kernel höher im Speicher platziert.
+
+**Timer-Korrektur:** IRQ0 führt vor `scheduler_enabled=1` nur noch Tick-Zählung
+und EOI aus. Deadline-, I/O- und Scheduling-Pfade laufen erst nach
+Scheduler-Initialisierung, damit frühe Manager-Selbsttests nicht durch noch
+nicht aufgebaute Runtime-Zustände gestört werden.

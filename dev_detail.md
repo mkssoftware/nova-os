@@ -4899,3 +4899,105 @@ sich assemblieren und bleibt im bestehenden 256-KiB-NKI-Limit.
 `MSYS2_ARG_CONV_EXCL="*"` erfolgreich durch. Der Test deckt u. a. binäre
 Dateiinhalte, Tree-Splits, Löschen/Umbenennen, Backup-Superblock und erkannte
 Korruption ab.
+
+---
+
+## §120 – SMP: dynamische Scheduler-Slots und Runtime-Thread-Erzeugung
+
+**Kurzfassung:** Der bisher statische SMP-Scheduler wurde auf dynamische
+Kernel-Threads vorbereitet. Es gibt jetzt acht Scheduler-Slots, und zusätzliche
+Threads können zur Laufzeit sicher veröffentlicht werden.
+
+### Umsetzung
+
+- `SCHEDULER_THREAD_COUNT = 8`
+- `THREAD_CAPACITY = SCHEDULER_THREAD_COUNT`
+- `SCHEDULER_CAP_DYNAMIC = 0x08`
+- `THREAD_API_SIZE = 36`
+- `SCHEDULER_API_SIZE = 48`
+
+`scheduler_initialize` setzt die vollständigen Slot-Arrays zurück:
+
+- `scheduler_contexts[] = 0`
+- `thread_cpu_affinity[] = -1`
+- `thread_running_on[] = -1`
+
+Slot 0 bleibt anschließend explizit auf CPU 0 gepinnt und als auf dem BSP
+laufend markiert.
+
+### `thread_create_dynamic`
+
+Die neue Routine nimmt `entry`, `pid` und `affinity` entgegen:
+
+```text
+EAX = Entry
+EDX = PID
+ECX = CPU-Affinität (-1 = beliebige CPU)
+```
+
+Sie hält `scheduler_lock`, sucht einen freien Slot, erzeugt einen synthetischen
+Interruptframe, setzt Affinität und Running-State und registriert danach den
+Thread-Datensatz. Damit können APs keinen halb initialisierten Slot sehen.
+
+### Selbsttest
+
+Der Thread-Manager erzeugt im Selbsttest einen zusätzlichen dynamischen Thread
+in Slot 3. Der Scheduler-Selbsttest wartet darauf, dass:
+
+- `scheduler_thread1` läuft,
+- `scheduler_thread2` läuft,
+- der dynamische Thread läuft,
+- IPC weiterhin fehlerfrei bleibt.
+
+### ABI
+
+`nova_thread_api_t` enthält jetzt zusätzlich `CreateDynamicEntry` und ist 36
+Byte groß. Die Kernel-ABI-Prüfung wurde auf diese Größe aktualisiert.
+
+### Validierung
+
+`make kernel` und `make abi-check` laufen erfolgreich durch.
+
+---
+
+## §121 – UEFI-SMP: Runtime-Marker für dynamischen Scheduler und AP-Timer
+
+**Kurzfassung:** Der Kernel meldet jetzt explizit, wenn der dynamische
+Scheduler-Thread und der SMP/AP-Timer-Pfad den Selbsttest bestanden haben.
+
+### Neue Boot-Log-Marker
+
+Nach dem Scheduler-Selbsttest:
+
+```text
+NOVA: Scheduler Dynamic Thread Slot 3 aktiv
+```
+
+Nach dem SMP-Selbsttest:
+
+```text
+NOVA: SMP AP-LAPIC-Timer und AP-Scheduler aktiv
+```
+
+Damit ist im seriellen UEFI-Log sichtbar, ob die Runtime-Thread-Erzeugung und
+der AP-LAPIC-Timer-Pfad wirklich durchlaufen wurden.
+
+### Frühe UEFI-Identity-Map
+
+`PAGING_LOW_LIMIT` wurde von 8 MiB auf 16 MiB erweitert. Der UEFI-Loader kann
+den Kernel höher platzieren als der BIOS-Pfad; zusammen mit 1024
+Bootstrap-PMM-Seiten können frühe Heap-Seiten sonst direkt oberhalb von 8 MiB
+liegen und beim Nullen einen Page-Fault auslösen.
+
+### Früher IRQ0-Pfad
+
+Vor `scheduler_enabled=1` zählt der Timer-Interrupt nur `timer_ticks` hoch und
+quittiert den Interrupt. Erst danach werden Deadline-, I/O- und
+Scheduler-Pfade aufgerufen. Dadurch bleibt der frühe PIT-Selbsttest aktiv,
+ohne noch nicht initialisierte Managerzustände zu berühren.
+
+### Testintegration
+
+`scripts/test-uefi-numa.ps1` prüft jetzt zusätzlich zu SRAT, PMM-NUMA,
+HAL-Topologieimport und `NOVA_KERNEL_READY` auch diese beiden Marker. Wenn einer
+fehlt, bleibt das Testartefakt zur Diagnose im Build-Ordner erhalten.

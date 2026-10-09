@@ -55,10 +55,16 @@ try {
     if($content-notlike'*NOVA: CPU Manager bezieht Package, Core und Thread aus HAL Topology*'){
         throw 'CPU Manager erreichte den HAL-Topologieimport nicht'
     }
+    if($content-notlike'*NOVA: Scheduler Dynamic Thread Slot 3 aktiv*'){
+        throw 'Scheduler erreichte den dynamischen Runtime-Thread nicht'
+    }
+    if($content-notlike'*NOVA: SMP AP-LAPIC-Timer und AP-Scheduler aktiv*'){
+        throw 'SMP erreichte AP-LAPIC-Timer/AP-Scheduler-Markierung nicht'
+    }
     if($content-notlike'*NOVA_KERNEL_READY*'){
         throw 'NUMA-Test erreichte NOVA_KERNEL_READY nicht'
     }
-    Write-Host 'UEFI NUMA: SRAT mit 4 CPU- und 3 Memory-Affinitäten validiert'
+    Write-Host 'UEFI NUMA/SMP: SRAT, dynamischer Scheduler-Thread und AP-LAPIC-Timer validiert'
     $completed=$true
 } finally {
     if(!$process.HasExited){Stop-Process -Id $process.Id -Force}

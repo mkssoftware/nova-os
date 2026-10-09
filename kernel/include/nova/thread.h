@@ -4,7 +4,7 @@
 #include <nova/object.h>
 #define NOVA_THREAD_ABI_MAJOR 1u
 #define NOVA_THREAD_ABI_MINOR 0u
-#define NOVA_THREAD_CAPACITY 3u
+#define NOVA_THREAD_CAPACITY 8u
 typedef enum nova_thread_state {
     NOVA_THREAD_READY = 1
 } nova_thread_state_t;
@@ -28,9 +28,10 @@ typedef struct nova_thread_api {
     uint32_t CountAddress;
     uint32_t TableAddress;
     uint32_t NextThreadIdAddress;
+    uint32_t CreateDynamicEntry;
 } nova_thread_api_t;
 _Static_assert(sizeof(nova_thread_record_t) == 32,
                "nova_thread_record_t ABI size changed");
-_Static_assert(sizeof(nova_thread_api_t) == 32,
+_Static_assert(sizeof(nova_thread_api_t) == 36,
                "nova_thread_api_t ABI size changed");
 #endif

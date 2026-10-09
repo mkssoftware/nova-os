@@ -4,6 +4,7 @@
 #include "firmware.h"
 #include "boot_control.h"
 #include "../../include/nova_boot_protocol.h"
+#include <stddef.h>
 
 #define EFI_ALLOCATE_ADDRESS 2u
 #define EFI_ALLOCATE_MAX_ADDRESS 1u
@@ -800,6 +801,12 @@ static bool dht_read_dynamic(deflate_bits_t*b,dht_t*lt,dht_t*dt){
     }
     dht_build(lt,lens,(uint16_t)hlit);dht_build(dt,lens+hlit,(uint16_t)hdist);return true;
 }
+/* RFC 1951 Laengen- und Distanztabellen (shared fuer Fixed- und Dynamic-Huffman) */
+static const uint8_t  g_le[29]={0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0};
+static const uint16_t g_lb[29]={3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258};
+static const uint8_t  g_de[30]={0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13};
+static const uint16_t g_db[30]={1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,
+                                  1025,1537,2049,3073,4097,6145,8193,12289,16385,24577};
 /* Schreibt Literal/Laengen+Distanz-Inhalt eines Huffman-Blocks in dst. */
 static bool dht_inflate_block(deflate_bits_t*b,const dht_t*lt,const dht_t*dt,uint8_t*dst,uint32_t cap,uint32_t*wr){
     for(;;){
@@ -816,12 +823,6 @@ static bool dht_inflate_block(deflate_bits_t*b,const dht_t*lt,const dht_t*dt,uin
     }
     return true;
 }
-/* RFC 1951 Laengen- und Distanztabellen (shared fuer Fixed- und Dynamic-Huffman) */
-static const uint8_t  g_le[29]={0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0};
-static const uint16_t g_lb[29]={3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258};
-static const uint8_t  g_de[30]={0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13};
-static const uint16_t g_db[30]={1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,
-                                  1025,1537,2049,3073,4097,6145,8193,12289,16385,24577};
 static uint32_t gzip_decompress(const uint8_t*src,uint32_t src_len,uint8_t*dst,uint32_t dst_cap){
     if(src_len<18u)return 0;
     if(src[0]!=0x1Fu||src[1]!=0x8Bu||src[2]!=8u)return 0;   /* GZIP Magic + CM=DEFLATE */
@@ -829,7 +830,8 @@ static uint32_t gzip_decompress(const uint8_t*src,uint32_t src_len,uint8_t*dst,u
     if(flg&0x04u){                                            /* FEXTRA: xlen + xlen Bytes ueberspringen */
         if(p+2u>src_len)return 0;
         uint32_t xlen=(uint32_t)src[p]|(uint32_t)src[p+1u]<<8;p+=2u;
-        if(p+xlen>src_len)return 0;p+=xlen;
+        if(p+xlen>src_len)return 0;
+        p+=xlen;
     }
     if(flg&0x08u){while(p<src_len&&src[p])++p;if(p>=src_len)return 0;++p;}  /* FNAME */
     if(flg&0x10u){while(p<src_len&&src[p])++p;if(p>=src_len)return 0;++p;}  /* FCOMMENT */
