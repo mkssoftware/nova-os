@@ -283,6 +283,7 @@ Die Startdiagnose meldet aktuell funktionsfähige Grundlagen für:
 - Thread Manager
 - Scheduler mit zwei Testthreads
 - SMP vollständig: AP-Start (§124), Cross-CPU-Calls (§27/§28), ACK-basierter TLB-Shootdown (§30)
+- Kernel Configuration Framework (§29/NPSPEC-KERNEL-0029): Schema-Registry, Store, Transaktionen, Generationen
 - Device Manager
 - VFS, Mount-Namespace und Bootstrap-Root
 - Netzwerkgrundlage für IPv4, IPv6, UDP, ICMP und TCP
@@ -656,6 +657,8 @@ Die folgenden Bereiche sind noch nicht vollständig abgeschlossen:
   `.provider_degraded`-Pfad in `submit_report` ruft jetzt `boot_health_advance` auf;
   serielle Meldungen für HealthConfirmed / DegradedConfirmed / not-confirmed;
   Boot Health erreicht `CONFIRMED` auch mit unsigniertem Kernel, Status dann DEGRADED)
+- ~~Kernel Configuration Framework~~ (§29/NPSPEC-KERNEL-0029: statische Schema-Registry mit 10 Schlüsseln; Typen Bool/Uint/Enum; Veränderbarkeitsklassen Immutable/BootOnly/Runtime/Session; Sicherheitsklassen Public/System/Security; `config_get`, `config_set` mit Typ- und Bereichsprüfung; `config_lock_boot_only` versiegelt BOOT_ONLY-Werte; atomare `config_tx_begin/tx_set/tx_commit/tx_abort`; monotone `config_generation`; 15 Selbsttests gemäß §59 bestanden; Kernelgröße 242 379 Bytes)
+- Abhängigkeitskette NPSPEC-KERNEL-0030 (Kernel ABI), -0100 (Object Graph), -0101 (Event Bus) – je ein Folgeschritt
 - Tests auf realer UEFI-Hardware
 - erneute End-to-End-Prüfung des aktuellen Images in VirtualBox
 - pixelgenauer visueller Vergleich aller Bootmanagerseiten mit sämtlichen

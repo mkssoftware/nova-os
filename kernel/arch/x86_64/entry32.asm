@@ -406,6 +406,13 @@ kernel_entry:
     mov esi, message_module_loader_ok
     call serial_write_string
 
+    call config_initialize
+    jc panic_config
+    call config_self_test
+    jc panic_config
+    mov esi, message_config_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -708,6 +715,12 @@ panic_boot_health:
     mov eax, 0x00002026
     mov edx, 0x4845414C             ; "HEAL"
     mov esi, message_boot_health_error
+    jmp kernel_panic
+
+panic_config:
+    mov eax, 0x00000012
+    mov edx, 0x43464700             ; "CFG\0"
+    mov esi, message_config_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -19011,6 +19024,635 @@ ap_stack_area:
     times (CPU_CAPACITY - 1) * AP_STACK_SIZE db 0
 
 ; ---------------------------------------------------------------------------
+; §29 – Kernel Configuration Framework (NPSPEC-KERNEL-0029)
+; ---------------------------------------------------------------------------
+
+; Typen
+CONFIG_TYPE_BOOL            equ 1
+CONFIG_TYPE_UINT            equ 2
+CONFIG_TYPE_ENUM            equ 3
+
+; Veränderbarkeitsklassen
+CONFIG_MUT_IMMUTABLE        equ 0
+CONFIG_MUT_BOOT_ONLY        equ 1
+CONFIG_MUT_RUNTIME          equ 2
+CONFIG_MUT_RUNTIME_RESTART  equ 3
+CONFIG_MUT_SESSION          equ 4
+
+; Sicherheitsklassen
+CONFIG_SEC_PUBLIC           equ 0
+CONFIG_SEC_SYSTEM           equ 1
+CONFIG_SEC_SECURITY         equ 2
+
+; Build-Profile
+NP_BUILD_DEVELOPMENT        equ 0
+NP_BUILD_TEST               equ 1
+NP_BUILD_RELEASE            equ 2
+NP_BUILD_HARDENED           equ 3
+NP_BUILD_RECOVERY           equ 4
+
+; Fehler-Codes (EAX wenn CF=1)
+CONFIG_ERR_NOT_FOUND        equ 1
+CONFIG_ERR_TYPE             equ 2
+CONFIG_ERR_RANGE            equ 3
+CONFIG_ERR_IMMUTABLE        equ 4
+CONFIG_ERR_BOOT_ONLY        equ 5
+CONFIG_ERR_ACCESS_DENIED    equ 6
+CONFIG_ERR_TX_ACTIVE        equ 7
+CONFIG_ERR_NO_TX            equ 8
+CONFIG_ERR_TX_FULL          equ 9
+CONFIG_ERR_SCHEMA_FULL      equ 10
+CONFIG_ERR_DUPLICATE        equ 11
+
+; Store-Flags
+CONFIG_STORE_SET            equ 0x01
+
+; Kapazitäten
+CONFIG_STORE_MAX            equ 16
+CONFIG_TX_MAX               equ 8
+CONFIG_SCHEMA_ENTRY_SIZE    equ 16      ; key_id(4)+type(1)+mut(1)+sec(1)+flags(1)+default(4)+max(4)
+CONFIG_STORE_ENTRY_SIZE     equ 12      ; key_id(4)+value(4)+flags(4)
+
+; Vordefinierte Schlüssel-IDs
+CONFIG_KEY_LOG_LEVEL        equ 1       ; uint, runtime, system (0–7, default=3)
+CONFIG_KEY_SCHEDULER_CLASS  equ 2       ; enum, boot_only, system (0–3, default=0)
+CONFIG_KEY_MEMORY_GUARD     equ 3       ; bool, boot_only, system (default=1)
+CONFIG_KEY_SECURITY_SMAP    equ 4       ; bool, immutable, security (default=0)
+CONFIG_KEY_MODULE_UNSIGNED  equ 5       ; bool, boot_only, security (default=0)
+CONFIG_KEY_NETWORK_IPV6     equ 6       ; bool, runtime, system (default=1)
+CONFIG_KEY_POWER_PROFILE    equ 7       ; enum, runtime, public (0–3, default=0)
+CONFIG_KEY_DEBUG_ENABLED    equ 8       ; bool, boot_only, security (default=0)
+CONFIG_KEY_BOOT_MODE        equ 9       ; enum, boot_only, system (0–2, default=0)
+CONFIG_KEY_BUILD_PROFILE    equ 10      ; enum, immutable, public (0–4, default=DEVELOPMENT)
+
+; ---------------------------------------------------------------------------
+; config_find_schema – linearer Scan der statischen Schema-Tabelle
+; Ein: EAX=key_id  Aus: EDX=Zeiger auf Eintrag, CF=0 gefunden / CF=1 nicht gefunden
+; Verändert: EDX  Schützt: EAX, EBX, ECX, ESI, EDI
+; ---------------------------------------------------------------------------
+config_find_schema:
+    push ecx
+    xor ecx, ecx
+    mov edx, config_schema
+.cfs_loop:
+    cmp ecx, config_schema_count
+    jae .cfs_nf
+    cmp [edx], eax
+    je .cfs_found
+    add edx, CONFIG_SCHEMA_ENTRY_SIZE
+    inc ecx
+    jmp .cfs_loop
+.cfs_found:
+    pop ecx
+    clc
+    ret
+.cfs_nf:
+    pop ecx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; config_find_store_entry – sucht gesetzten Eintrag im Laufzeit-Store
+; Ein: EAX=key_id  Aus: EDX=Zeiger, CF=0 / CF=1
+; ---------------------------------------------------------------------------
+config_find_store_entry:
+    push ecx
+    xor ecx, ecx
+    mov edx, config_store
+.cfse_loop:
+    cmp ecx, CONFIG_STORE_MAX
+    jae .cfse_nf
+    test dword [edx + 8], CONFIG_STORE_SET
+    jz .cfse_next
+    cmp [edx], eax
+    je .cfse_found
+.cfse_next:
+    add edx, CONFIG_STORE_ENTRY_SIZE
+    inc ecx
+    jmp .cfse_loop
+.cfse_found:
+    pop ecx
+    clc
+    ret
+.cfse_nf:
+    pop ecx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; config_find_free_store – sucht leeren Slot
+; Aus: EDX=Zeiger, CF=0 / CF=1 voll
+; ---------------------------------------------------------------------------
+config_find_free_store:
+    push ecx
+    xor ecx, ecx
+    mov edx, config_store
+.cffs_loop:
+    cmp ecx, CONFIG_STORE_MAX
+    jae .cffs_full
+    test dword [edx + 8], CONFIG_STORE_SET
+    jz .cffs_found
+    add edx, CONFIG_STORE_ENTRY_SIZE
+    inc ecx
+    jmp .cffs_loop
+.cffs_found:
+    pop ecx
+    clc
+    ret
+.cffs_full:
+    pop ecx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; config_get – liest einen Konfigurationswert (Store-Override oder Schema-Default)
+; Ein: EAX=key_id  Aus: EBX=Wert, CF=0 ok / CF=1 (EAX=Fehler)
+; Verändert: EBX  Schützt: EAX, ECX, EDX, ESI, EDI
+; ---------------------------------------------------------------------------
+config_get:
+    push edx
+    call config_find_schema
+    jc .cget_nf
+    mov ebx, [edx + 8]              ; Schema-Default als Ausgangswert
+    call config_find_store_entry    ; EAX=key_id; sucht im Store
+    jc .cget_done                   ; kein Override → Default gilt
+    mov ebx, [edx + 4]              ; Override-Wert aus Store
+.cget_done:
+    pop edx
+    clc
+    ret
+.cget_nf:
+    mov eax, CONFIG_ERR_NOT_FOUND
+    pop edx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; config_set – setzt einen Konfigurationswert mit Typ-, Mutability- und Bereichsprüfung
+; Ein: EAX=key_id, EBX=neuer Wert  Aus: CF=0 ok / CF=1 (EAX=Fehler)
+; Verändert: –  Schützt: EAX, EBX, ECX, EDX, ESI, EDI
+; ---------------------------------------------------------------------------
+config_set:
+    push ecx
+    push edx
+    push esi
+    call config_find_schema
+    jc .cset_nf
+    ; Mutability (Offset 5 im Schema-Eintrag)
+    movzx ecx, byte [edx + 5]
+    cmp ecx, CONFIG_MUT_IMMUTABLE
+    je .cset_immutable
+    cmp ecx, CONFIG_MUT_BOOT_ONLY
+    jne .cset_mut_ok
+    cmp dword [config_boot_sealed], 0
+    jne .cset_boot_only
+.cset_mut_ok:
+    ; Bereichsprüfung (Offset 12)
+    mov esi, [edx + 12]
+    test esi, esi
+    jz .cset_range_ok
+    cmp ebx, esi
+    ja .cset_range
+.cset_range_ok:
+    call config_find_store_entry    ; EAX=key_id
+    jc .cset_new
+    mov [edx + 4], ebx              ; vorhandenen Eintrag aktualisieren
+    jmp .cset_ok
+.cset_new:
+    call config_find_free_store
+    jc .cset_store_full
+    mov [edx], eax                  ; key_id (EAX unverändert)
+    mov [edx + 4], ebx              ; Wert
+    mov dword [edx + 8], CONFIG_STORE_SET
+.cset_ok:
+    inc dword [config_generation]
+    clc
+    pop esi
+    pop edx
+    pop ecx
+    ret
+.cset_nf:
+    mov eax, CONFIG_ERR_NOT_FOUND
+    jmp .cset_err
+.cset_immutable:
+    mov eax, CONFIG_ERR_IMMUTABLE
+    jmp .cset_err
+.cset_boot_only:
+    mov eax, CONFIG_ERR_BOOT_ONLY
+    jmp .cset_err
+.cset_range:
+    mov eax, CONFIG_ERR_RANGE
+    jmp .cset_err
+.cset_store_full:
+    mov eax, CONFIG_ERR_NOT_FOUND
+.cset_err:
+    stc
+    pop esi
+    pop edx
+    pop ecx
+    ret
+
+; ---------------------------------------------------------------------------
+; config_lock_boot_only – versiegelt BOOT_ONLY-Werte (nach Boot aufrufen)
+; ---------------------------------------------------------------------------
+config_lock_boot_only:
+    mov dword [config_boot_sealed], 1
+    ret
+
+; ---------------------------------------------------------------------------
+; config_tx_begin – startet eine atomare Konfigurationstransaktion
+; Aus: CF=0 ok / CF=1 (EAX=CONFIG_ERR_TX_ACTIVE)
+; ---------------------------------------------------------------------------
+config_tx_begin:
+    cmp dword [config_tx_active], 0
+    jne .ctx_already
+    mov dword [config_tx_active], 1
+    mov dword [config_tx_pending], 0
+    clc
+    ret
+.ctx_already:
+    mov eax, CONFIG_ERR_TX_ACTIVE
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; config_tx_abort – bricht die aktive Transaktion ab ohne Änderungen
+; ---------------------------------------------------------------------------
+config_tx_abort:
+    mov dword [config_tx_pending], 0
+    mov dword [config_tx_active], 0
+    ret
+
+; ---------------------------------------------------------------------------
+; config_tx_set – fügt einen Wert zur Transaktion hinzu (Validierung sofort)
+; Ein: EAX=key_id, EBX=Wert  Aus: CF=0 ok / CF=1 (EAX=Fehler)
+; ---------------------------------------------------------------------------
+config_tx_set:
+    cmp dword [config_tx_active], 0
+    je .ctxs_no_tx
+    push ecx
+    push edx
+    call config_find_schema
+    jc .ctxs_nf
+    movzx ecx, byte [edx + 5]          ; Mutability
+    cmp ecx, CONFIG_MUT_IMMUTABLE
+    je .ctxs_immutable
+    cmp ecx, CONFIG_MUT_BOOT_ONLY
+    jne .ctxs_mut_ok
+    cmp dword [config_boot_sealed], 0
+    jne .ctxs_boot_only
+.ctxs_mut_ok:
+    mov ecx, [edx + 12]                 ; max_value
+    test ecx, ecx
+    jz .ctxs_range_ok
+    cmp ebx, ecx
+    ja .ctxs_range
+.ctxs_range_ok:
+    mov ecx, [config_tx_pending]
+    cmp ecx, CONFIG_TX_MAX
+    jae .ctxs_full
+    imul edx, ecx, CONFIG_STORE_ENTRY_SIZE
+    add edx, config_tx_buffer
+    mov [edx], eax
+    mov [edx + 4], ebx
+    mov dword [edx + 8], CONFIG_STORE_SET
+    inc dword [config_tx_pending]
+    clc
+    pop edx
+    pop ecx
+    ret
+.ctxs_no_tx:
+    mov eax, CONFIG_ERR_NO_TX
+    stc
+    ret
+.ctxs_nf:
+    mov eax, CONFIG_ERR_NOT_FOUND
+    jmp .ctxs_err
+.ctxs_immutable:
+    mov eax, CONFIG_ERR_IMMUTABLE
+    jmp .ctxs_err
+.ctxs_boot_only:
+    mov eax, CONFIG_ERR_BOOT_ONLY
+    jmp .ctxs_err
+.ctxs_range:
+    mov eax, CONFIG_ERR_RANGE
+    jmp .ctxs_err
+.ctxs_full:
+    mov eax, CONFIG_ERR_TX_FULL
+.ctxs_err:
+    stc
+    pop edx
+    pop ecx
+    ret
+
+; ---------------------------------------------------------------------------
+; config_tx_commit – wendet alle gepufferten Änderungen atomar an
+; Aus: CF=0 ok / CF=1 (EAX=CONFIG_ERR_NO_TX)
+; ---------------------------------------------------------------------------
+config_tx_commit:
+    cmp dword [config_tx_active], 0
+    je .ctxc_no_tx
+    push ebx
+    push ecx
+    push edx
+    push esi
+    xor esi, esi
+.ctxc_apply:
+    cmp esi, [config_tx_pending]
+    jae .ctxc_done
+    imul ecx, esi, CONFIG_STORE_ENTRY_SIZE
+    mov eax, [config_tx_buffer + ecx]       ; key_id
+    mov ebx, [config_tx_buffer + ecx + 4]   ; Wert
+    push esi
+    call config_find_store_entry            ; EDX=vorhandener Slot oder CF=1
+    jc .ctxc_new
+    mov [edx + 4], ebx                      ; vorhandenen Slot aktualisieren
+    pop esi
+    jmp .ctxc_next
+.ctxc_new:
+    call config_find_free_store             ; EDX=freier Slot
+    jc .ctxc_skip
+    mov [edx], eax                          ; key_id (EAX unverändert)
+    mov [edx + 4], ebx
+    mov dword [edx + 8], CONFIG_STORE_SET
+    pop esi
+    jmp .ctxc_next
+.ctxc_skip:
+    pop esi
+.ctxc_next:
+    inc esi
+    jmp .ctxc_apply
+.ctxc_done:
+    inc dword [config_generation]
+    mov dword [config_tx_pending], 0
+    mov dword [config_tx_active], 0
+    clc
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    ret
+.ctxc_no_tx:
+    mov eax, CONFIG_ERR_NO_TX
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; config_initialize – setzt Store, TX-Puffer und Zustand zurück
+; ---------------------------------------------------------------------------
+config_initialize:
+    push eax
+    push ecx
+    push edi
+    mov edi, config_store
+    xor eax, eax
+    mov ecx, (CONFIG_STORE_MAX * CONFIG_STORE_ENTRY_SIZE) / 4
+    rep stosd
+    mov edi, config_tx_buffer
+    mov ecx, (CONFIG_TX_MAX * CONFIG_STORE_ENTRY_SIZE) / 4
+    rep stosd
+    mov dword [config_tx_active], 0
+    mov dword [config_tx_pending], 0
+    mov dword [config_generation], 0
+    mov dword [config_boot_sealed], 0
+    pop edi
+    pop ecx
+    pop eax
+    clc
+    ret
+
+; ---------------------------------------------------------------------------
+; config_self_test – 15 Testfälle gemäß NPSPEC-KERNEL-0029 §59
+; Aus: CF=0 alle bestanden / CF=1 Fehler
+; ---------------------------------------------------------------------------
+config_self_test:
+    push eax
+    push ebx
+    push ecx
+    push edx
+
+    ; Test 1: Standard-Wert lesen (LOG_LEVEL → 3, kein Store-Eintrag)
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    call config_get
+    jc .cst_fail
+    cmp ebx, 3
+    jne .cst_fail
+
+    ; Test 2: Immutable-Standard (BUILD_PROFILE → NP_BUILD_DEVELOPMENT)
+    mov eax, CONFIG_KEY_BUILD_PROFILE
+    call config_get
+    jc .cst_fail
+    cmp ebx, NP_BUILD_DEVELOPMENT
+    jne .cst_fail
+
+    ; Test 3: Unbekannter Schlüssel → CF=1, ERR_NOT_FOUND
+    mov eax, 0xFF
+    call config_get
+    jnc .cst_fail
+    cmp eax, CONFIG_ERR_NOT_FOUND
+    jne .cst_fail
+
+    ; Test 4: Gültige Runtime-Änderung (LOG_LEVEL 3→5)
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    mov ebx, 5
+    call config_set
+    jc .cst_fail
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    call config_get
+    jc .cst_fail
+    cmp ebx, 5
+    jne .cst_fail
+
+    ; Test 5: Bereichsfehler (LOG_LEVEL > max=7)
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    mov ebx, 8
+    call config_set
+    jnc .cst_fail
+    cmp eax, CONFIG_ERR_RANGE
+    jne .cst_fail
+
+    ; Test 6: Immutable-Fehler (BUILD_PROFILE nicht änderbar)
+    mov eax, CONFIG_KEY_BUILD_PROFILE
+    mov ebx, NP_BUILD_RELEASE
+    call config_set
+    jnc .cst_fail
+    cmp eax, CONFIG_ERR_IMMUTABLE
+    jne .cst_fail
+
+    ; Test 7: BOOT_ONLY vor Versiegelung → erlaubt
+    mov eax, CONFIG_KEY_BOOT_MODE
+    mov ebx, 1
+    call config_set
+    jc .cst_fail
+
+    ; Test 8: BOOT_ONLY bei Versiegelung → CF=1, ERR_BOOT_ONLY
+    mov dword [config_boot_sealed], 1
+    mov eax, CONFIG_KEY_BOOT_MODE
+    mov ebx, 2
+    call config_set
+    jnc .cst_fail
+    cmp eax, CONFIG_ERR_BOOT_ONLY
+    jne .cst_fail
+    mov dword [config_boot_sealed], 0   ; für nachfolgende Tests zurücksetzen
+
+    ; Test 9: Generation steigt nach erfolgreichem Set
+    mov ecx, [config_generation]
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    mov ebx, 4
+    call config_set
+    jc .cst_fail
+    cmp [config_generation], ecx
+    jle .cst_fail
+
+    ; Test 10: Transaktion commit – zwei Werte atomar setzen
+    call config_tx_begin
+    jc .cst_fail
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    mov ebx, 6
+    call config_tx_set
+    jc .cst_fail
+    mov eax, CONFIG_KEY_NETWORK_IPV6
+    mov ebx, 0
+    call config_tx_set
+    jc .cst_fail
+    call config_tx_commit
+    jc .cst_fail
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    call config_get
+    jc .cst_fail
+    cmp ebx, 6
+    jne .cst_fail
+    mov eax, CONFIG_KEY_NETWORK_IPV6
+    call config_get
+    jc .cst_fail
+    cmp ebx, 0
+    jne .cst_fail
+
+    ; Test 11: Transaktion abort – Wert bleibt unverändert
+    mov eax, CONFIG_KEY_LOG_LEVEL   ; aktuell 6
+    call config_get
+    jc .cst_fail
+    push ebx                        ; alten Wert (6) retten
+    call config_tx_begin
+    jc .cst_fail_pop
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    mov ebx, 7
+    call config_tx_set
+    jc .cst_fail_pop
+    call config_tx_abort
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    call config_get
+    jc .cst_fail_pop
+    pop ecx                         ; erwarteter Wert = 6
+    cmp ebx, ecx
+    jne .cst_fail
+
+    ; Test 12: Doppeltes tx_begin → CF=1, ERR_TX_ACTIVE
+    call config_tx_begin
+    jc .cst_fail
+    call config_tx_begin
+    jnc .cst_fail_cleanup_tx
+    cmp eax, CONFIG_ERR_TX_ACTIVE
+    jne .cst_fail_cleanup_tx
+    call config_tx_abort
+
+    ; Test 13: config_tx_set ohne aktive Transaktion → CF=1, ERR_NO_TX
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    mov ebx, 3
+    call config_tx_set
+    jnc .cst_fail
+    cmp eax, CONFIG_ERR_NO_TX
+    jne .cst_fail
+
+    ; Test 14: Bool-Wert > 1 → CF=1, ERR_RANGE
+    mov eax, CONFIG_KEY_NETWORK_IPV6
+    mov ebx, 2
+    call config_set
+    jnc .cst_fail
+    cmp eax, CONFIG_ERR_RANGE
+    jne .cst_fail
+
+    ; Test 15: Generation ist nicht rückläufig
+    mov ecx, [config_generation]
+    mov eax, CONFIG_KEY_LOG_LEVEL
+    mov ebx, 3
+    call config_set
+    jc .cst_fail
+    cmp [config_generation], ecx
+    jle .cst_fail
+
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    clc
+    ret
+
+.cst_fail_pop:
+    pop ecx
+.cst_fail:
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    stc
+    ret
+.cst_fail_cleanup_tx:
+    call config_tx_abort
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; Statische Schema-Tabelle: key_id(4) | type(1) | mut(1) | sec(1) | flags(1)
+;                           | default(4) | max(4)  = 16 Bytes je Eintrag
+; ---------------------------------------------------------------------------
+config_schema:
+    dd CONFIG_KEY_LOG_LEVEL
+    db CONFIG_TYPE_UINT,  CONFIG_MUT_RUNTIME,      CONFIG_SEC_SYSTEM,    0
+    dd 3, 7
+    dd CONFIG_KEY_SCHEDULER_CLASS
+    db CONFIG_TYPE_ENUM,  CONFIG_MUT_BOOT_ONLY,    CONFIG_SEC_SYSTEM,    0
+    dd 0, 3
+    dd CONFIG_KEY_MEMORY_GUARD
+    db CONFIG_TYPE_BOOL,  CONFIG_MUT_BOOT_ONLY,    CONFIG_SEC_SYSTEM,    0
+    dd 1, 1
+    dd CONFIG_KEY_SECURITY_SMAP
+    db CONFIG_TYPE_BOOL,  CONFIG_MUT_IMMUTABLE,    CONFIG_SEC_SECURITY,  0
+    dd 0, 1
+    dd CONFIG_KEY_MODULE_UNSIGNED
+    db CONFIG_TYPE_BOOL,  CONFIG_MUT_BOOT_ONLY,    CONFIG_SEC_SECURITY,  0
+    dd 0, 1
+    dd CONFIG_KEY_NETWORK_IPV6
+    db CONFIG_TYPE_BOOL,  CONFIG_MUT_RUNTIME,      CONFIG_SEC_SYSTEM,    0
+    dd 1, 1
+    dd CONFIG_KEY_POWER_PROFILE
+    db CONFIG_TYPE_ENUM,  CONFIG_MUT_RUNTIME,      CONFIG_SEC_PUBLIC,    0
+    dd 0, 3
+    dd CONFIG_KEY_DEBUG_ENABLED
+    db CONFIG_TYPE_BOOL,  CONFIG_MUT_BOOT_ONLY,    CONFIG_SEC_SECURITY,  0
+    dd 0, 1
+    dd CONFIG_KEY_BOOT_MODE
+    db CONFIG_TYPE_ENUM,  CONFIG_MUT_BOOT_ONLY,    CONFIG_SEC_SYSTEM,    0
+    dd 0, 2
+    dd CONFIG_KEY_BUILD_PROFILE
+    db CONFIG_TYPE_ENUM,  CONFIG_MUT_IMMUTABLE,    CONFIG_SEC_PUBLIC,    0
+    dd NP_BUILD_DEVELOPMENT, NP_BUILD_RECOVERY
+config_schema_end:
+config_schema_count equ (config_schema_end - config_schema) / CONFIG_SCHEMA_ENTRY_SIZE
+
+; Laufzeit-Zustand
+config_store:       times CONFIG_STORE_MAX * CONFIG_STORE_ENTRY_SIZE db 0
+config_tx_buffer:   times CONFIG_TX_MAX   * CONFIG_STORE_ENTRY_SIZE db 0
+config_tx_active:   dd 0
+config_tx_pending:  dd 0
+config_generation:  dd 0
+config_boot_sealed: dd 0
+
+; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
 ; ---------------------------------------------------------------------------
 MODULE_MAGIC              equ 0x444D564E ; "NVMD"
@@ -24374,6 +25016,10 @@ message_panic_manager_ok:
     db "NOVA: Panic Reporter ABI 1.1 bereit", 13, 10, 0
 message_crash_dump_ok:
     db "NOVA: Crash Dump ABI 1.0, reservierter Minimal-Dump-Pfad bereit", 13, 10, 0
+message_config_ok:
+    db "NOVA: Config Framework ABI 1.0, Schema/Store/Transaktion bereit", 13, 10, 0
+message_config_error:
+    db "NOVA PANIC: Kernel Configuration Selbsttest fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
