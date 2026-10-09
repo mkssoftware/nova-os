@@ -30,7 +30,7 @@ int nl_type_is_numeric(NlTypeRef t) {
 
 int nl_type_is_assignable(NlTypeRef dest, NlTypeRef src) {
     if (dest == src) return 1;
-    if (dest == NL_TY_OBJECT) return 1;
+    if (dest == NL_TY_OBJECT || src == NL_TY_OBJECT) return 1; /* unknown type is compatible */
     if (dest == NL_TY_DOUBLE && nl_type_is_numeric(src)) return 1;
     if (nl_type_is_numeric(dest) && nl_type_is_numeric(src)) return src <= dest;
     return 0;
@@ -86,7 +86,7 @@ static int str_ieq(const char *a, const char *b) {
 /* Pre-declare standard-library identifiers that appear in the source */
 static void predeclare_builtins(NlTypeChecker *tc) {
     static const char *const names[] = {
-        "console", "math", "environment",
+        "console", "math", "environment", "nova",
         "cdbl", "cstr", "cbool", "cint", "clng", "csng",
         "cbyte", "cshort", "cuint", "culng", "cushort", "cdec", "cchar", "cobj",
         "cdate", "ctype",
@@ -470,6 +470,17 @@ static void check_decl(NlTypeChecker *tc, NlNode *n) {
         }
         case ND_CLASS_DECL: case ND_STRUCT_DECL: case ND_MODULE_DECL:
         case ND_INTERFACE_DECL: case ND_NAMESPACE_DECL: {
+            /* Declare this type's name in the enclosing scope (for external references) */
+            if (n->kind == ND_CLASS_DECL || n->kind == ND_STRUCT_DECL ||
+                n->kind == ND_INTERFACE_DECL) {
+                if (!lookup(tc, n->val.str_id)) {
+                    NlTypeKind tk = (n->kind == ND_STRUCT_DECL)    ? TY_STRUCT :
+                                    (n->kind == ND_INTERFACE_DECL) ? TY_INTERFACE : TY_CLASS;
+                    int is_val = (n->kind == ND_STRUCT_DECL);
+                    NlTypeRef et = nl_type_register(tc->table, tc->arena, tk, n->val.str_id, is_val);
+                    declare(tc, n->val.str_id, et, n);
+                }
+            }
             push_scope(tc);
             /* Pass 1: forward-declare enums and callables so bodies can see them */
             for (uint32_t i = 0; i < n->children.count; i++) {
@@ -479,6 +490,13 @@ static void check_decl(NlTypeChecker *tc, NlNode *n) {
                     declare(tc, c->val.str_id, et, c);
                 } else if (c->kind == ND_SUB_DECL || c->kind == ND_FUNCTION_DECL) {
                     declare(tc, c->val.str_id, NL_TY_OBJECT, c);
+                } else if (c->kind == ND_CLASS_DECL || c->kind == ND_STRUCT_DECL ||
+                           c->kind == ND_INTERFACE_DECL) {
+                    NlTypeKind tk = (c->kind == ND_STRUCT_DECL)    ? TY_STRUCT :
+                                    (c->kind == ND_INTERFACE_DECL) ? TY_INTERFACE : TY_CLASS;
+                    NlTypeRef et = nl_type_register(tc->table, tc->arena, tk, c->val.str_id,
+                                                    c->kind == ND_STRUCT_DECL);
+                    declare(tc, c->val.str_id, et, c);
                 }
             }
             /* Pass 2: full check */
@@ -487,10 +505,26 @@ static void check_decl(NlTypeChecker *tc, NlNode *n) {
             pop_scope(tc);
             break;
         }
-        case ND_COMPILATION_UNIT:
+        case ND_COMPILATION_UNIT: {
+            /* Pass 1: register top-level user-defined types (structs, classes, interfaces) */
+            for (uint32_t i = 0; i < n->children.count; i++) {
+                NlNode *c = n->children.items[i];
+                if (c->kind == ND_CLASS_DECL || c->kind == ND_STRUCT_DECL ||
+                    c->kind == ND_INTERFACE_DECL) {
+                    if (!lookup(tc, c->val.str_id)) {
+                        NlTypeKind tk = (c->kind == ND_STRUCT_DECL)    ? TY_STRUCT :
+                                        (c->kind == ND_INTERFACE_DECL) ? TY_INTERFACE : TY_CLASS;
+                        NlTypeRef et = nl_type_register(tc->table, tc->arena, tk, c->val.str_id,
+                                                        c->kind == ND_STRUCT_DECL);
+                        declare(tc, c->val.str_id, et, c);
+                    }
+                }
+            }
+            /* Pass 2: check all declarations */
             for (uint32_t i = 0; i < n->children.count; i++)
                 check_decl(tc, n->children.items[i]);
             break;
+        }
         default:
             check_stmt(tc, n);
             break;
