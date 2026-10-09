@@ -434,6 +434,13 @@ kernel_entry:
     mov esi, message_evbus_ok
     call serial_write_string
 
+    call uobj_initialize
+    jc panic_uobj
+    call uobj_self_test
+    jc panic_uobj
+    mov esi, message_uobj_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -764,6 +771,12 @@ panic_evbus:
     mov eax, 0x00000015
     mov edx, 0x45564200             ; "EVB\0"
     mov esi, message_evbus_error
+    jmp kernel_panic
+
+panic_uobj:
+    mov eax, 0x00000016
+    mov edx, 0x554F4200             ; "UOB\0"
+    mov esi, message_uobj_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -21606,6 +21619,772 @@ evbus_test_flag:        dd 0
 evbus_test_buf:         times 16 db 0
 
 ; ---------------------------------------------------------------------------
+; §102 – Unified Object API (NPSPEC-KERNEL-0102)
+; Einheitliche Zugangsschicht für verwaltete Kernelobjekte.
+; Bootstrap: Phase 1 (§64): Typregistrierung, Objekterzeugung, Handle-Auflösung,
+; Referenzzählung, Capability-Prüfung.
+; Phase 2-4 (Namespaces, async, RCU): Bootstrap-N/A.
+; ---------------------------------------------------------------------------
+
+; Objektzustände (§9)
+UOBJ_STATE_CREATING     equ 0
+UOBJ_STATE_ACTIVE       equ 1
+UOBJ_STATE_QUIESCING    equ 2
+UOBJ_STATE_CLOSING      equ 3
+UOBJ_STATE_ZOMBIE       equ 4
+UOBJ_STATE_DESTROYING   equ 5
+UOBJ_STATE_DESTROYED    equ 6
+
+; Capabilities (§15)
+UOBJ_CAP_QUERY          equ 0x001
+UOBJ_CAP_MODIFY         equ 0x002
+UOBJ_CAP_SIGNAL         equ 0x004
+UOBJ_CAP_WAIT           equ 0x008
+UOBJ_CAP_DUPLICATE      equ 0x010
+UOBJ_CAP_TRANSFER       equ 0x020
+UOBJ_CAP_SUBSCRIBE      equ 0x040
+UOBJ_CAP_DELETE         equ 0x080
+UOBJ_CAP_ADMIN          equ 0x100
+
+; Fehlercodes (§48)
+UOBJ_ERR_INVALID_HANDLE equ -50
+UOBJ_ERR_STALE_REF      equ -51
+UOBJ_ERR_TYPE_MISMATCH  equ -52
+UOBJ_ERR_ACCESS_DENIED  equ -53
+UOBJ_ERR_INVALID_STATE  equ -54
+UOBJ_ERR_NOT_SUPPORTED  equ -55
+
+; Pool-Größen
+UOBJ_MAX_TYPES          equ 16
+UOBJ_MAX_OBJECTS        equ 32
+UOBJ_MAX_HANDLES        equ 32
+
+; Typ-Deskriptor-Layout (24 Bytes, §7)
+UOBJ_TYPE_SIZE              equ 24
+UOBJ_TYPE_OFF_TYPE_ID       equ 0    ; uint32_t
+UOBJ_TYPE_OFF_ABI_VER       equ 4    ; uint32_t
+UOBJ_TYPE_OFF_FLAGS         equ 8    ; uint32_t
+UOBJ_TYPE_OFF_INIT_FN       equ 12   ; uint32_t (fn-ptr, 0=kein Init)
+UOBJ_TYPE_OFF_DESTROY_FN    equ 16   ; uint32_t (fn-ptr, 0=kein Destroy)
+UOBJ_TYPE_OFF_PRESENT       equ 20   ; uint8_t
+; 21-23: Padding
+
+; Objekt-Header-Layout (32 Bytes, §5)
+UOBJ_OBJ_SIZE               equ 32
+UOBJ_OBJ_OFF_OBJ_ID         equ 0    ; uint32_t
+UOBJ_OBJ_OFF_TYPE_ID        equ 4    ; uint32_t
+UOBJ_OBJ_OFF_GEN            equ 8    ; uint32_t
+UOBJ_OBJ_OFF_STATE          equ 12   ; uint8_t
+UOBJ_OBJ_OFF_PRESENT        equ 13   ; uint8_t
+UOBJ_OBJ_OFF_FLAGS          equ 14   ; uint16_t
+UOBJ_OBJ_OFF_REFCOUNT       equ 16   ; uint32_t
+UOBJ_OBJ_OFF_KOG_NODE       equ 20   ; uint32_t (KOG-Knoten-ID, 0=nicht verknüpft)
+; 24-31: Reserved
+
+; Handle-Tabellen-Eintrag-Layout (16 Bytes, §13)
+UOBJ_HDL_SIZE               equ 16
+UOBJ_HDL_OFF_HDL_ID         equ 0    ; uint32_t
+UOBJ_HDL_OFF_OBJ_ID         equ 4    ; uint32_t
+UOBJ_HDL_OFF_GEN            equ 8    ; uint32_t (Generation bei Erzeugung)
+UOBJ_HDL_OFF_CAPS           equ 12   ; uint16_t (Capability-Bitmaske)
+UOBJ_HDL_OFF_PRESENT        equ 14   ; uint8_t
+; 15: Padding
+
+; Compile-time-Invarianten
+%if UOBJ_TYPE_SIZE != 24
+%error "UOBJ_TYPE_SIZE muss 24 Bytes sein"
+%endif
+%if UOBJ_OBJ_SIZE != 32
+%error "UOBJ_OBJ_SIZE muss 32 Bytes sein"
+%endif
+%if UOBJ_HDL_SIZE != 16
+%error "UOBJ_HDL_SIZE muss 16 Bytes sein"
+%endif
+
+; ---------------------------------------------------------------------------
+; Interne Hilfsfunktionen (lineare Suche über feste Pools)
+; ---------------------------------------------------------------------------
+
+; uobj_find_type: EAX=type_id → EBX=ptr, CF=0/CF=1; Clobbers: EBX
+uobj_find_type:
+    push esi
+    push ecx
+    mov esi, uobj_types
+    xor ecx, ecx
+.uft_loop:
+    cmp ecx, UOBJ_MAX_TYPES
+    jae .uft_not_found
+    cmp byte [esi + UOBJ_TYPE_OFF_PRESENT], 1
+    jne .uft_next
+    cmp [esi + UOBJ_TYPE_OFF_TYPE_ID], eax
+    je .uft_found
+.uft_next:
+    add esi, UOBJ_TYPE_SIZE
+    inc ecx
+    jmp .uft_loop
+.uft_found:
+    mov ebx, esi
+    pop ecx
+    pop esi
+    clc
+    ret
+.uft_not_found:
+    xor ebx, ebx
+    pop ecx
+    pop esi
+    stc
+    ret
+
+; uobj_find_object: EAX=obj_id → EBX=ptr, CF=0/CF=1; Clobbers: EBX
+uobj_find_object:
+    push esi
+    push ecx
+    mov esi, uobj_objects
+    xor ecx, ecx
+.ufo_loop:
+    cmp ecx, UOBJ_MAX_OBJECTS
+    jae .ufo_not_found
+    cmp byte [esi + UOBJ_OBJ_OFF_PRESENT], 1
+    jne .ufo_next
+    cmp [esi + UOBJ_OBJ_OFF_OBJ_ID], eax
+    je .ufo_found
+.ufo_next:
+    add esi, UOBJ_OBJ_SIZE
+    inc ecx
+    jmp .ufo_loop
+.ufo_found:
+    mov ebx, esi
+    pop ecx
+    pop esi
+    clc
+    ret
+.ufo_not_found:
+    xor ebx, ebx
+    pop ecx
+    pop esi
+    stc
+    ret
+
+; uobj_find_handle: EAX=handle_id → EBX=ptr, CF=0/CF=1; Clobbers: EBX
+uobj_find_handle:
+    push esi
+    push ecx
+    mov esi, uobj_handles
+    xor ecx, ecx
+.ufhdl_loop:
+    cmp ecx, UOBJ_MAX_HANDLES
+    jae .ufhdl_not_found
+    cmp byte [esi + UOBJ_HDL_OFF_PRESENT], 1
+    jne .ufhdl_next
+    cmp [esi + UOBJ_HDL_OFF_HDL_ID], eax
+    je .ufhdl_found
+.ufhdl_next:
+    add esi, UOBJ_HDL_SIZE
+    inc ecx
+    jmp .ufhdl_loop
+.ufhdl_found:
+    mov ebx, esi
+    pop ecx
+    pop esi
+    clc
+    ret
+.ufhdl_not_found:
+    xor ebx, ebx
+    pop ecx
+    pop esi
+    stc
+    ret
+
+; uobj_alloc_object: → EBX=obj_ptr, ECX=new_obj_id, CF=0/CF=1
+uobj_alloc_object:
+    push esi
+    mov esi, uobj_objects
+    xor ecx, ecx
+.uao_scan:
+    cmp ecx, UOBJ_MAX_OBJECTS
+    jae .uao_full
+    cmp byte [esi + UOBJ_OBJ_OFF_PRESENT], 0
+    je .uao_write
+    add esi, UOBJ_OBJ_SIZE
+    inc ecx
+    jmp .uao_scan
+.uao_write:
+    lock inc dword [uobj_next_id]
+    mov ecx, [uobj_next_id]
+    mov [esi + UOBJ_OBJ_OFF_OBJ_ID], ecx
+    mov byte [esi + UOBJ_OBJ_OFF_PRESENT], 1
+    mov ebx, esi
+    pop esi
+    clc
+    ret
+.uao_full:
+    xor ebx, ebx
+    xor ecx, ecx
+    pop esi
+    stc
+    ret
+
+; uobj_alloc_handle: EAX=obj_id, ECX=generation, EDX=capabilities
+; → EBX=handle_id, CF=0/CF=1
+uobj_alloc_handle:
+    push esi
+    push edi
+    push ecx    ; [esp+4 after next push]=ECX(gen)
+    push edx    ; Stack: [esp]=EDX(caps), [esp+4]=ECX(gen),
+                ;        [esp+8]=old_EDI, [esp+12]=old_ESI  EAX=obj_id
+
+    mov edi, uobj_handles
+    xor ecx, ecx
+.uah_scan:
+    cmp ecx, UOBJ_MAX_HANDLES
+    jae .uah_full
+    cmp byte [edi + UOBJ_HDL_OFF_PRESENT], 0
+    je .uah_write
+    add edi, UOBJ_HDL_SIZE
+    inc ecx
+    jmp .uah_scan
+.uah_write:
+    lock inc dword [uobj_next_hdl]
+    mov ebx, [uobj_next_hdl]
+    mov [edi + UOBJ_HDL_OFF_HDL_ID], ebx
+    mov [edi + UOBJ_HDL_OFF_OBJ_ID], eax
+    mov ecx, [esp + 4]                      ; generation
+    mov [edi + UOBJ_HDL_OFF_GEN], ecx
+    mov cx, [esp]                           ; capabilities (low 16)
+    mov [edi + UOBJ_HDL_OFF_CAPS], cx
+    mov byte [edi + UOBJ_HDL_OFF_PRESENT], 1
+    pop edx
+    pop ecx
+    pop edi
+    pop esi
+    clc
+    ret
+.uah_full:
+    xor ebx, ebx
+    pop edx
+    pop ecx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; uobj_register_type – Objekttyp registrieren (§7)
+; EAX=type_id, ECX=abi_version, EDX=flags, ESI=init_fn (0=kein), EDI=destroy_fn (0=kein)
+; CF=0 OK / CF=1 Fehler (doppelt/voll)
+; ---------------------------------------------------------------------------
+uobj_register_type:
+    push ebx
+    push esi
+    push edi
+    push ecx    ; [esp+4 after next push]=ECX(abi_ver)
+    push edx    ; Stack: [esp]=EDX(flags), [esp+4]=ECX(abi_ver),
+                ;        [esp+8]=old_EDI(destroy_fn), [esp+12]=old_ESI(init_fn), [esp+16]=old_EBX
+
+    call uobj_find_type         ; EAX=type_id; EAX unveränderter Wert
+    jnc .urt_dup                ; CF=0 = bereits vorhanden
+
+    mov edi, uobj_types
+    xor ecx, ecx
+.urt_scan:
+    cmp ecx, UOBJ_MAX_TYPES
+    jae .urt_full
+    cmp byte [edi + UOBJ_TYPE_OFF_PRESENT], 0
+    je .urt_write
+    add edi, UOBJ_TYPE_SIZE
+    inc ecx
+    jmp .urt_scan
+.urt_write:
+    mov [edi + UOBJ_TYPE_OFF_TYPE_ID], eax
+    mov ebx, [esp + 4]                      ; abi_version
+    mov [edi + UOBJ_TYPE_OFF_ABI_VER], ebx
+    mov ebx, [esp]                          ; flags
+    mov [edi + UOBJ_TYPE_OFF_FLAGS], ebx
+    mov ebx, [esp + 12]                     ; init_fn (old ESI)
+    mov [edi + UOBJ_TYPE_OFF_INIT_FN], ebx
+    mov ebx, [esp + 8]                      ; destroy_fn (old EDI)
+    mov [edi + UOBJ_TYPE_OFF_DESTROY_FN], ebx
+    mov byte [edi + UOBJ_TYPE_OFF_PRESENT], 1
+    pop edx
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+.urt_dup:
+.urt_full:
+    pop edx
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; uobj_create – Objekt erzeugen und Handle zurückgeben (§11)
+; EAX=type_id, ECX=capabilities
+; EBX=handle_id, ECX=obj_id (Rückgabe), CF=0 OK / CF=1 Fehler
+; Bootstrap: Pools; kein Rollback über KOG-Integration.
+; ---------------------------------------------------------------------------
+uobj_create:
+    mov [uobj_tmp_type], eax
+    mov [uobj_tmp_caps], ecx
+
+    push ebx
+    push esi
+    push edi
+
+    ; Typ validieren
+    mov eax, [uobj_tmp_type]
+    call uobj_find_type
+    jc .uc_fail
+    mov esi, ebx                ; ESI = type_ptr (callee-saved)
+
+    ; Objekt-Slot allokieren
+    call uobj_alloc_object      ; → EBX=obj_ptr, ECX=obj_id
+    jc .uc_fail
+    mov edi, ebx                ; EDI = obj_ptr (callee-saved)
+    mov [uobj_tmp_obj_id], ecx
+
+    ; Objekt-Header initialisieren
+    lock inc dword [uobj_next_gen]
+    mov eax, [uobj_next_gen]
+    mov [edi + UOBJ_OBJ_OFF_GEN], eax
+    mov eax, [esi + UOBJ_TYPE_OFF_TYPE_ID]
+    mov [edi + UOBJ_OBJ_OFF_TYPE_ID], eax
+    mov byte [edi + UOBJ_OBJ_OFF_STATE], UOBJ_STATE_CREATING
+    mov dword [edi + UOBJ_OBJ_OFF_REFCOUNT], 1
+    mov dword [edi + UOBJ_OBJ_OFF_KOG_NODE], 0
+    mov word [edi + UOBJ_OBJ_OFF_FLAGS], 0
+
+    ; Typspezifischen init_fn aufrufen (§11 Schritt 5)
+    mov eax, [esi + UOBJ_TYPE_OFF_INIT_FN]
+    test eax, eax
+    jz .uc_no_init
+    mov ebx, edi                ; init_fn(EBX=obj_ptr) → CF
+    call eax
+    jc .uc_init_fail
+.uc_no_init:
+    mov byte [edi + UOBJ_OBJ_OFF_STATE], UOBJ_STATE_ACTIVE
+
+    ; Handle allokieren
+    mov eax, [uobj_tmp_obj_id]
+    mov ecx, [edi + UOBJ_OBJ_OFF_GEN]
+    mov edx, [uobj_tmp_caps]
+    call uobj_alloc_handle      ; EAX=obj_id, ECX=gen, EDX=caps → EBX=handle_id
+    jc .uc_handle_fail
+
+    ; Rückgabewerte: EBX=handle_id, ECX=obj_id
+    mov ecx, [uobj_tmp_obj_id]
+
+    ; NP_EVENT_OBJ_CREATED veröffentlichen (§40, §29)
+    push ebx
+    push ecx
+    mov eax, NP_EVENT_OBJ_CREATED
+    mov ecx, [uobj_tmp_obj_id]
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    call evbus_publish          ; CF ignoriert (Bootstrap-Event)
+    pop ecx
+    pop ebx
+
+    lock inc dword [uobj_stat_created]
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+
+.uc_handle_fail:
+.uc_init_fail:
+    mov byte [edi + UOBJ_OBJ_OFF_PRESENT], 0
+.uc_fail:
+    lock inc dword [uobj_stat_failed]
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; uobj_from_handle – Handle auflösen + Capabilities und Generation prüfen (§13)
+; EAX=handle_id, ECX=required_capabilities
+; EBX=obj_ptr (Rückgabe), CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+uobj_from_handle:
+    push esi
+    push ecx                    ; [esp] = required_caps
+
+    call uobj_find_handle       ; EAX=handle_id → EBX=hdl_ptr
+    jc .ufrom_fail
+
+    mov esi, ebx                ; ESI = hdl_ptr
+
+    ; Capability-Prüfung: alle geforderten Bits müssen im Handle vorhanden sein
+    movzx eax, word [esi + UOBJ_HDL_OFF_CAPS]
+    mov ecx, [esp]              ; required_caps
+    and eax, ecx                ; EAX = vorhandene & geforderte
+    cmp eax, ecx                ; müssen identisch sein
+    jne .ufrom_denied
+
+    ; Objekt auflösen
+    mov eax, [esi + UOBJ_HDL_OFF_OBJ_ID]
+    call uobj_find_object       ; → EBX=obj_ptr
+    jc .ufrom_fail
+
+    ; Generations-Prüfung (§6 Invariant 4, §60 Invariant 4)
+    mov eax, [esi + UOBJ_HDL_OFF_GEN]
+    cmp eax, [ebx + UOBJ_OBJ_OFF_GEN]
+    jne .ufrom_stale
+
+    ; Zustandsprüfung: kein Zugriff auf sterbende Objekte
+    movzx eax, byte [ebx + UOBJ_OBJ_OFF_STATE]
+    cmp eax, UOBJ_STATE_DESTROYING
+    jae .ufrom_bad_state
+
+    pop ecx
+    pop esi
+    clc
+    ret
+
+.ufrom_stale:
+.ufrom_bad_state:
+.ufrom_denied:
+.ufrom_fail:
+    xor ebx, ebx
+    pop ecx
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; uobj_retain – Referenzzähler erhöhen (§12)
+; EAX=obj_id → CF=0 OK / CF=1 nicht gefunden
+; ---------------------------------------------------------------------------
+uobj_retain:
+    push ebx
+    call uobj_find_object
+    jc .uret_fail
+    lock inc dword [ebx + UOBJ_OBJ_OFF_REFCOUNT]
+    pop ebx
+    clc
+    ret
+.uret_fail:
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; uobj_release – Referenzzähler senken; bei 0 Objekt zerstören (§12)
+; EAX=obj_id → CF=0 OK / CF=1 nicht gefunden
+; ---------------------------------------------------------------------------
+uobj_release:
+    push ebx
+    push esi
+    call uobj_find_object       ; EAX=obj_id → EBX=obj_ptr
+    jc .urel_fail
+
+    lock dec dword [ebx + UOBJ_OBJ_OFF_REFCOUNT]
+    jnz .urel_done
+
+    ; Refcount = 0: Objekt zerstören (§9 DESTROYING → DESTROYED)
+    mov esi, ebx                ; ESI = obj_ptr
+    mov byte [esi + UOBJ_OBJ_OFF_STATE], UOBJ_STATE_DESTROYING
+
+    ; destroy_fn aufrufen
+    mov eax, [esi + UOBJ_OBJ_OFF_TYPE_ID]
+    call uobj_find_type         ; → EBX=type_ptr (ESI bleibt erhalten)
+    jc .urel_no_fn
+    mov eax, [ebx + UOBJ_TYPE_OFF_DESTROY_FN]
+    test eax, eax
+    jz .urel_no_fn
+    mov ebx, esi                ; destroy_fn(EBX=obj_ptr)
+    call eax
+.urel_no_fn:
+    ; obj_id vor Freigabe lesen (§41 – Diagnose nach Destroy)
+    mov ecx, [esi + UOBJ_OBJ_OFF_OBJ_ID]
+    mov byte [esi + UOBJ_OBJ_OFF_STATE], UOBJ_STATE_DESTROYED
+    mov byte [esi + UOBJ_OBJ_OFF_PRESENT], 0
+    lock inc dword [uobj_stat_destroyed]
+
+    ; NP_EVENT_OBJ_DESTROYED veröffentlichen
+    mov eax, NP_EVENT_OBJ_DESTROYED
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    call evbus_publish          ; EAX=type, ECX=obj_id (noch gesetzt)
+
+.urel_done:
+    pop esi
+    pop ebx
+    clc
+    ret
+.urel_fail:
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; uobj_close_handle – Handle schließen und Objektreferenz freigeben (§33)
+; EAX=handle_id → CF=0 OK / CF=1 nicht gefunden
+; ---------------------------------------------------------------------------
+uobj_close_handle:
+    push ebx
+    call uobj_find_handle       ; → EBX=hdl_ptr
+    jc .uch_fail
+    mov byte [ebx + UOBJ_HDL_OFF_PRESENT], 0
+    mov eax, [ebx + UOBJ_HDL_OFF_OBJ_ID]
+    call uobj_release           ; CF ignoriert (Objekt könnte schon weg sein)
+    pop ebx
+    clc
+    ret
+.uch_fail:
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; uobj_query – Objekt abfragen (§20), Bootstrap: nur Klasse 0 (Basisidentität)
+; EAX=handle_id, ECX=query_class, EDX=buffer_ptr
+; EAX=bytes_written (Rückgabe), CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+uobj_query:
+    push ebx
+    push esi
+    push edi
+    push ecx                    ; query_class
+    push edx                    ; buffer_ptr
+
+    ; Handle auflösen (QUERY-Recht prüfen)
+    mov ecx, UOBJ_CAP_QUERY
+    call uobj_from_handle       ; EAX=handle → EBX=obj_ptr
+    jc .uq_fail
+
+    ; Nur Klasse 0 in Bootstrap implementiert (§20 Basisidentität)
+    cmp dword [esp + 4], 0
+    jne .uq_not_supported
+
+    ; 16-Byte-Antwort: obj_id, type_id, generation, state
+    mov edi, [esp]              ; buffer_ptr
+    mov eax, [ebx + UOBJ_OBJ_OFF_OBJ_ID]
+    mov [edi],      eax
+    mov eax, [ebx + UOBJ_OBJ_OFF_TYPE_ID]
+    mov [edi + 4],  eax
+    mov eax, [ebx + UOBJ_OBJ_OFF_GEN]
+    mov [edi + 8],  eax
+    movzx eax, byte [ebx + UOBJ_OBJ_OFF_STATE]
+    mov [edi + 12], eax
+
+    pop edx
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    mov eax, 16
+    clc
+    ret
+
+.uq_not_supported:
+.uq_fail:
+    pop edx
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    xor eax, eax
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; uobj_initialize – Pools leeren, 15 Built-in-Typen registrieren (§55)
+; CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+
+%macro uobj_reg_builtin 1
+    mov eax, %1
+    mov ecx, 1
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    call uobj_register_type
+    jc .uinit_fail
+%endmacro
+
+uobj_initialize:
+    push edi
+    push ecx
+
+    mov edi, uobj_types
+    xor eax, eax
+    mov ecx, (UOBJ_MAX_TYPES * UOBJ_TYPE_SIZE) / 4
+    rep stosd
+    mov edi, uobj_objects
+    mov ecx, (UOBJ_MAX_OBJECTS * UOBJ_OBJ_SIZE) / 4
+    rep stosd
+    mov edi, uobj_handles
+    mov ecx, (UOBJ_MAX_HANDLES * UOBJ_HDL_SIZE) / 4
+    rep stosd
+    mov dword [uobj_next_id],  0
+    mov dword [uobj_next_gen], 0
+    mov dword [uobj_next_hdl], 0
+    mov dword [uobj_stat_created],   0
+    mov dword [uobj_stat_destroyed], 0
+    mov dword [uobj_stat_failed],    0
+
+    uobj_reg_builtin NP_OBJTYPE_KERNEL
+    uobj_reg_builtin NP_OBJTYPE_MACHINE
+    uobj_reg_builtin NP_OBJTYPE_NAMESPACE
+    uobj_reg_builtin NP_OBJTYPE_PROCESS
+    uobj_reg_builtin NP_OBJTYPE_THREAD
+    uobj_reg_builtin NP_OBJTYPE_CPU
+    uobj_reg_builtin NP_OBJTYPE_MEMORY
+    uobj_reg_builtin NP_OBJTYPE_IPC
+    uobj_reg_builtin NP_OBJTYPE_DEVICE
+    uobj_reg_builtin NP_OBJTYPE_DRIVER
+    uobj_reg_builtin NP_OBJTYPE_VFS_NODE
+    uobj_reg_builtin NP_OBJTYPE_SECURITY
+    uobj_reg_builtin NP_OBJTYPE_DIAGNOSTIC
+    uobj_reg_builtin NP_OBJTYPE_POWER
+    uobj_reg_builtin NP_OBJTYPE_GENERIC
+
+    pop ecx
+    pop edi
+    clc
+    ret
+.uinit_fail:
+    pop ecx
+    pop edi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; uobj_self_test – §58 Tests 1-10 (Bootstrap-Implementierung)
+; Tests 11-15 (SMP, async, weak-ref, namespace): Bootstrap-N/A.
+; CF=0 alle Tests bestanden / CF=1 Fehler
+; ---------------------------------------------------------------------------
+uobj_self_test:
+    push ebx
+    push esi
+    push edi
+
+    ; Test 1 – Typ GENERIC registriert
+    mov eax, NP_OBJTYPE_GENERIC
+    call uobj_find_type
+    jc .ust_fail
+    cmp byte [ebx + UOBJ_TYPE_OFF_PRESENT], 1
+    jne .ust_fail
+
+    ; Test 2 – Doppelter Typ abgelehnt (§60 Invariant)
+    mov eax, NP_OBJTYPE_GENERIC
+    mov ecx, 1
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    call uobj_register_type
+    jnc .ust_fail               ; muss CF=1
+
+    ; Test 3 – Objekt erzeugen → gültiger Handle
+    mov eax, NP_OBJTYPE_GENERIC
+    mov ecx, UOBJ_CAP_QUERY | UOBJ_CAP_DELETE
+    call uobj_create            ; → EBX=handle_id, ECX=obj_id
+    jc .ust_fail
+    push ebx                    ; [esp+4] = handle_id
+    push ecx                    ; [esp]   = obj_id
+
+    ; Test 4 – Handle-Auflösung mit korrekten Caps (QUERY erlaubt)
+    mov eax, [esp + 4]          ; handle_id
+    mov ecx, UOBJ_CAP_QUERY
+    call uobj_from_handle       ; → EBX=obj_ptr
+    jc .ust_pop2_fail
+
+    ; Test 5 – Unzureichende Caps (ADMIN nicht im Handle) → CF=1
+    mov eax, [esp + 4]          ; handle_id
+    mov ecx, UOBJ_CAP_ADMIN
+    call uobj_from_handle
+    jnc .ust_pop2_fail          ; muss CF=1
+
+    ; Test 6 – uobj_retain: Refcount auf 2
+    mov eax, [esp]              ; obj_id
+    call uobj_retain
+    jc .ust_pop2_fail
+    call uobj_find_object       ; EAX noch = obj_id → EBX=obj_ptr
+    jc .ust_pop2_fail
+    cmp dword [ebx + UOBJ_OBJ_OFF_REFCOUNT], 2
+    jne .ust_pop2_fail
+
+    ; Test 7 – uobj_release: Refcount zurück auf 1, Objekt noch vorhanden
+    mov eax, [esp]              ; obj_id
+    call uobj_release
+    jc .ust_pop2_fail
+    mov eax, [esp]
+    call uobj_find_object
+    jc .ust_pop2_fail
+    cmp dword [ebx + UOBJ_OBJ_OFF_REFCOUNT], 1
+    jne .ust_pop2_fail
+    cmp byte [ebx + UOBJ_OBJ_OFF_PRESENT], 1
+    jne .ust_pop2_fail
+
+    ; Test 8 – uobj_query Klasse 0: 16 Bytes, korrekte obj_id
+    mov eax, [esp + 4]          ; handle_id
+    mov ecx, 0                  ; query class 0 = Basisidentität
+    mov edx, uobj_test_buf
+    call uobj_query
+    jc .ust_pop2_fail
+    cmp eax, 16
+    jne .ust_pop2_fail
+    mov eax, [esp]              ; obj_id
+    cmp [uobj_test_buf], eax
+    jne .ust_pop2_fail
+
+    ; Test 9 – Handle schließen
+    mov eax, [esp + 4]          ; handle_id
+    call uobj_close_handle
+    jc .ust_pop2_fail
+
+    ; Test 10 – Handle nach Schließung nicht mehr auffindbar (§60 Invariant 2/3)
+    mov eax, [esp + 4]          ; handle_id (geschlossen)
+    call uobj_find_handle
+    jnc .ust_pop2_fail          ; muss CF=1
+
+    ; Aufräumen (obj_id, handle_id vom Stack)
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+
+.ust_pop2_fail:
+    pop ecx                     ; obj_id
+    pop ebx                     ; handle_id
+.ust_fail:
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; UOBJ-Daten
+uobj_types:           times (UOBJ_MAX_TYPES * UOBJ_TYPE_SIZE) db 0
+uobj_objects:         times (UOBJ_MAX_OBJECTS * UOBJ_OBJ_SIZE) db 0
+uobj_handles:         times (UOBJ_MAX_HANDLES * UOBJ_HDL_SIZE) db 0
+uobj_next_id:         dd 0
+uobj_next_gen:        dd 0
+uobj_next_hdl:        dd 0
+uobj_stat_created:    dd 0
+uobj_stat_destroyed:  dd 0
+uobj_stat_failed:     dd 0
+uobj_tmp_type:        dd 0
+uobj_tmp_caps:        dd 0
+uobj_tmp_obj_id:      dd 0
+uobj_test_buf:        times 16 db 0
+
+; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
 ; ---------------------------------------------------------------------------
 MODULE_MAGIC              equ 0x444D564E ; "NVMD"
@@ -26985,6 +27764,10 @@ message_evbus_ok:
     db "NOVA: Event Bus 1.0 (§101), 8 Built-in-Schemata, Pub/Sub bereit", 13, 10, 0
 message_evbus_error:
     db "NOVA PANIC: Event Bus Selbsttest fehlgeschlagen", 13, 10, 0
+message_uobj_ok:
+    db "NOVA: Unified Object API 1.0 (§102), 15 Typen, Handle-Tabelle bereit", 13, 10, 0
+message_uobj_error:
+    db "NOVA PANIC: Unified Object API Selbsttest fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
