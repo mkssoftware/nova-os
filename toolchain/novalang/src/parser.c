@@ -46,7 +46,8 @@ static const NlToken *expect(NlParser *p, NlTokenKind k) {
 
 static void expect_newline(NlParser *p) {
     if (check(p, TK_EOF)) return;
-    if (check(p, TK_NEWLINE)) { advance_tok(p); return; }
+    /* ':' is a statement separator and acts like a newline */
+    if (check(p, TK_NEWLINE) || check(p, PUNCT_COLON)) { advance_tok(p); return; }
     nl_diag_emit(p->diags, DIAG_ERROR, cur(p)->range, "expected newline");
 }
 
@@ -689,6 +690,43 @@ static NlNode *parse_decl(NlParser *p) {
     }
 }
 
+static NlNode *parse_select_stmt(NlParser *p) {
+    NlRange r = cur(p)->range;
+    advance_tok(p); /* Select */
+    expect(p, KW_CASE);
+    NlNode *n = nl_node_new(p->arena, ND_SELECT_STMT, r);
+    nl_node_push(p->arena, &n->children, parse_expr(p)); /* selector */
+    expect_newline(p);
+    for (;;) {
+        skip_newlines(p);
+        if (!check(p, KW_CASE)) break;
+        NlRange cr = cur(p)->range;
+        advance_tok(p); /* Case */
+        NlNode *cc = nl_node_new(p->arena, ND_CASE_CLAUSE, cr);
+        if (match(p, KW_ELSE)) {
+            cc->flags = 1; /* Case Else */
+        } else {
+            do {
+                nl_node_push(p->arena, &cc->children, parse_expr(p));
+            } while (match(p, PUNCT_COMMA));
+        }
+        expect_newline(p);
+        /* Case body: stop at next Case or End */
+        NlNode *body = nl_node_new(p->arena, ND_BLOCK, cur(p)->range);
+        for (;;) {
+            skip_newlines(p);
+            NlTokenKind k = cur_kind(p);
+            if (k == KW_CASE || k == KW_END || k == TK_EOF) break;
+            nl_node_push(p->arena, &body->children, parse_decl(p));
+        }
+        nl_node_push(p->arena, &cc->children, body);
+        nl_node_push(p->arena, &n->children, cc);
+        if (cc->flags == 1) break; /* Case Else is always last */
+    }
+    expect(p, KW_END); expect(p, KW_SELECT); expect_newline(p);
+    return n;
+}
+
 static NlNode *parse_stmt(NlParser *p) {
     skip_newlines(p);
     NlRange r = cur(p)->range;
@@ -758,6 +796,7 @@ static NlNode *parse_stmt(NlParser *p) {
             expect_newline(p);
             return n;
         }
+        case KW_SELECT: return parse_select_stmt(p);
         case KW_WITH: {
             advance_tok(p);
             NlNode *n = nl_node_new(p->arena, ND_WITH_STMT, r);
