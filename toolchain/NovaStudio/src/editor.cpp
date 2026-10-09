@@ -114,13 +114,34 @@ void EditorHighlight() {
 }
 
 /* -----------------------------------------------------------------------
+ * Bottom panel (Ausgabe/Probleme/Terminal/Git) – container + TabCtrl + Output
+ * -------------------------------------------------------------------- */
+#define BOTTOM_TAB_H   26   /* Höhe des Tab-Streifens */
+
+static HWND g_hBottomCont  = nullptr;  /* äußerer Container */
+static HWND g_hBottomTabCtrl = nullptr;
+
+static void BottomContainerResize(HWND hCont, int w, int h) {
+    if (!hCont) return;
+    if (g_hBottomTabCtrl)
+        SetWindowPos(g_hBottomTabCtrl, nullptr, 0, 0, w, BOTTOM_TAB_H,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    if (g_hOutput)
+        SetWindowPos(g_hOutput, nullptr, 0, BOTTOM_TAB_H, w, h - BOTTOM_TAB_H,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+/* -----------------------------------------------------------------------
  * Create editor pane
  * -------------------------------------------------------------------- */
 void EditorCreate(HWND hParent, RECT rc) {
-    /* Tab bar */
+    int W = rc.right  - rc.left;
+    int H = rc.bottom - rc.top;
+
+    /* Tab bar (Datei-Tabs oben) */
     g_hTabBar = CreateWindowExW(0, WC_TABCONTROLW, nullptr,
         WS_CHILD | WS_VISIBLE | TCS_FLATBUTTONS | TCS_FOCUSNEVER,
-        rc.left, rc.top, rc.right - rc.left, 26,
+        rc.left, rc.top, W, 26,
         hParent, (HMENU)ID_TABBAR, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(g_hTabBar, WM_SETFONT,
                  (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
@@ -130,11 +151,15 @@ void EditorCreate(HWND hParent, RECT rc) {
     if (!hRE) hRE = LoadLibraryW(L"Riched20.dll");
     const wchar_t *reClass = hRE ? MSFTEDIT_CLASS : RICHEDIT_CLASSW;
 
+    int outH  = g_showOutput ? g_outputHeight : 0;
+    int edTop = rc.top + 26;
+    int edH   = H - 26 - outH - (outH > 0 ? 1 : 0);
+    if (edH < 0) edH = 0;
+
     g_hEditor = CreateWindowExW(WS_EX_CLIENTEDGE, reClass, nullptr,
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL |
         ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_NOHIDESEL,
-        rc.left, rc.top + 26,
-        rc.right - rc.left, rc.bottom - rc.top - 26,
+        rc.left, edTop, W, edH,
         hParent, (HMENU)ID_EDITOR, GetModuleHandleW(nullptr), nullptr);
 
     /* Consolas 11pt */
@@ -160,14 +185,45 @@ void EditorCreate(HWND hParent, RECT rc) {
     g_origREProc = (WNDPROC)SetWindowLongPtrW(g_hEditor, GWLP_WNDPROC,
                                                (LONG_PTR)EditorSubclassProc);
 
-    /* Output panel */
+    /* ---- Bottom container mit Tabs (Ausgabe / Probleme / Terminal / Git) ---- */
+    int botTop = edTop + edH + 1;
+    g_hBottomCont = CreateWindowExW(0, L"STATIC", nullptr,
+        WS_CHILD | (g_showOutput ? WS_VISIBLE : 0) | WS_CLIPCHILDREN | SS_OWNERDRAW,
+        rc.left, botTop, W, outH,
+        hParent, (HMENU)ID_BOTTOMPANEL, GetModuleHandleW(nullptr), nullptr);
+
+    /* Tab-Streifen im Bottom-Container */
+    g_hBottomTabCtrl = CreateWindowExW(0, WC_TABCONTROLW, nullptr,
+        WS_CHILD | WS_VISIBLE | TCS_FLATBUTTONS | TCS_FOCUSNEVER,
+        0, 0, W, BOTTOM_TAB_H,
+        g_hBottomCont, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(g_hBottomTabCtrl, WM_SETFONT,
+                 (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    /* Tabs einfügen */
+    {
+        TCITEMW ti = {};
+        ti.mask = TCIF_TEXT;
+        struct { LPCWSTR name; } tabs[] = {
+            {L"Ausgabe"}, {L"Probleme (0)"}, {L"Terminal"}, {L"Git"}
+        };
+        for (int i = 0; i < 4; i++) {
+            ti.pszText = (LPWSTR)tabs[i].name;
+            TabCtrl_InsertItem(g_hBottomTabCtrl, i, &ti);
+        }
+        TabCtrl_SetCurSel(g_hBottomTabCtrl, 0);
+    }
+
+    /* Output RichEdit */
     g_hOutput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", nullptr,
         WS_CHILD | WS_VISIBLE | WS_VSCROLL |
         ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-        rc.left, rc.bottom - g_outputHeight,
-        rc.right - rc.left, g_outputHeight,
-        hParent, (HMENU)ID_OUTPUT, GetModuleHandleW(nullptr), nullptr);
+        0, BOTTOM_TAB_H, W, outH - BOTTOM_TAB_H,
+        g_hBottomCont, (HMENU)ID_OUTPUT, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(g_hOutput, WM_SETFONT, (WPARAM)g_hCodeFont, TRUE);
+
+    /* g_hBottomContainer / g_hBottomTabs für externe Zugriffe */
+    g_hBottomContainer = g_hBottomCont;
+    g_hBottomTabs      = g_hBottomTabCtrl;
 
     EditorApplyTheme();
     EditorNewFile();
@@ -177,21 +233,29 @@ void EditorCreate(HWND hParent, RECT rc) {
 }
 
 void EditorResize(RECT rc) {
-    int tabH = 26;
-    int outH = g_showOutput ? g_outputHeight : 0;
-    int w = rc.right - rc.left;
-    int h = rc.bottom - rc.top;
-    int edH = h - tabH - outH - (outH > 0 ? 4 : 0);
+    int tabH  = 26;
+    int outH  = g_showOutput ? g_outputHeight : 0;
+    int w     = rc.right  - rc.left;
+    int h     = rc.bottom - rc.top;
+    int edH   = h - tabH - outH - (outH > 0 ? 1 : 0);
     if (edH < 0) edH = 0;
 
     if (g_hTabBar)
-        SetWindowPos(g_hTabBar, nullptr, rc.left, rc.top, w, tabH, SWP_NOZORDER | SWP_NOACTIVATE);
-    if (g_hEditor)
-        SetWindowPos(g_hEditor, nullptr, rc.left, rc.top + tabH, w, edH, SWP_NOZORDER | SWP_NOACTIVATE);
-    if (g_hOutput)
-        SetWindowPos(g_hOutput, nullptr, rc.left, rc.top + tabH + edH + (outH > 0 ? 4 : 0), w, outH,
+        SetWindowPos(g_hTabBar, nullptr,
+                     rc.left, rc.top, w, tabH,
                      SWP_NOZORDER | SWP_NOACTIVATE);
-    ShowWindow(g_hOutput, g_showOutput ? SW_SHOW : SW_HIDE);
+    if (g_hEditor)
+        SetWindowPos(g_hEditor, nullptr,
+                     rc.left, rc.top + tabH, w, edH,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    if (g_hBottomCont) {
+        int botY = rc.top + tabH + edH + (outH > 0 ? 1 : 0);
+        SetWindowPos(g_hBottomCont, nullptr,
+                     rc.left, botY, w, outH,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        BottomContainerResize(g_hBottomCont, w, outH);
+        ShowWindow(g_hBottomCont, g_showOutput ? SW_SHOW : SW_HIDE);
+    }
 }
 
 void EditorApplyTheme() {
@@ -356,7 +420,7 @@ bool EditorSaveFile() {
     tab.modified = false;
     TabSetTitle(g_activeTab, tab.title.c_str());
     EditorUpdateTitle();
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)L"  Saved");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)L"  Gespeichert");
     SetTimer(g_hMain, TIMER_STATUS, 2000, nullptr);
     return true;
 }

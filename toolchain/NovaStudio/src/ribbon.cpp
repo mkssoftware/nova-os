@@ -83,104 +83,107 @@ static RECT                 s_appRect;
 static void InitTabs() {
     s_tabs.clear();
 
-    /* === Tab 0: Home – NPSPEC-STUDIO-RIBBON-HOME-0001 === */
-    s_tabs.push_back({ L"Home", {
-        { L"Project", {
-            { IDM_FILE_NEW_PROJECT,   L"New\nProject",    RI_NEWPROJ,  true  },
-            { IDM_FILE_NEW,           L"New\nFile",       RI_NEW,      true  },
-            { IDM_FILE_OPEN,          L"Open",            RI_OPEN,     true  },
-            { IDM_FILE_SAVE,          L"Save",            RI_SAVE,     true  },
-            { IDM_FILE_SAVE_ALL,      L"Save All",        RI_SAVEALL,  true  },
+    /* === Tab 0: Start === */
+    s_tabs.push_back({ L"Start", {
+        { L"Projekt", {
+            { IDM_FILE_NEW_PROJECT,   L"Neues\nProjekt",      RI_NEWPROJ,      true  },
+            { IDM_FILE_NEW,           L"Neue\nDatei",         RI_NEW,          true  },
+            { IDM_FILE_OPEN,          L"Öffnen",              RI_OPEN,         true  },
+            { IDM_FILE_SAVE,          L"Speichern",           RI_SAVE,         true  },
+            { IDM_FILE_SAVE_ALL,      L"Alle\nspeichern",     RI_SAVEALL,      true  },
         }},
-        { L"Edit", {
-            { IDM_EDIT_CUT,           L"Cut",             RI_CUT,      true  },
-            { IDM_EDIT_COPY,          L"Copy",            RI_COPY,     true  },
-            { IDM_EDIT_PASTE,         L"Paste",           RI_PASTE,    true  },
-            { IDM_EDIT_UNDO,          L"Undo",            RI_UNDO,     true  },
-            { IDM_EDIT_REDO,          L"Redo",            RI_REDO,     true  },
+        { L"Bearbeiten", {
+            { IDM_EDIT_CUT,           L"Ausschneiden",        RI_CUT,          true  },
+            { IDM_EDIT_COPY,          L"Kopieren",            RI_COPY,         true  },
+            { IDM_EDIT_PASTE,         L"Einfügen",            RI_PASTE,        true  },
+            { IDM_EDIT_UNDO,          L"Rückgängig",          RI_UNDO,         true  },
+            { IDM_EDIT_REDO,          L"Wiederholen",         RI_REDO,         true  },
         }},
-        { L"Build", {
-            { IDM_BUILD_BUILD,        L"Build\nSolution", RI_BUILD,    true  },
-            { IDM_BUILD_REBUILD,      L"Rebuild",         RI_REBUILD,  true  },
-            { IDM_BUILD_CLEAN,        L"Clean",           RI_CLEAN,    true  },
+        { L"Erstellen", {
+            { IDM_BUILD_BUILD,        L"Projektmappe\nerstellen", RI_BUILD,    true  },
+            { IDM_BUILD_REBUILD,      L"Neu\nerstellen",      RI_REBUILD,      true  },
+            { IDM_BUILD_CLEAN,        L"Bereinigen",          RI_CLEAN,        true  },
         }},
-        { L"Debug", {
-            { IDM_DEBUG_START,        L"Start\nDebugging",RI_DEBUG_START, true },
-            { IDM_DEBUG_START_NO_DBG, L"Start Without\nDebugging", RI_RUN, false },
-            { IDM_DEBUG_STOP,         L"Stop",            RI_DEBUG_STOP, false },
+        { L"Debuggen", {
+            { IDM_DEBUG_START,        L"Debuggen\nstarten",   RI_DEBUG_START,  true  },
+            { IDM_DEBUG_START_NO_DBG, L"Ohne Debugger\nstarten", RI_RUN,      false },
+            { IDM_DEBUG_STOP,         L"Stopp",               RI_DEBUG_STOP,   false },
         }},
         { L"Git", {
-            { IDM_GIT_COMMIT,         L"Commit",          RI_GIT_COMMIT, true  },
-            { IDM_GIT_PUSH,           L"Push",            RI_GIT_PUSH,   true  },
-            { IDM_GIT_PULL,           L"Pull",            RI_GIT_PULL,   true  },
+            { IDM_GIT_COMMIT,         L"Commit",              RI_GIT_COMMIT,   true  },
+            { IDM_GIT_PUSH,           L"Pushen",              RI_GIT_PUSH,     true  },
+            { IDM_GIT_PULL,           L"Pullen",              RI_GIT_PULL,     true  },
         }},
     }});
 
-    /* === Tab 1: Edit === */
-    s_tabs.push_back({ L"Edit", {
-        { L"Edit", {
-            { IDM_EDIT_FIND,          L"Find",            RI_FIND,     true  },
-            { IDM_EDIT_REPLACE,       L"Replace",         RI_REPLACE,  true  },
-            { IDM_EDIT_GOTO,          L"Go to\nLine",     RI_GOTO,     true  },
+    /* === Tab 1: Bearbeiten === */
+    s_tabs.push_back({ L"Bearbeiten", {
+        { L"Suchen", {
+            { IDM_EDIT_FIND,          L"Suchen",              RI_FIND,         true  },
+            { IDM_EDIT_REPLACE,       L"Ersetzen",            RI_REPLACE,      true  },
+            { IDM_EDIT_GOTO,          L"Gehe zu\nZeile",      RI_GOTO,         true  },
         }},
-        { L"Selection", {
-            { IDM_EDIT_SELECTALL,     L"Select\nAll",     RI_SELECTALL,true  },
+        { L"Auswahl", {
+            { IDM_EDIT_SELECTALL,     L"Alles\nmarkieren",    RI_SELECTALL,    true  },
         }},
         { L"Code", {
-            { IDM_EDIT_COMMENT,       L"Toggle\nComment", RI_COMMENT,  true  },
+            { IDM_EDIT_COMMENT,       L"Kommentar\numschalten", RI_COMMENT,    true  },
         }},
     }});
 
-    /* === Tab 2: View === */
-    s_tabs.push_back({ L"View", {
-        { L"Panels", {
-            { IDM_VIEW_EXPLORER,      L"Explorer",        RI_EXPLORER, true  },
-            { IDM_VIEW_OUTPUT,        L"Output",          RI_OUTPUT,   true  },
+    /* === Tab 2: Ansicht === */
+    s_tabs.push_back({ L"Ansicht", {
+        { L"Fenster", {
+            { IDM_VIEW_EXPLORER,      L"Explorer",            RI_EXPLORER,     true  },
+            { IDM_VIEW_OUTPUT,        L"Ausgabe",             RI_OUTPUT,       true  },
         }},
         { L"Zoom", {
-            { IDM_VIEW_ZOOMIN,        L"Zoom In",         RI_ZOOMIN,   true  },
-            { IDM_VIEW_ZOOMRESET,     L"Reset",           RI_ZOOMRESET,true  },
-            { IDM_VIEW_ZOOMOUT,       L"Zoom Out",        RI_ZOOMOUT,  true  },
+            { IDM_VIEW_ZOOMIN,        L"Vergrößern",          RI_ZOOMIN,       true  },
+            { IDM_VIEW_ZOOMRESET,     L"Normal",              RI_ZOOMRESET,    true  },
+            { IDM_VIEW_ZOOMOUT,       L"Verkleinern",         RI_ZOOMOUT,      true  },
         }},
-        { L"Theme", {
-            { IDM_VIEW_DARKMODE,      L"Dark",            RI_DARKMODE, true  },
-            { IDM_VIEW_LIGHTMODE,     L"Light",           RI_LIGHTMODE,true  },
-        }},
-    }});
-
-    /* === Tab 3: Build === */
-    s_tabs.push_back({ L"Build", {
-        { L"Build", {
-            { IDM_BUILD_BUILD,        L"Build\nSolution", RI_BUILD,    true  },
-            { IDM_BUILD_REBUILD,      L"Rebuild",         RI_REBUILD,  true  },
-            { IDM_BUILD_CLEAN,        L"Clean",           RI_CLEAN,    true  },
+        { L"Design", {
+            { IDM_VIEW_DARKMODE,      L"Dunkel",              RI_DARKMODE,     true  },
+            { IDM_VIEW_LIGHTMODE,     L"Hell",                RI_LIGHTMODE,    true  },
         }},
     }});
 
-    /* === Tab 4: Debug === */
-    s_tabs.push_back({ L"Debug", {
-        { L"Run", {
-            { IDM_DEBUG_START,        L"Start\nDebugging",RI_DEBUG_START, true },
-            { IDM_DEBUG_START_NO_DBG, L"Start Without\nDebugging", RI_RUN, true },
-            { IDM_DEBUG_STOP,         L"Stop",            RI_DEBUG_STOP,  true },
+    /* === Tab 3: Erstellen === */
+    s_tabs.push_back({ L"Erstellen", {
+        { L"Erstellen", {
+            { IDM_BUILD_BUILD,        L"Projektmappe\nerstellen", RI_BUILD,    true  },
+            { IDM_BUILD_REBUILD,      L"Neu\nerstellen",      RI_REBUILD,      true  },
+            { IDM_BUILD_CLEAN,        L"Bereinigen",          RI_CLEAN,        true  },
+        }},
+        { L"Ausführen", {
+            { IDM_BUILD_RUN,          L"Ausführen",           RI_RUN,          true  },
+        }},
+    }});
+
+    /* === Tab 4: Debuggen === */
+    s_tabs.push_back({ L"Debuggen", {
+        { L"Ausführen", {
+            { IDM_DEBUG_START,        L"Debuggen\nstarten",   RI_DEBUG_START,  true  },
+            { IDM_DEBUG_START_NO_DBG, L"Ohne Debugger\nstarten", RI_RUN,      true  },
+            { IDM_DEBUG_STOP,         L"Stopp",               RI_DEBUG_STOP,   true  },
         }},
     }});
 
     /* === Tab 5: Git === */
     s_tabs.push_back({ L"Git", {
         { L"Repository", {
-            { IDM_GIT_COMMIT,         L"Commit",          RI_GIT_COMMIT, true },
-            { IDM_GIT_PUSH,           L"Push",            RI_GIT_PUSH,   true },
-            { IDM_GIT_PULL,           L"Pull",            RI_GIT_PULL,   true },
+            { IDM_GIT_COMMIT,         L"Commit",              RI_GIT_COMMIT,   true  },
+            { IDM_GIT_PUSH,           L"Pushen",              RI_GIT_PUSH,     true  },
+            { IDM_GIT_PULL,           L"Pullen",              RI_GIT_PULL,     true  },
         }},
     }});
 
-    /* === Tab 6: Tools === */
-    s_tabs.push_back({ L"Tools", {
-        { L"Options", {
-            { IDM_VIEW_DARKMODE,      L"Dark\nTheme",     RI_DARKMODE, true  },
-            { IDM_VIEW_LIGHTMODE,     L"Light\nTheme",    RI_LIGHTMODE,true  },
-            { IDM_HELP_ABOUT,         L"About\nNovaStudio", RI_ABOUT,  true  },
+    /* === Tab 6: Extras === */
+    s_tabs.push_back({ L"Extras", {
+        { L"Optionen", {
+            { IDM_VIEW_DARKMODE,      L"Dunkles\nDesign",     RI_DARKMODE,     true  },
+            { IDM_VIEW_LIGHTMODE,     L"Helles\nDesign",      RI_LIGHTMODE,    true  },
+            { IDM_HELP_ABOUT,         L"Über\nNovaStudio",    RI_ABOUT,        true  },
         }},
     }});
 }

@@ -3,17 +3,19 @@
 /* =========================================================================
  * Globals defined here
  * ====================================================================== */
-HWND g_hMain        = nullptr;
-HWND g_hExplorer    = nullptr;
-HWND g_hStatusBar   = nullptr;
-HWND g_hToolBar     = nullptr;
-HWND g_hDocOutline  = nullptr;
+HWND g_hMain           = nullptr;
+HWND g_hExplorer       = nullptr;
+HWND g_hStatusBar      = nullptr;
+HWND g_hToolBar        = nullptr;
+HWND g_hDocOutline     = nullptr;
+HWND g_hBottomContainer = nullptr;
+HWND g_hBottomTabs     = nullptr;
 /* g_hRibbon ist in ribbon.cpp definiert */
 
-Theme g_theme       = {};
+Theme g_theme          = {};
 
 int  g_explorerWidth = 240;
-int  g_outputHeight  = 160;
+int  g_outputHeight  = 170;
 int  g_outlineWidth  = 220;
 bool g_showExplorer  = true;
 bool g_showOutput    = true;
@@ -71,47 +73,42 @@ static void ApplyDwmTheme(HWND hw) {
 /* =========================================================================
  * Status bar
  * ====================================================================== */
+static void StatusSetParts(HWND hParent) {
+    RECT rc; GetClientRect(hParent, &rc);
+    int W = rc.right;
+    /* Segmente: Bereit | Zeile/Spalte | Leerzeichen | Kodierung | Zeilenende |
+                 Sprache | Vorschau */
+    int parts[7];
+    parts[0] = 200;
+    parts[1] = parts[0] + 140;
+    parts[2] = parts[1] + 100;
+    parts[3] = parts[2] + 75;
+    parts[4] = parts[3] + 65;
+    parts[5] = W - 120;
+    parts[6] = -1;
+    SendMessageW(g_hStatusBar, SB_SETPARTS, 7, (LPARAM)parts);
+}
+
 static void StatusCreate(HWND hParent) {
     g_hStatusBar = CreateWindowExW(0, STATUSCLASSNAMEW, nullptr,
         WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
         0, 0, 0, 0,
         hParent, (HMENU)ID_STATUSBAR, GetModuleHandleW(nullptr), nullptr);
 
-    RECT rc; GetClientRect(hParent, &rc);
-    int W = rc.right;
-    /* Parts: Ready | Ln/Col | Spaces | Encoding | EOL | Language | Pre-Release */
-    int parts[7];
-    parts[0] = 200;
-    parts[1] = parts[0] + 130;
-    parts[2] = parts[1] + 90;
-    parts[3] = parts[2] + 70;
-    parts[4] = parts[3] + 60;
-    parts[5] = W - 130;
-    parts[6] = -1;
-    SendMessageW(g_hStatusBar, SB_SETPARTS, 7, (LPARAM)parts);
-
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)L"  Ready");
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 1, (LPARAM)L"  Ln 1, Col 1");
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 2, (LPARAM)L"  Spaces: 4");
+    StatusSetParts(hParent);
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)L"  ● Bereit");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 1, (LPARAM)L"  Zl 1, Sp 1");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 2, (LPARAM)L"  Leerzeichen: 4");
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 3, (LPARAM)L"  UTF-8");
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 4, (LPARAM)L"  CRLF");
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 5, (LPARAM)L"  NovaLang");
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 6, (LPARAM)L"  Pre-Release");
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 6, (LPARAM)L"  Vorschau");
 }
 
 static void StatusResize(HWND hParent) {
     if (!g_hStatusBar) return;
+    StatusSetParts(hParent);
     RECT rc; GetClientRect(hParent, &rc);
-    int W = rc.right;
-    int parts[7];
-    parts[0] = 200;
-    parts[1] = parts[0] + 130;
-    parts[2] = parts[1] + 90;
-    parts[3] = parts[2] + 70;
-    parts[4] = parts[3] + 60;
-    parts[5] = W - 130;
-    parts[6] = -1;
-    SendMessageW(g_hStatusBar, SB_SETPARTS, 7, (LPARAM)parts);
     SendMessageW(g_hStatusBar, WM_SIZE, 0, MAKELPARAM(rc.right, rc.bottom));
 }
 
@@ -224,7 +221,9 @@ void LayoutCompute(HWND hw, RECT *rExp, RECT *rEd, RECT *rOut, RECT *rTab) {
 }
 
 static void OutlineResize(HWND hw) {
-    if (!g_hDocOutline) return;
+    /* Find the outline container (parent of g_hDocOutline) */
+    HWND hOutCont = g_hDocOutline ? GetParent(g_hDocOutline) : nullptr;
+    if (!hOutCont) return;
     RECT cl; GetClientRect(hw, &cl);
     RECT sbrc = {};
     if (g_hStatusBar) GetWindowRect(g_hStatusBar, &sbrc);
@@ -232,10 +231,11 @@ static void OutlineResize(HWND hw) {
     int top  = RIBBON_HEIGHT;
     int h    = cl.bottom - sbH;
     int outW = g_showOutline ? g_outlineWidth : 0;
-    SetWindowPos(g_hDocOutline, nullptr,
+    SetWindowPos(hOutCont, nullptr,
                  cl.right - outW, top, outW, h - top,
                  SWP_NOZORDER | SWP_NOACTIVATE);
-    ShowWindow(g_hDocOutline, g_showOutline ? SW_SHOW : SW_HIDE);
+    ShowWindow(hOutCont, g_showOutline ? SW_SHOW : SW_HIDE);
+    SendMessageW(hOutCont, WM_SIZE, 0, MAKELPARAM(outW, h - top));
 }
 
 void LayoutApply(HWND hw) {
@@ -748,52 +748,146 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         /* Status bar (unten) */
         StatusCreate(hw);
 
-        /* Explorer (links) */
+        /* === Explorer-Panel (links) === */
         RECT rExp = {0, RIBBON_HEIGHT, g_explorerWidth, cl.bottom};
         ExplorerCreate(hw, rExp);
 
-        /* Document Outline (rechts) */
+        /* === Document-Outline-Panel (rechts) mit Header + Suche + Tree === */
         {
             int outW = g_showOutline ? g_outlineWidth : 0;
-            RECT rOut = {cl.right - outW, RIBBON_HEIGHT, cl.right, cl.bottom};
-            g_hDocOutline = CreateWindowExW(
-                WS_EX_CLIENTEDGE,
+            int outX = cl.right - outW;
+            int outH = cl.bottom - RIBBON_HEIGHT;
+
+            /* Äußeres Container-Fenster */
+            WNDCLASSEXW wcOut = {};
+            wcOut.cbSize        = sizeof(wcOut);
+            wcOut.hInstance     = GetModuleHandleW(nullptr);
+            wcOut.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+            wcOut.hbrBackground = nullptr;
+            wcOut.lpszClassName = L"NovaDocOutlineContainer";
+            wcOut.lpfnWndProc   = [](HWND hw2, UINT m, WPARAM w, LPARAM l) -> LRESULT {
+                static HWND s_search = nullptr, s_tree = nullptr;
+                enum { HDR_H = 28, SRH_H = 26 };
+                switch (m) {
+                case WM_CREATE:
+                    return 0;
+                case WM_ERASEBKGND:
+                    return 1;
+                case WM_PAINT: {
+                    PAINTSTRUCT ps; HDC hdc = BeginPaint(hw2, &ps);
+                    RECT cl2; GetClientRect(hw2, &cl2);
+                    HBRUSH brBg = CreateSolidBrush(g_theme.bg_panel);
+                    FillRect(hdc, &cl2, brBg); DeleteObject(brBg);
+                    /* Header */
+                    RECT hdr = {0, 0, cl2.right, HDR_H};
+                    COLORREF hdrBg = (g_theme.kind==THEME_DARK)
+                        ? RGB(0x1A,0x1A,0x2A) : RGB(0xDC,0xDC,0xEA);
+                    HBRUSH brH = CreateSolidBrush(hdrBg);
+                    FillRect(hdc, &hdr, brH); DeleteObject(brH);
+                    COLORREF sep = (g_theme.kind==THEME_DARK)
+                        ? RGB(0x38,0x38,0x52) : RGB(0xCC,0xCC,0xDD);
+                    HPEN pen = CreatePen(PS_SOLID,1,sep);
+                    HPEN op  = (HPEN)SelectObject(hdc,pen);
+                    MoveToEx(hdc,0,HDR_H-1,nullptr); LineTo(hdc,cl2.right,HDR_H-1);
+                    SelectObject(hdc,op); DeleteObject(pen);
+                    /* Linker Rand-Separator */
+                    pen = CreatePen(PS_SOLID,1,sep);
+                    op  = (HPEN)SelectObject(hdc,pen);
+                    MoveToEx(hdc,0,0,nullptr); LineTo(hdc,0,cl2.bottom);
+                    SelectObject(hdc,op); DeleteObject(pen);
+                    HFONT fnt = CreateFontW(13,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,
+                        DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,
+                        CLEARTYPE_QUALITY,DEFAULT_PITCH|FF_SWISS,L"Segoe UI");
+                    HFONT of = (HFONT)SelectObject(hdc,fnt);
+                    SetBkMode(hdc,TRANSPARENT);
+                    COLORREF tc = (g_theme.kind==THEME_DARK)
+                        ? RGB(0xCD,0xD6,0xF4) : RGB(0x1F,0x1F,0x3F);
+                    SetTextColor(hdc,tc);
+                    RECT tr = {8,0,cl2.right-8,HDR_H};
+                    DrawTextW(hdc,L"Dokumentgliederung",-1,&tr,
+                        DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+                    DeleteObject(SelectObject(hdc,of));
+                    EndPaint(hw2,&ps); return 0;
+                }
+                case WM_SIZE: {
+                    RECT cl2; GetClientRect(hw2,&cl2);
+                    int W2=cl2.right, H2=cl2.bottom;
+                    HWND srch = GetDlgItem(hw2, ID_DOCOUTLINE+1);
+                    HWND tree = GetDlgItem(hw2, ID_DOCOUTLINE);
+                    if (srch) SetWindowPos(srch,nullptr,
+                        5,HDR_H+2,W2-10,SRH_H-4,SWP_NOZORDER|SWP_NOACTIVATE);
+                    int tt = HDR_H+SRH_H+2;
+                    if (tree) SetWindowPos(tree,nullptr,
+                        1,tt,W2-1,H2-tt,SWP_NOZORDER|SWP_NOACTIVATE);
+                    return 0;
+                }
+                }
+                return DefWindowProcW(hw2,m,w,l);
+            };
+            RegisterClassExW(&wcOut);
+
+            HWND hOutCont = CreateWindowExW(0, L"NovaDocOutlineContainer", nullptr,
+                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+                outX, RIBBON_HEIGHT, outW, outH,
+                hw, nullptr, GetModuleHandleW(nullptr), nullptr);
+
+            /* Suchfeld */
+            HWND hOutSearch = CreateWindowExW(WS_EX_CLIENTEDGE,
+                L"EDIT", L"Symbole suchen (Strg+Alt+S)",
+                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                5, HDR_H + 2, outW - 10, 22,
+                hOutCont, (HMENU)(ID_DOCOUTLINE + 1),
+                GetModuleHandleW(nullptr), nullptr);
+            HFONT fntSm = CreateFontW(12,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
+                DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY,DEFAULT_PITCH|FF_SWISS,L"Segoe UI");
+            SendMessageW(hOutSearch, WM_SETFONT, (WPARAM)fntSm, TRUE);
+
+            /* TreeView */
+            g_hDocOutline = CreateWindowExW(0,
                 WC_TREEVIEWW, nullptr,
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | TVS_HASLINES |
                 TVS_HASBUTTONS | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
-                rOut.left, rOut.top,
-                rOut.right - rOut.left, rOut.bottom - rOut.top,
-                hw, (HMENU)ID_DOCOUTLINE, GetModuleHandleW(nullptr), nullptr);
+                1, HDR_H + 28, outW - 1, outH - HDR_H - 28,
+                hOutCont, (HMENU)ID_DOCOUTLINE,
+                GetModuleHandleW(nullptr), nullptr);
 
-            /* Populate with static placeholder items */
+            SetWindowTheme(g_hDocOutline,
+                g_theme.kind==THEME_DARK ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+            TreeView_SetBkColor(g_hDocOutline, g_theme.bg_panel);
+            TreeView_SetTextColor(g_hDocOutline, g_theme.fg_default);
+
+            /* Gliederungsbaum füllen */
             if (g_hDocOutline) {
                 TVINSERTSTRUCT tis = {};
                 tis.hParent      = TVI_ROOT;
                 tis.hInsertAfter = TVI_LAST;
                 tis.item.mask    = TVIF_TEXT;
-
                 tis.item.pszText = (LPWSTR)L"MainWindow";
-                HTREEITEM hRoot  = TreeView_InsertItem(g_hDocOutline, &tis);
+                HTREEITEM hRoot = TreeView_InsertItem(g_hDocOutline, &tis);
 
-                struct { HTREEITEM parent; LPCWSTR name; } items[] = {
-                    {hRoot, L"Fields"},
-                    {hRoot, L"Constructors"},
-                    {hRoot, L"Methods"},
-                    {hRoot, L"Properties"},
-                    {hRoot, L"Events"},
+                struct { HTREEITEM par; LPCWSTR name; } cats[] = {
+                    {hRoot, L"Felder"},
+                    {hRoot, L"Konstruktoren"},
+                    {hRoot, L"Methoden"},
+                    {hRoot, L"Eigenschaften"},
+                    {hRoot, L"Ereignisse"},
                 };
-                for (auto &it : items) {
-                    tis.hParent      = it.parent;
-                    tis.item.pszText = (LPWSTR)it.name;
+                for (auto &c : cats) {
+                    tis.hParent = c.par;
+                    tis.item.pszText = (LPWSTR)c.name;
                     TreeView_InsertItem(g_hDocOutline, &tis);
                 }
                 TreeView_Expand(g_hDocOutline, hRoot, TVE_EXPAND);
             }
+
+            /* WM_SIZE initial trigger */
+            SendMessageW(hOutCont, WM_SIZE, 0, MAKELPARAM(outW, outH));
         }
 
-        /* Editor (mitte) */
-        RECT rEd  = {g_explorerWidth, RIBBON_HEIGHT,
-                     cl.right - g_outlineWidth, cl.bottom};
+        /* === Editor (Mitte) === */
+        RECT rEd = {g_explorerWidth, RIBBON_HEIGHT,
+                    cl.right - g_outlineWidth, cl.bottom};
         EditorCreate(hw, rEd);
         break;
     }

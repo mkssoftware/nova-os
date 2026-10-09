@@ -181,7 +181,9 @@ extern HWND g_hExplorer;
 extern HWND g_hOutput;
 extern HWND g_hTabBar;
 extern HWND g_hStatusBar;
-extern HWND g_hDocOutline;
+extern HWND g_hDocOutline;        /* TreeView inside outline container */
+extern HWND g_hBottomContainer;   /* Container for tabs + output */
+extern HWND g_hBottomTabs;        /* TabCtrl in bottom container */
 extern HFONT g_hCodeFont;
 
 extern int  g_explorerWidth;
