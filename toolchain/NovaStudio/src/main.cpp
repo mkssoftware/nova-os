@@ -973,6 +973,12 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         InvalidateTitleBar(hw);
         break;
 
+    case WM_NCLBUTTONDOWN:
+        if (wp == HTCLOSE)     { SendMessageW(hw, WM_SYSCOMMAND, SC_CLOSE,   lp); return 0; }
+        if (wp == HTMAXBUTTON) { SendMessageW(hw, WM_SYSCOMMAND, IsZoomed(hw) ? SC_RESTORE : SC_MAXIMIZE, lp); return 0; }
+        if (wp == HTMINBUTTON) { SendMessageW(hw, WM_SYSCOMMAND, SC_MINIMIZE, lp); return 0; }
+        return DefWindowProcW(hw, msg, wp, lp);
+
     case WM_NCLBUTTONDBLCLK:
         if (wp == HTCAPTION) {
             SendMessageW(hw, WM_SYSCOMMAND,
