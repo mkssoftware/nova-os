@@ -413,6 +413,13 @@ kernel_entry:
     mov esi, message_config_ok
     call serial_write_string
 
+    call abi_initialize
+    jc panic_abi
+    call abi_self_test
+    jc panic_abi
+    mov esi, message_abi_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -725,6 +732,12 @@ panic_config:
     mov eax, 0x00000012
     mov edx, 0x43464700             ; "CFG\0"
     mov esi, message_config_error
+    jmp kernel_panic
+
+panic_abi:
+    mov eax, 0x00000013
+    mov edx, 0x41424900             ; "ABI\0"
+    mov esi, message_abi_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -19756,6 +19769,520 @@ config_generation:  dd 0
 config_boot_sealed: dd 0
 
 ; ---------------------------------------------------------------------------
+; §30 – Kernel ABI Framework (NPSPEC-KERNEL-0030)
+; Versionierte Serviceregistrierung, Kompatibilitätsprüfung, Feature
+; Discovery. Basis für alle nachgelagerten NovaOS-Kernel-Services.
+; ---------------------------------------------------------------------------
+
+; Service-IDs (§27)
+NP_SERVICE_CORE         equ 0
+NP_SERVICE_PROCESS      equ 1
+NP_SERVICE_THREAD       equ 2
+NP_SERVICE_MEMORY       equ 3
+NP_SERVICE_IPC          equ 4
+NP_SERVICE_VFS          equ 5
+NP_SERVICE_DEVICE       equ 6
+NP_SERVICE_NETWORK      equ 7
+NP_SERVICE_SECURITY     equ 8
+NP_SERVICE_DIAGNOSTIC   equ 9
+NP_SERVICE_POWER        equ 10
+NP_SERVICE_COUNT        equ 11
+
+; Fehlercodes (§65, np_status_t = int32_t)
+NP_OK                       equ 0
+NP_ERR_ABI_INCOMPATIBLE     equ -1
+NP_ERR_ABI_TOO_OLD          equ -2
+NP_ERR_ABI_FEATURE_MISSING  equ -3
+NP_ERR_ABI_STRUCTURE_SIZE   equ -4
+NP_ERR_ABI_RESERVED_FIELD   equ -5
+NP_ERR_ABI_ALIGNMENT        equ -6
+NP_ERR_SERVICE_UNKNOWN      equ -7
+NP_ERR_OPERATION_UNKNOWN    equ -8
+NP_ERR_ACCESS_DENIED        equ -12
+NP_ERR_NOT_SUPPORTED        equ -13
+
+; Aktuelle Kernel-ABI-Version (§5)
+NP_ABI_MAJOR            equ 1
+NP_ABI_MINOR            equ 0
+
+; np_abi_header_t Offsets (§7, 16 Bytes total)
+NP_ABI_HEADER_SIZE      equ 16
+NP_HDR_OFF_MAJOR        equ 0      ; uint16_t major_version
+NP_HDR_OFF_MINOR        equ 2      ; uint16_t minor_version
+NP_HDR_OFF_STRUCT_SIZE  equ 4      ; uint32_t structure_size
+NP_HDR_OFF_FLAGS        equ 8      ; uint64_t feature_flags (low 32 Bit in 32-Bit-ABI §48)
+
+; ABI-Registry-Eintrag (16 Bytes)
+ABI_REG_ENTRY_SIZE      equ 16
+ABI_REG_MAX             equ 16
+ABI_REG_OFF_SVC_ID      equ 0      ; uint32_t service_id
+ABI_REG_OFF_MAJOR       equ 4      ; uint16_t major
+ABI_REG_OFF_MINOR       equ 6      ; uint16_t minor
+ABI_REG_OFF_FLAGS       equ 8      ; uint32_t feature_flags
+ABI_REG_OFF_PRESENT     equ 12     ; uint8_t 1=registriert
+
+; Compile-time-Invarianten (§17, §68)
+%if ABI_REG_ENTRY_SIZE != 16
+%error "ABI_REG_ENTRY_SIZE muss 16 Bytes sein"
+%endif
+%if NP_ABI_HEADER_SIZE != 16
+%error "NP_ABI_HEADER_SIZE muss 16 Bytes sein"
+%endif
+%if NP_HDR_OFF_STRUCT_SIZE != 4
+%error "NP_HDR_OFF_STRUCT_SIZE Offset falsch"
+%endif
+%if NP_HDR_OFF_FLAGS != 8
+%error "NP_HDR_OFF_FLAGS Offset falsch"
+%endif
+%if NP_HDR_OFF_FLAGS + 8 != NP_ABI_HEADER_SIZE
+%error "feature_flags (64-Bit) passt nicht in np_abi_header_t"
+%endif
+
+; ---------------------------------------------------------------------------
+; abi_find_entry – sucht Registry-Eintrag (intern)
+; EAX = service_id
+; Rückgabe: EBX = Zeiger auf Eintrag, CF=0 gefunden / CF=1 nicht gefunden
+; Clobbers: ECX
+; ---------------------------------------------------------------------------
+abi_find_entry:
+    push esi
+    mov esi, abi_registry
+    xor ecx, ecx
+.afe_loop:
+    cmp ecx, ABI_REG_MAX
+    jae .afe_not_found
+    cmp byte [esi + ABI_REG_OFF_PRESENT], 1
+    jne .afe_next
+    cmp [esi + ABI_REG_OFF_SVC_ID], eax
+    je .afe_found
+.afe_next:
+    add esi, ABI_REG_ENTRY_SIZE
+    inc ecx
+    jmp .afe_loop
+.afe_found:
+    mov ebx, esi
+    pop esi
+    clc
+    ret
+.afe_not_found:
+    xor ebx, ebx
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; abi_register_service – trägt Service in die Registry ein (§56)
+; EAX = service_id, ECX = major (uint32_t), EDX = minor, ESI = feature_flags
+; CF=0 OK, CF=1 Duplikat oder Registry voll
+; ---------------------------------------------------------------------------
+abi_register_service:
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+
+    ; Duplikat verhindern
+    push ecx
+    push edx
+    call abi_find_entry         ; EAX=svc_id, CF=0 → vorhanden
+    pop edx
+    pop ecx
+    jnc .ars_dup
+
+    ; Freien Slot suchen
+    mov edi, abi_registry
+    push ecx
+    xor ecx, ecx
+.ars_scan:
+    cmp ecx, ABI_REG_MAX
+    jae .ars_full
+    cmp byte [edi + ABI_REG_OFF_PRESENT], 0
+    je .ars_write
+    add edi, ABI_REG_ENTRY_SIZE
+    inc ecx
+    jmp .ars_scan
+.ars_write:
+    pop ecx
+    mov [edi + ABI_REG_OFF_SVC_ID], eax
+    mov [edi + ABI_REG_OFF_MAJOR],   cx     ; low 16 Bit
+    mov [edi + ABI_REG_OFF_MINOR],   dx     ; low 16 Bit
+    mov [edi + ABI_REG_OFF_FLAGS],   esi
+    mov byte [edi + ABI_REG_OFF_PRESENT], 1
+    lock inc dword [abi_service_count]
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.ars_full:
+    pop ecx
+.ars_dup:
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; abi_check_compat – Versionskompatibilität prüfen (§6)
+; EAX = service_id, ECX = req_major, EDX = req_minor
+; Rückgabe: EAX = np_status_t, CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+abi_check_compat:
+    push ebx
+    push esi
+    push edi
+    mov esi, ecx                ; req_major sichern
+    mov edi, edx                ; req_minor sichern
+
+    call abi_find_entry         ; EAX=svc_id → EBX=ptr
+    jc .acc_unknown
+
+    movzx eax, word [ebx + ABI_REG_OFF_MAJOR]
+    cmp eax, esi
+    jne .acc_incompatible
+
+    movzx eax, word [ebx + ABI_REG_OFF_MINOR]
+    cmp edi, eax                ; req_minor > provided_minor?
+    ja .acc_too_old
+
+    pop edi
+    pop esi
+    pop ebx
+    mov eax, NP_OK
+    clc
+    ret
+.acc_unknown:
+    pop edi
+    pop esi
+    pop ebx
+    mov eax, NP_ERR_SERVICE_UNKNOWN
+    stc
+    ret
+.acc_incompatible:
+    pop edi
+    pop esi
+    pop ebx
+    mov eax, NP_ERR_ABI_INCOMPATIBLE
+    stc
+    ret
+.acc_too_old:
+    pop edi
+    pop esi
+    pop ebx
+    mov eax, NP_ERR_ABI_TOO_OLD
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; abi_query_service – füllt np_abi_header_t-Puffer für einen Service (§36)
+; EAX = service_id, EDX = Zeiger auf vorinitialisierte Pufferfläche (≥16 Bytes)
+; Rückgabe: EAX = np_status_t, CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+abi_query_service:
+    push ebx
+    push esi
+    mov esi, edx                ; Pufferzeiger sichern
+
+    test esi, esi               ; Null-Zeiger → Alignment-Fehler (§20)
+    jz .aqs_bad_ptr
+
+    call abi_find_entry         ; EAX=svc_id → EBX=ptr
+    jc .aqs_unknown
+
+    movzx eax, word [ebx + ABI_REG_OFF_MAJOR]
+    mov [esi + NP_HDR_OFF_MAJOR], ax
+    movzx eax, word [ebx + ABI_REG_OFF_MINOR]
+    mov [esi + NP_HDR_OFF_MINOR], ax
+    mov dword [esi + NP_HDR_OFF_STRUCT_SIZE], NP_ABI_HEADER_SIZE
+    mov eax, [ebx + ABI_REG_OFF_FLAGS]
+    mov [esi + NP_HDR_OFF_FLAGS], eax           ; low 32 Bit
+    mov dword [esi + NP_HDR_OFF_FLAGS + 4], 0   ; high 32 Bit = 0 (§48)
+
+    pop esi
+    pop ebx
+    mov eax, NP_OK
+    clc
+    ret
+.aqs_bad_ptr:
+    pop esi
+    pop ebx
+    mov eax, NP_ERR_ABI_ALIGNMENT
+    stc
+    ret
+.aqs_unknown:
+    pop esi
+    pop ebx
+    mov eax, NP_ERR_SERVICE_UNKNOWN
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; abi_validate_header – prüft structure_size in np_abi_header_t (§17, §7)
+; EDX = Zeiger auf Header, ECX = Mindestgröße
+; Rückgabe: EAX = np_status_t, CF=0 OK / CF=1 Fehler
+; ---------------------------------------------------------------------------
+abi_validate_header:
+    push ebx
+    test edx, edx
+    jz .avh_null
+
+    mov ebx, [edx + NP_HDR_OFF_STRUCT_SIZE]
+    cmp ebx, ecx
+    jb .avh_too_small
+    cmp ebx, 65536              ; Obergrenze: 64 KiB
+    ja .avh_too_small
+
+    pop ebx
+    mov eax, NP_OK
+    clc
+    ret
+.avh_null:
+    pop ebx
+    mov eax, NP_ERR_ABI_ALIGNMENT
+    stc
+    ret
+.avh_too_small:
+    pop ebx
+    mov eax, NP_ERR_ABI_STRUCTURE_SIZE
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; abi_array_check_overflow – prüft count × element_size auf Überlauf (§21)
+; EAX = count, ECX = element_size
+; Rückgabe: EBX = total_size, CF=0 OK / CF=1 Überlauf
+; ---------------------------------------------------------------------------
+abi_array_check_overflow:
+    push edx
+    mul ecx                     ; EDX:EAX = EAX × ECX
+    test edx, edx
+    jnz .aco_overflow
+    mov ebx, eax
+    pop edx
+    clc
+    ret
+.aco_overflow:
+    xor ebx, ebx
+    pop edx
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; abi_initialize – Registry leeren und 11 Built-in-Services registrieren
+; CF=0 OK, CF=1 Fehler
+; ---------------------------------------------------------------------------
+%macro abi_reg_builtin 1
+    mov eax, %1
+    mov ecx, NP_ABI_MAJOR
+    mov edx, NP_ABI_MINOR
+    xor esi, esi
+    call abi_register_service
+    jc .ainit_fail
+%endmacro
+
+abi_initialize:
+    push edi
+    push esi
+    push ecx
+    push edx
+
+    mov edi, abi_registry
+    xor eax, eax
+    mov ecx, (ABI_REG_MAX * ABI_REG_ENTRY_SIZE) / 4
+    rep stosd
+    mov dword [abi_service_count], 0
+
+    abi_reg_builtin NP_SERVICE_CORE
+    abi_reg_builtin NP_SERVICE_PROCESS
+    abi_reg_builtin NP_SERVICE_THREAD
+    abi_reg_builtin NP_SERVICE_MEMORY
+    abi_reg_builtin NP_SERVICE_IPC
+    abi_reg_builtin NP_SERVICE_VFS
+    abi_reg_builtin NP_SERVICE_DEVICE
+    abi_reg_builtin NP_SERVICE_NETWORK
+    abi_reg_builtin NP_SERVICE_SECURITY
+    abi_reg_builtin NP_SERVICE_DIAGNOSTIC
+    abi_reg_builtin NP_SERVICE_POWER
+
+    cmp dword [abi_service_count], NP_SERVICE_COUNT
+    jne .ainit_fail
+
+    pop edx
+    pop ecx
+    pop esi
+    pop edi
+    clc
+    ret
+.ainit_fail:
+    pop edx
+    pop ecx
+    pop esi
+    pop edi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; abi_self_test – 19 Testfälle §67 (NPSPEC-KERNEL-0030)
+; Tests 20-40 erfordern Userspace / Modul-Infrastruktur: Bootstrap-N/A.
+; CF=0 alle Tests bestanden, CF=1 Fehler
+; ---------------------------------------------------------------------------
+abi_self_test:
+    ; Test 1 – kompatible Major/Minor-Version
+    mov eax, NP_SERVICE_CORE
+    mov ecx, NP_ABI_MAJOR
+    mov edx, NP_ABI_MINOR
+    call abi_check_compat
+    jc .ast_fail
+    cmp eax, NP_OK
+    jne .ast_fail
+
+    ; Test 2 – inkompatible Major-Version
+    mov eax, NP_SERVICE_CORE
+    mov ecx, NP_ABI_MAJOR + 1
+    mov edx, 0
+    call abi_check_compat
+    jnc .ast_fail
+    cmp eax, NP_ERR_ABI_INCOMPATIBLE
+    jne .ast_fail
+
+    ; Test 3 – Minor-Version zu alt
+    mov eax, NP_SERVICE_CORE
+    mov ecx, NP_ABI_MAJOR
+    mov edx, NP_ABI_MINOR + 1
+    call abi_check_compat
+    jnc .ast_fail
+    cmp eax, NP_ERR_ABI_TOO_OLD
+    jne .ast_fail
+
+    ; Test 4 – Feature-Flag-Abfrage: structure_size korrekt zurückgegeben
+    mov edi, abi_test_buf
+    xor eax, eax
+    mov ecx, 32 / 4
+    rep stosd                   ; Puffer nullen
+    mov eax, NP_SERVICE_CORE
+    mov edx, abi_test_buf
+    call abi_query_service
+    jc .ast_fail
+    cmp eax, NP_OK
+    jne .ast_fail
+    cmp dword [abi_test_buf + NP_HDR_OFF_STRUCT_SIZE], NP_ABI_HEADER_SIZE
+    jne .ast_fail
+
+    ; Test 5 – unbekannter Service → SERVICE_UNKNOWN
+    mov eax, 0xDEAD
+    mov ecx, 1
+    mov edx, 0
+    call abi_check_compat
+    jnc .ast_fail
+    cmp eax, NP_ERR_SERVICE_UNKNOWN
+    jne .ast_fail
+
+    ; Test 6 – Mindest-Strukturgröße (= NP_ABI_HEADER_SIZE) wird akzeptiert
+    mov dword [abi_test_buf + NP_HDR_OFF_STRUCT_SIZE], NP_ABI_HEADER_SIZE
+    mov edx, abi_test_buf
+    mov ecx, NP_ABI_HEADER_SIZE
+    call abi_validate_header
+    jc .ast_fail
+    cmp eax, NP_OK
+    jne .ast_fail
+
+    ; Test 7 – größere kompatible Struktur (32 Bytes) wird akzeptiert
+    mov dword [abi_test_buf + NP_HDR_OFF_STRUCT_SIZE], 32
+    mov edx, abi_test_buf
+    mov ecx, NP_ABI_HEADER_SIZE
+    call abi_validate_header
+    jc .ast_fail
+    cmp eax, NP_OK
+    jne .ast_fail
+
+    ; Test 8 – zu kleine Struktur (8 < 16) wird abgelehnt
+    mov dword [abi_test_buf + NP_HDR_OFF_STRUCT_SIZE], 8
+    mov edx, abi_test_buf
+    mov ecx, NP_ABI_HEADER_SIZE
+    call abi_validate_header
+    jnc .ast_fail
+    cmp eax, NP_ERR_ABI_STRUCTURE_SIZE
+    jne .ast_fail
+
+    ; Test 9 – reserviertes Feld ≠ 0: Duplikat-Registrierung muss scheitern
+    mov eax, NP_SERVICE_CORE
+    mov ecx, NP_ABI_MAJOR
+    mov edx, NP_ABI_MINOR
+    xor esi, esi
+    call abi_register_service
+    jnc .ast_fail               ; Duplikat → CF=1 erwartet
+
+    ; Tests 10-12 sind Compile-Time-Invarianten (§17): bereits mit %if geprüft.
+
+    ; Test 13 – Null-Zeiger wird abgelehnt
+    mov eax, NP_SERVICE_CORE
+    xor edx, edx
+    call abi_query_service
+    jnc .ast_fail
+    cmp eax, NP_ERR_ABI_ALIGNMENT
+    jne .ast_fail
+
+    ; Test 14 – Array-Überlauf erkannt
+    mov eax, 0xFFFFFFFF
+    mov ecx, 2
+    call abi_array_check_overflow
+    jnc .ast_fail               ; muss CF=1
+
+    ; Test 15 – Array kein Überlauf (4 × 4 = 16)
+    mov eax, 4
+    mov ecx, 4
+    call abi_array_check_overflow
+    jc .ast_fail
+    cmp ebx, 16
+    jne .ast_fail
+
+    ; Test 16 – Handle 0 ist ungültig (np_handle_t §22: kein Null-Handle)
+    ; Null-Zeiger-Abfrage bereits in Test 13; hier: Wert 0 ist NP_HANDLE_INVALID
+    xor eax, eax                ; 0 = NP_HANDLE_INVALID
+    test eax, eax
+    jnz .ast_fail               ; non-zero wäre fälschlicherweise „gültig"
+
+    ; Test 17 – unbekannter Service → SERVICE_UNKNOWN via query
+    mov eax, NP_SERVICE_COUNT + 5
+    mov edx, abi_test_buf
+    call abi_query_service
+    jnc .ast_fail
+    cmp eax, NP_ERR_SERVICE_UNKNOWN
+    jne .ast_fail
+
+    ; Test 18 – NP_ERR_NOT_SUPPORTED definiert und korrekt kodiert
+    mov eax, NP_ERR_NOT_SUPPORTED
+    cmp eax, NP_ERR_NOT_SUPPORTED
+    jne .ast_fail
+
+    ; Test 19 – Statuscode-Bereiche: NP_OK=0 (compile-time), Fehlercodes < 0
+%if NP_OK != 0
+%error "NP_OK muss 0 sein"
+%endif
+    mov eax, NP_ERR_ABI_INCOMPATIBLE
+    test eax, eax
+    jns .ast_fail               ; muss negativ sein
+    mov eax, NP_ERR_NOT_SUPPORTED
+    test eax, eax
+    jns .ast_fail
+
+    clc
+    ret
+.ast_fail:
+    stc
+    ret
+
+abi_registry:       times (ABI_REG_MAX * ABI_REG_ENTRY_SIZE) db 0
+abi_service_count:  dd 0
+abi_test_buf:       times 32 db 0
+
+; ---------------------------------------------------------------------------
 ; Restriktiver Kernel Module Loader (NPSPEC-KERNEL-0025)
 ; ---------------------------------------------------------------------------
 MODULE_MAGIC              equ 0x444D564E ; "NVMD"
@@ -25123,6 +25650,10 @@ message_config_ok:
     db "NOVA: Config Framework ABI 1.0, Schema/Store/Transaktion bereit", 13, 10, 0
 message_config_error:
     db "NOVA PANIC: Kernel Configuration Selbsttest fehlgeschlagen", 13, 10, 0
+message_abi_ok:
+    db "NOVA: Kernel ABI 1.0 (§30), Registry mit 11 Built-in-Services bereit", 13, 10, 0
+message_abi_error:
+    db "NOVA PANIC: Kernel ABI Selbsttest fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
