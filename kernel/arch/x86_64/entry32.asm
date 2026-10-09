@@ -473,6 +473,10 @@ kernel_entry:
     jc panic_sync
     call sync_self_test
     jc panic_sync
+    call sync_ext_initialize
+    jc panic_sync
+    call sync_ext_self_test
+    jc panic_sync
     mov esi, message_sync_ok
     call serial_write_string
 
@@ -25326,6 +25330,358 @@ sync_vsvc_tbl:
     dd VSVC_CALL_EARLY_BOOT | VSVC_CALL_PANIC_SAFE
     dd 0
 sync_name_sync:  db "nova.sync.core", 0
+align 4
+
+; ===========================================================================
+; §016 Erweiterung – Blocking Mutex, Condition Variables, Wait Queues, RCU
+; Bootstrap: kein echtes Blockieren (Single-CPU, kein Scheduler-Sleep);
+; Datenstrukturen + Operationen vollständig, Schlaf = Spin-Fallback.
+; ===========================================================================
+
+; Mutex-Struktur (16 Byte)
+SYNC_MUTEX_SIZE         equ 16
+SYNC_MUTEX_OFF_SPIN     equ 0     ; dd spinlock state
+SYNC_MUTEX_OFF_OWNER    equ 4     ; dd owner token (0=frei)
+SYNC_MUTEX_OFF_WAITERS  equ 8     ; dd Anzahl Wartender
+SYNC_MUTEX_OFF_FLAGS    equ 12    ; dd (RECURSIVE, PI etc.)
+
+SYNC_MUTEX_FLAG_RECURSIVE equ 0x00000001
+SYNC_MUTEX_FLAG_PI        equ 0x00000002
+
+; Condition Variable (12 Byte)
+SYNC_COND_SIZE          equ 12
+SYNC_COND_OFF_GEN       equ 0     ; dd generation counter
+SYNC_COND_OFF_WAITERS   equ 4     ; dd Anzahl Wartender
+SYNC_COND_OFF_SPIN      equ 8     ; dd spinlock
+
+; Wait Queue (16 Byte)
+SYNC_WQ_SIZE            equ 16
+SYNC_WQ_OFF_GEN         equ 0     ; dd generation counter
+SYNC_WQ_OFF_WAITERS     equ 4     ; dd Anzahl aktiver Waiter-Einträge
+SYNC_WQ_OFF_SPIN        equ 8     ; dd spinlock
+SYNC_WQ_OFF_FLAGS       equ 12    ; dd Flags
+
+; Wait Queue Entry (16 Byte, §29)
+SYNC_WQE_SIZE           equ 16
+SYNC_WQE_OFF_OWNER      equ 0     ; dd thread-Token (0=frei)
+SYNC_WQE_OFF_FLAGS      equ 4
+SYNC_WQE_OFF_PRIO       equ 8
+SYNC_WQE_OFF_SEQ        equ 12
+SYNC_MAX_WQ_ENTRIES     equ 16
+
+; ---------------------------------------------------------------------------
+; Mutex (§16–§21)
+; ---------------------------------------------------------------------------
+
+; np_mutex_init: EAX=mutex_ptr, ECX=flags
+np_mutex_init:
+    mov dword [eax + SYNC_MUTEX_OFF_SPIN],    SYNC_SPIN_UNLOCKED
+    mov dword [eax + SYNC_MUTEX_OFF_OWNER],   0
+    mov dword [eax + SYNC_MUTEX_OFF_WAITERS], 0
+    mov [eax + SYNC_MUTEX_OFF_FLAGS], ecx
+    ret
+
+; np_mutex_lock: EAX=mutex_ptr → CF=0 erworben / CF=1 Deadlock (§49 Bootstrap)
+; Spin-Fallback: in single-threaded Umgebung kann kein anderer Besitzer entsperren;
+; Wiedereintritt gilt als Deadlock (nicht-rekursiver Standard-Mutex, §17).
+np_mutex_lock:
+    push ecx
+    mov ecx, SYNC_SPIN_LOCKED
+    xchg [eax + SYNC_MUTEX_OFF_SPIN], ecx
+    test ecx, ecx
+    jnz .nml_deadlock
+    mov dword [eax + SYNC_MUTEX_OFF_OWNER], 1
+    pop ecx
+    clc
+    ret
+.nml_deadlock:
+    lock inc dword [eax + SYNC_MUTEX_OFF_WAITERS]
+    lock dec dword [eax + SYNC_MUTEX_OFF_WAITERS]
+    pop ecx
+    mov eax, NP_ERR_SYNC_DEADLOCK
+    stc
+    ret
+
+; np_mutex_try_lock: EAX=mutex_ptr → CF=0 erworben / CF=1 belegt (§16)
+np_mutex_try_lock:
+    push ecx
+    mov ecx, SYNC_SPIN_LOCKED
+    xchg [eax + SYNC_MUTEX_OFF_SPIN], ecx
+    test ecx, ecx
+    jnz .nmtl_fail
+    mov dword [eax + SYNC_MUTEX_OFF_OWNER], 1
+    pop ecx
+    clc
+    ret
+.nmtl_fail:
+    pop ecx
+    stc
+    ret
+
+; np_mutex_unlock: EAX=mutex_ptr → CF=0 / CF=1 nicht Besitzer (§17)
+np_mutex_unlock:
+    cmp dword [eax + SYNC_MUTEX_OFF_OWNER], 0
+    je .nmu_not_owner
+    mov dword [eax + SYNC_MUTEX_OFF_OWNER], 0
+    mfence
+    mov dword [eax + SYNC_MUTEX_OFF_SPIN], SYNC_SPIN_UNLOCKED
+    clc
+    ret
+.nmu_not_owner:
+    mov eax, NP_ERR_SYNC_NOT_OWNER
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; Condition Variable (§26–§27)
+; ---------------------------------------------------------------------------
+
+; np_condition_init: EAX=cond_ptr
+np_condition_init:
+    mov dword [eax + SYNC_COND_OFF_GEN],     0
+    mov dword [eax + SYNC_COND_OFF_WAITERS], 0
+    mov dword [eax + SYNC_COND_OFF_SPIN],    SYNC_SPIN_UNLOCKED
+    ret
+
+; np_condition_signal: EAX=cond_ptr – weckt einen Waiter (§26)
+np_condition_signal:
+    lock inc dword [eax + SYNC_COND_OFF_GEN]
+    ret
+
+; np_condition_broadcast: EAX=cond_ptr – weckt alle Waiter (§26)
+np_condition_broadcast:
+    push ecx
+    mov ecx, [eax + SYNC_COND_OFF_WAITERS]
+    test ecx, ecx
+    jz .ncb_done
+    lock add dword [eax + SYNC_COND_OFF_GEN], ecx
+.ncb_done:
+    pop ecx
+    clc
+    ret
+
+; np_condition_wait: EAX=cond_ptr, EBX=mutex_ptr → CF=0 / CF=1 Fehler
+; Bootstrap-Spurious-Wakeup: Mutex freigeben + sofort wieder erwerben (§27)
+np_condition_wait:
+    push eax
+    mov eax, ebx
+    call np_mutex_unlock
+    jc .ncw_err
+    call np_mutex_lock
+    jc .ncw_err
+    pop eax
+    clc
+    ret
+.ncw_err:
+    pop eax
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; Wait Queue (§28–§30)
+; ---------------------------------------------------------------------------
+
+; np_wait_queue_init: EAX=wq_ptr
+np_wait_queue_init:
+    mov dword [eax + SYNC_WQ_OFF_GEN],     0
+    mov dword [eax + SYNC_WQ_OFF_WAITERS], 0
+    mov dword [eax + SYNC_WQ_OFF_SPIN],    SYNC_SPIN_UNLOCKED
+    mov dword [eax + SYNC_WQ_OFF_FLAGS],   0
+    ret
+
+; np_wait_queue_wake_one: EAX=wq_ptr – weckt einen Eintrag (§30)
+; Bootstrap: Generation hochzählen als Wakeup-Signal
+np_wait_queue_wake_one:
+    lock inc dword [eax + SYNC_WQ_OFF_GEN]
+    clc
+    ret
+
+; np_wait_queue_wake_all: EAX=wq_ptr – weckt alle Einträge (§30)
+np_wait_queue_wake_all:
+    lock inc dword [eax + SYNC_WQ_OFF_GEN]
+    clc
+    ret
+
+; ---------------------------------------------------------------------------
+; RCU – Bootstrap (§33–§34)
+; Single-CPU ohne Präemption: keine echten Grace Periods nötig.
+; ---------------------------------------------------------------------------
+
+; np_rcu_read_lock: no-op (keine Präemption auf Single-CPU) (§34)
+np_rcu_read_lock:
+    ret
+
+; np_rcu_read_unlock: no-op (§34)
+np_rcu_read_unlock:
+    ret
+
+; np_rcu_assign_pointer: EAX=dst_ptr, ECX=new_value (§34)
+; SFENCE stellt sicher, dass der neue Zeiger erst nach abgeschlossenen
+; Schreibzugriffen auf die neue Struktur sichtbar wird.
+np_rcu_assign_pointer:
+    sfence
+    mov [eax], ecx
+    ret
+
+; np_rcu_dereference: EAX=src_ptr → EAX=value (§34)
+; LFENCE verhindert spekulative Vorausnahme des Folge-Lesezugriffs.
+np_rcu_dereference:
+    mov eax, [eax]
+    lfence
+    ret
+
+; np_rcu_synchronize: wartet auf aktive Read-Side Critical Sections (§34)
+; Bootstrap: MFENCE reicht (keine parallel laufenden Leser auf Single-CPU).
+np_rcu_synchronize:
+    mfence
+    ret
+
+; np_rcu_call: EAX=callback_ptr, ECX=context (§34)
+; Bootstrap: sofortige Ausführung (Grace Period entfällt auf Single-CPU).
+np_rcu_call:
+    call eax
+    ret
+
+; ---------------------------------------------------------------------------
+; sync_ext_initialize – Testinstanzen nullen
+; CF=0 (kann nicht fehlschlagen)
+; ---------------------------------------------------------------------------
+sync_ext_initialize:
+    push edi
+
+    mov edi, sync_test_mutex
+    xor eax, eax
+    mov ecx, (SYNC_MUTEX_SIZE + SYNC_COND_SIZE + SYNC_WQ_SIZE) / 4
+    rep stosd
+
+    mov dword [sync_st_rcu_ptr],    0
+    mov dword [sync_st_rcu_target], 0xCAFEBABE
+    mov dword [sync_st_rcu_called], 0
+
+    pop edi
+    clc
+    ret
+
+; ---------------------------------------------------------------------------
+; sync_ext_self_test – 8 Tests
+; CF=0 alle bestanden / CF=1 Fehler
+; ---------------------------------------------------------------------------
+sync_ext_self_test:
+    push ebx
+    push esi
+    push edi
+
+    ; === Test 1: np_mutex_lock / np_mutex_unlock ===
+    mov eax, sync_test_mutex
+    xor ecx, ecx
+    call np_mutex_init
+    call np_mutex_lock
+    jc .sest_fail
+    cmp dword [sync_test_mutex + SYNC_MUTEX_OFF_SPIN], SYNC_SPIN_LOCKED
+    jne .sest_fail
+    call np_mutex_unlock
+    jc .sest_fail
+    cmp dword [sync_test_mutex + SYNC_MUTEX_OFF_SPIN], SYNC_SPIN_UNLOCKED
+    jne .sest_fail
+
+    ; === Test 2: np_mutex_try_lock – frei CF=0; belegt CF=1 ===
+    mov eax, sync_test_mutex
+    call np_mutex_try_lock
+    jc .sest_fail
+    call np_mutex_try_lock
+    jnc .sest_fail
+    call np_mutex_unlock
+
+    ; === Test 3: np_mutex_unlock ohne Besitzer → CF=1 ===
+    mov eax, sync_test_mutex
+    call np_mutex_unlock
+    jnc .sest_fail
+
+    ; === Test 4: np_condition_signal erhöht Generation ===
+    mov eax, sync_test_cond
+    call np_condition_init
+    call np_condition_signal
+    cmp dword [sync_test_cond + SYNC_COND_OFF_GEN], 1
+    jne .sest_fail
+    call np_condition_broadcast     ; waiters=0 → GEN unverändert, CF=0
+    ; (kein Increment da waiters=0)
+    cmp dword [sync_test_cond + SYNC_COND_OFF_GEN], 1
+    jne .sest_fail
+
+    ; === Test 5: np_condition_wait – Mutex unlock+relock ===
+    mov eax, sync_test_mutex
+    xor ecx, ecx
+    call np_mutex_init
+    call np_mutex_lock
+    jc .sest_fail
+    mov eax, sync_test_cond
+    mov ebx, sync_test_mutex
+    call np_condition_wait
+    jc .sest_fail
+    cmp dword [sync_test_mutex + SYNC_MUTEX_OFF_SPIN], SYNC_SPIN_LOCKED
+    jne .sest_fail
+    mov eax, sync_test_mutex
+    call np_mutex_unlock
+
+    ; === Test 6: np_wait_queue wake_one / wake_all ===
+    mov eax, sync_test_wq
+    call np_wait_queue_init
+    call np_wait_queue_wake_one
+    cmp dword [sync_test_wq + SYNC_WQ_OFF_GEN], 1
+    jne .sest_fail
+    call np_wait_queue_wake_all
+    cmp dword [sync_test_wq + SYNC_WQ_OFF_GEN], 2
+    jne .sest_fail
+
+    ; === Test 7: np_rcu_assign_pointer + np_rcu_dereference (2-stufig) ===
+    ; sync_st_rcu_ptr → sync_st_rcu_target → 0xCAFEBABE
+    mov eax, sync_st_rcu_ptr
+    mov ecx, sync_st_rcu_target
+    call np_rcu_assign_pointer      ; [sync_st_rcu_ptr] = &sync_st_rcu_target
+    mov eax, sync_st_rcu_ptr
+    call np_rcu_dereference         ; EAX = &sync_st_rcu_target
+    cmp eax, sync_st_rcu_target
+    jne .sest_fail
+    call np_rcu_dereference         ; EAX = [sync_st_rcu_target] = 0xCAFEBABE
+    cmp eax, 0xCAFEBABE
+    jne .sest_fail
+
+    ; === Test 8: np_rcu_call → Callback sofort ausgeführt ===
+    mov dword [sync_st_rcu_called], 0
+    mov eax, sync_st_rcu_cb
+    xor ecx, ecx
+    call np_rcu_call
+    cmp dword [sync_st_rcu_called], 1
+    jne .sest_fail
+
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+
+.sest_fail:
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+; RCU-Selbsttest-Callback
+sync_st_rcu_cb:
+    mov dword [sync_st_rcu_called], 1
+    ret
+
+; ---------------------------------------------------------------------------
+; §016-Erweiterung Daten
+; ---------------------------------------------------------------------------
+align 4
+sync_test_mutex:     times (SYNC_MUTEX_SIZE / 4) dd 0
+sync_test_cond:      times (SYNC_COND_SIZE  / 4) dd 0
+sync_test_wq:        times (SYNC_WQ_SIZE    / 4) dd 0
+sync_st_rcu_ptr:     dd 0
+sync_st_rcu_target:  dd 0xCAFEBABE
+sync_st_rcu_called:  dd 0
 align 4
 
 ; ---------------------------------------------------------------------------
