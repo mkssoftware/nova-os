@@ -167,6 +167,8 @@ kernel_entry:
 
     call ipc_initialize
     jc panic_ipc
+    call ipc_self_test
+    jc panic_ipc
     call semantic_initialize
     jc panic_ipc
     call semantic_self_test
@@ -4280,6 +4282,85 @@ ipc_initialize:
     mov ecx, (IPC_MESSAGE_SIZE * IPC_QUEUE_CAPACITY) / 4
     rep stosd
     clc
+    ret
+
+; §015 §38: Self-Test – 7 Tests (FIFO-Invarianten, Send/Receive, Grenzen)
+ipc_self_test:
+    push ebx
+    push esi
+    push edi
+    sub esp, 32                         ; [esp+0..15]=Sendepuffer, [esp+16..31]=Empfangspuffer
+    xor ebx, ebx                        ; Fehler-Zähler
+
+    ; Test 1: Queue leer nach init
+    cmp dword [ipc_count], 0
+    je .t2
+    inc ebx
+
+.t2:
+    ; Test 2: ipc_send mit Testinhalt
+    mov dword [esp + 0],  0xDEADBEEF
+    mov dword [esp + 4],  0xCAFEBABE
+    mov dword [esp + 8],  0x12345678
+    mov dword [esp + 12], 0xABCDABCD
+    lea esi, [esp + 0]
+    call ipc_send
+    cmp eax, 1
+    je .t3
+    inc ebx
+
+.t3:
+    ; Test 3: ipc_count == 1 nach send
+    cmp dword [ipc_count], 1
+    je .t4
+    inc ebx
+
+.t4:
+    ; Test 4: ipc_receive
+    lea edi, [esp + 16]
+    call ipc_receive
+    cmp eax, 1
+    je .t5
+    inc ebx
+
+.t5:
+    ; Test 5: empfangene Daten identisch mit gesendeten
+    cmp dword [esp + 16], 0xDEADBEEF
+    jne .t5_fail
+    cmp dword [esp + 20], 0xCAFEBABE
+    je .t6
+.t5_fail:
+    inc ebx
+
+.t6:
+    ; Test 6: ipc_count == 0 nach receive
+    cmp dword [ipc_count], 0
+    je .t7
+    inc ebx
+
+.t7:
+    ; Test 7: receive auf leere Queue → EAX=0
+    lea edi, [esp + 16]
+    call ipc_receive
+    test eax, eax
+    jz .done
+    inc ebx
+
+.done:
+    test ebx, ebx
+    jnz .selftest_fail
+    add esp, 32
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+.selftest_fail:
+    add esp, 32
+    pop edi
+    pop esi
+    pop ebx
+    stc
     ret
 
 ; ESI zeigt auf eine 16-Byte-Nachricht. EAX=1 bei Erfolg, sonst 0.
