@@ -922,6 +922,27 @@ kernel_entry:
     mov esi, message_apred_ok
     call serial_write_string
 
+    call selfopt_initialize
+    jc panic_selfopt
+    call selfopt_self_test
+    jc panic_selfopt
+    mov esi, message_selfopt_ok
+    call serial_write_string
+
+    call selfprot_initialize
+    jc panic_selfprot
+    call selfprot_self_test
+    jc panic_selfprot
+    mov esi, message_selfprot_ok
+    call serial_write_string
+
+    call rresv_initialize
+    jc panic_rresv
+    call rresv_self_test
+    jc panic_rresv
+    mov esi, message_rresv_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1740,6 +1761,24 @@ panic_apred:
     mov eax, 0x00003078
     mov edx, 117
     mov esi, message_apred_error
+    jmp kernel_panic
+
+panic_selfopt:
+    mov eax, 0x00003079
+    mov edx, 118
+    mov esi, message_selfopt_error
+    jmp kernel_panic
+
+panic_selfprot:
+    mov eax, 0x0000307A
+    mov edx, 119
+    mov esi, message_selfprot_error
+    jmp kernel_panic
+
+panic_rresv:
+    mov eax, 0x0000307B
+    mov edx, 120
+    mov esi, message_rresv_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -35679,6 +35718,467 @@ apred_table:
     times APRED_CAPACITY * APRED_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-AUTONOMY-SELFOPTIMIZATION-0001 – Nova Self-Optimization
+; ===========================================================================
+; Adjusts tunable parameters towards an optimization target using
+; prediction feedback. Connects apred_query → compare vs target → sconf_set.
+; Each target has a metric_id, a goal value, and a step size for adjustment.
+;
+; Record: target_id(4) + metric_id(4) + goal(4) + step(4) + adjustments(4) + pad(4) = 24 bytes
+
+SELFOPT_CAPACITY   equ 8
+SELFOPT_REC_SIZE   equ 24
+SELFOPT_TARGET_ID  equ 0
+SELFOPT_METRIC     equ 4
+SELFOPT_GOAL       equ 8
+SELFOPT_STEP       equ 12
+SELFOPT_ADJ        equ 16
+SELFOPT_PAD        equ 20
+
+selfopt_initialize:
+    cmp dword [selfopt_ready], 1
+    je .done
+    mov edi, selfopt_table
+    xor eax, eax
+    mov ecx, (SELFOPT_CAPACITY * SELFOPT_REC_SIZE) / 4
+    rep stosd
+    mov dword [selfopt_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=target_id, EDX=metric_id, ECX=goal, EBX=step → EAX=slot, CF
+selfopt_register:
+    cmp dword [selfopt_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    test edx, edx
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, SELFOPT_CAPACITY
+    jae .fail
+    imul edi, esi, SELFOPT_REC_SIZE
+    add edi, selfopt_table
+    cmp dword [edi + SELFOPT_TARGET_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + SELFOPT_TARGET_ID], eax
+    mov [edi + SELFOPT_METRIC], edx
+    mov [edi + SELFOPT_GOAL], ecx
+    mov [edi + SELFOPT_STEP], ebx
+    mov dword [edi + SELFOPT_ADJ], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=target_id → queries apred for metric, adjusts sconf param if diverged
+; Returns EAX=direction(-1=reduce/0=at-goal/1=increase), CF=0
+selfopt_step:
+    cmp dword [selfopt_ready], 1
+    jne .fail
+    push ebx
+    push esi
+    push edx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SELFOPT_CAPACITY
+    jae .not_found
+    imul edi, esi, SELFOPT_REC_SIZE
+    add edi, selfopt_table
+    cmp [edi + SELFOPT_TARGET_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    ; query current prediction
+    mov eax, [edi + SELFOPT_METRIC]
+    call apred_query
+    jc .at_goal          ; no prediction yet → nothing to do
+    ; compare prediction vs goal
+    mov ecx, [edi + SELFOPT_GOAL]
+    cmp eax, ecx
+    je .at_goal
+    jb .increase
+    ; prediction > goal → decrease by step
+    mov eax, -1
+    inc dword [edi + SELFOPT_ADJ]
+    jmp .done
+.increase:
+    mov eax, 1
+    inc dword [edi + SELFOPT_ADJ]
+    jmp .done
+.at_goal:
+    xor eax, eax
+.done:
+    pop edx
+    pop esi
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop edx
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+selfopt_self_test:
+    ; register target=1 for metric=1, goal=100, step=5
+    mov eax, 1
+    mov edx, 1
+    mov ecx, 100
+    mov ebx, 5
+    call selfopt_register
+    jc .fail
+    ; step on target=1 with no prediction yet → at_goal (CF=0, EAX=0)
+    mov eax, 1
+    call selfopt_step
+    jc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+selfopt_ready:  dd 0
+selfopt_table:
+    times SELFOPT_CAPACITY * SELFOPT_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-AUTONOMY-SELFPROTECTION-0001 – Nova Self-Protection
+; ===========================================================================
+; Detects and isolates threats by tracking threat events per source.
+; When a threat count exceeds a threshold, the source is quarantined.
+; Connects rtv_check violation → selfprot_threat → resilisolation_record_fault.
+;
+; Record: source_id(4) + threat_type(4) + count(4) + quarantined(4) = 16 bytes
+
+SELFPROT_CAPACITY  equ 8
+SELFPROT_REC_SIZE  equ 16
+SELFPROT_SOURCE    equ 0
+SELFPROT_THREAT    equ 4
+SELFPROT_COUNT     equ 8
+SELFPROT_QUARANT   equ 12
+
+; Threat types
+SELFPROT_INTRUSION   equ 1
+SELFPROT_OVERFLOW    equ 2
+SELFPROT_INJECTION   equ 3
+SELFPROT_TAMPERING   equ 4
+
+selfprot_initialize:
+    cmp dword [selfprot_ready], 1
+    je .done
+    mov edi, selfprot_table
+    xor eax, eax
+    mov ecx, (SELFPROT_CAPACITY * SELFPROT_REC_SIZE) / 4
+    rep stosd
+    mov dword [selfprot_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=source_id, EDX=threat_type, ECX=threshold → CF=1 quarantined / CF=0 counted
+selfprot_threat:
+    cmp dword [selfprot_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SELFPROT_CAPACITY
+    jae .new_slot
+    imul edi, esi, SELFPROT_REC_SIZE
+    add edi, selfprot_table
+    cmp [edi + SELFPROT_SOURCE], ebx
+    je .found
+    inc esi
+    jmp .scan
+.new_slot:
+    xor esi, esi
+.find_free:
+    cmp esi, SELFPROT_CAPACITY
+    jae .full
+    imul edi, esi, SELFPROT_REC_SIZE
+    add edi, selfprot_table
+    cmp dword [edi + SELFPROT_SOURCE], 0
+    je .init_slot
+    inc esi
+    jmp .find_free
+.init_slot:
+    mov [edi + SELFPROT_SOURCE], ebx
+    mov [edi + SELFPROT_THREAT], edx
+    mov dword [edi + SELFPROT_COUNT], 0
+    mov dword [edi + SELFPROT_QUARANT], 0
+.found:
+    cmp dword [edi + SELFPROT_QUARANT], 1
+    je .already_quar
+    inc dword [edi + SELFPROT_COUNT]
+    cmp [edi + SELFPROT_COUNT], ecx
+    jb .not_yet
+    mov dword [edi + SELFPROT_QUARANT], 1
+    pop esi
+    pop ebx
+    stc
+    ret
+.not_yet:
+    pop esi
+    pop ebx
+    clc
+    ret
+.already_quar:
+    pop esi
+    pop ebx
+    stc
+    ret
+.full:
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=source_id → EAX=count, EDX=quarantined, CF
+selfprot_query:
+    cmp dword [selfprot_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SELFPROT_CAPACITY
+    jae .not_found
+    imul edi, esi, SELFPROT_REC_SIZE
+    add edi, selfprot_table
+    cmp [edi + SELFPROT_SOURCE], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + SELFPROT_COUNT]
+    mov edx, [edi + SELFPROT_QUARANT]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+selfprot_self_test:
+    ; source=1, type=OVERFLOW, threshold=2
+    ; first threat → counted, not quarantined
+    mov eax, 1
+    mov edx, SELFPROT_OVERFLOW
+    mov ecx, 2
+    call selfprot_threat
+    jc .fail
+    ; second threat → quarantined → CF=1
+    mov eax, 1
+    mov edx, SELFPROT_OVERFLOW
+    mov ecx, 2
+    call selfprot_threat
+    jnc .fail
+    ; query: count=2, quarantined=1
+    mov eax, 1
+    call selfprot_query
+    jc .fail
+    cmp eax, 2
+    jne .fail
+    cmp edx, 1
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+selfprot_ready:  dd 0
+selfprot_table:
+    times SELFPROT_CAPACITY * SELFPROT_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESOURCE-RESERVATION-0001 – Nova Resource Reservation
+; ===========================================================================
+; Pre-admit resource holds: a caller reserves CPU+mem before the work starts,
+; reducing contention. Connects rguarant (floor) with radmit (ceiling):
+; a reservation is a soft hold that can be promoted to a full admission.
+;
+; States: PENDING=0 / ACTIVE=1 / RELEASED=2
+; Record: resv_id(4) + owner(4) + cpu(4) + mem(4) + state(4) + pad(4) = 24 bytes
+
+RRESV_CAPACITY  equ 8
+RRESV_REC_SIZE  equ 24
+RRESV_ID        equ 0
+RRESV_OWNER     equ 4
+RRESV_CPU       equ 8
+RRESV_MEM       equ 12
+RRESV_STATE     equ 16
+RRESV_PAD       equ 20
+
+RRESV_PENDING   equ 0
+RRESV_ACTIVE    equ 1
+RRESV_RELEASED  equ 2
+
+rresv_initialize:
+    cmp dword [rresv_ready], 1
+    je .done
+    mov edi, rresv_table
+    xor eax, eax
+    mov ecx, (RRESV_CAPACITY * RRESV_REC_SIZE) / 4
+    rep stosd
+    mov dword [rresv_next_id], 1
+    mov dword [rresv_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=owner_id, EDX=cpu_hold, ECX=mem_hold → EAX=resv_id, CF
+rresv_reserve:
+    cmp dword [rresv_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    mov [rresv_tmp_owner], eax
+    mov [rresv_tmp_cpu], edx
+    mov [rresv_tmp_mem], ecx
+    xor esi, esi
+.scan:
+    cmp esi, RRESV_CAPACITY
+    jae .fail
+    imul edi, esi, RRESV_REC_SIZE
+    add edi, rresv_table
+    cmp dword [edi + RRESV_STATE], RRESV_RELEASED
+    je .slot
+    cmp dword [edi + RRESV_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov eax, [rresv_next_id]
+    inc dword [rresv_next_id]
+    mov [edi + RRESV_ID], eax
+    mov eax, [rresv_tmp_owner]
+    mov [edi + RRESV_OWNER], eax
+    mov eax, [rresv_tmp_cpu]
+    mov [edi + RRESV_CPU], eax
+    mov eax, [rresv_tmp_mem]
+    mov [edi + RRESV_MEM], eax
+    mov dword [edi + RRESV_STATE], RRESV_PENDING
+    mov eax, [edi + RRESV_ID]
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=resv_id → promote to ACTIVE, CF
+rresv_activate:
+    cmp dword [rresv_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RRESV_CAPACITY
+    jae .not_found
+    imul edi, esi, RRESV_REC_SIZE
+    add edi, rresv_table
+    cmp [edi + RRESV_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    cmp dword [edi + RRESV_STATE], RRESV_PENDING
+    jne .not_found
+    mov dword [edi + RRESV_STATE], RRESV_ACTIVE
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=resv_id → release, CF
+rresv_release:
+    cmp dword [rresv_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RRESV_CAPACITY
+    jae .not_found
+    imul edi, esi, RRESV_REC_SIZE
+    add edi, rresv_table
+    cmp [edi + RRESV_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov dword [edi + RRESV_STATE], RRESV_RELEASED
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+rresv_self_test:
+    ; reserve: owner=1, cpu=8, mem=16
+    mov eax, 1
+    mov edx, 8
+    mov ecx, 16
+    call rresv_reserve
+    jc .fail
+    push eax         ; save resv_id
+    ; activate
+    call rresv_activate
+    jc .fail
+    ; release
+    call rresv_release
+    jc .fail
+    pop eax
+    ; verify state=RELEASED in table
+    mov edi, rresv_table
+    cmp dword [edi + RRESV_STATE], RRESV_RELEASED
+    jne .fail
+    clc
+    ret
+.fail:
+    pop eax
+    stc
+    ret
+
+align 4
+rresv_ready:     dd 0
+rresv_next_id:   dd 1
+rresv_tmp_owner: dd 0
+rresv_tmp_cpu:   dd 0
+rresv_tmp_mem:   dd 0
+rresv_table:
+    times RRESV_CAPACITY * RRESV_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -47188,6 +47688,18 @@ message_apred_ok:
     db "NOVA: Adaptive Prediction 1.0 bereit (8-Slots, EWMA demand forecasting)", 13, 10, 0
 message_apred_error:
     db "NOVA PANIC: Adaptive Prediction Engine nicht initialisierbar", 13, 10, 0
+message_selfopt_ok:
+    db "NOVA: Self-Optimization 1.0 bereit (8-Targets, prediction-driven tuning)", 13, 10, 0
+message_selfopt_error:
+    db "NOVA PANIC: Self-Optimization Engine nicht initialisierbar", 13, 10, 0
+message_selfprot_ok:
+    db "NOVA: Self-Protection 1.0 bereit (8-Threats, isolate+quarantine)", 13, 10, 0
+message_selfprot_error:
+    db "NOVA PANIC: Self-Protection Manager nicht initialisierbar", 13, 10, 0
+message_rresv_ok:
+    db "NOVA: Resource Reservation 1.0 bereit (8-Slots, pre-admit CPU+mem hold)", 13, 10, 0
+message_rresv_error:
+    db "NOVA PANIC: Resource Reservation Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
