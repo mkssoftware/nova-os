@@ -387,6 +387,13 @@ kernel_entry:
     mov esi, message_kernelbypass_ok
     call serial_write_string
 
+    call watchdog_initialize
+    jc panic_watchdog
+    call watchdog_self_test
+    jc panic_watchdog
+    mov esi, message_watchdog_ok
+    call serial_write_string
+
     call io_scheduler_initialize
     jc panic_io_scheduler
     call io_scheduler_self_test
@@ -854,6 +861,12 @@ panic_kernelbypass:
     mov eax, 0x00002027
     mov edx, 39
     mov esi, message_kernelbypass_error
+    jmp kernel_panic
+
+panic_watchdog:
+    mov eax, 0x00003033
+    mov edx, 48
+    mov esi, message_watchdog_error
     jmp kernel_panic
 
 panic_io_scheduler:
@@ -12911,6 +12924,299 @@ kbyp_revoke_count:  dd 0
 align 4
 kbyp_contexts:
     times KBYP_CAPACITY * KBYP_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-WATCHDOG-0001 – Nova Watchdog Timer
+; Periodisch zu kickender Timer; bei Ablauf konfigurierbare Recovery-Aktion.
+; ===========================================================================
+
+WD_CAPACITY       equ 4
+WD_RECORD_SIZE    equ 40
+
+WD_STATE_FREE     equ 0
+WD_STATE_DISARMED equ 1
+WD_STATE_ARMED    equ 2
+WD_STATE_EXPIRED  equ 3
+
+WD_ACTION_PANIC    equ 1
+WD_ACTION_REBOOT   equ 2
+WD_ACTION_LOG      equ 3
+WD_ACTION_CALLBACK equ 4
+
+WD_ID             equ 0
+WD_STATE          equ 4
+WD_OWNER          equ 8
+WD_TIMEOUT_TICKS  equ 12
+WD_LAST_KICK      equ 16
+WD_ACTION_OFF     equ 20
+WD_FLAGS_OFF      equ 24
+WD_CALLBACK       equ 28
+WD_EXPIRE_COUNT   equ 32
+WD_PAD            equ 36
+
+watchdog_initialize:
+    mov edi, wd_table
+    mov ecx, WD_CAPACITY * WD_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [wd_next_id], 0
+    mov dword [wd_global_tick], 0
+    mov dword [wd_live_count], 0
+    mov dword [wd_total_expires], 0
+    mov dword [wd_manager_ready], 1
+    clc
+    ret
+
+; EAX=owner_pid  EDX=timeout_ticks  ECX=action → EAX=slot_index CF=0 / CF=1 full
+watchdog_create:
+    push ebx
+    push esi
+    push edi
+    push edx
+    push ecx
+    mov esi, wd_table
+    xor ebx, ebx
+.wdc_scan:
+    cmp ebx, WD_CAPACITY
+    jae .wdc_full
+    cmp dword [esi + WD_STATE], WD_STATE_FREE
+    je .wdc_found
+    add esi, WD_RECORD_SIZE
+    inc ebx
+    jmp .wdc_scan
+.wdc_found:
+    pop ecx        ; action
+    pop edx        ; timeout
+    mov edi, [wd_next_id]
+    inc dword [wd_next_id]
+    mov [esi + WD_ID], edi
+    mov dword [esi + WD_STATE], WD_STATE_DISARMED
+    mov [esi + WD_OWNER], eax
+    mov [esi + WD_TIMEOUT_TICKS], edx
+    mov [esi + WD_ACTION_OFF], ecx
+    mov dword [esi + WD_LAST_KICK], 0
+    mov dword [esi + WD_FLAGS_OFF], 0
+    mov dword [esi + WD_CALLBACK], 0
+    mov dword [esi + WD_EXPIRE_COUNT], 0
+    mov dword [esi + WD_PAD], 0
+    inc dword [wd_live_count]
+    mov eax, ebx
+    clc
+    pop edi
+    pop esi
+    pop ebx
+    ret
+.wdc_full:
+    pop ecx
+    pop edx
+    stc
+    pop edi
+    pop esi
+    pop ebx
+    ret
+
+; EAX=slot → DISARMED→ARMED, last_kick=current_tick, CF=0 / CF=1
+watchdog_arm:
+    push esi
+    push edx
+    cmp eax, WD_CAPACITY
+    jae .wda_fail
+    imul esi, eax, WD_RECORD_SIZE
+    add esi, wd_table
+    cmp dword [esi + WD_STATE], WD_STATE_DISARMED
+    jne .wda_fail
+    mov edx, [wd_global_tick]
+    mov [esi + WD_LAST_KICK], edx
+    mov dword [esi + WD_STATE], WD_STATE_ARMED
+    clc
+    pop edx
+    pop esi
+    ret
+.wda_fail:
+    stc
+    pop edx
+    pop esi
+    ret
+
+; EAX=slot → last_kick=current_tick, CF=0 / CF=1 not armed
+watchdog_kick:
+    push esi
+    push edx
+    cmp eax, WD_CAPACITY
+    jae .wdk_fail
+    imul esi, eax, WD_RECORD_SIZE
+    add esi, wd_table
+    cmp dword [esi + WD_STATE], WD_STATE_ARMED
+    jne .wdk_fail
+    mov edx, [wd_global_tick]
+    mov [esi + WD_LAST_KICK], edx
+    clc
+    pop edx
+    pop esi
+    ret
+.wdk_fail:
+    stc
+    pop edx
+    pop esi
+    ret
+
+; EAX=slot → state=DISARMED, CF=0 / CF=1 invalid
+watchdog_disarm:
+    push esi
+    cmp eax, WD_CAPACITY
+    jae .wdd_fail
+    imul esi, eax, WD_RECORD_SIZE
+    add esi, wd_table
+    mov dword [esi + WD_STATE], WD_STATE_DISARMED
+    clc
+    pop esi
+    ret
+.wdd_fail:
+    stc
+    pop esi
+    ret
+
+; Inkrementiert wd_global_tick — aus Timer-IRQ aufrufen
+watchdog_tick:
+    inc dword [wd_global_tick]
+    ret
+
+; Prüft alle ARMED Watchdogs; verfallene werden gemäß Action behandelt
+watchdog_check:
+    push ebx
+    push esi
+    push edx
+    push ecx
+    mov esi, wd_table
+    xor ebx, ebx
+.wdchk_loop:
+    cmp ebx, WD_CAPACITY
+    jae .wdchk_done
+    cmp dword [esi + WD_STATE], WD_STATE_ARMED
+    jne .wdchk_next
+    mov edx, [wd_global_tick]
+    sub edx, [esi + WD_LAST_KICK]
+    cmp edx, [esi + WD_TIMEOUT_TICKS]
+    jb .wdchk_next
+    ; abgelaufen
+    inc dword [wd_total_expires]
+    inc dword [esi + WD_EXPIRE_COUNT]
+    mov ecx, [esi + WD_ACTION_OFF]
+    cmp ecx, WD_ACTION_PANIC
+    je .wdchk_panic
+    mov dword [esi + WD_STATE], WD_STATE_EXPIRED
+    jmp .wdchk_next
+.wdchk_panic:
+    mov dword [esi + WD_STATE], WD_STATE_EXPIRED
+    mov eax, 0x00003033
+    mov edx, 48
+    mov esi, message_watchdog_error
+    jmp kernel_panic
+.wdchk_next:
+    add esi, WD_RECORD_SIZE
+    inc ebx
+    jmp .wdchk_loop
+.wdchk_done:
+    pop ecx
+    pop edx
+    pop esi
+    pop ebx
+    clc
+    ret
+
+watchdog_self_test:
+    push ebx
+    push esi
+    push edx
+    xor esi, esi   ; Fehlerz.
+
+    ; T1: ready
+    cmp dword [wd_manager_ready], 1
+    je .wdt1_ok
+    inc esi
+.wdt1_ok:
+
+    ; T2: create
+    mov eax, 7          ; owner
+    mov edx, 50         ; timeout
+    mov ecx, WD_ACTION_LOG
+    call watchdog_create
+    jnc .wdt2_ok
+    inc esi
+.wdt2_ok:
+    mov ebx, eax        ; slot
+
+    ; T3: arm
+    mov eax, ebx
+    call watchdog_arm
+    jnc .wdt3_ok
+    inc esi
+.wdt3_ok:
+
+    ; T4: state=ARMED
+    push edx
+    imul edx, ebx, WD_RECORD_SIZE
+    add edx, wd_table
+    cmp dword [edx + WD_STATE], WD_STATE_ARMED
+    je .wdt4_ok
+    inc esi
+.wdt4_ok:
+
+    ; T5: kick
+    mov eax, ebx
+    call watchdog_kick
+    jnc .wdt5_ok
+    inc esi
+.wdt5_ok:
+
+    ; T6: simuliere Ablauf
+    imul edx, ebx, WD_RECORD_SIZE
+    add edx, wd_table
+    mov dword [edx + WD_LAST_KICK], 0
+    mov dword [wd_global_tick], 200
+    call watchdog_check
+    cmp dword [edx + WD_STATE], WD_STATE_EXPIRED
+    je .wdt6_ok
+    inc esi
+.wdt6_ok:
+    pop edx
+
+    ; T7: disarm
+    mov eax, ebx
+    call watchdog_disarm
+    push edx
+    imul edx, ebx, WD_RECORD_SIZE
+    add edx, wd_table
+    cmp dword [edx + WD_STATE], WD_STATE_DISARMED
+    je .wdt7_ok
+    inc esi
+.wdt7_ok:
+    pop edx
+
+    mov dword [wd_global_tick], 0
+
+    test esi, esi
+    jnz .wdt_fail
+    clc
+    pop edx
+    pop esi
+    pop ebx
+    ret
+.wdt_fail:
+    stc
+    pop edx
+    pop esi
+    pop ebx
+    ret
+
+wd_manager_ready:  dd 0
+wd_next_id:        dd 0
+wd_global_tick:    dd 0
+wd_live_count:     dd 0
+wd_total_expires:  dd 0
+align 4
+wd_table:
+    times WD_CAPACITY * WD_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
@@ -33728,6 +34034,10 @@ message_kernelbypass_ok:
     db "NOVA: Kernel Bypass 1.0 bereit (Control+DataPlane, Revocation)", 13, 10, 0
 message_kernelbypass_error:
     db "NOVA PANIC: Kernel Bypass Manager nicht initialisierbar", 13, 10, 0
+message_watchdog_ok:
+    db "NOVA: Watchdog 1.0 bereit (4 Slots, Kick/Arm/Expire/Disarm)", 13, 10, 0
+message_watchdog_error:
+    db "NOVA PANIC: Watchdog Manager nicht initialisierbar", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:
