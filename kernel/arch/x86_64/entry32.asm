@@ -691,6 +691,27 @@ kernel_entry:
     mov esi, message_thermal_ok
     call serial_write_string
 
+    call identity_initialize
+    jc panic_identity
+    call identity_self_test
+    jc panic_identity
+    mov esi, message_identity_ok
+    call serial_write_string
+
+    call trust_initialize
+    jc panic_trust
+    call trust_self_test
+    jc panic_trust
+    mov esi, message_trust_ok
+    call serial_write_string
+
+    call adapt_initialize
+    jc panic_adaptive
+    call adapt_self_test
+    jc panic_adaptive
+    mov esi, message_adaptive_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1311,6 +1332,24 @@ panic_thermal:
     mov eax, 0x00003057
     mov edx, 84
     mov esi, message_thermal_error
+    jmp kernel_panic
+
+panic_identity:
+    mov eax, 0x00003058
+    mov edx, 85
+    mov esi, message_identity_error
+    jmp kernel_panic
+
+panic_trust:
+    mov eax, 0x00003059
+    mov edx, 86
+    mov esi, message_trust_error
+    jmp kernel_panic
+
+panic_adaptive:
+    mov eax, 0x0000305A
+    mov edx, 87
+    mov esi, message_adaptive_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -30445,6 +30484,480 @@ align 4
 thermal_zones:
     times THERM_ZONE_COUNT * THERM_ZONE_REC_SIZE db 0
 
+; ---------------------------------------------------------------------------
+; NPSPEC-IDENTITY-0001 – Nova Identity Registry
+; ---------------------------------------------------------------------------
+; Stabile Identitäten für Kernel, Prozesse und Dienste.
+; Identity ≠ Authority: ein Eintrag hier verleiht keine Rechte.
+; Types: KERNEL=1 / PROCESS=2 / SERVICE=3 / DEVICE=4.
+; States: ACTIVE=1 / SUSPENDED=2 / REVOKED=3.
+; ---------------------------------------------------------------------------
+IDENT_CAPACITY      equ 16
+IDENT_REC_SIZE      equ 16
+
+IDENT_TYPE_KERNEL   equ 1
+IDENT_TYPE_PROCESS  equ 2
+IDENT_TYPE_SERVICE  equ 3
+IDENT_TYPE_DEVICE   equ 4
+
+IDENT_STATE_ACTIVE  equ 1
+IDENT_STATE_SUSP    equ 2
+IDENT_STATE_REVOKED equ 3
+
+IDENT_ID_OFF        equ 0
+IDENT_TYPE_OFF      equ 4
+IDENT_STATE_OFF2    equ 8
+IDENT_OWNER_OFF     equ 12
+
+identity_initialize:
+    mov edi, identity_table
+    xor eax, eax
+    mov ecx, (IDENT_CAPACITY * IDENT_REC_SIZE) / 4
+    rep stosd
+    mov dword [identity_ready], 0
+    mov dword [identity_count], 0
+    mov dword [identity_next_id], 1
+    ; Pre-register kernel identity (id=1)
+    mov eax, IDENT_TYPE_KERNEL
+    xor edx, edx
+    call identity_register
+    jc .idinit_fail
+    mov dword [identity_ready], 1
+    clc
+    ret
+.idinit_fail:
+    stc
+    ret
+
+; EAX=type  EDX=owner → EAX=identity_id  CF=0/CF=1 full
+identity_register:
+    cmp dword [identity_count], IDENT_CAPACITY
+    jae .idr_full
+    push esi
+    push edi
+    push ebx
+    mov ebx, edx
+    xor esi, esi
+.idr_scan:
+    cmp esi, IDENT_CAPACITY
+    jae .idr_nospc
+    imul edi, esi, IDENT_REC_SIZE
+    add edi, identity_table
+    cmp dword [edi + IDENT_ID_OFF], 0
+    je .idr_slot
+    inc esi
+    jmp .idr_scan
+.idr_slot:
+    push eax
+    mov eax, [identity_next_id]
+    mov [edi + IDENT_ID_OFF], eax
+    inc dword [identity_next_id]
+    pop eax
+    mov [edi + IDENT_TYPE_OFF], eax
+    mov dword [edi + IDENT_STATE_OFF2], IDENT_STATE_ACTIVE
+    mov [edi + IDENT_OWNER_OFF], ebx
+    inc dword [identity_count]
+    mov eax, [edi + IDENT_ID_OFF]
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.idr_nospc:
+    pop ebx
+    pop edi
+    pop esi
+.idr_full:
+    stc
+    ret
+
+; EAX=identity_id → EAX=type  EDX=state  CF=0 found / CF=1 not found
+identity_query:
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.idq_loop:
+    cmp esi, IDENT_CAPACITY
+    jae .idq_notfound
+    imul edi, esi, IDENT_REC_SIZE
+    add edi, identity_table
+    cmp [edi + IDENT_ID_OFF], ebx
+    jne .idq_next
+    mov eax, [edi + IDENT_TYPE_OFF]
+    mov edx, [edi + IDENT_STATE_OFF2]
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.idq_next:
+    inc esi
+    jmp .idq_loop
+.idq_notfound:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; EAX=identity_id  EDX=new_state — revoke or suspend
+identity_set_state:
+    cmp edx, IDENT_STATE_REVOKED
+    ja .ids_bad
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.ids_loop:
+    cmp esi, IDENT_CAPACITY
+    jae .ids_notfound
+    imul edi, esi, IDENT_REC_SIZE
+    add edi, identity_table
+    cmp [edi + IDENT_ID_OFF], ebx
+    jne .ids_next
+    mov [edi + IDENT_STATE_OFF2], edx
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.ids_next:
+    inc esi
+    jmp .ids_loop
+.ids_notfound:
+    pop ebx
+    pop edi
+    pop esi
+.ids_bad:
+    stc
+    ret
+
+identity_self_test:
+    ; Query kernel identity (id=1) → KERNEL type, ACTIVE
+    mov eax, 1
+    call identity_query
+    jc .idstf
+    cmp eax, IDENT_TYPE_KERNEL
+    jne .idstf
+    cmp edx, IDENT_STATE_ACTIVE
+    jne .idstf
+    ; Register a process identity
+    mov eax, IDENT_TYPE_PROCESS
+    mov edx, 42
+    call identity_register
+    jc .idstf
+    push eax
+    ; Query it back
+    call identity_query
+    jc .idstf_pop
+    cmp eax, IDENT_TYPE_PROCESS
+    jne .idstf_pop
+    pop eax
+    ; Revoke it
+    mov edx, IDENT_STATE_REVOKED
+    call identity_set_state
+    jc .idstf
+    clc
+    ret
+.idstf_pop:
+    pop eax
+.idstf:
+    stc
+    ret
+
+identity_ready:     dd 0
+identity_count:     dd 0
+identity_next_id:   dd 1
+align 4
+identity_table:
+    times IDENT_CAPACITY * IDENT_REC_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-TRUST-ANCHOR-0001 – Nova Trust Anchor Chain
+; ---------------------------------------------------------------------------
+; Root-of-Trust-Kette für Boot-Verifikation und Subsystem-Attestation.
+; Anker: KERNEL_BOOT=1 / SECURITY_MODULE=2 / CAPABILITY_ROOT=3 / USER_ROOT=4.
+; Jeder Anker trägt eine 32-bit-Fingerprint (Hash-Approximation für x86-32).
+; ---------------------------------------------------------------------------
+TRUST_ANCHOR_COUNT  equ 8
+TRUST_ANCHOR_SIZE   equ 16
+
+TRUST_ANCH_BOOT     equ 1
+TRUST_ANCH_SECURITY equ 2
+TRUST_ANCH_CAPROOT  equ 3
+TRUST_ANCH_USER     equ 4
+
+TRUST_ANC_ID_OFF    equ 0
+TRUST_ANC_TYPE_OFF  equ 4
+TRUST_ANC_FPRINT_OFF equ 8
+TRUST_ANC_FLAGS_OFF equ 12
+TRUST_ANC_FLAG_VALID equ 0x01
+TRUST_ANC_FLAG_REVOKED equ 0x02
+
+trust_initialize:
+    mov edi, trust_anchors
+    xor eax, eax
+    mov ecx, (TRUST_ANCHOR_COUNT * TRUST_ANCHOR_SIZE) / 4
+    rep stosd
+    mov dword [trust_ready], 0
+    mov dword [trust_count], 0
+    ; Register KERNEL_BOOT anchor with fingerprint from CSPRNG
+    call csprng_next
+    jc .ti_fail
+    mov edx, eax      ; fingerprint
+    mov eax, TRUST_ANCH_BOOT
+    call trust_register_anchor
+    jc .ti_fail
+    ; Register SECURITY anchor
+    call csprng_next
+    jc .ti_fail
+    mov edx, eax
+    mov eax, TRUST_ANCH_SECURITY
+    call trust_register_anchor
+    jc .ti_fail
+    mov dword [trust_ready], 1
+    clc
+    ret
+.ti_fail:
+    stc
+    ret
+
+; EAX=anchor_type  EDX=fingerprint → EAX=slot  CF=0/CF=1 full
+trust_register_anchor:
+    cmp dword [trust_count], TRUST_ANCHOR_COUNT
+    jae .tra_full
+    push esi
+    push edi
+    push ebx
+    mov ebx, edx
+    xor esi, esi
+.tra_scan:
+    cmp esi, TRUST_ANCHOR_COUNT
+    jae .tra_nospc
+    imul edi, esi, TRUST_ANCHOR_SIZE
+    add edi, trust_anchors
+    cmp dword [edi + TRUST_ANC_ID_OFF], 0
+    je .tra_slot
+    inc esi
+    jmp .tra_scan
+.tra_slot:
+    mov dword [edi + TRUST_ANC_ID_OFF], esi
+    mov [edi + TRUST_ANC_TYPE_OFF], eax
+    mov [edi + TRUST_ANC_FPRINT_OFF], ebx
+    mov dword [edi + TRUST_ANC_FLAGS_OFF], TRUST_ANC_FLAG_VALID
+    inc dword [trust_count]
+    mov eax, esi
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.tra_nospc:
+    pop ebx
+    pop edi
+    pop esi
+.tra_full:
+    stc
+    ret
+
+; EAX=anchor_type → EAX=fingerprint  CF=0 found+valid / CF=1 not found/revoked
+trust_verify_anchor:
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.tva_loop:
+    cmp esi, TRUST_ANCHOR_COUNT
+    jae .tva_notfound
+    imul edi, esi, TRUST_ANCHOR_SIZE
+    add edi, trust_anchors
+    cmp dword [edi + TRUST_ANC_ID_OFF], 0
+    je .tva_next
+    cmp [edi + TRUST_ANC_TYPE_OFF], ebx
+    jne .tva_next
+    test dword [edi + TRUST_ANC_FLAGS_OFF], TRUST_ANC_FLAG_REVOKED
+    jnz .tva_revoked
+    test dword [edi + TRUST_ANC_FLAGS_OFF], TRUST_ANC_FLAG_VALID
+    jz .tva_next
+    mov eax, [edi + TRUST_ANC_FPRINT_OFF]
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.tva_next:
+    inc esi
+    jmp .tva_loop
+.tva_revoked:
+.tva_notfound:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+trust_self_test:
+    ; Verify KERNEL_BOOT anchor
+    mov eax, TRUST_ANCH_BOOT
+    call trust_verify_anchor
+    jc .tstf
+    test eax, eax
+    jz .tstf
+    ; Verify SECURITY anchor
+    mov eax, TRUST_ANCH_SECURITY
+    call trust_verify_anchor
+    jc .tstf
+    ; Unknown type → CF=1
+    mov eax, 99
+    call trust_verify_anchor
+    jnc .tstf
+    clc
+    ret
+.tstf:
+    stc
+    ret
+
+trust_ready:   dd 0
+trust_count:   dd 0
+align 4
+trust_anchors:
+    times TRUST_ANCHOR_COUNT * TRUST_ANCHOR_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-ADAPTIVE-FEEDBACK-0001 – Nova Adaptive Feedback Loop
+; ---------------------------------------------------------------------------
+; Schließt den Regelkreis: Observe→Predict→Decide→Execute→Measure→Feedback.
+; Jeder Feedback-Slot überwacht eine Policy-Dimension (Thermal/QoS/Sched/Memory).
+; Wenn Messergebnis > Erwartungswert: increment_miss; → policy_adjust wenn ≥ threshold.
+; ---------------------------------------------------------------------------
+ADAPT_SLOT_COUNT    equ 8
+ADAPT_REC_SIZE      equ 20
+
+ADAPT_DIM_THERMAL   equ 1
+ADAPT_DIM_QOS       equ 2
+ADAPT_DIM_SCHED     equ 3
+ADAPT_DIM_MEMORY    equ 4
+
+ADAPT_ID_OFF        equ 0
+ADAPT_DIM_OFF       equ 4
+ADAPT_EXPECTED_OFF  equ 8
+ADAPT_ACTUAL_OFF    equ 12
+ADAPT_MISSES_OFF    equ 16
+
+adapt_initialize:
+    mov edi, adapt_slots
+    xor eax, eax
+    mov ecx, (ADAPT_SLOT_COUNT * ADAPT_REC_SIZE) / 4
+    rep stosd
+    mov dword [adapt_ready], 0
+    mov dword [adapt_adjustments], 0
+    mov dword [adapt_ready], 1
+    clc
+    ret
+
+; EAX=dimension  EDX=expected_value → EAX=slot  CF=0/CF=1 full
+adapt_register:
+    push esi
+    push edi
+    xor esi, esi
+.ar_scan:
+    cmp esi, ADAPT_SLOT_COUNT
+    jae .ar_full
+    imul edi, esi, ADAPT_REC_SIZE
+    add edi, adapt_slots
+    cmp dword [edi + ADAPT_ID_OFF], 0
+    je .ar_slot
+    inc esi
+    jmp .ar_scan
+.ar_slot:
+    mov dword [edi + ADAPT_ID_OFF], esi
+    mov [edi + ADAPT_DIM_OFF], eax
+    mov [edi + ADAPT_EXPECTED_OFF], edx
+    mov dword [edi + ADAPT_ACTUAL_OFF], 0
+    mov dword [edi + ADAPT_MISSES_OFF], 0
+    mov eax, esi
+    pop edi
+    pop esi
+    clc
+    ret
+.ar_full:
+    pop edi
+    pop esi
+    stc
+    ret
+
+; EAX=slot  EDX=actual_value  ECX=miss_threshold
+; CF=0 within budget / CF=1 threshold exceeded → policy_adjust signalled
+adapt_observe:
+    cmp eax, ADAPT_SLOT_COUNT
+    jae .ao_bad
+    push esi
+    push edi
+    imul edi, eax, ADAPT_REC_SIZE
+    add edi, adapt_slots
+    mov [edi + ADAPT_ACTUAL_OFF], edx
+    cmp edx, [edi + ADAPT_EXPECTED_OFF]
+    jbe .ao_ok
+    inc dword [edi + ADAPT_MISSES_OFF]
+    inc dword [adapt_adjustments]
+.ao_ok:
+    cmp [edi + ADAPT_MISSES_OFF], ecx
+    pop edi
+    pop esi
+    jae .ao_threshold
+    clc
+    ret
+.ao_threshold:
+    stc
+    ret
+.ao_bad:
+    stc
+    ret
+
+adapt_self_test:
+    ; Register thermal feedback, expected≤80
+    mov eax, ADAPT_DIM_THERMAL
+    mov edx, 80
+    call adapt_register
+    jc .abstf
+    push eax          ; save slot
+    ; observe within budget (70 ≤ 80, miss_threshold=3)
+    mov edx, 70
+    mov ecx, 3
+    call adapt_observe
+    jc .abstf_pop     ; CF=0 expected
+    ; observe exceeding (90 > 80) × 3 times → CF=1 on 3rd
+    pop eax
+    push eax
+    mov edx, 90
+    mov ecx, 3
+    call adapt_observe
+    mov edx, 90
+    mov ecx, 3
+    call adapt_observe
+    mov edx, 90
+    mov ecx, 3
+    call adapt_observe
+    jnc .abstf_pop    ; CF=1 expected after 3 misses
+    pop eax
+    clc
+    ret
+.abstf_pop:
+    pop eax
+.abstf:
+    stc
+    ret
+
+adapt_ready:        dd 0
+adapt_adjustments:  dd 0
+align 4
+adapt_slots:
+    times ADAPT_SLOT_COUNT * ADAPT_REC_SIZE db 0
+
 ; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
@@ -41823,6 +42336,18 @@ message_thermal_ok:
     db "NOVA: Thermal 1.0 bereit (4 Zonen, WARM/HOT-Throttle, QoS-Epoch)", 13, 10, 0
 message_thermal_error:
     db "NOVA PANIC: Thermal Manager nicht initialisierbar", 13, 10, 0
+message_identity_ok:
+    db "NOVA: Identity 1.0 bereit (16-Slot Registry, KERNEL/PROCESS/SERVICE/DEVICE)", 13, 10, 0
+message_identity_error:
+    db "NOVA PANIC: Identity Registry nicht initialisierbar", 13, 10, 0
+message_trust_ok:
+    db "NOVA: Trust Anchor 1.0 bereit (8-Slot, BOOT+SECURITY Anker, CSPRNG-Fingerprint)", 13, 10, 0
+message_trust_error:
+    db "NOVA PANIC: Trust Anchor Chain nicht initialisierbar", 13, 10, 0
+message_adaptive_ok:
+    db "NOVA: Adaptive Feedback 1.0 bereit (8-Slot, Thermal/QoS/Sched/Memory)", 13, 10, 0
+message_adaptive_error:
+    db "NOVA PANIC: Adaptive Feedback Loop nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
