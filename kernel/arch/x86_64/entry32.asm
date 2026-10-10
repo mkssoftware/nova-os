@@ -540,6 +540,13 @@ kernel_entry:
     mov esi, message_smp_stress_ok
     call serial_write_string
 
+    call numa_initialize
+    jc panic_numa
+    call numa_self_test
+    jc panic_numa
+    mov esi, message_numa_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_SCHEDULER_SMP
     mov dword [boot_phase_current], BOOT_PHASE_DEVICE_DISCOVERY
     call boot_phase_log
@@ -941,6 +948,12 @@ panic_driver_framework:
     mov eax, 0x00002018
     mov edx, 24
     mov esi, message_driver_framework_error
+    jmp kernel_panic
+
+panic_numa:
+    mov eax, 0x00002028
+    mov edx, 40
+    mov esi, message_numa_error
     jmp kernel_panic
 
 panic_vfs:
@@ -19775,6 +19788,142 @@ ap_stack_area:
     times (CPU_CAPACITY - 1) * AP_STACK_SIZE db 0
 
 ; ---------------------------------------------------------------------------
+; §028 – NUMA Support 1.0 (NPSPEC-KERNEL-0028)
+; UMA-Systeme werden als NUMA-System mit genau einem Node (Node 0) behandelt.
+; Alle späteren Subsysteme verwenden dieselben Schnittstellen unabhängig von
+; der tatsächlichen Hardwaretopologie.
+; ---------------------------------------------------------------------------
+
+NUMA_MAX_NODES          equ 8
+NUMA_RECORD_SIZE        equ 32
+NUMA_NODE_STATE_OFFLINE equ 0
+NUMA_NODE_STATE_ONLINE  equ 1
+NUMA_DIST_SELF          equ 10
+NUMA_DIST_REMOTE        equ 20
+
+; Record-Offsets
+NUMA_ID          equ 0
+NUMA_STATE       equ 4
+NUMA_CPU_MASK    equ 8
+NUMA_FLAGS       equ 12
+NUMA_MEM_BASE_LO equ 16
+NUMA_MEM_BASE_HI equ 20
+NUMA_MEM_SIZE_LO equ 24
+NUMA_MEM_SIZE_HI equ 28
+
+; Erstellt Node 0 (UMA-Fallback: physische Basis 0, Größe = pmm_frame_count * 4096).
+numa_initialize:
+    mov edi, numa_records
+    xor eax, eax
+    mov ecx, (NUMA_MAX_NODES * NUMA_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [numa_count], 0
+    ; Node 0 befüllen
+    mov edi, numa_records
+    mov dword [edi + NUMA_ID],          0
+    mov dword [edi + NUMA_STATE],       NUMA_NODE_STATE_ONLINE
+    mov eax, [cpu_online_set]
+    test eax, eax
+    jnz .cpu_mask_ok
+    mov eax, 1                          ; Fallback: mindestens BSP (Bit 0)
+.cpu_mask_ok:
+    mov [edi + NUMA_CPU_MASK],          eax
+    mov dword [edi + NUMA_FLAGS],       0
+    mov dword [edi + NUMA_MEM_BASE_LO], 0
+    mov dword [edi + NUMA_MEM_BASE_HI], 0
+    mov eax, [pmm_frame_count]
+    shl eax, 12                         ; * 4096
+    mov [edi + NUMA_MEM_SIZE_LO],       eax
+    mov dword [edi + NUMA_MEM_SIZE_HI], 0
+    mov dword [numa_count], 1
+    mov dword [numa_initialized], 1
+    clc
+    ret
+
+; EAX=node_id → ESI=Record-Zeiger (CF=0) oder CF=1.
+numa_node_find:
+    push ecx
+    push edi
+    xor ecx, ecx
+.scan:
+    cmp ecx, NUMA_MAX_NODES
+    jae .not_found
+    mov edi, ecx
+    imul edi, NUMA_RECORD_SIZE
+    add edi, numa_records
+    cmp dword [edi + NUMA_ID],    eax
+    jne .next
+    cmp dword [edi + NUMA_STATE], NUMA_NODE_STATE_OFFLINE
+    je .next
+    mov esi, edi
+    pop edi
+    pop ecx
+    clc
+    ret
+.next:
+    inc ecx
+    jmp .scan
+.not_found:
+    pop edi
+    pop ecx
+    stc
+    ret
+
+; Gibt EAX=0 zurück (lokaler Node ist immer Node 0 auf UMA).
+numa_get_local_node:
+    xor eax, eax
+    clc
+    ret
+
+numa_self_test:
+    push esi
+    xor edi, edi                        ; Fehler-Zähler
+    ; Test 1: initialisiert
+    cmp dword [numa_initialized], 1
+    je .t2
+    inc edi
+.t2:
+    ; Test 2: genau 1 Node
+    cmp dword [numa_count], 1
+    je .t3
+    inc edi
+.t3:
+    ; Test 3: Node 0 auffindbar
+    xor eax, eax
+    call numa_node_find
+    jnc .t4
+    inc edi
+    jmp .done
+.t4:
+    ; Test 4: Node 0 ist ONLINE
+    cmp dword [esi + NUMA_STATE], NUMA_NODE_STATE_ONLINE
+    je .t5
+    inc edi
+.t5:
+    ; Test 5: CPU-Maske != 0
+    cmp dword [esi + NUMA_CPU_MASK], 0
+    jne .done
+    inc edi
+.done:
+    test edi, edi
+    jnz .selftest_fail
+    pop esi
+    clc
+    ret
+.selftest_fail:
+    pop esi
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; §028 Datensegment
+; ---------------------------------------------------------------------------
+numa_initialized: dd 0
+numa_count:       dd 0
+align 4
+numa_records: times NUMA_MAX_NODES * NUMA_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
 ; §29 – Kernel Configuration Framework (NPSPEC-KERNEL-0029)
 ; ---------------------------------------------------------------------------
 
@@ -32475,6 +32624,10 @@ message_driver_framework_ok:
     db "NOVA: Driver Framework ABI 1.0 bereit", 13, 10, 0
 message_driver_framework_error:
     db "NOVA PANIC: Driver Framework nicht initialisierbar", 13, 10, 0
+message_numa_ok:
+    db "NOVA: NUMA 1.0 bereit (1 Node, UMA-Modus)", 13, 10, 0
+message_numa_error:
+    db "NOVA PANIC: NUMA-Subsystem nicht initialisierbar", 13, 10, 0
 message_vfs_ok:
     db "NOVA: VFS ABI 1.0, Mount-Namespace und Bootstrap-Root bereit", 13, 10, 0
 message_vfs_error:
