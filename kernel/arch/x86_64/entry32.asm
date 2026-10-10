@@ -2196,7 +2196,7 @@ early_security_entropy_self_test:
     ret
 
 ; ---------------------------------------------------------------------------
-; Physischer Bootstrap-Speichermanager (ADR-2001)
+; Physischer Bootstrap-Speichermanager (ADR-2001 / NPSPEC-KERNEL-0006)
 ; ---------------------------------------------------------------------------
 
 PMM_PAGE_SIZE        equ 4096
@@ -2479,7 +2479,7 @@ pmm_frame_numa_nodes:
     times PMM_MAX_FRAMES dd PMM_NUMA_UNKNOWN
 
 ; ---------------------------------------------------------------------------
-; Bootstrap-Kernel-Heap (ADR-2003)
+; Bootstrap-Kernel-Heap (ADR-2003 / NPSPEC-KERNEL-0008)
 ; ---------------------------------------------------------------------------
 
 HEAP_ALIGNMENT       equ 16
@@ -2746,7 +2746,7 @@ logging_ring:               times LOG_RING_CAPACITY * LOG_RECORD_SIZE db 0
 logging_critical_record:    times LOG_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
-; Kernel Object Manager (ADR-2008)
+; Kernel Object Manager (ADR-2008 / NPSPEC-KERNEL-0012)
 ; ---------------------------------------------------------------------------
 
 OBJECT_API_SIZE       equ 32
@@ -3435,7 +3435,7 @@ component_table:
     times COMPONENT_CAPACITY * COMPONENT_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
-; Virtueller Bootstrap-Speichermanager (ADR-2002)
+; Virtueller Bootstrap-Speichermanager (ADR-2002 / NPSPEC-KERNEL-0007)
 ; ---------------------------------------------------------------------------
 
 PAGING_PAGE_PRESENT   equ 0x001
@@ -3620,7 +3620,7 @@ paging_directory: dd 0
 paging_enabled:   dd 0
 
 ; ---------------------------------------------------------------------------
-; Interrupt- und Timer-Architektur (ADR-2006 / ADR-2007)
+; Interrupt- und Timer-Architektur (ADR-2006 / ADR-2007 / NPSPEC-KERNEL-0009 / NPSPEC-KERNEL-0014)
 ; ---------------------------------------------------------------------------
 
 IDT_ENTRY_COUNT equ 256
@@ -4358,7 +4358,7 @@ interrupt_api:
     dd 100
 
 ; ---------------------------------------------------------------------------
-; Kernel-Nachrichtenwarteschlange (ADR-2005)
+; Kernel-Nachrichtenwarteschlange (ADR-2005 / NPSPEC-KERNEL-0015)
 ; ---------------------------------------------------------------------------
 
 %include "arch/x86_64/semantic32.inc"
@@ -5294,7 +5294,7 @@ service_output_types:   times SERVICE_CAPACITY dd 0
 service_input_versions: times SERVICE_CAPACITY dd 0
 service_output_versions: times SERVICE_CAPACITY dd 0
 
-; Kernel Process Manager (ADR-2011)
+; Kernel Process Manager (ADR-2011 / NPSPEC-KERNEL-0004)
 PROCESS_API_SIZE      equ 32
 PROCESS_CAPACITY      equ 4
 PROCESS_RECORD_SIZE   equ 32
@@ -17461,7 +17461,7 @@ align 4
 mouse_background:         times 12 * 16 dd 0
 align 4
 
-; Kernel Security / Capability Manager (ADR-2013)
+; Kernel Security / Capability Manager (ADR-2013 / NPSPEC-KERNEL-0020)
 SECURITY_API_SIZE       equ 32
 SECURITY_CAPACITY       equ PROCESS_CAPACITY
 SECURITY_RECORD_SIZE    equ 8
@@ -27132,7 +27132,7 @@ module_test_image:
     times 16 db 0x10
 
 ; ---------------------------------------------------------------------------
-; Präemptiver Round-Robin-Scheduler (ADR-2004 / ADR-2012)
+; Präemptiver Round-Robin-Scheduler (ADR-2004 / ADR-2012 / NPSPEC-KERNEL-0003 / NPSPEC-KERNEL-0005)
 ; ---------------------------------------------------------------------------
 
 SCHEDULER_THREAD_COUNT equ 8
