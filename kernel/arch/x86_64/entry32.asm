@@ -32552,13 +32552,6 @@ exception_manager_dispatch:
     ; Letzten Record kopieren (für Diagnose)
     push edi
     push ecx
-    mov esi, esp
-    add esi, 8           ; korrigieren: esi = edi (vor pushes)
-    pop ecx
-    pop esi
-    ; direkter Copy ohne Makro
-    push edi
-    push ecx
     mov esi, edi
     mov edi, exception_last_record
     mov ecx, EXC_REC_SIZE
@@ -32620,7 +32613,8 @@ exception_manager_dispatch:
     dec dword [exception_depth_table]
 
     add esp, EXC_REC_SIZE
-    mov eax, [ebp + 12]  ; Frame unverändert zurückgeben
+    mov eax, [ebp + 12]  ; Frame zurückgeben
+    mov [ebp - 4], eax   ; EAX-Slot in pushad-Area setzen (popad liest daraus)
     popad
     pop ebp
     ret
@@ -32646,6 +32640,7 @@ exception_manager_dispatch:
     dec dword [exception_depth_table]
     add esp, EXC_REC_SIZE
     mov eax, [ebp + 12]
+    mov [ebp - 4], eax   ; EAX-Slot in pushad-Area setzen
     popad
     pop ebp
     ret
@@ -32666,6 +32661,7 @@ exception_manager_dispatch:
     dec dword [exception_depth_table]
     add esp, EXC_REC_SIZE
     mov eax, [ebp + 12]   ; ursprünglicher Frame (Caller erhält ihn)
+    mov [ebp - 4], eax    ; EAX-Slot in pushad-Area setzen
     popad
     pop ebp
     ret
@@ -32778,12 +32774,12 @@ exception_manager_self_test:
     push esi
     push edi
 
-    xor edi, edi         ; Fehler-Zähler
+    xor esi, esi         ; Fehler-Zähler (ESI; EDI wird in Tests 12/13 als Record-Puffer benötigt)
 
     ; Test 1: Initialisierungsflag gesetzt
     cmp dword [exception_mgr_initialized], 1
     je .t1_ok
-    inc edi
+    inc esi
 .t1_ok:
 
     ; Test 2: exc_vector_to_code Vektor 0 → NP_EXC_DIVIDE_BY_ZERO
@@ -32791,7 +32787,7 @@ exception_manager_self_test:
     call exc_vector_to_code
     cmp eax, NP_EXC_DIVIDE_BY_ZERO
     je .t2_ok
-    inc edi
+    inc esi
 .t2_ok:
 
     ; Test 3: Vektor 14 → NP_EXC_PAGE_FAULT
@@ -32799,7 +32795,7 @@ exception_manager_self_test:
     call exc_vector_to_code
     cmp eax, NP_EXC_PAGE_FAULT
     je .t3_ok
-    inc edi
+    inc esi
 .t3_ok:
 
     ; Test 4: Vektor 8 → NP_EXC_DOUBLE_FAULT
@@ -32807,7 +32803,7 @@ exception_manager_self_test:
     call exc_vector_to_code
     cmp eax, NP_EXC_DOUBLE_FAULT
     je .t4_ok
-    inc edi
+    inc esi
 .t4_ok:
 
     ; Test 5: exc_code_to_category PAGE_FAULT → MEMORY
@@ -32815,7 +32811,7 @@ exception_manager_self_test:
     call exc_code_to_category
     cmp eax, EXC_CAT_MEMORY
     je .t5_ok
-    inc edi
+    inc esi
 .t5_ok:
 
     ; Test 6: exc_code_to_category DIVIDE_BY_ZERO → ARITHMETIC
@@ -32823,7 +32819,7 @@ exception_manager_self_test:
     call exc_code_to_category
     cmp eax, EXC_CAT_ARITHMETIC
     je .t6_ok
-    inc edi
+    inc esi
 .t6_ok:
 
     ; Test 7: exc_code_to_category DOUBLE_FAULT → KERNEL_FATAL
@@ -32831,7 +32827,7 @@ exception_manager_self_test:
     call exc_code_to_category
     cmp eax, EXC_CAT_KERNEL_FATAL
     je .t7_ok
-    inc edi
+    inc esi
 .t7_ok:
 
     ; Test 8: exc_code_to_category DEBUG → DEBUG
@@ -32839,7 +32835,7 @@ exception_manager_self_test:
     call exc_code_to_category
     cmp eax, EXC_CAT_DEBUG
     je .t8_ok
-    inc edi
+    inc esi
 .t8_ok:
 
     ; Test 9: Fixup-Tabellen-Suche: Sentinel → 0 (kein Fixup)
@@ -32850,20 +32846,20 @@ exception_manager_self_test:
     add esp, 8
     cmp eax, 0
     je .t9_ok
-    inc edi
+    inc esi
 .t9_ok:
 
     ; Test 10: Statistik-Felder erreichbar
     mov eax, [exception_stats_total]
     cmp eax, 0xFFFFFFFF
     jne .t10_ok
-    inc edi
+    inc esi
 .t10_ok:
 
     ; Test 11: Exception-Tiefenzähler = 0 (nach Init)
     cmp dword [exception_depth_table], 0
     je .t11_ok
-    inc edi
+    inc esi
 .t11_ok:
 
     ; Test 12/13: exc_build_record auf statischen Dummy-Frame
@@ -32883,7 +32879,7 @@ exception_manager_self_test:
     add esp, 12
     cmp dword [edi + EXC_REC_STRUCT_SIZE], EXC_REC_SIZE
     je .t12_ok
-    inc edi
+    inc esi
 .t12_ok:
     ; Test 13: Kategorie für Vektor 0 (ARITHMETIC)
     mov dword [ebx + 60], 0     ; CS = Ring-0
@@ -32895,7 +32891,7 @@ exception_manager_self_test:
     add esp, 12
     cmp dword [edi + EXC_REC_CATEGORY], EXC_CAT_ARITHMETIC
     je .t13_ok
-    inc edi
+    inc esi
 .t13_ok:
     add esp, EXC_REC_SIZE + 68
 
@@ -32905,11 +32901,11 @@ exception_manager_self_test:
     call vmm_handle_page_fault
     cmp eax, 0
     jne .t14_ok
-    inc edi
+    inc esi
 .t14_ok:
 
     ; Ergebnis
-    test edi, edi
+    test esi, esi
     jnz .selftest_fail
 
     mov esi, message_exc_selftest_ok
