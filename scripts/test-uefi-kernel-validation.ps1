@@ -63,7 +63,7 @@ function Invoke-SuccessCase([string]$name,[string]$image,[string[]]$requiredMark
                 throw "${name}: QEMU wurde vor NOVA_KERNEL_READY beendet. $detail"
             }
         } while($content-notlike'*NOVA_KERNEL_READY*'-and[DateTime]::UtcNow-lt$deadline)
-        if($content-notlike'*NOVA_KERNEL_READY*'){throw "${name}: Timeout — NOVA_KERNEL_READY nicht erreicht."}
+        if($content-notlike'*NOVA_KERNEL_READY*'){throw "${name}: Timeout - NOVA_KERNEL_READY nicht erreicht."}
         foreach($marker in $requiredMarkers){
             if($content-notlike"*$marker*"){throw "${name}: Pflichtmarkierung fehlt: $marker"}
         }

@@ -15,9 +15,10 @@ try {
 }
 $noteOffset = [uint32]116
 $noteSize = [uint32]72
-$maximumElfSize = [uint32]262144
+$maximumPayloadSize = [uint32]1048576
+$maximumElfSize = [uint32]($payloadOffset + $maximumPayloadSize)
 if ($payload.Length -eq 0 -or ($payloadOffset + $payload.Length) -gt $maximumElfSize) {
-    throw "ELF32-Image überschreitet das 256-KiB-Limit."
+    throw "ELF32-Image überschreitet das 1-MiB-Kernelpayload-Limit."
 }
 
 $outputDirectory = Split-Path -Parent $OutputFile

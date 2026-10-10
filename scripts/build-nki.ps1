@@ -28,7 +28,7 @@ if ($compressionSwitches.Count -gt 1) {
 }
 
 $headerSize = 64
-$maximumPayloadSize = 262144
+$maximumPayloadSize = 1048576
 $entryPoint = [uint32]0x00100000
 
 $payload = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $InputFile))
