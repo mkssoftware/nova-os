@@ -944,7 +944,20 @@ userspace_return:
     jne panic_userspace
     mov esi, message_userspace_exit_ok
     call serial_write_string
+
+    ; Integration-Test: alle Subsysteme gemeinsam (nach vollständigem Bootstrap)
+    call integration_self_test
+    jc panic_integration
+    mov esi, message_integration_ok
+    call serial_write_string
+
     call kernel_main
+
+panic_integration:
+    mov eax, 0x00003051
+    mov edx, 78
+    mov esi, message_integration_error
+    jmp kernel_panic
 
 panic_ipc:
     mov eax, 0x00002005
@@ -35208,6 +35221,718 @@ align 4
 qos_table:
     times QOS_CLASS_COUNT * QOS_RECORD_SIZE db 0
 
+; ===========================================================================
+; NPSPEC-INTEGRATION-0001 – Nova Subsystem Integration Pipelines
+;
+; Verbindet die einzelnen Subsysteme zu zusammenhängenden Kontrollflüssen:
+;   Pipeline 1: Security Access Check  (MAC → DAC → RBAC → Audit)
+;   Pipeline 2: Resilience Fault       (Detection → Containment → Failover → Metrics)
+;   Pipeline 3: Scheduler Admission    (QoS → CFS oder RT-Register)
+;   Pipeline 4: Memory Pressure / OOM  (OOM-Kill → Accounting → Audit)
+;   Pipeline 5: Watchdog Expire        (WD-Tick → Fault Detection → CB → Metrics)
+; ===========================================================================
+
+; ---------------------------------------------------------------------------
+; Pipeline 1: Security Access Check
+; EAX=subject_id  EDX=object_id  ECX=perm_bits
+; → CF=0 Zugriff erlaubt / CF=1 verweigert (+ Audit-Eintrag)
+; Reihenfolge: MAC → DAC → RBAC; erster Fehler bricht ab und loggt VIOLATION.
+; ---------------------------------------------------------------------------
+security_access_check:
+    push esi
+    push edi
+    push ebx
+    push ecx
+
+    ; MAC-Check: subject=EAX, object=EDX
+    push eax
+    push edx
+    push ecx
+    call mac_check
+    pop ecx
+    pop edx
+    pop eax
+    jnc .sac_mac_ok
+
+    ; MAC verweigert → Audit VIOLATION
+    push eax
+    push edx
+    push ecx
+    mov eax, AUDIT_TYPE_VIOLATION
+    ; EDX=subject bleibt, ECX=object_id für AUDIT_OBJECT
+    mov ecx, edx     ; object_id
+    mov ebx, 0       ; result=deny
+    call security_audit_log
+    pop ecx
+    pop edx
+    pop eax
+    stc
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    ret
+
+.sac_mac_ok:
+    ; DAC-Check: obj=EDX, caller=EAX, perms=ECX
+    push eax
+    push edx
+    push ecx
+    mov eax, edx     ; obj_id
+    mov edx, [esp+8] ; caller = original EAX
+    call dac_check
+    pop ecx
+    pop edx
+    pop eax
+    jnc .sac_dac_ok
+
+    push eax
+    push edx
+    push ecx
+    mov eax, AUDIT_TYPE_VIOLATION
+    mov ecx, edx
+    mov ebx, 0
+    call security_audit_log
+    pop ecx
+    pop edx
+    pop eax
+    stc
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    ret
+
+.sac_dac_ok:
+    ; RBAC-Check: subject=EAX, perm=ECX
+    push eax
+    push edx
+    push ecx
+    mov edx, ecx     ; perm_bits als requested_perm
+    call rbac_check
+    pop ecx
+    pop edx
+    pop eax
+    jnc .sac_rbac_ok
+
+    push eax
+    push edx
+    push ecx
+    mov eax, AUDIT_TYPE_VIOLATION
+    mov ecx, edx
+    mov ebx, 0
+    call security_audit_log
+    pop ecx
+    pop edx
+    pop eax
+    stc
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    ret
+
+.sac_rbac_ok:
+    ; Alles erlaubt → CAP_GRANT-Event loggen
+    push eax
+    push edx
+    push ecx
+    mov eax, AUDIT_TYPE_CAP_GRANT
+    mov ecx, edx     ; object
+    mov ebx, 1       ; allow
+    call security_audit_log
+    pop ecx
+    pop edx
+    pop eax
+    clc
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    ret
+
+; ---------------------------------------------------------------------------
+; Pipeline 2: Resilience Fault Pipeline
+; EAX=fault_type  EDX=subsystem_id  ECX=fault_code
+; Meldet Fehler an Detection→Containment→ggf. Failover + Metrics
+; ---------------------------------------------------------------------------
+resilience_fault_pipeline:
+    push esi
+    push edi
+    push ebx
+    push ecx
+
+    ; 1. Fault Detection registrieren
+    push eax
+    push edx
+    push ecx
+    call detection_record_fault
+    pop ecx
+    pop edx
+    pop eax
+
+    ; 2. Metrics: FAULTS-Zähler erhöhen (Slot 2)
+    push eax
+    mov eax, 2       ; MET_SLOT_FAULTS
+    call metrics_increment
+    pop eax
+
+    ; 3. Containment: suche Slot für subsystem_id
+    ;    (linear über cont_table; erstes ACTIVE-Match)
+    push esi
+    push ecx
+    push edx
+    mov esi, cont_table
+    xor ecx, ecx
+.rfp_cont_scan:
+    cmp ecx, CONT_CAPACITY
+    jae .rfp_cont_done
+    cmp dword [esi + CONT_STATE_OFF], CONT_STATE_FREE
+    je .rfp_cont_next
+    cmp dword [esi + CONT_SUBSYSTEM], edx
+    je .rfp_cont_found
+.rfp_cont_next:
+    add esi, CONT_RECORD_SIZE
+    inc ecx
+    jmp .rfp_cont_scan
+.rfp_cont_found:
+    push eax
+    mov eax, ecx
+    call containment_report_fault
+    ; Wenn jetzt ISOLATED → Failover prüfen
+    cmp dword [esi + CONT_STATE_OFF], CONT_STATE_ISOLATED
+    jne .rfp_no_failover
+    ; Failover: suche passenden Slot für subsystem
+    push esi
+    push ecx
+    mov esi, fo_table
+    xor ecx, ecx
+.rfp_fo_scan:
+    cmp ecx, FO_CAPACITY
+    jae .rfp_fo_done
+    cmp dword [esi + FO_STATE_OFF], FO_STATE_FREE
+    je .rfp_fo_next
+    cmp dword [esi + FO_PRIMARY], edx   ; primary=subsystem_id
+    je .rfp_fo_trig
+.rfp_fo_next:
+    add esi, FO_RECORD_SIZE
+    inc ecx
+    jmp .rfp_fo_scan
+.rfp_fo_trig:
+    push eax
+    mov eax, ecx
+    call failover_trigger
+    pop eax
+.rfp_fo_done:
+    pop ecx
+    pop esi
+.rfp_no_failover:
+    pop eax
+.rfp_cont_done:
+    pop edx
+    pop ecx
+    pop esi
+
+    ; 4. Restart-Check: suche owner=subsystem_id
+    push esi
+    push ecx
+    push edx
+    mov esi, rst_table
+    xor ecx, ecx
+.rfp_rst_scan:
+    cmp ecx, RST_CAPACITY
+    jae .rfp_rst_done
+    cmp dword [esi + RST_STATE], 0     ; FREE
+    je .rfp_rst_next
+    cmp dword [esi + RST_OWNER], edx
+    je .rfp_rst_found
+.rfp_rst_next:
+    add esi, RST_RECORD_SIZE
+    inc ecx
+    jmp .rfp_rst_scan
+.rfp_rst_found:
+    push eax
+    mov eax, ecx
+    call restart_check_and_record
+    pop eax
+.rfp_rst_done:
+    pop edx
+    pop ecx
+    pop esi
+
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    ret
+
+; ---------------------------------------------------------------------------
+; Pipeline 3: Scheduler Task Admission
+; EAX=owner  EDX=priority  ECX=qos_class
+; Prio >= 200 → RT; sonst QoS-Budget prüfen → CFS enqueue
+; → EAX=slot  CF=0 / CF=1 kein Platz oder Budget
+; ---------------------------------------------------------------------------
+SCHED_RT_THRESHOLD   equ 200
+
+scheduler_admit_task:
+    push esi
+    push ebx
+    push ecx
+
+    cmp edx, SCHED_RT_THRESHOLD
+    jae .sat_rt
+
+    ; QoS Budget prüfen
+    push eax
+    push edx
+    push ecx
+    mov eax, ecx     ; qos_class
+    call qos_consume
+    pop ecx
+    pop edx
+    pop eax
+    jc .sat_no_budget
+
+    ; CFS enqueue: owner=EAX, weight=(256-priority) für inverse Priorität
+    ; Keine Register-Sicherung nötig — nach dem call werden sie nicht mehr gebraucht
+    mov ecx, 256
+    sub ecx, edx     ; kleinerer weight = höhere Prio
+    jbe .sat_cfs_weight_min
+    jmp .sat_cfs_enqueue
+.sat_cfs_weight_min:
+    mov ecx, 1
+.sat_cfs_enqueue:
+    mov edx, ecx     ; weight
+    call cfs_task_enqueue
+    ; EAX=slot bleibt unverändert
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+
+.sat_rt:
+    ; RT registrieren: owner=EAX, deadline=wd_global_tick+500, prio=EDX
+    push eax
+    push edx
+    push ecx
+    push edx         ; prio sichern
+    mov ecx, [wd_global_tick]
+    add ecx, 500
+    mov edx, ecx    ; deadline
+    mov ecx, [esp]  ; prio
+    add esp, 4
+    mov ebx, RT_POLICY_EDF
+    call rt_task_register
+    pop ecx
+    pop edx
+    pop eax
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+
+.sat_no_budget:
+    stc
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+
+; ---------------------------------------------------------------------------
+; Pipeline 4: Memory Pressure Response
+; Wird aufgerufen wenn Speicher erschöpft → OOM wählt Opfer, loggt, accountiert
+; → EAX=killed_pid CF=0 / CF=1 kein Kandidat
+; ---------------------------------------------------------------------------
+memory_pressure_response:
+    push esi
+    push ebx
+
+    ; 1. OOM: Opfer wählen
+    call oom_kill_victim
+    jc .mpr_no_victim
+
+    mov ebx, eax     ; killed_pid sichern
+
+    ; 2. Audit: VIOLATION-Typ für OOM-Kill
+    push eax
+    push edx
+    push ecx
+    mov edx, eax     ; subject = killed_pid
+    mov eax, AUDIT_TYPE_VIOLATION
+    mov ecx, 0       ; object = kernel
+    mov ebx, 0       ; result = terminate
+    call security_audit_log
+    pop ecx
+    pop edx
+    pop eax
+
+    ; 3. Metrics: FREES-Slot inkrementieren
+    push eax
+    mov eax, 4       ; MET_SLOT_FREES
+    call metrics_increment
+    pop eax
+
+    ; 4. Circuit Breaker: Memory-Subsystem (Slot 0) failure melden
+    push eax
+    xor eax, eax
+    call circuitbreaker_record_failure
+    pop eax
+
+    mov eax, ebx     ; killed_pid zurück
+    clc
+    pop ebx
+    pop esi
+    ret
+
+.mpr_no_victim:
+    stc
+    pop ebx
+    pop esi
+    ret
+
+; ---------------------------------------------------------------------------
+; Pipeline 5: Watchdog Tick → Fault Detection → Circuit Breaker → Metrics
+; EAX=wd_slot → prüft ob WD abgelaufen; bei Ablauf: Fault-Pipeline + CB
+; ---------------------------------------------------------------------------
+watchdog_expire_pipeline:
+    push esi
+    push ebx
+    push ecx
+
+    ; Watchdog-Tick global erhöhen
+    inc dword [wd_global_tick]
+    call watchdog_tick
+    call watchdog_check
+
+    ; Wenn Watchdog abgelaufen (wd_total_expires erhöht sich): Fault melden
+    mov esi, [wd_total_expires]
+    cmp esi, [wep_last_expires]
+    je .wep_no_new_expire
+
+    mov [wep_last_expires], esi
+
+    ; Fault Detection: TIMING-Fehler für Subsystem 0
+    mov eax, 2       ; FD_TYPE_TIMING
+    xor edx, edx
+    mov ecx, 0xDEAD0001
+    call detection_record_fault
+
+    ; Metrics: IRQ_COUNT-Slot (als Watchdog-Event-Proxy)
+    mov eax, 0
+    call metrics_increment
+
+    ; CB: Failure für Slot 0 (Watchdog-Subsystem)
+    xor eax, eax
+    call circuitbreaker_record_failure
+
+.wep_no_new_expire:
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+
+; ---------------------------------------------------------------------------
+; integration_self_test – Testet alle 5 Pipelines
+; ---------------------------------------------------------------------------
+integration_self_test:
+    push ebx
+    push esi
+    push edi
+    push ecx
+    xor edi, edi     ; Fehler-Zähler
+
+    ; ========================================================================
+    ; Test-Vorbereitungen: Subject/Object/Rollen für Pipeline 1
+    ; ========================================================================
+    ; Subject 50 = CONFIDENTIAL  (MAC), Owner (DAC), Rolle 10 (RBAC mit WRITE)
+    ; Object  99 = INTERNAL      (MAC), obj_id=99 (DAC: owner=50, others=R)
+    ; ========================================================================
+
+    ; MAC: Subject 50 CONFIDENTIAL
+    mov eax, 50
+    mov edx, MAC_LABEL_CONFIDENTIAL
+    call mac_register_subject
+
+    ; MAC: Object 99 INTERNAL
+    mov eax, 99
+    mov edx, MAC_LABEL_INTERNAL
+    call mac_register_object
+
+    ; DAC: Object 99, owner=50, owner=RWX, others=0
+    mov eax, 99
+    mov edx, 50
+    mov ecx, DAC_PERM_READ | DAC_PERM_WRITE | DAC_PERM_EXEC
+    xor ebx, ebx
+    call dac_register
+
+    ; RBAC: Rolle 10 = READ|WRITE
+    mov eax, 10
+    mov edx, DAC_PERM_READ | DAC_PERM_WRITE
+    call rbac_define_role
+
+    ; RBAC: Subject 50 → Rolle 10
+    mov eax, 50
+    mov edx, 10
+    call rbac_assign_role
+
+    ; ============================
+    ; Test P1a: Zugriff erlaubt
+    ; ============================
+    mov eax, 50
+    mov edx, 99
+    mov ecx, DAC_PERM_WRITE
+    call security_access_check
+    jnc .istp1a_ok
+    inc edi
+.istp1a_ok:
+
+    ; Audit muss CAP_GRANT enthalten (total audit >= 1)
+    cmp dword [audit_total], 1
+    jae .istp1b_ok
+    inc edi
+.istp1b_ok:
+
+    ; ============================
+    ; Test P1c: Zugriff verweigert (Subject 51 PUBLIC, Object 88 SECRET)
+    ; ============================
+    mov eax, 51
+    mov edx, MAC_LABEL_PUBLIC
+    call mac_register_subject
+    mov eax, 88
+    mov edx, MAC_LABEL_SECRET
+    call mac_register_object
+
+    push dword [audit_violations]   ; Violations vor dem Test
+
+    mov eax, 51
+    mov edx, 88
+    mov ecx, DAC_PERM_READ
+    call security_access_check
+    jc .istp1c_ok
+    inc edi
+.istp1c_ok:
+    ; audit_violations muss gestiegen sein
+    pop ecx
+    cmp dword [audit_violations], ecx
+    ja .istp1d_ok
+    inc edi
+.istp1d_ok:
+
+    ; ============================
+    ; Test P2: Resilience Fault Pipeline
+    ; Subsystem 77 mit Containment-Slot (threshold=2)
+    ; ============================
+
+    ; Containment für Subsystem 77 registrieren (threshold=2)
+    mov eax, 77
+    mov edx, 2
+    call containment_register
+    jnc .istp2_cont_ok
+    inc edi
+.istp2_cont_ok:
+    mov ebx, eax   ; cont_slot
+
+    ; Failover für primary=77 registrieren
+    mov eax, 77
+    mov edx, 78    ; backup
+    call failover_register
+
+    ; 1. Fehler → DEGRADED
+    mov eax, FD_TYPE_TIMING
+    mov edx, 77
+    mov ecx, 0xBAD0001
+    call resilience_fault_pipeline
+
+    ; Containment-State muss DEGRADED sein
+    push esi
+    imul esi, ebx, CONT_RECORD_SIZE
+    add esi, cont_table
+    cmp dword [esi + CONT_STATE_OFF], CONT_STATE_DEGRADED
+    je .istp2a_ok
+    inc edi
+.istp2a_ok:
+    pop esi
+
+    ; 2. Fehler → ISOLATED + Failover
+    push dword [fo_total_switches]
+    mov eax, FD_TYPE_TIMING
+    mov edx, 77
+    mov ecx, 0xBAD0002
+    call resilience_fault_pipeline
+
+    push esi
+    imul esi, ebx, CONT_RECORD_SIZE
+    add esi, cont_table
+    cmp dword [esi + CONT_STATE_OFF], CONT_STATE_ISOLATED
+    je .istp2b_ok
+    inc edi
+.istp2b_ok:
+    pop esi
+
+    ; fo_total_switches muss gestiegen sein
+    pop ecx
+    cmp dword [fo_total_switches], ecx
+    ja .istp2c_ok
+    inc edi
+.istp2c_ok:
+
+    ; Metrics FAULTS-Slot muss > 0
+    mov eax, 2
+    call metrics_read
+    cmp eax, 0
+    ja .istp2d_ok
+    inc edi
+.istp2d_ok:
+
+    ; ============================
+    ; Test P3: Scheduler Admission
+    ; ============================
+
+    ; P3a: Normal-Task (prio=50, qos=NORMAL) → CFS
+    push dword [cfs_next_id]
+    mov eax, 100    ; owner
+    mov edx, 50     ; prio < 200
+    mov ecx, QOS_CLASS_NORMAL
+    call scheduler_admit_task
+    jnc .istp3a_ok
+    inc edi
+.istp3a_ok:
+    ; CFS-Task muss hinzugefügt sein
+    pop ecx
+    cmp dword [cfs_next_id], ecx
+    ja .istp3b_ok
+    inc edi
+.istp3b_ok:
+
+    ; P3b: RT-Task (prio=250) → RT-Tabelle
+    push dword [rt_next_id]
+    mov eax, 101
+    mov edx, 250    ; >= 200 → RT
+    mov ecx, QOS_CLASS_RT
+    call scheduler_admit_task
+    jnc .istp3c_ok
+    inc edi
+.istp3c_ok:
+    pop ecx
+    cmp dword [rt_next_id], ecx
+    ja .istp3d_ok
+    inc edi
+.istp3d_ok:
+
+    ; P3c: QoS-Budget erschöpfen → Admission schlägt fehl
+    ; IDLE-Klasse hat Budget=10; 11x consume → CF=1
+    push ecx
+    mov ecx, 11
+.istp3e_burn:
+    mov eax, 200    ; prio < 200
+    mov edx, 50
+    push ecx
+    mov ecx, QOS_CLASS_IDLE
+    call scheduler_admit_task
+    pop ecx
+    loop .istp3e_burn
+    ; Letzter muss scheitern
+    mov eax, 200
+    mov edx, 50
+    mov ecx, QOS_CLASS_IDLE
+    call scheduler_admit_task
+    jc .istp3f_ok
+    inc edi
+.istp3f_ok:
+    pop ecx
+
+    ; ============================
+    ; Test P4: Memory Pressure
+    ; ============================
+
+    ; OOM-Kandidaten registrieren
+    mov eax, 200
+    mov edx, 60
+    call oom_register_candidate
+    mov eax, 201
+    mov edx, 90
+    call oom_register_candidate
+
+    push dword [audit_total]
+    push dword [oom_kills]
+
+    call memory_pressure_response
+    jnc .istp4a_ok
+    inc edi
+.istp4a_ok:
+    ; Opfer muss PID=201 sein (Score=90 > 60)
+    cmp eax, 201
+    je .istp4b_ok
+    inc edi
+.istp4b_ok:
+    ; oom_kills muss gestiegen
+    pop ecx
+    cmp dword [oom_kills], ecx
+    ja .istp4c_ok
+    inc edi
+.istp4c_ok:
+    ; audit_total muss gestiegen
+    pop ecx
+    cmp dword [audit_total], ecx
+    ja .istp4d_ok
+    inc edi
+.istp4d_ok:
+
+    ; ============================
+    ; Test P5: Watchdog Expire Pipeline
+    ; ============================
+
+    ; WD registrieren und ablaufen lassen
+    push dword [wd_total_expires]
+    mov eax, 0xFF
+    mov edx, 1       ; timeout=1 Tick
+    mov ecx, WD_ACTION_LOG
+    call watchdog_create
+    jnc .istp5_create_ok
+    inc edi
+.istp5_create_ok:
+    push eax   ; handle
+
+    call watchdog_arm
+
+    ; wep_last_expires auf aktuellen Stand setzen → nächster Call erkennt Änderung
+    mov eax, [wd_total_expires]
+    mov [wep_last_expires], eax
+
+    ; Tick simulieren: Timeout=1 → sofort abgelaufen
+    call watchdog_expire_pipeline
+
+    ; Nach Pipeline muss wd_total_expires gestiegen sein
+    pop eax   ; handle
+    pop ecx   ; saved expires
+    cmp dword [wd_total_expires], ecx
+    ja .istp5a_ok
+    inc edi
+.istp5a_ok:
+
+    ; ============================
+    ; Ergebnis
+    ; ============================
+    test edi, edi
+    jnz .istfail
+    mov dword [integration_ready], 1
+    clc
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    ret
+.istfail:
+    stc
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    ret
+
+integration_ready:  dd 0
+wep_last_expires:   dd 0
+
 ; ---------------------------------------------------------------------------
 ; Minimaler Kernel Main
 ; ---------------------------------------------------------------------------
@@ -40195,6 +40920,10 @@ message_capneg_ok:
     db "NOVA: Cap Negotiation 1.0 bereit (8 Requests, Match/Reject)", 13, 10, 0
 message_capneg_error:
     db "NOVA PANIC: Cap Negotiation nicht initialisierbar", 13, 10, 0
+message_integration_ok:
+    db "NOVA: Integration 1.0 OK (5 Pipelines: Security/Resilience/Sched/Mem/WD)", 13, 10, 0
+message_integration_error:
+    db "NOVA PANIC: Subsystem-Integration fehlgeschlagen", 13, 10, 0
 message_rt_scheduler_ok:
     db "NOVA: RT Scheduler 1.0 bereit (8 Tasks, EDF/FIFO-RT)", 13, 10, 0
 message_rt_scheduler_error:
