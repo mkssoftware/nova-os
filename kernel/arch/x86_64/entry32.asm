@@ -373,6 +373,13 @@ kernel_entry:
     mov esi, message_ringbuf_ok
     call serial_write_string
 
+    call locality_initialize
+    jc panic_locality
+    call locality_self_test
+    jc panic_locality
+    mov esi, message_locality_ok
+    call serial_write_string
+
     call io_scheduler_initialize
     jc panic_io_scheduler
     call io_scheduler_self_test
@@ -828,6 +835,12 @@ panic_ringbuf:
     mov eax, 0x00002024
     mov edx, 36
     mov esi, message_ringbuf_error
+    jmp kernel_panic
+
+panic_locality:
+    mov eax, 0x00002026
+    mov edx, 38
+    mov esi, message_locality_error
     jmp kernel_panic
 
 panic_io_scheduler:
@@ -12372,6 +12385,256 @@ ringbuf_table:
     times RINGBUF_CAPACITY * RINGBUF_RECORD_SIZE db 0
 ringbuf_storage:
     times RINGBUF_CAPACITY * RINGBUF_ELEMENT_CAP * RINGBUF_ELEMENT_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Data-Locality-Manager – NUMA-bewusste Platzierungshinweise und Kostenmodell
+; fuer Datenpfade zwischen Producer, Consumer und Device.
+; NPSPEC-DATAMOVE-LOCALITY-0001
+; ---------------------------------------------------------------------------
+
+LOC_CAPACITY       equ 8
+LOC_RECORD_SIZE    equ 32
+
+LOC_STATE_FREE     equ 0
+LOC_STATE_ACTIVE   equ 1
+
+LOC_FLAG_RT        equ 0x01        ; Realtime: keine automatische Migration
+LOC_FLAG_NO_MIGRATE equ 0x02       ; Migration dauerhaft deaktiviert
+
+LOC_HINT_ID          equ 0
+LOC_STATE            equ 4
+LOC_CURRENT_NODE     equ 8
+LOC_PREFERRED_NODE   equ 12
+LOC_LAST_ACCESS_NODE equ 16
+LOC_REMOTE_ACCESSES  equ 20
+LOC_FLAGS            equ 24
+LOC_MIGRATE_COUNT    equ 28
+
+; Kostenmodell: NUMA_DIST_SELF=0, Remote=20
+LOC_COST_LOCAL  equ 0
+LOC_COST_REMOTE equ 20
+
+locality_initialize:
+    mov edi, locality_hints
+    xor eax, eax
+    mov ecx, (LOC_CAPACITY * LOC_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [locality_next_id], 1
+    mov dword [locality_live_count], 0
+    mov dword [locality_remote_decisions], 0
+    mov dword [locality_manager_ready], 1
+    clc
+    ret
+
+; Erstellt einen Locality-Hinweis. EAX=current_node, EDX=preferred_node.
+; EAX=Hint-Index (CF=0) oder CF=1 wenn voll.
+locality_hint_create:
+    push ecx
+    push edi
+    xor ecx, ecx
+.lhc_scan:
+    cmp ecx, LOC_CAPACITY
+    jae .lhc_full
+    mov edi, ecx
+    imul edi, LOC_RECORD_SIZE
+    add edi, locality_hints
+    cmp dword [edi + LOC_STATE], LOC_STATE_FREE
+    je .lhc_found
+    inc ecx
+    jmp .lhc_scan
+.lhc_found:
+    push eax
+    mov eax, [locality_next_id]
+    mov [edi + LOC_HINT_ID],          eax
+    pop eax
+    mov dword [edi + LOC_STATE],      LOC_STATE_ACTIVE
+    mov [edi + LOC_CURRENT_NODE],     eax
+    mov [edi + LOC_PREFERRED_NODE],   edx
+    mov [edi + LOC_LAST_ACCESS_NODE], eax
+    mov dword [edi + LOC_REMOTE_ACCESSES], 0
+    mov dword [edi + LOC_FLAGS],      0
+    mov dword [edi + LOC_MIGRATE_COUNT], 0
+    inc dword [locality_next_id]
+    inc dword [locality_live_count]
+    mov eax, ecx
+    pop edi
+    pop ecx
+    clc
+    ret
+.lhc_full:
+    pop edi
+    pop ecx
+    stc
+    ret
+
+; Setzt Flags fuer einen Hint. EAX=Hint-Index, EDX=Flags-Maske. CF=0 ok.
+locality_hint_set_flags:
+    push edi
+    cmp eax, LOC_CAPACITY
+    jae .lhsf_bad
+    mov edi, eax
+    imul edi, LOC_RECORD_SIZE
+    add edi, locality_hints
+    cmp dword [edi + LOC_STATE], LOC_STATE_ACTIVE
+    jne .lhsf_bad
+    or [edi + LOC_FLAGS], edx
+    pop edi
+    clc
+    ret
+.lhsf_bad:
+    pop edi
+    stc
+    ret
+
+; Vermerkt Zugriff. EAX=Hint-Index, EDX=accessing_node. CF=0 ok.
+locality_access_record:
+    push edi
+    cmp eax, LOC_CAPACITY
+    jae .lar_bad
+    mov edi, eax
+    imul edi, LOC_RECORD_SIZE
+    add edi, locality_hints
+    cmp dword [edi + LOC_STATE], LOC_STATE_ACTIVE
+    jne .lar_bad
+    mov [edi + LOC_LAST_ACCESS_NODE], edx
+    ; Remote-Zugriff wenn Knoten != current
+    cmp edx, [edi + LOC_CURRENT_NODE]
+    je .lar_done
+    inc dword [edi + LOC_REMOTE_ACCESSES]
+    inc dword [locality_remote_decisions]
+.lar_done:
+    pop edi
+    clc
+    ret
+.lar_bad:
+    pop edi
+    stc
+    ret
+
+; Berechnet Zugriffskosten. EAX=Hint-Index, EDX=requesting_node.
+; EAX=Kostenwert (0=lokal, 20=remote), CF=0 ok, CF=1 ungueltig.
+locality_evaluate_cost:
+    push edi
+    cmp eax, LOC_CAPACITY
+    jae .lec_bad
+    mov edi, eax
+    imul edi, LOC_RECORD_SIZE
+    add edi, locality_hints
+    cmp dword [edi + LOC_STATE], LOC_STATE_ACTIVE
+    jne .lec_bad
+    cmp edx, [edi + LOC_CURRENT_NODE]
+    je .lec_local
+    mov eax, LOC_COST_REMOTE
+    pop edi
+    clc
+    ret
+.lec_local:
+    xor eax, eax
+    pop edi
+    clc
+    ret
+.lec_bad:
+    pop edi
+    stc
+    ret
+
+; Self-Test: 7 Tests (Init, Create, Remote-Access, Cost=0, Cost=remote,
+;   RT-Flag-Schutz, Count-Invariante).
+locality_self_test:
+    push ebx
+    push edi
+    xor ebx, ebx
+
+    ; Test 1: Manager bereit
+    cmp dword [locality_manager_ready], 1
+    je .lst2
+    inc ebx
+
+.lst2:
+    ; Test 2: Erstelle Hint (node 0 → node 0)
+    xor eax, eax
+    xor edx, edx
+    call locality_hint_create
+    jnc .lst3
+    inc ebx
+    jmp .lst_done
+.lst3:
+    ; EAX = Hint-Index (0)
+    push eax
+
+    ; Test 3: Lokaler Zugriff von Node 0 → remote_accesses bleibt 0
+    mov edx, 0
+    call locality_access_record
+    pop eax
+    push eax
+    mov edi, eax
+    imul edi, LOC_RECORD_SIZE
+    add edi, locality_hints
+    cmp dword [edi + LOC_REMOTE_ACCESSES], 0
+    je .lst4
+    inc ebx
+
+.lst4:
+    ; Test 4: evaluate_cost(node 0) → EAX == 0
+    pop eax
+    push eax
+    xor edx, edx
+    call locality_evaluate_cost
+    cmp eax, 0
+    je .lst5
+    inc ebx
+
+.lst5:
+    ; Test 5: evaluate_cost(node 1) → EAX == LOC_COST_REMOTE
+    pop eax
+    push eax
+    mov edx, 1
+    call locality_evaluate_cost
+    cmp eax, LOC_COST_REMOTE
+    je .lst6
+    inc ebx
+
+.lst6:
+    ; Test 6: RT-Flag setzen → LOC_FLAGS hat RT-Bit
+    pop eax
+    push eax
+    mov edx, LOC_FLAG_RT
+    call locality_hint_set_flags
+    pop eax
+    mov edi, eax
+    imul edi, LOC_RECORD_SIZE
+    add edi, locality_hints
+    mov edi, [edi + LOC_FLAGS]
+    test edi, LOC_FLAG_RT
+    jnz .lst7
+    inc ebx
+
+.lst7:
+    ; Test 7: live_count == 1 (genau ein aktiver Hint)
+    cmp dword [locality_live_count], 1
+    je .lst_done
+    inc ebx
+
+.lst_done:
+    test ebx, ebx
+    jnz .lst_fail
+    pop edi
+    pop ebx
+    clc
+    ret
+.lst_fail:
+    pop edi
+    pop ebx
+    stc
+    ret
+
+locality_manager_ready:      dd 0
+locality_next_id:            dd 0
+locality_live_count:         dd 0
+locality_remote_decisions:   dd 0
+align 4
+locality_hints:
+    times LOC_CAPACITY * LOC_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
@@ -33174,6 +33437,10 @@ message_ringbuf_ok:
     db "NOVA: Ring Buffer 1.0 bereit (SPSC, 4 Instanzen, 16 Slots)", 13, 10, 0
 message_ringbuf_error:
     db "NOVA PANIC: Ring Buffer Manager nicht initialisierbar", 13, 10, 0
+message_locality_ok:
+    db "NOVA: Data Locality 1.0 bereit (NUMA-aware, RT-Schutz, Kostenmodell)", 13, 10, 0
+message_locality_error:
+    db "NOVA PANIC: Data Locality Manager nicht initialisierbar", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:
