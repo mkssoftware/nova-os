@@ -838,6 +838,27 @@ kernel_entry:
     mov esi, message_srec_ok
     call serial_write_string
 
+    call txlog_initialize
+    jc panic_txlog
+    call txlog_self_test
+    jc panic_txlog
+    mov esi, message_txlog_ok
+    call serial_write_string
+
+    call tbarrier_initialize
+    jc panic_tbarrier
+    call tbarrier_self_test
+    jc panic_tbarrier
+    mov esi, message_tbarrier_ok
+    call serial_write_string
+
+    call tcomp_initialize
+    jc panic_tcomp
+    call tcomp_self_test
+    jc panic_tcomp
+    mov esi, message_tcomp_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1584,6 +1605,24 @@ panic_srec:
     mov eax, 0x0000306C
     mov edx, 105
     mov esi, message_srec_error
+    jmp kernel_panic
+
+panic_txlog:
+    mov eax, 0x0000306D
+    mov edx, 106
+    mov esi, message_txlog_error
+    jmp kernel_panic
+
+panic_tbarrier:
+    mov eax, 0x0000306E
+    mov edx, 107
+    mov esi, message_tbarrier_error
+    jmp kernel_panic
+
+panic_tcomp:
+    mov eax, 0x0000306F
+    mov edx, 108
+    mov esi, message_tcomp_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -33852,6 +33891,388 @@ srec_table:
     times SREC_CAPACITY * SREC_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-TRANSACTION-LOG-0001 – Nova Transaction Log (WAL-style)
+; ===========================================================================
+; Write-ahead log: records transaction operations before they are applied.
+; Connects transaction_begin/transaction_commit (state32.inc) with an
+; append-only operation ring for durability and replay.
+;
+; Record: txn_id(4) + op_type(4) + target(4) + value(4) = 16 bytes
+; Op types: TXLOG_WRITE=1 / TXLOG_DELETE=2 / TXLOG_COMMIT=3 / TXLOG_ABORT=4
+
+TXLOG_CAPACITY  equ 8
+TXLOG_REC_SIZE  equ 16
+TXLOG_TXN_ID    equ 0
+TXLOG_OP_TYPE   equ 4
+TXLOG_TARGET    equ 8
+TXLOG_VALUE     equ 12
+
+TXLOG_WRITE     equ 1
+TXLOG_DELETE    equ 2
+TXLOG_COMMIT    equ 3
+TXLOG_ABORT     equ 4
+
+txlog_initialize:
+    cmp dword [txlog_ready], 1
+    je .done
+    mov edi, txlog_ring
+    xor eax, eax
+    mov ecx, (TXLOG_CAPACITY * TXLOG_REC_SIZE) / 4
+    rep stosd
+    mov dword [txlog_head], 0
+    mov dword [txlog_count], 0
+    mov dword [txlog_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=txn_id, EDX=op_type, ECX=target, EBX=value → CF
+txlog_append:
+    cmp dword [txlog_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push esi
+    push edi
+    mov esi, [txlog_head]
+    imul edi, esi, TXLOG_REC_SIZE
+    add edi, txlog_ring
+    mov [edi + TXLOG_TXN_ID], eax
+    mov [edi + TXLOG_OP_TYPE], edx
+    mov [edi + TXLOG_TARGET], ecx
+    mov [edi + TXLOG_VALUE], ebx
+    ; advance head (ring)
+    inc esi
+    cmp esi, TXLOG_CAPACITY
+    jb .no_wrap
+    xor esi, esi
+.no_wrap:
+    mov [txlog_head], esi
+    mov ecx, [txlog_count]
+    cmp ecx, TXLOG_CAPACITY
+    jae .count_ok
+    inc dword [txlog_count]
+.count_ok:
+    pop edi
+    pop esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; → EAX=count of log entries, CF
+txlog_count_entries:
+    cmp dword [txlog_ready], 1
+    jne .fail
+    mov eax, [txlog_count]
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+txlog_self_test:
+    ; append WRITE op for txn 1
+    mov eax, 1
+    mov edx, TXLOG_WRITE
+    mov ecx, 0x1000
+    mov ebx, 0xABCD
+    call txlog_append
+    jc .fail
+    ; append COMMIT op
+    mov eax, 1
+    mov edx, TXLOG_COMMIT
+    xor ecx, ecx
+    xor ebx, ebx
+    call txlog_append
+    jc .fail
+    call txlog_count_entries
+    jc .fail
+    cmp eax, 2
+    jne .fail
+    ; verify first entry
+    mov edi, txlog_ring
+    cmp dword [edi + TXLOG_TXN_ID], 1
+    jne .fail
+    cmp dword [edi + TXLOG_OP_TYPE], TXLOG_WRITE
+    jne .fail
+    cmp dword [edi + TXLOG_TARGET], 0x1000
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+txlog_ready:  dd 0
+txlog_head:   dd 0
+txlog_count:  dd 0
+txlog_ring:
+    times TXLOG_CAPACITY * TXLOG_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-TRANSACTION-BARRIER-0001 – Nova Transaction Barrier
+; ===========================================================================
+; All-ready synchronization gate: a barrier waits for N participants to
+; signal ready before releasing. Connects distributed transaction prepare
+; phase — each participant calls tbarrier_signal; when count reaches total,
+; barrier transitions to OPEN.
+;
+; States: CLOSED=0 / OPEN=1
+; Record: barrier_id(4) + total(4) + arrived(4) + state(4) = 16 bytes
+
+TBARRIER_CAPACITY equ 4
+TBARRIER_REC_SIZE equ 16
+TBARRIER_ID       equ 0
+TBARRIER_TOTAL    equ 4
+TBARRIER_ARRIVED  equ 8
+TBARRIER_STATE    equ 12
+
+TBARRIER_CLOSED   equ 0
+TBARRIER_OPEN     equ 1
+
+tbarrier_initialize:
+    cmp dword [tbarrier_ready], 1
+    je .done
+    mov edi, tbarrier_table
+    xor eax, eax
+    mov ecx, (TBARRIER_CAPACITY * TBARRIER_REC_SIZE) / 4
+    rep stosd
+    mov dword [tbarrier_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=barrier_id, EDX=total_participants → EAX=slot, CF
+tbarrier_create:
+    cmp dword [tbarrier_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    test edx, edx
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, TBARRIER_CAPACITY
+    jae .fail
+    imul edi, esi, TBARRIER_REC_SIZE
+    add edi, tbarrier_table
+    cmp dword [edi + TBARRIER_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + TBARRIER_ID], eax
+    mov [edi + TBARRIER_TOTAL], edx
+    mov dword [edi + TBARRIER_ARRIVED], 0
+    mov dword [edi + TBARRIER_STATE], TBARRIER_CLOSED
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=barrier_id → CF=0 open (all arrived) / CF=1 still closed
+tbarrier_signal:
+    cmp dword [tbarrier_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, TBARRIER_CAPACITY
+    jae .not_found
+    imul edi, esi, TBARRIER_REC_SIZE
+    add edi, tbarrier_table
+    cmp [edi + TBARRIER_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    inc dword [edi + TBARRIER_ARRIVED]
+    mov eax, [edi + TBARRIER_ARRIVED]
+    cmp eax, [edi + TBARRIER_TOTAL]
+    jne .still_closed
+    mov dword [edi + TBARRIER_STATE], TBARRIER_OPEN
+    pop ebx
+    clc
+    ret
+.still_closed:
+    pop ebx
+    stc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+tbarrier_self_test:
+    ; create barrier id=1, total=2
+    mov eax, 1
+    mov edx, 2
+    call tbarrier_create
+    jc .fail
+    ; signal once → still closed
+    mov eax, 1
+    call tbarrier_signal
+    jnc .fail           ; CF=1 expected
+    ; signal twice → open
+    mov eax, 1
+    call tbarrier_signal
+    jc .fail            ; CF=0 expected (open)
+    ; verify state in table
+    mov edi, tbarrier_table
+    cmp dword [edi + TBARRIER_STATE], TBARRIER_OPEN
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+tbarrier_ready:  dd 0
+tbarrier_table:
+    times TBARRIER_CAPACITY * TBARRIER_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-TRANSACTION-COMPENSATION-0001 – Nova Transaction Compensation
+; ===========================================================================
+; Saga-style compensation registry: each forward action has a registered
+; compensating action (undo function pointer). On abort, tcomp_run_all
+; invokes all registered compensators in LIFO order.
+;
+; Record: txn_id(4) + comp_fn(4) + arg(4) + done(4) = 16 bytes
+
+TCOMP_CAPACITY  equ 8
+TCOMP_REC_SIZE  equ 16
+TCOMP_TXN_ID    equ 0
+TCOMP_FN        equ 4
+TCOMP_ARG       equ 8
+TCOMP_DONE      equ 12
+
+tcomp_initialize:
+    cmp dword [tcomp_ready], 1
+    je .done
+    mov edi, tcomp_table
+    xor eax, eax
+    mov ecx, (TCOMP_CAPACITY * TCOMP_REC_SIZE) / 4
+    rep stosd
+    mov dword [tcomp_count], 0
+    mov dword [tcomp_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=txn_id, EDX=comp_fn (ptr), ECX=arg → EAX=slot, CF
+tcomp_register:
+    cmp dword [tcomp_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    test edx, edx
+    jz .fail
+    mov esi, [tcomp_count]
+    cmp esi, TCOMP_CAPACITY
+    jae .fail
+    imul edi, esi, TCOMP_REC_SIZE
+    add edi, tcomp_table
+    mov [edi + TCOMP_TXN_ID], eax
+    mov [edi + TCOMP_FN], edx
+    mov [edi + TCOMP_ARG], ecx
+    mov dword [edi + TCOMP_DONE], 0
+    inc dword [tcomp_count]
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; Run compensators in LIFO order for EAX=txn_id → CF
+tcomp_run_all:
+    cmp dword [tcomp_ready], 1
+    jne .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    mov esi, [tcomp_count]
+    test esi, esi
+    jz .done_ok
+.loop:
+    dec esi
+    js .done_ok
+    imul edi, esi, TCOMP_REC_SIZE
+    add edi, tcomp_table
+    cmp [edi + TCOMP_TXN_ID], ebx
+    jne .loop
+    cmp dword [edi + TCOMP_DONE], 1
+    je .loop
+    ; call compensator fn(arg)
+    push esi
+    push edi
+    mov eax, [edi + TCOMP_ARG]
+    call dword [edi + TCOMP_FN]
+    pop edi
+    pop esi
+    mov dword [edi + TCOMP_DONE], 1
+    jmp .loop
+.done_ok:
+    pop esi
+    pop ebx
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; Test compensator stub — does nothing, just returns
+tcomp_test_stub:
+    ret
+
+tcomp_self_test:
+    ; register two compensators for txn=1
+    mov eax, 1
+    mov edx, tcomp_test_stub
+    mov ecx, 0
+    call tcomp_register
+    jc .fail
+    mov eax, 1
+    mov edx, tcomp_test_stub
+    mov ecx, 0
+    call tcomp_register
+    jc .fail
+    ; run all
+    mov eax, 1
+    call tcomp_run_all
+    jc .fail
+    ; verify both slots are done=1
+    mov edi, tcomp_table
+    cmp dword [edi + TCOMP_DONE], 1
+    jne .fail
+    mov edi, tcomp_table
+    add edi, TCOMP_REC_SIZE
+    cmp dword [edi + TCOMP_DONE], 1
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+tcomp_ready:  dd 0
+tcomp_count:  dd 0
+tcomp_table:
+    times TCOMP_CAPACITY * TCOMP_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -45313,6 +45734,18 @@ message_srec_ok:
     db "NOVA: State Reconciliation 1.0 bereit (8-Slots, desired vs actual)", 13, 10, 0
 message_srec_error:
     db "NOVA PANIC: State Reconciliation nicht initialisierbar", 13, 10, 0
+message_txlog_ok:
+    db "NOVA: Transaction Log 1.0 bereit (8-Entry ring, WAL-style op recording)", 13, 10, 0
+message_txlog_error:
+    db "NOVA PANIC: Transaction Log nicht initialisierbar", 13, 10, 0
+message_tbarrier_ok:
+    db "NOVA: Transaction Barrier 1.0 bereit (4-Slots, all-ready sync gate)", 13, 10, 0
+message_tbarrier_error:
+    db "NOVA PANIC: Transaction Barrier nicht initialisierbar", 13, 10, 0
+message_tcomp_ok:
+    db "NOVA: Transaction Compensation 1.0 bereit (8-Slots, undo-action registry)", 13, 10, 0
+message_tcomp_error:
+    db "NOVA PANIC: Transaction Compensation nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
