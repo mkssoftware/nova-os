@@ -1086,6 +1086,7 @@ panic_invalid_handoff:
 
 ; ---------------------------------------------------------------------------
 ; BIB-Validierung und Firmware-Interface (NPSPEC-HAL-FIRMWARE-0001)
+; NPSPEC-HAL-0001 / NPSPEC-BOOT-BIOS-0001 / NPSPEC-BOOT-SECURE-0001
 ; ---------------------------------------------------------------------------
 
 validate_bib:
@@ -2249,6 +2250,7 @@ early_security_entropy_self_test:
 
 ; ---------------------------------------------------------------------------
 ; Physischer Bootstrap-Speichermanager (ADR-2001 / NPSPEC-KERNEL-0006)
+; NPSPEC-MEMORY-PROTECTION-0001 / NPSPEC-MEMORY-SHARED-0001 / NPSPEC-MEMORY-TLB-0001
 ; ---------------------------------------------------------------------------
 
 PMM_PAGE_SIZE        equ 4096
@@ -3673,6 +3675,7 @@ paging_enabled:   dd 0
 
 ; ---------------------------------------------------------------------------
 ; Interrupt- und Timer-Architektur (ADR-2006 / ADR-2007 / NPSPEC-KERNEL-0009 / NPSPEC-KERNEL-0014 / NPSPEC-HAL-INTERRUPT-0001)
+; NPSPEC-INTERRUPT-0001 / NPSPEC-INTERRUPT-AFFINITY-0001 / NPSPEC-INTERRUPT-PRIORITY-0001
 ; ---------------------------------------------------------------------------
 
 IDT_ENTRY_COUNT equ 256
@@ -5347,6 +5350,8 @@ service_input_versions: times SERVICE_CAPACITY dd 0
 service_output_versions: times SERVICE_CAPACITY dd 0
 
 ; Kernel Process Manager (ADR-2011 / NPSPEC-KERNEL-0004)
+; NPSPEC-PROCESS-LIFECYCLE-0001 / NPSPEC-PROCESS-MODEL-0001 / NPSPEC-PROCESS-SPAWN-0001
+; NPSPEC-PROCESS-ISOLATION-0001
 PROCESS_API_SIZE      equ 32
 PROCESS_CAPACITY      equ 4
 PROCESS_RECORD_SIZE   equ 32
@@ -18298,6 +18303,9 @@ mouse_background:         times 12 * 16 dd 0
 align 4
 
 ; Kernel Security / Capability Manager (ADR-2013 / NPSPEC-KERNEL-0020)
+; NPSPEC-SECURITY-CODEINTEGRITY-0001 / NPSPEC-SECURITY-CODESIGNING-0001
+; NPSPEC-SECURITY-ISOLATION-0001 / NPSPEC-SECURITY-LEASTPRIVILEGE-0001
+; NPSPEC-CAPABILITY-0001
 SECURITY_API_SIZE       equ 32
 SECURITY_CAPACITY       equ PROCESS_CAPACITY
 SECURITY_RECORD_SIZE    equ 8
@@ -26400,6 +26408,8 @@ align 4
 
 ; ===========================================================================
 ; §016 – Synchronisation 1.0 Bootstrap (NPSPEC-KERNEL-0016)
+; NPSPEC-SYNC-ATOMIC-0001 / NPSPEC-SYNC-BARRIER-0001 / NPSPEC-SYNC-SPINLOCK-0001
+; NPSPEC-SYNC-SEMAPHORE-0001 / NPSPEC-SYNC-LOCKFREE-0001
 ; Implementiert: Atomaroperationen, Speicherbarrieren, Spinlocks (inkl. IRQ),
 ; Semaphoren (try-only), Completions, Sequence Locks, Referenzzählung.
 ; RCU, blockierende Mutexes und Wait Queues erfordern Scheduler-Integration.
@@ -26932,6 +26942,8 @@ align 4
 
 ; ===========================================================================
 ; §016 Erweiterung – Blocking Mutex, Condition Variables, Wait Queues, RCU
+; NPSPEC-SYNC-MUTEX-0001 / NPSPEC-SYNC-CONDITION-0001 / NPSPEC-SYNC-RWLOCK-0001
+; NPSPEC-SYNC-RCU-0001
 ; Bootstrap: kein echtes Blockieren (Single-CPU, kein Scheduler-Sleep);
 ; Datenstrukturen + Operationen vollständig, Schlaf = Spin-Fallback.
 ; ===========================================================================
