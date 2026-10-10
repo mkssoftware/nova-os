@@ -532,6 +532,13 @@ kernel_entry:
     mov esi, message_trace_ok
     call serial_write_string
 
+    call metrics_initialize
+    jc panic_metrics
+    call metrics_self_test
+    jc panic_metrics
+    mov esi, message_metrics_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -990,6 +997,12 @@ panic_trace:
     mov eax, 0x00003035
     mov edx, 50
     mov esi, message_trace_error
+    jmp kernel_panic
+
+panic_metrics:
+    mov eax, 0x00003039
+    mov edx, 54
+    mov esi, message_metrics_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -26241,6 +26254,211 @@ trace_ring:
     times TRACE_CAPACITY * TRACE_EVENT_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-OBSERVABILITY-METRICS-0001 – Nova Kernel Performance Counters
+; Benannte Zähler mit atomarem Inkrement; snapshot-fähig für Diagnose.
+; ===========================================================================
+
+METRICS_CAPACITY    equ 32
+METRICS_RECORD_SIZE equ 24
+
+MET_ID              equ 0
+MET_VALUE           equ 4
+MET_PEAK            equ 8
+MET_TOTAL           equ 12
+MET_SUBSYSTEM       equ 16
+MET_FLAGS           equ 20
+
+MET_FLAG_ACTIVE     equ 0x01
+MET_FLAG_RATE       equ 0x02
+
+; Vordefinierte Metrik-Slots (nach Bootstrap direkt beschreibbar)
+MET_SLOT_IRQ_COUNT  equ 0
+MET_SLOT_CTX_SWITCH equ 1
+MET_SLOT_FAULTS     equ 2
+MET_SLOT_ALLOCS     equ 3
+MET_SLOT_FREES      equ 4
+MET_SLOT_IPC_CALLS  equ 5
+MET_SLOT_TRACE_EMIT equ 6
+MET_SLOT_WD_KICKS   equ 7
+
+metrics_initialize:
+    mov edi, metrics_table
+    mov ecx, METRICS_CAPACITY * METRICS_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    ; Vordefinierte Slots aktivieren
+    mov esi, metrics_table
+    mov ecx, METRICS_CAPACITY
+    xor ebx, ebx
+.mi_init_loop:
+    mov [esi + MET_ID], ebx
+    mov dword [esi + MET_FLAGS], MET_FLAG_ACTIVE
+    add esi, METRICS_RECORD_SIZE
+    inc ebx
+    dec ecx
+    jnz .mi_init_loop
+    mov dword [metrics_ready], 1
+    clc
+    ret
+
+; EAX=slot_index → inkrementiert MET_VALUE und MET_TOTAL; aktualisiert MET_PEAK
+metrics_increment:
+    push esi
+    cmp eax, METRICS_CAPACITY
+    jae .minc_done
+    imul esi, eax, METRICS_RECORD_SIZE
+    add esi, metrics_table
+    inc dword [esi + MET_VALUE]
+    inc dword [esi + MET_TOTAL]
+    mov eax, [esi + MET_VALUE]
+    cmp eax, [esi + MET_PEAK]
+    jbe .minc_done
+    mov [esi + MET_PEAK], eax
+.minc_done:
+    clc
+    pop esi
+    ret
+
+; EAX=slot_index  EDX=delta → addiert delta auf MET_VALUE + MET_TOTAL
+metrics_add:
+    push esi
+    push edx
+    cmp eax, METRICS_CAPACITY
+    jae .madd_done
+    imul esi, eax, METRICS_RECORD_SIZE
+    add esi, metrics_table
+    add [esi + MET_VALUE], edx
+    add [esi + MET_TOTAL], edx
+    mov edx, [esi + MET_VALUE]
+    cmp edx, [esi + MET_PEAK]
+    jbe .madd_done
+    mov [esi + MET_PEAK], edx
+.madd_done:
+    clc
+    pop edx
+    pop esi
+    ret
+
+; EAX=slot_index → EAX=current value, EDX=peak, ECX=total
+metrics_read:
+    push esi
+    cmp eax, METRICS_CAPACITY
+    jae .mrd_zero
+    imul esi, eax, METRICS_RECORD_SIZE
+    add esi, metrics_table
+    mov eax, [esi + MET_VALUE]
+    mov edx, [esi + MET_PEAK]
+    mov ecx, [esi + MET_TOTAL]
+    clc
+    pop esi
+    ret
+.mrd_zero:
+    xor eax, eax
+    xor edx, edx
+    xor ecx, ecx
+    stc
+    pop esi
+    ret
+
+; EAX=slot_index → setzt MET_VALUE=0 (Peak und Total bleiben)
+metrics_reset:
+    push esi
+    cmp eax, METRICS_CAPACITY
+    jae .mrst_done
+    imul esi, eax, METRICS_RECORD_SIZE
+    add esi, metrics_table
+    mov dword [esi + MET_VALUE], 0
+.mrst_done:
+    clc
+    pop esi
+    ret
+
+metrics_self_test:
+    push ebx
+    xor ebx, ebx
+
+    ; T1: ready
+    cmp dword [metrics_ready], 1
+    je .mst1_ok
+    inc ebx
+.mst1_ok:
+
+    ; T2: increment slot 0
+    mov eax, MET_SLOT_IRQ_COUNT
+    call metrics_increment
+    mov eax, MET_SLOT_IRQ_COUNT
+    call metrics_read      ; EAX=value
+    cmp eax, 1
+    je .mst2_ok
+    inc ebx
+.mst2_ok:
+
+    ; T3: increment 4 more times → value=5
+    mov ecx, 4
+.mst3_loop:
+    push ecx
+    mov eax, MET_SLOT_IRQ_COUNT
+    call metrics_increment
+    pop ecx
+    dec ecx
+    jnz .mst3_loop
+    mov eax, MET_SLOT_IRQ_COUNT
+    call metrics_read
+    cmp eax, 5
+    je .mst3_ok
+    inc ebx
+.mst3_ok:
+
+    ; T4: peak=5
+    mov eax, MET_SLOT_IRQ_COUNT
+    call metrics_read       ; EDX=peak
+    cmp edx, 5
+    je .mst4_ok
+    inc ebx
+.mst4_ok:
+
+    ; T5: total=5
+    cmp ecx, 5
+    je .mst5_ok
+    inc ebx
+.mst5_ok:
+
+    ; T6: metrics_add(slot1, 100)
+    mov eax, MET_SLOT_CTX_SWITCH
+    mov edx, 100
+    call metrics_add
+    mov eax, MET_SLOT_CTX_SWITCH
+    call metrics_read
+    cmp eax, 100
+    je .mst6_ok
+    inc ebx
+.mst6_ok:
+
+    ; T7: reset slot 0 → value=0, total bleibt
+    mov eax, MET_SLOT_IRQ_COUNT
+    call metrics_reset
+    call metrics_read
+    test eax, eax
+    jz .mst7_ok
+    inc ebx
+.mst7_ok:
+
+    test ebx, ebx
+    jnz .mstf
+    clc
+    pop ebx
+    ret
+.mstf:
+    stc
+    pop ebx
+    ret
+
+metrics_ready:  dd 0
+align 4
+metrics_table:
+    times METRICS_CAPACITY * METRICS_RECORD_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -35201,6 +35419,10 @@ message_trace_ok:
     db "NOVA: Kernel Trace 1.0 bereit (64-Slot-Ring, seq/subsys/args)", 13, 10, 0
 message_trace_error:
     db "NOVA PANIC: Kernel Trace Ring nicht initialisierbar", 13, 10, 0
+message_metrics_ok:
+    db "NOVA: Metrics 1.0 bereit (32 Counter, increment/add/peak/reset)", 13, 10, 0
+message_metrics_error:
+    db "NOVA PANIC: Metrics Manager nicht initialisierbar", 13, 10, 0
 message_time_ok:
     db "NOVA: Time 1.0 bereit (Monoton 100Hz + RTC CMOS Uhr/Datum)", 13, 10, 0
 message_time_error:
