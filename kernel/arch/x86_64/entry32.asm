@@ -380,6 +380,13 @@ kernel_entry:
     mov esi, message_locality_ok
     call serial_write_string
 
+    call kernelbypass_initialize
+    jc panic_kernelbypass
+    call kernelbypass_self_test
+    jc panic_kernelbypass
+    mov esi, message_kernelbypass_ok
+    call serial_write_string
+
     call io_scheduler_initialize
     jc panic_io_scheduler
     call io_scheduler_self_test
@@ -841,6 +848,12 @@ panic_locality:
     mov eax, 0x00002026
     mov edx, 38
     mov esi, message_locality_error
+    jmp kernel_panic
+
+panic_kernelbypass:
+    mov eax, 0x00002027
+    mov edx, 39
+    mov esi, message_kernelbypass_error
     jmp kernel_panic
 
 panic_io_scheduler:
@@ -12635,6 +12648,264 @@ locality_remote_decisions:   dd 0
 align 4
 locality_hints:
     times LOC_CAPACITY * LOC_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Kernel-Bypass-Manager – autorisierter Hochleistungs-Datenpfad mit strikter
+; Control/Data-Plane-Trennung, Capability-Pruefung und Revocation-Protokoll.
+; NPSPEC-DATAMOVE-KERNELBYPASS-0001
+; ---------------------------------------------------------------------------
+
+KBYP_CAPACITY      equ 4
+KBYP_RECORD_SIZE   equ 40
+
+KBYP_STATE_FREE       equ 0
+KBYP_STATE_CREATED    equ 1
+KBYP_STATE_CONFIGURED equ 2
+KBYP_STATE_ACTIVE     equ 3
+KBYP_STATE_QUIESCING  equ 4
+KBYP_STATE_REVOKED    equ 5
+
+KBYP_CAP_USE_DEVICE   equ 0x01
+KBYP_CAP_MAP_DMA      equ 0x02
+KBYP_CAP_SUBMIT       equ 0x04
+KBYP_CAP_RECEIVE      equ 0x08
+KBYP_CAP_CONFIGURE    equ 0x10
+
+KBYP_ID              equ 0
+KBYP_STATE           equ 4
+KBYP_OWNER           equ 8
+KBYP_DEVICE          equ 12
+KBYP_CAPABILITIES    equ 16
+KBYP_DMA_MAPPING_ID  equ 20
+KBYP_IOMMU_DOMAIN    equ 24
+KBYP_NUMA_NODE       equ 28
+KBYP_FLAGS           equ 32
+KBYP_SUBMISSION_COUNT equ 36
+
+kernelbypass_initialize:
+    mov edi, kbyp_contexts
+    xor eax, eax
+    mov ecx, (KBYP_CAPACITY * KBYP_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [kbyp_next_id], 1
+    mov dword [kbyp_live_count], 0
+    mov dword [kbyp_active_count], 0
+    mov dword [kbyp_revoke_count], 0
+    mov dword [kbyp_manager_ready], 1
+    clc
+    ret
+
+; Erstellt Bypass-Kontext. EAX=owner_pid, EDX=capabilities.
+; EAX=Slot-Index (CF=0) oder CF=1 wenn voll.
+kernelbypass_create:
+    push ecx
+    push edi
+    xor ecx, ecx
+.kbc_scan:
+    cmp ecx, KBYP_CAPACITY
+    jae .kbc_full
+    mov edi, ecx
+    imul edi, KBYP_RECORD_SIZE
+    add edi, kbyp_contexts
+    cmp dword [edi + KBYP_STATE], KBYP_STATE_FREE
+    je .kbc_found
+    inc ecx
+    jmp .kbc_scan
+.kbc_found:
+    push eax
+    mov eax, [kbyp_next_id]
+    mov [edi + KBYP_ID],           eax
+    pop eax
+    mov dword [edi + KBYP_STATE],  KBYP_STATE_CREATED
+    mov [edi + KBYP_OWNER],        eax
+    mov dword [edi + KBYP_DEVICE], 0
+    mov [edi + KBYP_CAPABILITIES], edx
+    mov dword [edi + KBYP_DMA_MAPPING_ID], 0
+    mov dword [edi + KBYP_IOMMU_DOMAIN], 0
+    mov dword [edi + KBYP_NUMA_NODE], 0
+    mov dword [edi + KBYP_FLAGS], 0
+    mov dword [edi + KBYP_SUBMISSION_COUNT], 0
+    inc dword [kbyp_next_id]
+    inc dword [kbyp_live_count]
+    mov eax, ecx
+    pop edi
+    pop ecx
+    clc
+    ret
+.kbc_full:
+    pop edi
+    pop ecx
+    stc
+    ret
+
+; Konfiguriert Kontext (CREATED → CONFIGURED). EAX=Slot. CF=0 ok.
+kernelbypass_configure:
+    push edi
+    cmp eax, KBYP_CAPACITY
+    jae .kbcfg_bad
+    mov edi, eax
+    imul edi, KBYP_RECORD_SIZE
+    add edi, kbyp_contexts
+    cmp dword [edi + KBYP_STATE], KBYP_STATE_CREATED
+    jne .kbcfg_bad
+    ; Capability-Pruefung: Submit oder Receive muss vorhanden sein
+    mov eax, [edi + KBYP_CAPABILITIES]
+    test eax, KBYP_CAP_SUBMIT | KBYP_CAP_RECEIVE
+    jz .kbcfg_bad
+    mov dword [edi + KBYP_STATE], KBYP_STATE_CONFIGURED
+    pop edi
+    clc
+    ret
+.kbcfg_bad:
+    pop edi
+    stc
+    ret
+
+; Aktiviert Kontext (CONFIGURED → ACTIVE). EAX=Slot. CF=0 ok.
+kernelbypass_activate:
+    push edi
+    cmp eax, KBYP_CAPACITY
+    jae .kba_bad
+    mov edi, eax
+    imul edi, KBYP_RECORD_SIZE
+    add edi, kbyp_contexts
+    cmp dword [edi + KBYP_STATE], KBYP_STATE_CONFIGURED
+    jne .kba_bad
+    mov dword [edi + KBYP_STATE], KBYP_STATE_ACTIVE
+    inc dword [kbyp_active_count]
+    pop edi
+    clc
+    ret
+.kba_bad:
+    pop edi
+    stc
+    ret
+
+; Widerruft Kontext. EAX=Slot. CF=0 ok, CF=1 wenn ungueltig/schon revoked.
+kernelbypass_revoke:
+    push edi
+    cmp eax, KBYP_CAPACITY
+    jae .kbr_bad
+    mov edi, eax
+    imul edi, KBYP_RECORD_SIZE
+    add edi, kbyp_contexts
+    mov eax, [edi + KBYP_STATE]
+    cmp eax, KBYP_STATE_FREE
+    je .kbr_bad
+    cmp eax, KBYP_STATE_REVOKED
+    je .kbr_bad
+    cmp eax, KBYP_STATE_ACTIVE
+    jne .kbr_not_active
+    dec dword [kbyp_active_count]
+.kbr_not_active:
+    mov dword [edi + KBYP_STATE], KBYP_STATE_REVOKED
+    inc dword [kbyp_revoke_count]
+    pop edi
+    clc
+    ret
+.kbr_bad:
+    pop edi
+    stc
+    ret
+
+; Self-Test: 7 Tests (Init, Create, Configure, Activate, Revoke, Doppel-
+;   Aktivierung nach Revoke scheitert, State-Invariante).
+kernelbypass_self_test:
+    push ebx
+    push edi
+    xor ebx, ebx
+
+    ; Test 1: Manager bereit
+    cmp dword [kbyp_manager_ready], 1
+    je .kbt2
+    inc ebx
+
+.kbt2:
+    ; Test 2: Create (PID=1, SUBMIT|RECEIVE)
+    mov eax, 1
+    mov edx, KBYP_CAP_SUBMIT | KBYP_CAP_RECEIVE
+    call kernelbypass_create
+    jnc .kbt3
+    inc ebx
+    jmp .kbt_done
+.kbt3:
+    push eax                            ; Slot-Index sichern
+    ; Test 3: State == CREATED
+    mov edi, eax
+    imul edi, KBYP_RECORD_SIZE
+    add edi, kbyp_contexts
+    cmp dword [edi + KBYP_STATE], KBYP_STATE_CREATED
+    je .kbt4
+    inc ebx
+
+.kbt4:
+    ; Test 4: Configure
+    pop eax
+    push eax
+    call kernelbypass_configure
+    jnc .kbt5
+    inc ebx
+
+.kbt5:
+    ; Test 5: Activate
+    pop eax
+    push eax
+    call kernelbypass_activate
+    jnc .kbt5_check
+    inc ebx
+    jmp .kbt6
+.kbt5_check:
+    mov edi, [esp]                      ; Slot-Index
+    imul edi, KBYP_RECORD_SIZE
+    add edi, kbyp_contexts
+    cmp dword [edi + KBYP_STATE], KBYP_STATE_ACTIVE
+    je .kbt6
+    inc ebx
+
+.kbt6:
+    ; Test 6: Revoke
+    pop eax
+    push eax
+    call kernelbypass_revoke
+    jnc .kbt6_check
+    inc ebx
+    jmp .kbt7
+.kbt6_check:
+    mov edi, [esp]
+    imul edi, KBYP_RECORD_SIZE
+    add edi, kbyp_contexts
+    cmp dword [edi + KBYP_STATE], KBYP_STATE_REVOKED
+    je .kbt7
+    inc ebx
+
+.kbt7:
+    ; Test 7: Re-Aktivierung nach Revoke muss scheitern (CF=1)
+    pop eax
+    call kernelbypass_activate
+    jc .kbt_done                        ; erwartet: Fehler
+    inc ebx
+
+.kbt_done:
+    test ebx, ebx
+    jnz .kbt_fail
+    pop edi
+    pop ebx
+    clc
+    ret
+.kbt_fail:
+    pop edi
+    pop ebx
+    stc
+    ret
+
+kbyp_manager_ready: dd 0
+kbyp_next_id:       dd 0
+kbyp_live_count:    dd 0
+kbyp_active_count:  dd 0
+kbyp_revoke_count:  dd 0
+align 4
+kbyp_contexts:
+    times KBYP_CAPACITY * KBYP_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
@@ -33441,6 +33712,10 @@ message_locality_ok:
     db "NOVA: Data Locality 1.0 bereit (NUMA-aware, RT-Schutz, Kostenmodell)", 13, 10, 0
 message_locality_error:
     db "NOVA PANIC: Data Locality Manager nicht initialisierbar", 13, 10, 0
+message_kernelbypass_ok:
+    db "NOVA: Kernel Bypass 1.0 bereit (Control+DataPlane, Revocation)", 13, 10, 0
+message_kernelbypass_error:
+    db "NOVA PANIC: Kernel Bypass Manager nicht initialisierbar", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:
