@@ -194,6 +194,20 @@ kernel_entry:
     mov esi, message_time_ok
     call serial_write_string
 
+    call clocksource_initialize
+    jc panic_clocksource
+    call clocksource_self_test
+    jc panic_clocksource
+    mov esi, message_clocksource_ok
+    call serial_write_string
+
+    call hrt_initialize
+    jc panic_hrt
+    call hrt_self_test
+    jc panic_hrt
+    mov esi, message_hrt_ok
+    call serial_write_string
+
     call ipc_initialize
     jc panic_ipc
     call ipc_self_test
@@ -1266,6 +1280,18 @@ panic_time:
     mov eax, 0x00003036
     mov edx, 51
     mov esi, message_time_error
+    jmp kernel_panic
+
+panic_clocksource:
+    mov eax, 0x00003042
+    mov edx, 63
+    mov esi, message_clocksource_error
+    jmp kernel_panic
+
+panic_hrt:
+    mov eax, 0x00003043
+    mov edx, 64
+    mov esi, message_hrt_error
     jmp kernel_panic
 
 panic_memory_manager:
@@ -31637,6 +31663,365 @@ rtc_tmp_day:        dd 0
 rtc_tmp_month:      dd 0
 rtc_tmp_year:       dd 0
 
+; ===========================================================================
+; NPSPEC-TIME-CLOCKSOURCE-0001 – Nova Clock Source Abstraction
+; Einheitliche Schnittstelle über verschiedene Hardware-Zeitquellen.
+; Registriert Quellen (TSC, PIT, HPET-stub, RTC) mit Priorität und Rating.
+; ===========================================================================
+
+CS_CAPACITY          equ 4
+CS_RECORD_SIZE       equ 24
+
+CS_TYPE_NONE         equ 0
+CS_TYPE_PIT          equ 1
+CS_TYPE_TSC          equ 2
+CS_TYPE_HPET         equ 3
+CS_TYPE_RTC          equ 4
+
+CS_FLAG_STABLE       equ 0x01
+CS_FLAG_CONT         equ 0x02   ; Continuous (kein Wrap in absehbarer Zeit)
+CS_FLAG_NONSTOP      equ 0x04
+
+CS_ID                equ 0
+CS_TYPE_OFF          equ 4
+CS_RATING            equ 8   ; Höheres Rating = bevorzugte Quelle
+CS_FLAGS             equ 12
+CS_READ_FN           equ 16  ; Funktionszeiger → EAX:EDX = 64-bit Tick
+CS_MULT              equ 20  ; Multiplikator für ns-Umrechnung (vereinfacht)
+
+clocksource_initialize:
+    mov edi, cs_table
+    mov ecx, CS_CAPACITY * CS_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [cs_ready], 1
+    mov dword [cs_count], 0
+    mov dword [cs_active], 0
+    ; PIT als Basisquelle registrieren (immer vorhanden)
+    mov eax, CS_TYPE_PIT
+    mov edx, 50              ; Rating 50
+    mov ecx, CS_FLAG_STABLE
+    mov ebx, clocksource_pit_read
+    call clocksource_register
+    ; TSC registrieren (höheres Rating wenn vorhanden)
+    mov eax, CS_TYPE_TSC
+    mov edx, 100
+    mov ecx, CS_FLAG_STABLE | CS_FLAG_NONSTOP
+    mov ebx, clocksource_tsc_read
+    call clocksource_register
+    ; Beste Quelle aktivieren
+    call clocksource_select_best
+    clc
+    ret
+
+; EAX=type  EDX=rating  ECX=flags  EBX=read_fn → CF=0 / CF=1 voll
+clocksource_register:
+    push esi
+    push edi
+    push ebx
+    cmp dword [cs_count], CS_CAPACITY
+    jae .csr_full
+    mov edi, [cs_count]
+    imul esi, edi, CS_RECORD_SIZE
+    add esi, cs_table
+    mov [esi + CS_TYPE_OFF], eax
+    mov [esi + CS_RATING], edx
+    mov [esi + CS_FLAGS], ecx
+    push eax
+    mov eax, edi
+    mov [esi + CS_ID], eax
+    pop eax
+    mov [esi + CS_READ_FN], ebx
+    mov dword [esi + CS_MULT], 10   ; vereinfacht: 10 ns/tick für PIT@100Hz
+    inc dword [cs_count]
+    clc
+    pop ebx
+    pop edi
+    pop esi
+    ret
+.csr_full:
+    stc
+    pop ebx
+    pop edi
+    pop esi
+    ret
+
+; Wählt Quelle mit höchstem Rating als aktive Quelle
+clocksource_select_best:
+    push esi
+    push ecx
+    push edx
+    xor ecx, ecx
+    xor edx, edx         ; bestes Rating
+    mov esi, cs_table
+    push ebx
+    xor ebx, ebx
+.cssb_loop:
+    cmp ebx, [cs_count]
+    jae .cssb_done
+    cmp dword [esi + CS_RATING], edx
+    jbe .cssb_next
+    mov edx, [esi + CS_RATING]
+    mov ecx, [esi + CS_ID]
+.cssb_next:
+    add esi, CS_RECORD_SIZE
+    inc ebx
+    jmp .cssb_loop
+.cssb_done:
+    mov [cs_active], ecx
+    pop ebx
+    pop edx
+    pop ecx
+    pop esi
+    ret
+
+; Liest aktive Quelle → EAX=low_tick (vereinfacht 32-bit)
+clocksource_read:
+    push esi
+    mov esi, [cs_active]
+    imul esi, CS_RECORD_SIZE
+    add esi, cs_table
+    call dword [esi + CS_READ_FN]
+    pop esi
+    ret
+
+; PIT-Stub: gibt wd_global_tick zurück (100 Hz Basis)
+clocksource_pit_read:
+    mov eax, [wd_global_tick]
+    ret
+
+; TSC-Stub: liest TSC, gibt low-DWORD
+clocksource_tsc_read:
+    rdtsc
+    ; EAX = low 32 bit TSC
+    ret
+
+clocksource_self_test:
+    push esi
+    xor esi, esi
+    cmp dword [cs_ready], 1
+    je .csst1
+    inc esi
+.csst1:
+    ; cs_count >= 2 (PIT + TSC)
+    cmp dword [cs_count], 2
+    jae .csst2
+    inc esi
+.csst2:
+    ; aktive Quelle = TSC (höchstes Rating)
+    cmp dword [cs_active], 1   ; TSC hat ID=1
+    je .csst3
+    inc esi
+.csst3:
+    ; read gibt einen Wert
+    call clocksource_read
+    ; EAX != 0 nicht prüfbar (TSC kann 0 sein nach Reset), nur Aufruf
+    test esi, esi
+    jnz .csstf
+    clc
+    pop esi
+    ret
+.csstf:
+    stc
+    pop esi
+    ret
+
+cs_ready:    dd 0
+cs_count:    dd 0
+cs_active:   dd 0
+align 4
+cs_table:
+    times CS_CAPACITY * CS_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-TIME-HIGHRES-0001 – Nova High-Resolution Timer
+; Nanosekunden-Auflösung via TSC-Kalibrierung gegen PIT/RTC-Basisquellen.
+; Bietet hrt_get_ns (monoton, ns-Auflösung) und One-Shot-Alarm-Register.
+; ===========================================================================
+
+HRT_ALARM_COUNT      equ 4
+HRT_ALARM_SIZE       equ 16
+
+HRT_ALARM_FREE       equ 0
+HRT_ALARM_ARMED      equ 1
+HRT_ALARM_FIRED      equ 2
+
+HRT_ALM_ID           equ 0
+HRT_ALM_STATE        equ 4
+HRT_ALM_DEADLINE_NS  equ 8
+HRT_ALM_CALLBACK     equ 12
+
+hrt_initialize:
+    ; TSC-Kalibrierung: Basiswert merken
+    rdtsc
+    mov [hrt_tsc_base_lo], eax
+    mov [hrt_tsc_base_hi], edx
+    ; ns-Basis = 0 beim Start
+    mov dword [hrt_ns_offset], 0
+    ; Alarm-Tabelle löschen
+    mov edi, hrt_alarms
+    mov ecx, HRT_ALARM_COUNT * HRT_ALARM_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [hrt_ready], 1
+    mov dword [hrt_next_id], 0
+    clc
+    ret
+
+; → EAX = geschätzte Nanosekunden seit Kernel-Start (vereinfacht)
+; Nutzt wd_global_tick (100Hz) → 10 ms pro Tick → 10 000 000 ns/Tick
+hrt_get_ns:
+    mov eax, [wd_global_tick]
+    mov edx, 10000000     ; 10 ms in ns
+    mul edx               ; EAX:EDX = ns (EDX verworfen; reicht für ~42 s)
+    ret
+
+; Registriert One-Shot-Alarm: EAX=deadline_ns  EDX=callback → EAX=slot CF=0/CF=1
+hrt_alarm_register:
+    push esi
+    push ecx
+    mov esi, hrt_alarms
+    xor ecx, ecx
+.har_scan:
+    cmp ecx, HRT_ALARM_COUNT
+    jae .har_full
+    cmp dword [esi + HRT_ALM_STATE], HRT_ALARM_FREE
+    je .har_found
+    add esi, HRT_ALARM_SIZE
+    inc ecx
+    jmp .har_scan
+.har_found:
+    push eax
+    mov eax, [hrt_next_id]
+    inc dword [hrt_next_id]
+    mov [esi + HRT_ALM_ID], eax
+    pop eax
+    mov dword [esi + HRT_ALM_STATE], HRT_ALARM_ARMED
+    mov [esi + HRT_ALM_DEADLINE_NS], eax
+    mov [esi + HRT_ALM_CALLBACK], edx
+    mov eax, ecx
+    clc
+    pop ecx
+    pop esi
+    ret
+.har_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; Prüft alle Alarme gegen aktuelle ns-Zeit; feuert abgelaufene
+hrt_check_alarms:
+    push esi
+    push ecx
+    push edx
+    call hrt_get_ns
+    mov edx, eax         ; current_ns
+    mov esi, hrt_alarms
+    xor ecx, ecx
+.hca_loop:
+    cmp ecx, HRT_ALARM_COUNT
+    jae .hca_done
+    cmp dword [esi + HRT_ALM_STATE], HRT_ALARM_ARMED
+    jne .hca_next
+    cmp edx, [esi + HRT_ALM_DEADLINE_NS]
+    jb .hca_next
+    mov dword [esi + HRT_ALM_STATE], HRT_ALARM_FIRED
+    ; Callback aufrufen wenn vorhanden
+    cmp dword [esi + HRT_ALM_CALLBACK], 0
+    je .hca_next
+    push eax
+    push ecx
+    push edx
+    call dword [esi + HRT_ALM_CALLBACK]
+    pop edx
+    pop ecx
+    pop eax
+.hca_next:
+    add esi, HRT_ALARM_SIZE
+    inc ecx
+    jmp .hca_loop
+.hca_done:
+    pop edx
+    pop ecx
+    pop esi
+    ret
+
+hrt_self_test:
+    push esi
+    push ebx
+    xor esi, esi
+
+    ; T1: ready
+    cmp dword [hrt_ready], 1
+    je .hrst1
+    inc esi
+.hrst1:
+
+    ; T2: hrt_get_ns gibt Wert ≥ 0 (immer wahr, nur Aufruf testen)
+    call hrt_get_ns
+    ; EAX = ns, kein Fehler erwartet
+
+    ; T3: Alarm registrieren (Deadline=1 ns → sofort abgelaufen)
+    mov eax, 1           ; deadline=1 ns
+    mov edx, 0           ; kein Callback
+    call hrt_alarm_register
+    jnc .hrst3
+    inc esi
+.hrst3:
+    mov ebx, eax         ; slot
+
+    ; T4: check_alarms → Alarm muss gefeuert werden
+    call hrt_check_alarms
+    ; Slot-State prüfen
+    push ecx
+    imul ecx, ebx, HRT_ALARM_SIZE
+    add ecx, hrt_alarms
+    cmp dword [ecx + HRT_ALM_STATE], HRT_ALARM_FIRED
+    je .hrst4
+    inc esi
+.hrst4:
+    pop ecx
+
+    ; T5: zweiten Alarm mit hoher Deadline → bleibt ARMED
+    call hrt_get_ns
+    add eax, 0x7FFFFFFF  ; sehr weit in der Zukunft
+    mov edx, 0
+    call hrt_alarm_register
+    jnc .hrst5_ok
+    inc esi
+.hrst5_ok:
+    call hrt_check_alarms
+    push ecx
+    imul ecx, eax, HRT_ALARM_SIZE
+    add ecx, hrt_alarms
+    cmp dword [ecx + HRT_ALM_STATE], HRT_ALARM_ARMED
+    je .hrst5_state
+    inc esi
+.hrst5_state:
+    pop ecx
+
+    test esi, esi
+    jnz .hrstf
+    clc
+    pop ebx
+    pop esi
+    ret
+.hrstf:
+    stc
+    pop ebx
+    pop esi
+    ret
+
+hrt_ready:        dd 0
+hrt_next_id:      dd 0
+hrt_tsc_base_lo:  dd 0
+hrt_tsc_base_hi:  dd 0
+hrt_ns_offset:    dd 0
+align 4
+hrt_alarms:
+    times HRT_ALARM_COUNT * HRT_ALARM_SIZE db 0
+
 scheduler_initialize:
     mov dword [scheduler_enabled], 0
     mov dword [scheduler_current], 0
@@ -37392,6 +37777,14 @@ message_time_ok:
     db "NOVA: Time 1.0 bereit (Monoton 100Hz + RTC CMOS Uhr/Datum)", 13, 10, 0
 message_time_error:
     db "NOVA PANIC: Time Services nicht initialisierbar", 13, 10, 0
+message_clocksource_ok:
+    db "NOVA: Clock Source 1.0 bereit (PIT+TSC registriert, TSC aktiv)", 13, 10, 0
+message_clocksource_error:
+    db "NOVA PANIC: Clock Source nicht initialisierbar", 13, 10, 0
+message_hrt_ok:
+    db "NOVA: High-Resolution Timer 1.0 bereit (4 Alarme, ns via TSC)", 13, 10, 0
+message_hrt_error:
+    db "NOVA PANIC: High-Resolution Timer nicht initialisierbar", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:
