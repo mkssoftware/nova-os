@@ -1,4 +1,4 @@
-; Nova Kernel - x86-32 Entry und früher Kernel Context
+; Nova Kernel - x86-32 Entry und früher Kernel Context (NPSPEC-KERNEL-0001)
 ; Validiert NBHP/BIB v1, übernimmt ausschließlich TLV-Daten und ruft danach
 ; den minimalen Kernel Main auf.
 
@@ -1033,7 +1033,7 @@ panic_invalid_handoff:
     jmp kernel_panic
 
 ; ---------------------------------------------------------------------------
-; BIB-Validierung
+; BIB-Validierung und Firmware-Interface (NPSPEC-HAL-FIRMWARE-0001)
 ; ---------------------------------------------------------------------------
 
 validate_bib:
@@ -3267,7 +3267,7 @@ handle_generations: times HANDLE_CAPACITY dd 0
 handle_table: times HANDLE_CAPACITY * HANDLE_ENTRY_SIZE db 0
 
 ; ---------------------------------------------------------------------------
-; Kernel Component Manager (ADR-2009)
+; Kernel Component Manager (ADR-2009 / NPSPEC-KERNEL-0001 §Subsystem-Registry)
 ; ---------------------------------------------------------------------------
 
 COMPONENT_API_SIZE       equ 32
@@ -3620,7 +3620,7 @@ paging_directory: dd 0
 paging_enabled:   dd 0
 
 ; ---------------------------------------------------------------------------
-; Interrupt- und Timer-Architektur (ADR-2006 / ADR-2007 / NPSPEC-KERNEL-0009 / NPSPEC-KERNEL-0014)
+; Interrupt- und Timer-Architektur (ADR-2006 / ADR-2007 / NPSPEC-KERNEL-0009 / NPSPEC-KERNEL-0014 / NPSPEC-HAL-INTERRUPT-0001)
 ; ---------------------------------------------------------------------------
 
 IDT_ENTRY_COUNT equ 256
@@ -4551,7 +4551,7 @@ align 16
 ipc_messages:
     times IPC_QUEUE_CAPACITY * IPC_MESSAGE_SIZE db 0
 
-; Bootkritischer Device Manager (NPSPEC-KERNEL-0002, Phase 8)
+; Bootkritischer Device Manager (NPSPEC-KERNEL-0017 / NPSPEC-KERNEL-0002 Phase 8)
 DEVICE_API_SIZE       equ 32
 DEVICE_CAPACITY       equ 8
 DEVICE_RECORD_SIZE    equ 32
@@ -8177,7 +8177,7 @@ shared_buffer_backing_pool:
 ; vorgetäuschte PCI-Erkennung. Neue Plattformprovider können dieselbe ABI mit
 ; validierten ACPI-, CPU- und Busdaten befüllen.
 ; NPSPEC-HAL-TOPOLOGY-0001, NPSPEC-HAL-NUMA-0001,
-; NPSPEC-HAL-HOTPLUG-0001
+; NPSPEC-HAL-HOTPLUG-0001, NPSPEC-HAL-PLATFORM-0001
 ; ---------------------------------------------------------------------------
 
 TOPOLOGY_API_SIZE                 equ 40
