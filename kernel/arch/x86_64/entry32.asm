@@ -157,6 +157,8 @@ kernel_entry:
     call boot_phase_log
     call interrupt_initialize
     jc panic_interrupt_manager
+    call interrupt_self_test
+    jc panic_interrupt_manager
     call timer_initialize
     jc panic_interrupt_manager
     sti
@@ -3760,6 +3762,73 @@ idt_set_gate:
     shr eax, 16
     mov [edi + 6], ax
     pop edi
+    ret
+
+; §009 interrupt_self_test – IDT-Integrität und Gate-Programmierung nach
+; interrupt_initialize (NPSPEC-KERNEL-0009)
+interrupt_self_test:
+    push ebx
+    push edi
+    sub esp, 8                          ; [esp+0..5] = IDTR-Puffer (6 Byte)
+    xor edi, edi                        ; Fehler-Zähler
+    ; Test 1: IDT geladen – sidt → Basis == idt_table
+    sidt [esp]
+    mov eax, [esp + 2]
+    cmp eax, idt_table
+    je .t2
+    inc edi
+.t2:
+    ; Test 2: Limit == (IDT_ENTRY_COUNT*8)-1
+    movzx eax, word [esp]
+    cmp eax, (IDT_ENTRY_COUNT * 8) - 1
+    je .t3
+    inc edi
+.t3:
+    ; Test 3: Vektor 0 trägt den Exception-Stub (nicht isr_unexpected)
+    movzx eax, word [idt_table + 0 * 8 + 0]
+    movzx ebx, word [idt_table + 0 * 8 + 6]
+    shl ebx, 16
+    or eax, ebx
+    cmp eax, isr_unexpected
+    jne .t4
+    inc edi
+.t4:
+    ; Test 4: Vektor 32 (IRQ0/PIT-Timer) == irq0_stub
+    movzx eax, word [idt_table + 32 * 8 + 0]
+    movzx ebx, word [idt_table + 32 * 8 + 6]
+    shl ebx, 16
+    or eax, ebx
+    cmp eax, irq0_stub
+    je .t5
+    inc edi
+.t5:
+    ; Test 5: Vektor 0x80 (Syscall) == syscall_stub
+    movzx eax, word [idt_table + 0x80 * 8 + 0]
+    movzx ebx, word [idt_table + 0x80 * 8 + 6]
+    shl ebx, 16
+    or eax, ebx
+    cmp eax, syscall_stub
+    je .t6
+    inc edi
+.t6:
+    ; Test 6: Syscall-Gate DPL=3 (Byte 5 == 0xEE)
+    movzx eax, byte [idt_table + 0x80 * 8 + 5]
+    cmp eax, 0xEE
+    je .done
+    inc edi
+.done:
+    test edi, edi
+    jnz .selftest_fail
+    add esp, 8
+    pop edi
+    pop ebx
+    clc
+    ret
+.selftest_fail:
+    add esp, 8
+    pop edi
+    pop ebx
+    stc
     ret
 
 timer_initialize:
