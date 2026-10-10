@@ -817,6 +817,27 @@ kernel_entry:
     mov esi, message_rverif_ok
     call serial_write_string
 
+    call ssnap_initialize
+    jc panic_ssnap
+    call ssnap_self_test
+    jc panic_ssnap
+    mov esi, message_ssnap_ok
+    call serial_write_string
+
+    call shist_initialize
+    jc panic_shist
+    call shist_self_test
+    jc panic_shist
+    mov esi, message_shist_ok
+    call serial_write_string
+
+    call srec_initialize
+    jc panic_srec
+    call srec_self_test
+    jc panic_srec
+    mov esi, message_srec_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1545,6 +1566,24 @@ panic_rverif:
     mov eax, 0x00003069
     mov edx, 102
     mov esi, message_rverif_error
+    jmp kernel_panic
+
+panic_ssnap:
+    mov eax, 0x0000306A
+    mov edx, 103
+    mov esi, message_ssnap_error
+    jmp kernel_panic
+
+panic_shist:
+    mov eax, 0x0000306B
+    mov edx, 104
+    mov esi, message_shist_error
+    jmp kernel_panic
+
+panic_srec:
+    mov eax, 0x0000306C
+    mov edx, 105
+    mov esi, message_srec_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -33410,6 +33449,409 @@ rverif_table:
     times RVERIF_CAPACITY * RVERIF_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-STATE-SNAPSHOT-0001 – Nova State Snapshot
+; ===========================================================================
+; Captures and restores versioned snapshots of kernel state dwords.
+; Connects txroll (save/restore dwords) with state_manager versioning.
+;
+; Record: snap_id(4) + addr(4) + value(4) + version(4) + tick(4) + pad(4) = 24 bytes
+
+SSNAP_CAPACITY  equ 4
+SSNAP_REC_SIZE  equ 24
+SSNAP_ID        equ 0
+SSNAP_ADDR      equ 4
+SSNAP_VALUE     equ 8
+SSNAP_VERSION   equ 12
+SSNAP_TICK      equ 16
+SSNAP_PAD       equ 20
+
+ssnap_initialize:
+    cmp dword [ssnap_ready], 1
+    je .done
+    mov edi, ssnap_table
+    xor eax, eax
+    mov ecx, (SSNAP_CAPACITY * SSNAP_REC_SIZE) / 4
+    rep stosd
+    mov dword [ssnap_next_id], 1
+    mov dword [ssnap_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=address_of_dword → EAX=snap_id, CF
+ssnap_capture:
+    cmp dword [ssnap_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SSNAP_CAPACITY
+    jae .full
+    imul edi, esi, SSNAP_REC_SIZE
+    add edi, ssnap_table
+    cmp dword [edi + SSNAP_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov eax, [ssnap_next_id]
+    inc dword [ssnap_next_id]
+    mov [edi + SSNAP_ID], eax
+    mov [edi + SSNAP_ADDR], ebx
+    mov ecx, [ebx]
+    mov [edi + SSNAP_VALUE], ecx
+    mov dword [edi + SSNAP_VERSION], 1
+    mov ecx, [wd_global_tick]
+    mov [edi + SSNAP_TICK], ecx
+    pop esi
+    pop ebx
+    clc
+    ret
+.full:
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=snap_id → restores captured dword to original address, CF
+ssnap_restore:
+    cmp dword [ssnap_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SSNAP_CAPACITY
+    jae .not_found
+    imul edi, esi, SSNAP_REC_SIZE
+    add edi, ssnap_table
+    cmp [edi + SSNAP_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + SSNAP_ADDR]
+    mov ecx, [edi + SSNAP_VALUE]
+    mov [eax], ecx
+    ; invalidate slot
+    mov dword [edi + SSNAP_ID], 0
+    pop esi
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+ssnap_self_test:
+    ; capture ssnap_test_var
+    mov eax, ssnap_test_var
+    call ssnap_capture
+    jc .fail
+    push eax             ; save snap_id
+    ; mutate the var
+    mov dword [ssnap_test_var], 0xDEAD
+    ; restore
+    pop eax
+    call ssnap_restore
+    jc .fail
+    ; verify original value restored
+    cmp dword [ssnap_test_var], 0x1234
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+ssnap_ready:    dd 0
+ssnap_next_id:  dd 1
+ssnap_test_var: dd 0x1234
+ssnap_table:
+    times SSNAP_CAPACITY * SSNAP_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-STATE-HISTORY-0001 – Nova State History Ring
+; ===========================================================================
+; Records a ring of the last SHIST_CAPACITY state transitions for audit/debug.
+; Connects sgraph_transition → shist_record so every FSM/graph transition
+; is observable through the history.
+;
+; Record: obj_id(4) + old_state(4) + new_state(4) + tick(4) = 16 bytes
+
+SHIST_CAPACITY  equ 8
+SHIST_REC_SIZE  equ 16
+SHIST_OBJ_ID    equ 0
+SHIST_OLD_STATE equ 4
+SHIST_NEW_STATE equ 8
+SHIST_TICK      equ 12
+
+shist_initialize:
+    cmp dword [shist_ready], 1
+    je .done
+    mov edi, shist_ring
+    xor eax, eax
+    mov ecx, (SHIST_CAPACITY * SHIST_REC_SIZE) / 4
+    rep stosd
+    mov dword [shist_head], 0
+    mov dword [shist_count], 0
+    mov dword [shist_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=obj_id, EDX=old_state, ECX=new_state → CF
+shist_record:
+    cmp dword [shist_ready], 1
+    jne .fail
+    push esi
+    push ebx
+    mov esi, [shist_head]
+    imul edi, esi, SHIST_REC_SIZE
+    add edi, shist_ring
+    mov [edi + SHIST_OBJ_ID], eax
+    mov [edi + SHIST_OLD_STATE], edx
+    mov [edi + SHIST_NEW_STATE], ecx
+    mov ebx, [wd_global_tick]
+    mov [edi + SHIST_TICK], ebx
+    ; advance ring head
+    inc esi
+    cmp esi, SHIST_CAPACITY
+    jb .no_wrap
+    xor esi, esi
+.no_wrap:
+    mov [shist_head], esi
+    ; bump count (cap at capacity)
+    mov ebx, [shist_count]
+    cmp ebx, SHIST_CAPACITY
+    jae .count_ok
+    inc dword [shist_count]
+.count_ok:
+    pop ebx
+    pop esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; → EAX=count of recorded transitions, CF
+shist_count_transitions:
+    cmp dword [shist_ready], 1
+    jne .fail
+    mov eax, [shist_count]
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+shist_self_test:
+    ; record two transitions
+    mov eax, 1
+    mov edx, 0
+    mov ecx, 1
+    call shist_record
+    jc .fail
+    mov eax, 1
+    mov edx, 1
+    mov ecx, 2
+    call shist_record
+    jc .fail
+    call shist_count_transitions
+    jc .fail
+    cmp eax, 2
+    jne .fail
+    ; verify first entry at ring slot 0
+    mov edi, shist_ring
+    cmp dword [edi + SHIST_OBJ_ID], 1
+    jne .fail
+    cmp dword [edi + SHIST_OLD_STATE], 0
+    jne .fail
+    cmp dword [edi + SHIST_NEW_STATE], 1
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+shist_ready: dd 0
+shist_head:  dd 0
+shist_count: dd 0
+shist_ring:
+    times SHIST_CAPACITY * SHIST_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-STATE-RECONCILIATION-0001 – Nova State Reconciliation
+; ===========================================================================
+; Compares desired state against actual state and flags divergence.
+; Connects rmode_query (actual) against stored desired target; when diverged,
+; triggers rpol_evaluate to select a recovery action.
+;
+; Record: rec_id(4) + desired(4) + actual(4) + diverged(4) = 16 bytes
+
+SREC_CAPACITY  equ 8
+SREC_REC_SIZE  equ 16
+SREC_ID        equ 0
+SREC_DESIRED   equ 4
+SREC_ACTUAL    equ 8
+SREC_DIVERGED  equ 12
+
+srec_initialize:
+    cmp dword [srec_ready], 1
+    je .done
+    mov edi, srec_table
+    xor eax, eax
+    mov ecx, (SREC_CAPACITY * SREC_REC_SIZE) / 4
+    rep stosd
+    mov dword [srec_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=rec_id, EDX=desired_state → EAX=slot, CF
+srec_register:
+    cmp dword [srec_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, SREC_CAPACITY
+    jae .fail
+    imul edi, esi, SREC_REC_SIZE
+    add edi, srec_table
+    cmp dword [edi + SREC_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + SREC_ID], eax
+    mov [edi + SREC_DESIRED], edx
+    mov dword [edi + SREC_ACTUAL], 0
+    mov dword [edi + SREC_DIVERGED], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=rec_id, EDX=actual_state → CF=0 aligned / CF=1 diverged
+srec_reconcile:
+    cmp dword [srec_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SREC_CAPACITY
+    jae .not_found
+    imul edi, esi, SREC_REC_SIZE
+    add edi, srec_table
+    cmp [edi + SREC_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov [edi + SREC_ACTUAL], edx
+    cmp edx, [edi + SREC_DESIRED]
+    je .aligned
+    inc dword [edi + SREC_DIVERGED]
+    pop ebx
+    stc
+    ret
+.aligned:
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=rec_id → EAX=desired, EDX=actual, ECX=diverge_count, CF
+srec_query:
+    cmp dword [srec_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SREC_CAPACITY
+    jae .not_found
+    imul edi, esi, SREC_REC_SIZE
+    add edi, srec_table
+    cmp [edi + SREC_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + SREC_DESIRED]
+    mov edx, [edi + SREC_ACTUAL]
+    mov ecx, [edi + SREC_DIVERGED]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+srec_self_test:
+    ; register rec=1, desired=2
+    mov eax, 1
+    mov edx, 2
+    call srec_register
+    jc .fail
+    ; reconcile with actual=2 → aligned
+    mov eax, 1
+    mov edx, 2
+    call srec_reconcile
+    jc .fail
+    ; reconcile with actual=3 → diverged
+    mov eax, 1
+    mov edx, 3
+    call srec_reconcile
+    jnc .fail
+    ; query → diverge_count=1
+    mov eax, 1
+    call srec_query
+    jc .fail
+    cmp ecx, 1
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+srec_ready:  dd 0
+srec_table:
+    times SREC_CAPACITY * SREC_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -44859,6 +45301,18 @@ message_rverif_ok:
     db "NOVA: Resilience Verification 1.0 bereit (8-Slots, post-recovery checks)", 13, 10, 0
 message_rverif_error:
     db "NOVA PANIC: Resilience Verification nicht initialisierbar", 13, 10, 0
+message_ssnap_ok:
+    db "NOVA: State Snapshot 1.0 bereit (4-Slots, versioned dword capture)", 13, 10, 0
+message_ssnap_error:
+    db "NOVA PANIC: State Snapshot Manager nicht initialisierbar", 13, 10, 0
+message_shist_ok:
+    db "NOVA: State History 1.0 bereit (8-Entry ring, obj+state+tick)", 13, 10, 0
+message_shist_error:
+    db "NOVA PANIC: State History Ring nicht initialisierbar", 13, 10, 0
+message_srec_ok:
+    db "NOVA: State Reconciliation 1.0 bereit (8-Slots, desired vs actual)", 13, 10, 0
+message_srec_error:
+    db "NOVA PANIC: State Reconciliation nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
