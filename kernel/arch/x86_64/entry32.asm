@@ -553,6 +553,12 @@ kernel_entry:
     jc panic_device_manager
     call storage_self_test
     jc panic_device_manager
+    call driver_framework_initialize
+    jc panic_driver_framework
+    call driver_framework_self_test
+    jc panic_driver_framework
+    mov esi, message_driver_framework_ok
+    call serial_write_string
     call boot_health_mark_kernel_initialized
     jc panic_boot_health
     mov esi, message_boot_health_kernel_initialized
@@ -929,6 +935,12 @@ panic_device_manager:
     mov eax, 0x0000200C
     mov edx, 12
     mov esi, message_device_manager_error
+    jmp kernel_panic
+
+panic_driver_framework:
+    mov eax, 0x00002018
+    mov edx, 24
+    mov esi, message_driver_framework_error
     jmp kernel_panic
 
 panic_vfs:
@@ -4587,6 +4599,239 @@ device_temp_size:  dd 0
 align 4
 device_records:
     times DEVICE_CAPACITY * DEVICE_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; Driver Framework 1.0 (NPSPEC-KERNEL-0018)
+; ---------------------------------------------------------------------------
+DRV_API_SIZE       equ 32
+DRV_CAPACITY       equ 8
+DRV_RECORD_SIZE    equ 48               ; 12 × 4-Byte-Felder
+
+; §018 §4: Treibertypen
+DRV_TYPE_KERNEL    equ 0
+DRV_TYPE_USERSPACE equ 1
+DRV_TYPE_BUS       equ 2
+DRV_TYPE_FUNCTION  equ 3
+DRV_TYPE_FILTER    equ 4
+DRV_TYPE_VIRTUAL   equ 5
+
+; §018 §21: Treiberzustände (Bootstrap-Subset)
+DRV_STATE_LOADED   equ 0
+DRV_STATE_BOUND    equ 2
+DRV_STATE_RUNNING  equ 4
+DRV_STATE_FAILED   equ 9
+
+; Record-Offsets
+DRV_ID_LO      equ 0
+DRV_ID_HI      equ 4
+DRV_TYPE_OFF   equ 8
+DRV_STATE_OFF  equ 12
+DRV_ABI_VER    equ 16
+DRV_DEV_HANDLE equ 20
+DRV_FLAGS_OFF  equ 24
+; Bytes 28–47: reserviert (künftige Erweiterungen)
+
+driver_framework_initialize:
+    mov edi, drv_records
+    xor eax, eax
+    mov ecx, (DRV_CAPACITY * DRV_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [drv_count], 0
+    mov dword [drv_mgr_initialized], 1
+    clc
+    ret
+
+; EAX=id_lo, EDX=id_hi → ESI=Record-Zeiger (CF=0) oder CF=1
+driver_find:
+    push ecx
+    push edi
+    xor ecx, ecx
+.scan:
+    cmp ecx, DRV_CAPACITY
+    jae .not_found
+    mov edi, ecx
+    imul edi, DRV_RECORD_SIZE
+    add edi, drv_records
+    cmp dword [edi + DRV_ID_LO], eax
+    jne .next
+    cmp dword [edi + DRV_ID_HI], edx
+    je .found
+.next:
+    inc ecx
+    jmp .scan
+.found:
+    mov esi, edi
+    pop edi
+    pop ecx
+    clc
+    ret
+.not_found:
+    pop edi
+    pop ecx
+    stc
+    ret
+
+; EAX=id_lo, EDX=id_hi, EBX=type, ECX=abi_version, ESI=flags
+driver_register:
+    test eax, eax
+    jnz .id_ok
+    test edx, edx
+    jz .invalid
+.id_ok:
+    cmp dword [drv_count], DRV_CAPACITY
+    jae .invalid
+    mov [drv_tmp_id_lo], eax
+    mov [drv_tmp_id_hi], edx
+    mov [drv_tmp_type],  ebx
+    mov [drv_tmp_abi],   ecx
+    mov [drv_tmp_flags], esi
+    call driver_find
+    jnc .invalid                        ; Duplikat abweisen
+    xor ecx, ecx
+.scan_slot:
+    cmp ecx, DRV_CAPACITY
+    jae .invalid
+    mov edi, ecx
+    imul edi, DRV_RECORD_SIZE
+    add edi, drv_records
+    cmp dword [edi + DRV_ID_LO], 0
+    jne .scan_next
+    cmp dword [edi + DRV_ID_HI], 0
+    je .fill_slot
+.scan_next:
+    inc ecx
+    jmp .scan_slot
+.fill_slot:
+    mov eax, [drv_tmp_id_lo]
+    mov [edi + DRV_ID_LO], eax
+    mov eax, [drv_tmp_id_hi]
+    mov [edi + DRV_ID_HI], eax
+    mov eax, [drv_tmp_type]
+    mov [edi + DRV_TYPE_OFF], eax
+    mov dword [edi + DRV_STATE_OFF], DRV_STATE_LOADED
+    mov eax, [drv_tmp_abi]
+    mov [edi + DRV_ABI_VER], eax
+    mov dword [edi + DRV_DEV_HANDLE], 0
+    mov eax, [drv_tmp_flags]
+    mov [edi + DRV_FLAGS_OFF], eax
+    inc dword [drv_count]
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; EAX=id_lo, EDX=id_hi, EBX=device_handle
+driver_bind:
+    call driver_find
+    jc .invalid
+    cmp dword [esi + DRV_STATE_OFF], DRV_STATE_LOADED
+    jne .invalid
+    mov [esi + DRV_DEV_HANDLE], ebx
+    mov dword [esi + DRV_STATE_OFF], DRV_STATE_BOUND
+    clc
+    ret
+.invalid:
+    stc
+    ret
+
+; §018 §60: Self-Test – 7 Tests
+driver_framework_self_test:
+    push esi
+    push edi
+    xor edi, edi                        ; Fehler-Zähler
+
+    ; Test 1: initialisiert
+    cmp dword [drv_mgr_initialized], 1
+    je .t2
+    inc edi
+
+.t2:
+    ; Test 2: drv_count == 0
+    cmp dword [drv_count], 0
+    je .t3
+    inc edi
+
+.t3:
+    ; Test 3: driver_register – Test-Treiber-ID 0xDFDF0001
+    mov eax, 0xDFDF0001
+    xor edx, edx
+    mov ebx, DRV_TYPE_KERNEL
+    mov ecx, 0x00010000                 ; ABI 1.0
+    xor esi, esi
+    call driver_register
+    jnc .t4
+    inc edi
+    jmp .done
+
+.t4:
+    ; Test 4: drv_count == 1
+    cmp dword [drv_count], 1
+    je .t5
+    inc edi
+
+.t5:
+    ; Test 5: driver_find findet den Treiber
+    mov eax, 0xDFDF0001
+    xor edx, edx
+    call driver_find
+    jnc .t6
+    inc edi
+
+.t6:
+    ; Test 6: driver_bind
+    mov eax, 0xDFDF0001
+    xor edx, edx
+    mov ebx, 1
+    call driver_bind
+    jnc .t7
+    inc edi
+
+.t7:
+    ; Test 7: Zustand == BOUND
+    mov eax, 0xDFDF0001
+    xor edx, edx
+    call driver_find
+    jc .t7_fail
+    cmp dword [esi + DRV_STATE_OFF], DRV_STATE_BOUND
+    je .done
+.t7_fail:
+    inc edi
+
+.done:
+    test edi, edi
+    jnz .selftest_fail
+    pop edi
+    pop esi
+    clc
+    ret
+.selftest_fail:
+    pop edi
+    pop esi
+    stc
+    ret
+
+align 4
+drv_api:
+    dd DRV_API_SIZE
+    dw 1, 0
+    dd DRV_CAPACITY
+    dd driver_register
+    dd driver_find
+    dd driver_bind
+    dd drv_count
+    dd drv_records
+
+drv_mgr_initialized: dd 0
+drv_count:           dd 0
+drv_tmp_id_lo:       dd 0
+drv_tmp_id_hi:       dd 0
+drv_tmp_type:        dd 0
+drv_tmp_abi:         dd 0
+drv_tmp_flags:       dd 0
+align 4
+drv_records:
+    times DRV_CAPACITY * DRV_RECORD_SIZE db 0
 
 ; Frühes VFS-Bootstrap-Root (NPSPEC-KERNEL-0019). Das RAMFS ist absichtlich
 ; read-only: es stellt bis zum späteren Dateisystemtreiber nur den Root-Knoten
@@ -32226,6 +32471,10 @@ message_device_manager_ok:
     db "NOVA: Device Manager ABI 1.0 und Bootgeraete aktiv", 13, 10, 0
 message_device_manager_error:
     db "NOVA PANIC: Kernel Device Manager nicht initialisierbar", 13, 10, 0
+message_driver_framework_ok:
+    db "NOVA: Driver Framework ABI 1.0 bereit", 13, 10, 0
+message_driver_framework_error:
+    db "NOVA PANIC: Driver Framework nicht initialisierbar", 13, 10, 0
 message_vfs_ok:
     db "NOVA: VFS ABI 1.0, Mount-Namespace und Bootstrap-Root bereit", 13, 10, 0
 message_vfs_error:
