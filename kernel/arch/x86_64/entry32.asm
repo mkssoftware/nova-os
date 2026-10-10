@@ -487,6 +487,14 @@ kernel_entry:
     mov esi, message_irq_manager_ok
     call serial_write_string
 
+    ; §010 Exception Manager
+    call exception_manager_initialize
+    jc panic_exception_mgr
+    call exception_manager_self_test
+    jc panic_exception_mgr
+    mov esi, message_exception_mgr_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -859,6 +867,12 @@ panic_irq_manager:
     mov eax, 0x0000001E
     mov edx, 0x49525147             ; "IRQG"
     mov esi, message_irq_manager_error
+    jmp kernel_panic
+
+panic_exception_mgr:
+    mov eax, 0x0000001F
+    mov edx, 0x45584D47             ; "EXMG"
+    mov esi, message_exc_mgr_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -3905,25 +3919,43 @@ interrupt_dispatch:
 .exception:
     cli
     mov [last_exception_vector], eax
+    mov [interrupt_return_frame], edx
+    ; §010 Exception Manager: vollständige Klassifizierung und Weiterleitung
+    cmp dword [exception_mgr_initialized], 1
+    je .exception_mgr_dispatch
+    ; Frühphase: primitiver Fallback bevor §010 bereit ist
     cmp eax, 14
-    jne .log_exception
+    jne .log_exception_early
     mov eax, cr2
     mov [last_fault_address], eax
-.log_exception:
+.log_exception_early:
     mov esi, message_exception
     call serial_write_string
     mov eax, [last_exception_vector]
     call serial_write_hex32
     cmp dword [last_exception_vector], 14
-    jne .exception_newline
+    jne .exception_newline_early
     mov esi, message_fault_address
     call serial_write_string
     mov eax, [last_fault_address]
     call serial_write_hex32
-.exception_newline:
+.exception_newline_early:
     mov esi, message_newline
     call serial_write_string
     jmp kernel_halt
+.exception_mgr_dispatch:
+    ; Übergabe an §010 exception_manager_dispatch
+    ; EAX = Vektor, EDX = Frame-Zeiger (Stack bei isr_common)
+    mov edx, [interrupt_return_frame]
+    push edx
+    push eax
+    call exception_manager_dispatch
+    add esp, 8
+    ; EAX = neuer Frame-Zeiger (oder 0 bei Fortsetzung des alten)
+    test eax, eax
+    jz .exception_done
+    mov [interrupt_return_frame], eax
+.exception_done:
 .done:
     cmp dword [kernel_context + CONTEXT_PLATFORM], 2
     jne .return_frame
@@ -17762,7 +17794,7 @@ firmware_runtime_saved_gdtr:   dw 0
 ; ---------------------------------------------------------------------------
 CPU_API_SIZE          equ 48
 CPU_RECORD_SIZE       equ 112
-CPU_CAPACITY          equ 8
+CPU_CAPACITY          equ 4
 CPU_LOCAL_SLOT_SIZE   equ 64
 CPU_STATE_DISCOVERED  equ 0
 CPU_STATE_OFFLINE     equ 1
@@ -31551,6 +31583,8 @@ message_irq_manager_ok:
     db "NOVA: Interrupt Manager 1.0 (SS009), 16 IRQ-Slots, 208 dyn. Vektoren", 13, 10, 0
 message_irq_manager_error:
     db "NOVA PANIC: Interrupt Manager Selbsttest fehlgeschlagen", 13, 10, 0
+message_exc_mgr_error:
+    db "NOVA PANIC: Exception Manager Initialisierung fehlgeschlagen", 13, 10, 0
 message_module_loader_ok:
     db "NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit", 13, 10, 0
 message_module_loader_error:
@@ -31995,6 +32029,936 @@ message_bib_error:
     db "NOVA PANIC: ungueltiger Boot Handoff", 13, 10, 0
 message_ready:
     db "NOVA_KERNEL_READY", 13, 10, 0
+
+; ===========================================================================
+; §010 – Exception Manager 1.0 (NPSPEC-KERNEL-0010)
+; ===========================================================================
+;
+; Implementiert:
+;   - Exception-Klassifizierung (CPU/MEMORY/ARITHMETIC/INSTRUCTION/DEBUG/
+;     SECURITY/RESOURCE/SOFTWARE/KERNEL_FATAL)
+;   - Ursprungsbestimmung (USER / KERNEL)
+;   - Exception Record Aufbau
+;   - Userspace-Exception-Pfad: VMM-Probe → Endpunkt → Thread-Beendigung
+;   - Kernel-Exception-Pfad: Fixup-Tabellen-Suche → Panic
+;   - Double-Fault- und Machine-Check-Notfallpfade
+;   - Exception-Tiefenzähler (per CPU-Slot, anti-rekursiv)
+;   - Statistik (total / user / kernel / panics)
+;   - Selbsttest (14 Fälle)
+;   - Boot-Initialisierung mit §023-Logging
+;
+; Frame-Layout beim Aufruf von exception_manager_dispatch (von isr_common):
+;   [esp+4]  = Vektor (uint32)
+;   [esp+8]  = Frame-Zeiger auf isr_common-Stack:
+;                [frame+0]  = gespeicherter EAX (pushad)
+;                ...
+;                [frame+28] = gespeicherter EDI
+;                [frame+32] = DS
+;                [frame+36] = ES
+;                [frame+40] = FS
+;                [frame+44] = GS
+;                [frame+48] = normalisierter Vektor
+;                [frame+52] = Fehlercode
+;                [frame+56] = EIP (CPU-gesichert)
+;                [frame+60] = CS
+;                [frame+64] = EFLAGS
+;
+; ---------------------------------------------------------------------------
+
+; --- Konstanten -------------------------------------------------------------
+
+EXC_CAT_CPU             equ 0
+EXC_CAT_MEMORY          equ 1
+EXC_CAT_ARITHMETIC      equ 2
+EXC_CAT_INSTRUCTION     equ 3
+EXC_CAT_DEBUG           equ 4
+EXC_CAT_SECURITY        equ 5
+EXC_CAT_RESOURCE        equ 6
+EXC_CAT_SOFTWARE        equ 7
+EXC_CAT_KERNEL_FATAL    equ 8
+
+EXC_ORIGIN_USER         equ 0
+EXC_ORIGIN_KERNEL       equ 1
+
+; Exception Record Struktur (60 Bytes, §7)
+EXC_REC_SIZE            equ 60
+EXC_REC_STRUCT_SIZE     equ 0    ; uint32  = EXC_REC_SIZE
+EXC_REC_VERSION         equ 4    ; uint32  = 1
+EXC_REC_CODE            equ 8    ; uint32  (np_exception_code)
+EXC_REC_CATEGORY        equ 12   ; uint32  (np_exception_category)
+EXC_REC_FLAGS           equ 16   ; uint32
+EXC_REC_PROCESS_ID      equ 20   ; uint32
+EXC_REC_THREAD_ID       equ 24   ; uint32
+EXC_REC_CPU_ID          equ 28   ; uint32
+EXC_REC_IP              equ 32   ; uint32
+EXC_REC_FAULT_ADDR      equ 36   ; uint32
+EXC_REC_ARCH_ERR        equ 40   ; uint32 (low)
+EXC_REC_ARCH_ERR_HI     equ 44   ; uint32 (high)
+EXC_REC_PARAM_COUNT     equ 48   ; uint32
+EXC_REC_PARAM0          equ 52   ; uint32
+
+; Exception-Codes (§5, Mapping auf x86 Vektoren)
+NP_EXC_DIVIDE_BY_ZERO   equ 0
+NP_EXC_DEBUG            equ 1
+NP_EXC_BREAKPOINT       equ 2
+NP_EXC_OVERFLOW         equ 3
+NP_EXC_BOUND_VIOLATION  equ 4
+NP_EXC_INVALID_OPCODE   equ 5
+NP_EXC_DEVICE_UNAVAIL   equ 6
+NP_EXC_DOUBLE_FAULT     equ 7
+NP_EXC_INVALID_STATE    equ 8
+NP_EXC_SEGMENT_VIOL     equ 9
+NP_EXC_STACK_FAULT      equ 10
+NP_EXC_GPF             equ 11
+NP_EXC_PAGE_FAULT       equ 12
+NP_EXC_FLOAT_POINT      equ 13
+NP_EXC_ALIGNMENT        equ 14
+NP_EXC_MACHINE_CHECK    equ 15
+NP_EXC_SIMD_FP          equ 16
+NP_EXC_CTRL_PROTECT     equ 17
+NP_EXC_SECURITY_VIOL    equ 18
+NP_EXC_RESOURCE_LIMIT   equ 19
+NP_EXC_SOFTWARE_RAISED  equ 20
+
+; Fixup-Tabellen-Eintrag (§33, 16 Bytes)
+EXC_FIXUP_SIZE          equ 16
+EXC_FIXUP_FAULT_START   equ 0
+EXC_FIXUP_FAULT_END     equ 4
+EXC_FIXUP_RECOVERY      equ 8
+EXC_FIXUP_ALLOWED_VECS  equ 12
+
+EXC_FIXUP_SENTINEL      equ 0xFFFFFFFF   ; Ende der Tabelle
+
+; Maximale Exception-Tiefe (§32)
+EXC_MAX_DEPTH           equ 4
+
+; Exception Record Flags
+EXC_FLAG_ORIGIN_USER    equ 0x0001
+EXC_FLAG_ORIGIN_KERNEL  equ 0x0002
+EXC_FLAG_FIXUP_USED     equ 0x0004
+EXC_FLAG_THREAD_TERM    equ 0x0008
+EXC_FLAG_PROC_TERM      equ 0x0010
+EXC_FLAG_DOUBLE_FAULT   equ 0x0020
+EXC_FLAG_MACHINE_CHECK  equ 0x0040
+
+; --- BSS-Daten (statisch) ---------------------------------------------------
+
+align 4
+exception_mgr_initialized:
+    dd 0
+
+; Statistik §46
+exception_stats_total:      dd 0
+exception_stats_user:       dd 0
+exception_stats_kernel:     dd 0
+exception_stats_handled:    dd 0
+exception_stats_thread_term: dd 0
+exception_stats_proc_term:  dd 0
+exception_stats_panics:     dd 0
+exception_stats_recursive:  dd 0
+
+; Per-CPU Exception-Tiefe (bis zu NOVA_CPU_CAPACITY CPUs, §32)
+; 4 CPUs × 4 Bytes = 16 Bytes
+exception_depth_table:
+    times 4 dd 0
+
+; Statischer Notfall-Exception-Record für Double Fault / Machine Check (§41)
+align 4
+exception_emergency_record:
+    times EXC_REC_SIZE db 0
+
+; Letzter Exception Record (für Diagnose / Panic-Ausgabe)
+align 4
+exception_last_record:
+    times EXC_REC_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; exception_manager_initialize  – Bootstrap §010 (§49, Test 1 Basis)
+;   Aufruf: kein Argument
+;   Rückgabe: CF=0 OK, CF=1 Fehler
+; ---------------------------------------------------------------------------
+exception_manager_initialize:
+    push eax
+    push esi
+
+    ; Statistikfelder nullen
+    mov dword [exception_stats_total],      0
+    mov dword [exception_stats_user],       0
+    mov dword [exception_stats_kernel],     0
+    mov dword [exception_stats_handled],    0
+    mov dword [exception_stats_thread_term],0
+    mov dword [exception_stats_proc_term],  0
+    mov dword [exception_stats_panics],     0
+    mov dword [exception_stats_recursive],  0
+
+    ; Tiefenzähler nullen
+    mov dword [exception_depth_table + 0],  0
+    mov dword [exception_depth_table + 4],  0
+    mov dword [exception_depth_table + 8],  0
+    mov dword [exception_depth_table + 12], 0
+
+    ; Notfall-Record nullen
+    push edi
+    push ecx
+    mov edi, exception_emergency_record
+    mov ecx, EXC_REC_SIZE
+    xor eax, eax
+    rep stosb
+    mov edi, exception_last_record
+    mov ecx, EXC_REC_SIZE
+    rep stosb
+    pop ecx
+    pop edi
+
+    mov dword [exception_mgr_initialized], 1
+
+    mov esi, message_exception_mgr_ok
+    call serial_write_string
+
+    clc
+    pop esi
+    pop eax
+    ret
+
+; ---------------------------------------------------------------------------
+; exc_vector_to_code  – x86 Vektor → np_exception_code  (EAX→EAX, EBX)
+; ---------------------------------------------------------------------------
+exc_vector_to_code:
+    cmp eax, 0 ; #DE
+    je .div_zero
+    cmp eax, 1 ; #DB
+    je .debug
+    cmp eax, 3 ; #BP
+    je .breakpoint
+    cmp eax, 4 ; #OF
+    je .overflow
+    cmp eax, 5 ; #BR
+    je .bound
+    cmp eax, 6 ; #UD
+    je .inv_opcode
+    cmp eax, 7 ; #NM
+    je .dev_unavail
+    cmp eax, 8 ; #DF
+    je .double_fault
+    cmp eax, 10 ; #TS
+    je .inv_state
+    cmp eax, 11 ; #NP
+    je .seg_viol
+    cmp eax, 12 ; #SS
+    je .stack_fault
+    cmp eax, 13 ; #GP
+    je .gpf
+    cmp eax, 14 ; #PF
+    je .page_fault
+    cmp eax, 16 ; #MF
+    je .float_point
+    cmp eax, 17 ; #AC
+    je .alignment
+    cmp eax, 18 ; #MC
+    je .machine_check
+    cmp eax, 19 ; #XM/#XF
+    je .simd_fp
+    cmp eax, 21 ; #CP
+    je .ctrl_protect
+    ; unbekannt → INVALID_STATE
+    mov eax, NP_EXC_INVALID_STATE
+    ret
+.div_zero:     mov eax, NP_EXC_DIVIDE_BY_ZERO  ; ret
+    ret
+.debug:        mov eax, NP_EXC_DEBUG            ; ret
+    ret
+.breakpoint:   mov eax, NP_EXC_BREAKPOINT
+    ret
+.overflow:     mov eax, NP_EXC_OVERFLOW
+    ret
+.bound:        mov eax, NP_EXC_BOUND_VIOLATION
+    ret
+.inv_opcode:   mov eax, NP_EXC_INVALID_OPCODE
+    ret
+.dev_unavail:  mov eax, NP_EXC_DEVICE_UNAVAIL
+    ret
+.double_fault: mov eax, NP_EXC_DOUBLE_FAULT
+    ret
+.inv_state:    mov eax, NP_EXC_INVALID_STATE
+    ret
+.seg_viol:     mov eax, NP_EXC_SEGMENT_VIOL
+    ret
+.stack_fault:  mov eax, NP_EXC_STACK_FAULT
+    ret
+.gpf:          mov eax, NP_EXC_GPF
+    ret
+.page_fault:   mov eax, NP_EXC_PAGE_FAULT
+    ret
+.float_point:  mov eax, NP_EXC_FLOAT_POINT
+    ret
+.alignment:    mov eax, NP_EXC_ALIGNMENT
+    ret
+.machine_check: mov eax, NP_EXC_MACHINE_CHECK
+    ret
+.simd_fp:      mov eax, NP_EXC_SIMD_FP
+    ret
+.ctrl_protect: mov eax, NP_EXC_CTRL_PROTECT
+    ret
+
+; ---------------------------------------------------------------------------
+; exc_code_to_category  – np_exception_code → np_exception_category  (EAX→EAX)
+; ---------------------------------------------------------------------------
+exc_code_to_category:
+    cmp eax, NP_EXC_PAGE_FAULT
+    je .memory
+    cmp eax, NP_EXC_STACK_FAULT
+    je .resource
+    cmp eax, NP_EXC_ALIGNMENT
+    je .resource
+    cmp eax, NP_EXC_RESOURCE_LIMIT
+    je .resource
+    cmp eax, NP_EXC_DIVIDE_BY_ZERO
+    je .arithmetic
+    cmp eax, NP_EXC_OVERFLOW
+    je .arithmetic
+    cmp eax, NP_EXC_FLOAT_POINT
+    je .arithmetic
+    cmp eax, NP_EXC_SIMD_FP
+    je .arithmetic
+    cmp eax, NP_EXC_DEBUG
+    je .debug
+    cmp eax, NP_EXC_BREAKPOINT
+    je .debug
+    cmp eax, NP_EXC_INVALID_OPCODE
+    je .instruction
+    cmp eax, NP_EXC_DEVICE_UNAVAIL
+    je .instruction
+    cmp eax, NP_EXC_CTRL_PROTECT
+    je .instruction
+    cmp eax, NP_EXC_DOUBLE_FAULT
+    je .fatal
+    cmp eax, NP_EXC_MACHINE_CHECK
+    je .fatal
+    cmp eax, NP_EXC_GPF
+    je .security
+    cmp eax, NP_EXC_SEGMENT_VIOL
+    je .security
+    cmp eax, NP_EXC_SECURITY_VIOL
+    je .security
+    cmp eax, NP_EXC_SOFTWARE_RAISED
+    je .software
+    ; Fallback → CPU
+    mov eax, EXC_CAT_CPU
+    ret
+.memory:    mov eax, EXC_CAT_MEMORY       ; ret
+    ret
+.resource:  mov eax, EXC_CAT_RESOURCE
+    ret
+.arithmetic: mov eax, EXC_CAT_ARITHMETIC
+    ret
+.debug:     mov eax, EXC_CAT_DEBUG
+    ret
+.instruction: mov eax, EXC_CAT_INSTRUCTION
+    ret
+.fatal:     mov eax, EXC_CAT_KERNEL_FATAL
+    ret
+.security:  mov eax, EXC_CAT_SECURITY
+    ret
+.software:  mov eax, EXC_CAT_SOFTWARE
+    ret
+
+; ---------------------------------------------------------------------------
+; exc_build_record  – Exception Record aus Frame aufbauen
+;   [esp+4] = Zeiger auf den 60-Byte Record-Puffer
+;   [esp+8] = Frame-Zeiger (isr_common Stack)
+;   [esp+12] = Vektor
+;   Clobbers: EAX, EBX, ECX, EDX (per calling convention OK – Caller pusht)
+; ---------------------------------------------------------------------------
+exc_build_record:
+    push ebp
+    mov ebp, esp
+    push esi
+    push edi
+
+    mov edi, [ebp + 8]   ; Record-Puffer
+    mov esi, [ebp + 12]  ; Frame
+    mov ecx, [ebp + 16]  ; Vektor
+
+    ; Größe und Version
+    mov dword [edi + EXC_REC_STRUCT_SIZE], EXC_REC_SIZE
+    mov dword [edi + EXC_REC_VERSION], 1
+
+    ; Code (Vektor → np_exception_code)
+    mov eax, ecx
+    call exc_vector_to_code
+    mov [edi + EXC_REC_CODE], eax
+
+    ; Kategorie
+    call exc_code_to_category
+    mov [edi + EXC_REC_CATEGORY], eax
+
+    ; Flags: Ursprung aus CS im Frame (Offset 60 vom Frame-Anfang = [esi+60])
+    ; Frame: pushad(32)+segs(16) = 48, dann Vektor(4)+ErrCode(4)+EIP(4)+CS(4)
+    ; CS ist bei [esi + 60]
+    mov eax, [esi + 60]
+    and eax, 0x3         ; RPL-Bits: 0=Ring0(Kernel), 3=Ring3(User)
+    cmp eax, 0
+    je .origin_kernel
+    mov dword [edi + EXC_REC_FLAGS], EXC_FLAG_ORIGIN_USER
+    jmp .origin_done
+.origin_kernel:
+    mov dword [edi + EXC_REC_FLAGS], EXC_FLAG_ORIGIN_KERNEL
+.origin_done:
+
+    ; IDs (Prozess/Thread/CPU – aus BSP-Kontext, §7)
+    ; per_cpu_current_thread[0] = Slot-Index des laufenden Threads auf CPU 0
+    mov eax, [per_cpu_current_thread]    ; Thread-Slot-Index (BSP)
+    cmp eax, -1
+    je .no_thread_id
+    ; Thread-Record: TID bei Offset THREAD_TID=0, PID bei THREAD_PID=4
+    push ebx
+    mov ebx, eax
+    imul ebx, THREAD_RECORD_SIZE
+    add ebx, thread_table
+    mov eax, [ebx + THREAD_TID]
+    mov [edi + EXC_REC_THREAD_ID], eax
+    mov eax, [ebx + THREAD_PID]
+    mov [edi + EXC_REC_PROCESS_ID], eax
+    pop ebx
+    jmp .ids_done
+.no_thread_id:
+    mov dword [edi + EXC_REC_THREAD_ID], 0
+    mov dword [edi + EXC_REC_PROCESS_ID], 0
+.ids_done:
+    mov dword [edi + EXC_REC_CPU_ID], 0  ; BSP = 0
+
+    ; EIP aus Frame [esi + 56]
+    mov eax, [esi + 56]
+    mov [edi + EXC_REC_IP], eax
+
+    ; Fault-Adresse: bei Page Fault (Vektor 14) aus CR2
+    xor eax, eax
+    cmp ecx, 14
+    jne .no_cr2
+    mov eax, cr2
+.no_cr2:
+    mov [edi + EXC_REC_FAULT_ADDR], eax
+
+    ; Architektur-Fehlercode aus Frame [esi + 52]
+    mov eax, [esi + 52]
+    mov [edi + EXC_REC_ARCH_ERR], eax
+    mov dword [edi + EXC_REC_ARCH_ERR_HI], 0
+
+    ; Parameter 0 = Vektor
+    mov dword [edi + EXC_REC_PARAM_COUNT], 1
+    mov [edi + EXC_REC_PARAM0], ecx
+
+    pop edi
+    pop esi
+    pop ebp
+    ret
+
+; ---------------------------------------------------------------------------
+; exc_search_fixup  – Fixup-Tabelle nach EIP durchsuchen (§33)
+;   [esp+4]  = EIP (fault instruction pointer)
+;   [esp+8]  = Vektor
+;   Rückgabe: EAX = Recovery-Adresse, 0 wenn nicht gefunden
+; ---------------------------------------------------------------------------
+exc_search_fixup:
+    push ebp
+    mov ebp, esp
+    push esi
+    push ebx
+
+    mov ebx, [ebp + 8]   ; EIP
+    mov ecx, [ebp + 12]  ; Vektor
+
+    mov esi, exception_fixup_table
+.loop:
+    mov eax, [esi + EXC_FIXUP_FAULT_START]
+    cmp eax, EXC_FIXUP_SENTINEL
+    je .not_found
+
+    cmp ebx, eax         ; EIP >= fault_start?
+    jb .next
+    mov eax, [esi + EXC_FIXUP_FAULT_END]
+    cmp ebx, eax         ; EIP < fault_end?
+    jae .next
+
+    ; Vektor-Maske prüfen
+    mov eax, [esi + EXC_FIXUP_ALLOWED_VECS]
+    mov edx, 1
+    cmp ecx, 31
+    ja .vec_ok          ; Vektor > 31 → unkritisch, erlaubt
+    shl edx, cl
+    test eax, edx
+    jz .next
+.vec_ok:
+    mov eax, [esi + EXC_FIXUP_RECOVERY]
+    pop ebx
+    pop esi
+    pop ebp
+    ret
+.next:
+    add esi, EXC_FIXUP_SIZE
+    jmp .loop
+.not_found:
+    xor eax, eax
+    pop ebx
+    pop esi
+    pop ebp
+    ret
+
+; ---------------------------------------------------------------------------
+; exception_manager_dispatch  – Haupteinstieg §010
+;   [esp+4]  = Vektor
+;   [esp+8]  = Frame-Zeiger
+;   Rückgabe: EAX = Frame-Zeiger (unverändert oder neuer Frame nach Fixup),
+;             0 wenn Return zum alten Frame
+; ---------------------------------------------------------------------------
+exception_manager_dispatch:
+    push ebp
+    mov ebp, esp
+    pushad
+
+    mov ecx, [ebp + 8]   ; Vektor
+    mov edx, [ebp + 12]  ; Frame
+
+    ; Statistik: total
+    lock inc dword [exception_stats_total]
+
+    ; Double Fault (Vektor 8) und Machine Check (18): Notfallpfad (§21, §22)
+    cmp ecx, 8
+    je .double_fault_path
+    cmp ecx, 18
+    je .machine_check_path
+
+    ; CPU-Slot bestimmen (§32 Tiefenzähler)
+    ; Vereinfacht: BSP=0 (nur ein CPU-Slot in der frühen Phase)
+    xor eax, eax         ; cpu_id = 0
+
+    ; Exception-Tiefe prüfen (§32)
+    mov ebx, [exception_depth_table + eax*4]
+    cmp ebx, EXC_MAX_DEPTH
+    jae .recursive_exception
+
+    inc dword [exception_depth_table + eax*4]
+
+    ; Exception Record aufbauen
+    sub esp, EXC_REC_SIZE
+    mov edi, esp          ; Record auf Stack
+
+    push ecx             ; Vektor
+    push edx             ; Frame
+    push edi             ; Record-Puffer
+    call exc_build_record
+    add esp, 12
+
+    ; Letzten Record kopieren (für Diagnose)
+    push edi
+    push ecx
+    mov esi, esp
+    add esi, 8           ; korrigieren: esi = edi (vor pushes)
+    pop ecx
+    pop esi
+    ; direkter Copy ohne Makro
+    push edi
+    push ecx
+    mov esi, edi
+    mov edi, exception_last_record
+    mov ecx, EXC_REC_SIZE
+    push ds
+    push es
+    push eax
+    mov ax, ds
+    mov es, ax
+    pop eax
+    rep movsb
+    pop es
+    pop ds
+    pop ecx
+    pop edi              ; edi = Record auf Stack
+
+    ; Ursprung bestimmen
+    mov eax, [edi + EXC_REC_FLAGS]
+    and eax, EXC_FLAG_ORIGIN_USER
+    test eax, eax
+    jnz .user_path
+
+    ; === Kernel-Exception-Pfad (§12) ===
+    lock inc dword [exception_stats_kernel]
+
+    ; Fixup-Tabelle durchsuchen (§33)
+    mov ebx, [edi + EXC_REC_IP]
+    push ecx             ; Vektor
+    push ebx             ; EIP
+    call exc_search_fixup
+    add esp, 8
+
+    test eax, eax
+    jnz .fixup_found
+
+    ; Kein Fixup → Kernel Panic
+    lock inc dword [exception_stats_panics]
+    mov esi, message_exc_kernel_panic
+    call serial_write_string
+    mov eax, [edi + EXC_REC_IP]
+    call serial_write_hex32
+    mov esi, message_newline
+    call serial_write_string
+
+    mov eax, [edi + EXC_REC_CODE]
+    xor esi, esi
+    call kernel_panic
+    ; kehrt nicht zurück
+
+.fixup_found:
+    ; Recovery-Adresse im Frame (EIP) setzen und zurückkehren (§12, §33)
+    lock inc dword [exception_stats_handled]
+    mov ebx, [ebp + 12]  ; Frame
+    mov [ebx + 56], eax  ; neues EIP im Frame
+
+    ; EXC_FLAG_FIXUP_USED setzen
+    or dword [edi + EXC_REC_FLAGS], EXC_FLAG_FIXUP_USED
+
+    ; Tiefenzähler dekrementieren
+    dec dword [exception_depth_table]
+
+    add esp, EXC_REC_SIZE
+    mov eax, [ebp + 12]  ; Frame unverändert zurückgeben
+    popad
+    pop ebp
+    ret
+
+    ; === Userspace-Exception-Pfad (§11) ===
+.user_path:
+    lock inc dword [exception_stats_user]
+
+    ; Page Fault: zuerst VMM-Probe (§14)
+    mov eax, [edi + EXC_REC_CODE]
+    cmp eax, NP_EXC_PAGE_FAULT
+    jne .user_no_vmm
+
+    ; vmm_handle_page_fault: EAX=Fehlercode, EBX=Fault-Adresse
+    mov eax, [edi + EXC_REC_ARCH_ERR]
+    mov ebx, [edi + EXC_REC_FAULT_ADDR]
+    call vmm_handle_page_fault
+    ; EAX=0 → behandelt, fortfahren
+    test eax, eax
+    jnz .user_vmm_failed
+
+    lock inc dword [exception_stats_handled]
+    dec dword [exception_depth_table]
+    add esp, EXC_REC_SIZE
+    mov eax, [ebp + 12]
+    popad
+    pop ebp
+    ret
+
+.user_vmm_failed:
+.user_no_vmm:
+    ; Exception-Endpunkt prüfen (§25) – Stub: aktueller Prozess
+    ; In dieser Bootstrap-Phase: kein separater Endpunkt-Mechanismus,
+    ; Prozess wird sofort beendet (§35, §36)
+    lock inc dword [exception_stats_thread_term]
+
+    ; Userspace-Thread/Prozess beenden über thread_manager_terminate_current
+    call exception_terminate_current_thread
+
+    ; Nach thread_manager_terminate_current wählt der Scheduler
+    ; den nächsten bereiten Thread.
+    ; Rückgabe: Frame unverändert (Scheduler übernimmt beim nächsten Tick)
+    dec dword [exception_depth_table]
+    add esp, EXC_REC_SIZE
+    mov eax, [ebp + 12]   ; ursprünglicher Frame (Caller erhält ihn)
+    popad
+    pop ebp
+    ret
+
+    ; === Rekursive Exception (§32) ===
+.recursive_exception:
+    lock inc dword [exception_stats_recursive]
+    lock inc dword [exception_stats_panics]
+    mov esi, message_exc_recursive
+    call serial_write_string
+    mov eax, 0xE0CA0010
+    mov edx, 0x0000DEAD
+    xor esi, esi
+    call kernel_panic
+
+    ; === Double Fault Notfallpfad (§21, §41) ===
+.double_fault_path:
+    lock inc dword [exception_stats_panics]
+    mov edi, exception_emergency_record
+    mov dword [edi + EXC_REC_STRUCT_SIZE], EXC_REC_SIZE
+    mov dword [edi + EXC_REC_VERSION],     1
+    mov dword [edi + EXC_REC_CODE],        NP_EXC_DOUBLE_FAULT
+    mov dword [edi + EXC_REC_CATEGORY],    EXC_CAT_KERNEL_FATAL
+    mov dword [edi + EXC_REC_FLAGS],       EXC_FLAG_DOUBLE_FAULT | EXC_FLAG_ORIGIN_KERNEL
+    ; EIP aus Frame wenn verfügbar
+    test edx, edx
+    jz .df_no_frame
+    mov eax, [edx + 56]
+    mov [edi + EXC_REC_IP], eax
+.df_no_frame:
+    mov esi, message_exc_double_fault
+    call serial_write_string
+    mov eax, [edi + EXC_REC_IP]
+    call serial_write_hex32
+    mov esi, message_newline
+    call serial_write_string
+    mov eax, 0xDF000008
+    mov edx, 0x0000DEAD
+    xor esi, esi
+    call kernel_panic
+
+    ; === Machine Check Notfallpfad (§22, §41) ===
+.machine_check_path:
+    lock inc dword [exception_stats_panics]
+    mov edi, exception_emergency_record
+    mov dword [edi + EXC_REC_STRUCT_SIZE], EXC_REC_SIZE
+    mov dword [edi + EXC_REC_VERSION],     1
+    mov dword [edi + EXC_REC_CODE],        NP_EXC_MACHINE_CHECK
+    mov dword [edi + EXC_REC_CATEGORY],    EXC_CAT_KERNEL_FATAL
+    mov dword [edi + EXC_REC_FLAGS],       EXC_FLAG_MACHINE_CHECK | EXC_FLAG_ORIGIN_KERNEL
+    mov esi, message_exc_machine_check
+    call serial_write_string
+    mov eax, 0xEC000012
+    mov edx, 0x0000DEAD
+    xor esi, esi
+    call kernel_panic
+
+; ---------------------------------------------------------------------------
+; exception_terminate_current_thread  – Stub (§35)
+;   Beendet den aktuellen Userspace-Thread. Delegiert an thread_manager.
+; ---------------------------------------------------------------------------
+exception_terminate_current_thread:
+    push eax
+    push ebx
+    push esi
+    mov esi, message_exc_thread_terminated
+    call serial_write_string
+    ; BSP-Thread-Slot aus per_cpu_current_thread holen
+    mov eax, [per_cpu_current_thread]
+    cmp eax, -1
+    je .no_thread
+    ; Thread-Status auf 0 (inaktiv) setzen (Stub-Terminierung)
+    imul ebx, eax, THREAD_RECORD_SIZE
+    add ebx, thread_table
+    mov dword [ebx + THREAD_STATE], 0
+.no_thread:
+    pop esi
+    pop ebx
+    pop eax
+    ret
+
+; ---------------------------------------------------------------------------
+; vmm_handle_page_fault  – VMM Page-Fault-Stub (§14)
+;   EAX = Fehlercode, EBX = Fault-Adresse
+;   Rückgabe: EAX=0 behandelt, EAX≠0 nicht behandelt
+; ---------------------------------------------------------------------------
+vmm_handle_page_fault:
+    ; Frühe Phase: keine Demand-Paging-Unterstützung →
+    ; Kern-Adressen (>=0xC0000000) immer als unbehandelbar zurückgeben
+    cmp ebx, 0xC0000000
+    jae .not_handled
+    ; Userspace-Adresse: prüfen ob in einer gemappten Region (Stub)
+    ; In dieser Bootstrap-Phase: keine UserVM-Regionen → nicht behandelbar
+    xor eax, eax
+    inc eax              ; 1 = nicht behandelt
+    ret
+.not_handled:
+    mov eax, 1
+    ret
+
+; ---------------------------------------------------------------------------
+; exception_manager_self_test  – 14 Testfälle (§49)
+;   Rückgabe: CF=0 alle OK, CF=1 mindestens ein Fehler
+; ---------------------------------------------------------------------------
+exception_manager_self_test:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+
+    xor edi, edi         ; Fehler-Zähler
+
+    ; Test 1: Initialisierungsflag gesetzt
+    cmp dword [exception_mgr_initialized], 1
+    je .t1_ok
+    inc edi
+.t1_ok:
+
+    ; Test 2: exc_vector_to_code Vektor 0 → NP_EXC_DIVIDE_BY_ZERO
+    mov eax, 0
+    call exc_vector_to_code
+    cmp eax, NP_EXC_DIVIDE_BY_ZERO
+    je .t2_ok
+    inc edi
+.t2_ok:
+
+    ; Test 3: Vektor 14 → NP_EXC_PAGE_FAULT
+    mov eax, 14
+    call exc_vector_to_code
+    cmp eax, NP_EXC_PAGE_FAULT
+    je .t3_ok
+    inc edi
+.t3_ok:
+
+    ; Test 4: Vektor 8 → NP_EXC_DOUBLE_FAULT
+    mov eax, 8
+    call exc_vector_to_code
+    cmp eax, NP_EXC_DOUBLE_FAULT
+    je .t4_ok
+    inc edi
+.t4_ok:
+
+    ; Test 5: exc_code_to_category PAGE_FAULT → MEMORY
+    mov eax, NP_EXC_PAGE_FAULT
+    call exc_code_to_category
+    cmp eax, EXC_CAT_MEMORY
+    je .t5_ok
+    inc edi
+.t5_ok:
+
+    ; Test 6: exc_code_to_category DIVIDE_BY_ZERO → ARITHMETIC
+    mov eax, NP_EXC_DIVIDE_BY_ZERO
+    call exc_code_to_category
+    cmp eax, EXC_CAT_ARITHMETIC
+    je .t6_ok
+    inc edi
+.t6_ok:
+
+    ; Test 7: exc_code_to_category DOUBLE_FAULT → KERNEL_FATAL
+    mov eax, NP_EXC_DOUBLE_FAULT
+    call exc_code_to_category
+    cmp eax, EXC_CAT_KERNEL_FATAL
+    je .t7_ok
+    inc edi
+.t7_ok:
+
+    ; Test 8: exc_code_to_category DEBUG → DEBUG
+    mov eax, NP_EXC_DEBUG
+    call exc_code_to_category
+    cmp eax, EXC_CAT_DEBUG
+    je .t8_ok
+    inc edi
+.t8_ok:
+
+    ; Test 9: Fixup-Tabellen-Suche: Sentinel → 0 (kein Fixup)
+    ; Suche nach EIP 0xDEAD0001, Vektor 0 → muss 0 zurückgeben
+    push dword 0
+    push dword 0xDEAD0001
+    call exc_search_fixup
+    add esp, 8
+    cmp eax, 0
+    je .t9_ok
+    inc edi
+.t9_ok:
+
+    ; Test 10: Statistik-Felder erreichbar
+    mov eax, [exception_stats_total]
+    cmp eax, 0xFFFFFFFF
+    jne .t10_ok
+    inc edi
+.t10_ok:
+
+    ; Test 11: Exception-Tiefenzähler = 0 (nach Init)
+    cmp dword [exception_depth_table], 0
+    je .t11_ok
+    inc edi
+.t11_ok:
+
+    ; Test 12/13: exc_build_record auf statischen Dummy-Frame
+    ; Dummy-Frame im BSS nutzen (exception_emergency_record als Scratch reicht nicht,
+    ; daher: Stack-Bereich reservieren, danach Record in emergency_record prüfen)
+    sub esp, EXC_REC_SIZE + 68  ; Record + Frame
+    mov edi, esp                ; Record-Puffer
+    mov ebx, esp
+    add ebx, EXC_REC_SIZE       ; Frame-Zeiger
+    mov dword [ebx + 60], 0x23  ; CS = Ring-3 (User)
+    mov dword [ebx + 56], 0x1234
+    mov dword [ebx + 52], 0
+    push dword 14               ; Vektor = Page Fault
+    push ebx                    ; Frame
+    push edi                    ; Record-Puffer
+    call exc_build_record
+    add esp, 12
+    cmp dword [edi + EXC_REC_STRUCT_SIZE], EXC_REC_SIZE
+    je .t12_ok
+    inc edi
+.t12_ok:
+    ; Test 13: Kategorie für Vektor 0 (ARITHMETIC)
+    mov dword [ebx + 60], 0     ; CS = Ring-0
+    mov dword [ebx + 56], 0x5678
+    push dword 0                ; Vektor 0 = #DE
+    push ebx
+    push edi
+    call exc_build_record
+    add esp, 12
+    cmp dword [edi + EXC_REC_CATEGORY], EXC_CAT_ARITHMETIC
+    je .t13_ok
+    inc edi
+.t13_ok:
+    add esp, EXC_REC_SIZE + 68
+
+    ; Test 14: vmm_handle_page_fault Kernel-Adresse → nicht behandelt
+    mov eax, 0           ; Fehlercode
+    mov ebx, 0xC0001000  ; Kernel-Adresse
+    call vmm_handle_page_fault
+    cmp eax, 0
+    jne .t14_ok
+    inc edi
+.t14_ok:
+
+    ; Ergebnis
+    test edi, edi
+    jnz .selftest_fail
+
+    mov esi, message_exc_selftest_ok
+    call serial_write_string
+    clc
+    jmp .selftest_done
+
+.selftest_fail:
+    mov esi, message_exc_selftest_fail
+    call serial_write_string
+    stc
+
+.selftest_done:
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+; ---------------------------------------------------------------------------
+; Fixup-Tabelle (§33) – statische Einträge für sichere Kernel-Probe-Operationen
+; Weitere Einträge können per exc_fixup_register hinzugefügt werden.
+; ---------------------------------------------------------------------------
+align 4
+exception_fixup_table:
+    ; Sentinel: Tabellenende
+    dd EXC_FIXUP_SENTINEL, 0, 0, 0
+
+; ---------------------------------------------------------------------------
+; §010 Meldungen
+; ---------------------------------------------------------------------------
+message_exception_mgr_ok:
+    db "NOVA: Exception Manager ABI 1.0 bereit", 13, 10, 0
+message_exc_selftest_ok:
+    db "NOVA: Exception Manager Selbsttest OK (14/14)", 13, 10, 0
+message_exc_selftest_fail:
+    db "NOVA PANIC: Exception Manager Selbsttest fehlgeschlagen", 13, 10, 0
+message_exc_kernel_panic:
+    db "NOVA PANIC: Kernel-Exception ohne Fixup bei EIP 0x", 0
+message_exc_double_fault:
+    db "NOVA PANIC: Double Fault bei EIP 0x", 0
+message_exc_machine_check:
+    db "NOVA PANIC: Machine Check Exception", 13, 10, 0
+message_exc_recursive:
+    db "NOVA PANIC: Rekursive Exception (Tiefenlimit)", 13, 10, 0
+message_exc_thread_terminated:
+    db "NOVA: Userspace-Thread durch Exception beendet", 13, 10, 0
 
 %include "nova-art.inc"
 %include "boot-font-aa.inc"

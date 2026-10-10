@@ -5,7 +5,7 @@
 
 #define NOVA_CPU_ABI_MAJOR 1u
 #define NOVA_CPU_ABI_MINOR 0u
-#define NOVA_CPU_CAPACITY  8u
+#define NOVA_CPU_CAPACITY  4u
 #define NOVA_CPU_TOPOLOGY_UNKNOWN UINT32_C(0xFFFFFFFF)
 
 typedef uint32_t nova_cpu_id_t;

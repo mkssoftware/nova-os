@@ -39,7 +39,7 @@ if ($elf.Length -lt 188 -or (U32 $elf 152) -ne 5 -or (U32 $elf 156) -ne 16 -or
 }
 
 if ($nki.Length -lt 64 -or [Text.Encoding]::ASCII.GetString($nki, 0, 7) -ne 'NOVANKI' -or
-    (U32 $nki 8) -ne 1 -or (U32 $nki 12) -ne 64 -or ((U32 $nki 20) -band 3) -ne 3) {
+    (U32 $nki 8) -lt 1 -or (U32 $nki 8) -gt 2 -or (U32 $nki 12) -ne 64 -or ((U32 $nki 20) -band 3) -ne 3) {
     throw 'NKI-Header oder Build-ID-Flag ist ungueltig.'
 }
 $nkiPayloadSize = U32 $nki 32
