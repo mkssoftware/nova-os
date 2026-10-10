@@ -495,6 +495,14 @@ kernel_entry:
     mov esi, message_exception_mgr_ok
     call serial_write_string
 
+    ; §011 System Call Interface
+    call syscall_manager_initialize
+    jc panic_syscall_manager
+    call syscall_manager_self_test
+    jc panic_syscall_manager
+    mov esi, message_syscall_mgr_ok
+    call serial_write_string
+
     mov dword [boot_phase_last_success], BOOT_PHASE_INTERRUPTS_TIME
     mov dword [boot_phase_current], BOOT_PHASE_SCHEDULER_SMP
     call boot_phase_log
@@ -873,6 +881,12 @@ panic_exception_mgr:
     mov eax, 0x0000001F
     mov edx, 0x45584D47             ; "EXMG"
     mov esi, message_exc_mgr_error
+    jmp kernel_panic
+
+panic_syscall_manager:
+    mov eax, 0x00000016
+    mov edx, 0x5359534B             ; "SYSK"
+    mov esi, message_syscall_mgr_error
     jmp kernel_panic
 
 panic_module_loader:
@@ -12403,6 +12417,9 @@ SYSCALL_STATUS_POINTER      equ -15
 SYSCALL_STATUS_WOULD_BLOCK  equ -19
 SYSCALL_STATUS_TYPE         equ -22
 SYSCALL_STATUS_VALIDATION   equ -23
+; §011 neue Konstanten (NPSPEC-KERNEL-0011)
+SYSCALL_CORE_QUERY_ABI      equ 4       ; §011 §26: ABI-Version abfragen
+SYSCALL_CALL_DEPTH_MAX      equ 8       ; §011 §39: max. Verschachtelungstiefe
 DISPLAY_INFO_SIZE           equ 40
 SYSTEM_SCENE_SIZE           equ 64
 SYSTEM_INPUT_EVENT_SIZE     equ 32
@@ -14862,6 +14879,8 @@ syscall_dispatch:
     je .core_ready
     cmp dword [edx + 32], SYSCALL_CORE_CLOSE_HANDLE
     je .core_close_handle
+    cmp dword [edx + 32], SYSCALL_CORE_QUERY_ABI
+    je .core_query_abi
     cmp dword [edx + 32], SYSCALL_CORE_EXIT
     jne .unknown_operation
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
@@ -15155,6 +15174,11 @@ syscall_dispatch:
 .log_would_block:
     mov eax, SYSCALL_STATUS_WOULD_BLOCK
     jmp .reject
+.core_query_abi:
+    ; §011 §26: ABI-Version und Feature-Flags abfragen
+    call syscall_handler_query_abi
+    ret
+
 .core_ready:
     cmp dword [edx + 40], SYSCALL_ABI_VERSION
     jne .bad_abi
@@ -32955,6 +32979,361 @@ message_exc_recursive:
     db "NOVA PANIC: Rekursive Exception (Tiefenlimit)", 13, 10, 0
 message_exc_thread_terminated:
     db "NOVA: Userspace-Thread durch Exception beendet", 13, 10, 0
+
+; ===========================================================================
+; §011 – System Call Interface (NPSPEC-KERNEL-0011)
+; ===========================================================================
+
+; ---------------------------------------------------------------------------
+; syscall_manager_initialize  – Bootstrap §011
+;   Konfiguriert SYSENTER-MSRs (wenn CPU es unterstützt), initialisiert
+;   Statistiken und Tiefenzähler (§39, §53), setzt Init-Flag.
+;   Rückgabe: CF=0 OK
+; ---------------------------------------------------------------------------
+syscall_manager_initialize:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    push esi
+
+    ; CPUID Leaf 1: EDX Bit 11 = SEP (SYSENTER/SYSEXIT-Support)
+    mov eax, 1
+    cpuid
+    test edx, (1 << 11)
+    jz .no_sysenter
+
+    mov dword [syscall_sysenter_available], 1
+
+    ; IA32_SYSENTER_CS (MSR 0x174) = Kernel-Code-Selektor
+    mov ecx, 0x174
+    xor edx, edx
+    mov eax, CODE_SEGMENT
+    wrmsr
+
+    ; IA32_SYSENTER_ESP (MSR 0x175) = Kernel-Stack (TSS ESP0)
+    mov ecx, 0x175
+    xor edx, edx
+    mov eax, [kernel_boot_stack_top]
+    wrmsr
+
+    ; IA32_SYSENTER_EIP (MSR 0x176) = SYSENTER-Eintrittspunkt
+    mov ecx, 0x176
+    xor edx, edx
+    mov eax, sysenter_entry
+    wrmsr
+
+    mov esi, message_syscall_sysenter_ok
+    call serial_write_string
+    jmp .stats_init
+
+.no_sysenter:
+    mov esi, message_syscall_intgate_only
+    call serial_write_string
+
+.stats_init:
+    ; §53 Statistiken initialisieren
+    mov dword [syscall_stats_successful],        0
+    mov dword [syscall_stats_failed],            0
+    mov dword [syscall_stats_capability_denied], 0
+    mov dword [syscall_stats_invalid_ptr],       0
+
+    ; §39 Tiefenzähler
+    mov dword [syscall_call_depth], 0
+
+    mov dword [syscall_mgr_initialized], 1
+
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    clc
+    ret
+
+; ---------------------------------------------------------------------------
+; sysenter_entry  – SYSENTER-Einstieg (§011 §9, §11)
+;   CPU setzt bei SYSENTER: CPL→0, CS=IA32_SYSENTER_CS,
+;   ESP=IA32_SYSENTER_ESP, EIP=IA32_SYSENTER_EIP.
+;
+;   NovaOS SYSENTER-Konvention (Userspace):
+;     EAX = service_id,  EBX = operation_id
+;     ESI = abi_version, EDI = arg_ptr, EBP = arg_size
+;     ECX = return EIP (SYSENTER-Pflicht)
+;     EDX = return ESP (SYSENTER-Pflicht)
+; ---------------------------------------------------------------------------
+sysenter_entry:
+    ; Rückkehrinformation vor Überschreibung sichern
+    mov [sysenter_user_eip], ecx
+    mov [sysenter_user_esp], edx
+
+    ; Registerkonvention an INT-0x80-Dispatcher anpassen:
+    ;   INT 0x80: ECX=abi_version, EDX=arg_ptr, ESI=arg_size
+    mov ecx, esi             ; ECX ← abi_version (war ESI)
+    mov edx, edi             ; EDX ← arg_ptr     (war EDI)
+    mov esi, ebp             ; ESI ← arg_size     (war EBP)
+
+    ; Synthetischen isr_common-Frame aufbauen
+    pushfd                   ; EFLAGS
+    push dword 0x1B          ; User-CS Ring-3
+    push dword [sysenter_user_eip]   ; User-EIP
+    push dword 0             ; Error-Code
+    push dword 0x80          ; Vektor 0x80
+
+    pushad                   ; EAX=service, ECX=abi_ver, EDX=arg_ptr,
+                             ; EBX=op, ESP, EBP, ESI=arg_size, EDI
+
+    push ds
+    push es
+    push fs
+    push gs
+
+    ; Kernel-Segmente aktivieren
+    mov ax, DATA_SEGMENT
+    mov ds, ax
+    mov es, ax
+
+    ; §39: Tiefenzähler prüfen und erhöhen
+    mov eax, [syscall_call_depth]
+    cmp eax, SYSCALL_CALL_DEPTH_MAX
+    jae .sysenter_depth_exceeded
+    inc dword [syscall_call_depth]
+
+    mov edx, esp             ; Frame-Zeiger wie in interrupt_dispatch
+    call syscall_dispatch
+
+    dec dword [syscall_call_depth]
+
+    ; Rückgabewert sichern: [frame+44]=EAX-Slot (von dispatch beschrieben)
+    ; frame+44 = [esp + 44] (GS@0 FS@4 ES@8 DS@12 EDI@16 ESI@20 EBP@24 ESP@28 EBX@32 EDX@36 ECX@40 EAX@44)
+    mov eax, [esp + 44]
+    mov [sysenter_dispatch_result], eax   ; vor popad sichern
+
+    ; Frame abbauen
+    pop gs
+    pop fs
+    pop es
+    pop ds
+    popad                    ; stellt EAX auf original service_id zurück
+    add esp, 20              ; Vektor(4)+errcode(4)+EIP(4)+CS(4)+EFLAGS(4)
+
+    ; Status-Code aus temporärer Variable laden
+    mov eax, [sysenter_dispatch_result]
+
+    mov ecx, [sysenter_user_eip]
+    mov edx, [sysenter_user_esp]
+    sti
+    sysexit
+
+.sysenter_depth_exceeded:
+    ; §39: Tiefenlimit – als Fehler zurückkehren
+    add esp, 20 + 32 + 16    ; frame cleanup (vector+errcode+eip+cs+eflags + pushad + seg)
+    mov eax, SYSCALL_STATUS_OPERATION
+    mov ecx, [sysenter_user_eip]
+    mov edx, [sysenter_user_esp]
+    sti
+    sysexit
+
+; ---------------------------------------------------------------------------
+; syscall_handler_query_abi  – §011 §26: ABI-Abfrage (Core-Namespace)
+;   EDX = syscall_frame (Frame-Zeiger, gesetzt von syscall_dispatch)
+;   Schreibt { struct_size(4), major(2), minor(2), feature_flags(8) } in
+;   Userspace-Puffer ([frame+36]=arg_ptr, [frame+20]=arg_size).
+; ---------------------------------------------------------------------------
+syscall_handler_query_abi:
+    push ebx
+    push esi
+    push edi
+    push ecx
+
+    mov edx, [syscall_frame]
+
+    ; Argumente aus Frame
+    mov esi, [edx + 36]      ; arg_ptr  (gespeichertes EDX = Userspace-Zeiger)
+    mov ecx, [edx + 20]      ; arg_size (gespeichertes ESI)
+
+    ; Mindestgröße: 16 Bytes (§011 §14)
+    cmp ecx, 16
+    jb .qabi_bad_size
+
+    ; Userspace-Zeiger prüfen (§011 §15)
+    call syscall_validate_user_range
+    jc .qabi_bad_pointer
+
+    ; Ergebnisstruktur im Kernel-Puffer aufbauen
+    mov dword [syscall_abi_result +  0], 16   ; struct_size
+    mov word  [syscall_abi_result +  4],  1   ; major_version = 1
+    mov word  [syscall_abi_result +  6],  0   ; minor_version = 0
+    mov dword [syscall_abi_result +  8],  0   ; feature_flags (low32)
+    mov dword [syscall_abi_result + 12],  0   ; feature_flags (high32)
+
+    ; In Userspace kopieren (§011 §16)
+    mov edi, esi             ; Ziel = arg_ptr (Userspace)
+    mov esi, syscall_abi_result
+    mov ecx, 16
+    push ds
+    push es
+    mov ax, ds
+    mov es, ax
+    rep movsb
+    pop es
+    pop ds
+
+    lock inc dword [syscall_stats_successful]
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_OK
+
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    ret
+
+.qabi_bad_size:
+    lock inc dword [syscall_stats_failed]
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_SIZE
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    ret
+
+.qabi_bad_pointer:
+    lock inc dword [syscall_stats_failed]
+    lock inc dword [syscall_stats_invalid_ptr]
+    mov edx, [syscall_frame]
+    mov dword [edx + 44], SYSCALL_STATUS_POINTER
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    ret
+
+; ---------------------------------------------------------------------------
+; syscall_manager_self_test  – §011 §55: Selbsttest (CF=0 OK, CF=1 Fehler)
+;   Testet: Init-Flag, Pointer-Validierung (3 Fälle), Statistiken, Tiefe
+; ---------------------------------------------------------------------------
+syscall_manager_self_test:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+
+    xor ebx, ebx             ; Fehlerzähler (EBX; ESI/EDI für Validierungsaufrufe)
+
+    ; Test 1: Initialisierungsflag gesetzt
+    cmp dword [syscall_mgr_initialized], 1
+    je .st1_ok
+    inc ebx
+.st1_ok:
+
+    ; Test 2: syscall_validate_user_range lehnt Kernel-Adresse ≥ 0xC0000000 ab
+    push ecx
+    mov esi, 0xC0001000
+    mov ecx, 4
+    call syscall_validate_user_range
+    pop ecx
+    jc .st2_ok                ; CF=1 = korrekt abgelehnt
+    inc ebx
+.st2_ok:
+
+    ; Test 3: Nulllänge → ungültig (§011 §15)
+    push ecx
+    mov esi, USER_ADDRESS_MIN
+    mov ecx, 0
+    call syscall_validate_user_range
+    pop ecx
+    jc .st3_ok
+    inc ebx
+.st3_ok:
+
+    ; Test 4: Adress-Überlauf (start+size wraps) → ungültig
+    push ecx
+    mov esi, 0xFFFF0000
+    mov ecx, 0x00020000
+    call syscall_validate_user_range
+    pop ecx
+    jc .st4_ok
+    inc ebx
+.st4_ok:
+
+    ; Test 5: §53 Statistiken erreichbar (kein Sentinel-Wert)
+    mov eax, [syscall_stats_successful]
+    cmp eax, 0xFFFFFFFF
+    jne .st5_ok
+    inc ebx
+.st5_ok:
+
+    ; Test 6: §39 Tiefenzähler = 0
+    cmp dword [syscall_call_depth], 0
+    je .st6_ok
+    inc ebx
+.st6_ok:
+
+    ; Test 7: §011 §50 SYSENTER-Flag ist 0 oder 1
+    mov eax, [syscall_sysenter_available]
+    cmp eax, 1
+    jbe .st7_ok
+    inc ebx
+.st7_ok:
+
+    ; Ergebnis
+    test ebx, ebx
+    jnz .st_fail
+    mov esi, message_syscall_selftest_ok
+    call serial_write_string
+    clc
+    jmp .st_done
+
+.st_fail:
+    mov esi, message_syscall_selftest_fail
+    call serial_write_string
+    stc
+
+.st_done:
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+; ---------------------------------------------------------------------------
+; §011 Daten
+; ---------------------------------------------------------------------------
+align 4
+syscall_mgr_initialized:         dd 0
+syscall_sysenter_available:      dd 0
+syscall_stats_successful:        dd 0
+syscall_stats_failed:            dd 0
+syscall_stats_capability_denied: dd 0
+syscall_stats_invalid_ptr:       dd 0
+syscall_call_depth:              dd 0    ; §39 BSP-Bootstrap
+sysenter_user_eip:               dd 0    ; Temp: User-Rückkehr-EIP
+sysenter_user_esp:               dd 0    ; Temp: User-Rückkehr-ESP
+sysenter_dispatch_result:        dd 0    ; Temp: Dispatcher-Rückgabewert
+align 16
+syscall_abi_result:              times 16 db 0   ; QUERY_ABI Ausgabepuffer
+
+; ---------------------------------------------------------------------------
+; §011 Meldungen
+; ---------------------------------------------------------------------------
+message_syscall_mgr_ok:
+    db "NOVA: System Call Interface ABI 1.0 bereit", 13, 10, 0
+message_syscall_mgr_error:
+    db "NOVA PANIC: System Call Interface Init fehlgeschlagen", 13, 10, 0
+message_syscall_sysenter_ok:
+    db "NOVA: SYSENTER verfuegbar und konfiguriert", 13, 10, 0
+message_syscall_intgate_only:
+    db "NOVA: SYSENTER nicht verfuegbar, nur INT 0x80 aktiv", 13, 10, 0
+message_syscall_selftest_ok:
+    db "NOVA: System Call Interface Selbsttest OK (7/7)", 13, 10, 0
+message_syscall_selftest_fail:
+    db "NOVA PANIC: System Call Interface Selbsttest fehlgeschlagen", 13, 10, 0
 
 %include "nova-art.inc"
 %include "boot-font-aa.inc"
