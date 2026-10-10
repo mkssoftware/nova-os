@@ -366,6 +366,13 @@ kernel_entry:
     mov esi, message_iommu_fault_propagation_ok
     call serial_write_string
 
+    call ringbuf_initialize
+    jc panic_ringbuf
+    call ringbuf_self_test
+    jc panic_ringbuf
+    mov esi, message_ringbuf_ok
+    call serial_write_string
+
     call io_scheduler_initialize
     jc panic_io_scheduler
     call io_scheduler_self_test
@@ -808,6 +815,12 @@ panic_dma_scatter_gather:
     mov eax, 0x00002023
     mov edx, 35
     mov esi, message_dma_scatter_gather_error
+    jmp kernel_panic
+
+panic_ringbuf:
+    mov eax, 0x00002024
+    mov edx, 36
+    mov esi, message_ringbuf_error
     jmp kernel_panic
 
 panic_io_scheduler:
@@ -12070,6 +12083,282 @@ dma_scatter_gather_iommu_authorization_ids:
     times DMA_SG_CAPACITY * DMA_SG_MAX_SEGMENTS dd 0
 dma_scatter_gather_error_codes:
     times DMA_SG_CAPACITY dd 0
+
+; ---------------------------------------------------------------------------
+; General-Purpose Ring Buffer – begrenzte SPSC-Kreisstruktur fuer kontin-
+; uierliche Datenstroeme zwischen Producer und Consumer.
+; NPSPEC-DATAMOVE-RINGBUFFER-0001
+; ---------------------------------------------------------------------------
+
+RINGBUF_CAPACITY       equ 4
+RINGBUF_ELEMENT_CAP    equ 16
+RINGBUF_ELEMENT_SIZE   equ 16
+RINGBUF_RECORD_SIZE    equ 32
+
+RINGBUF_STATE_FREE     equ 0
+RINGBUF_STATE_ACTIVE   equ 1
+
+RINGBUF_ID             equ 0
+RINGBUF_ELEM_CAPACITY  equ 4
+RINGBUF_READ_POS       equ 8
+RINGBUF_WRITE_POS      equ 12
+RINGBUF_STATE          equ 16
+RINGBUF_FLAGS          equ 20
+RINGBUF_COUNT          equ 24
+RINGBUF_GENERATION     equ 28
+
+ringbuf_initialize:
+    mov edi, ringbuf_table
+    xor eax, eax
+    mov ecx, (RINGBUF_CAPACITY * RINGBUF_RECORD_SIZE) / 4
+    rep stosd
+    mov edi, ringbuf_storage
+    mov ecx, (RINGBUF_CAPACITY * RINGBUF_ELEMENT_CAP * RINGBUF_ELEMENT_SIZE) / 4
+    rep stosd
+    mov edi, ringbuf_generations
+    mov ecx, RINGBUF_CAPACITY
+    rep stosd
+    mov dword [ringbuf_next_id], 1
+    mov dword [ringbuf_live_count], 0
+    mov dword [ringbuf_manager_ready], 1
+    clc
+    ret
+
+; Erstellt einen Ring-Buffer. EAX=Slot-Index (CF=0) oder CF=1 wenn voll.
+ringbuf_create:
+    push ecx
+    push edi
+    xor ecx, ecx
+.rc_scan:
+    cmp ecx, RINGBUF_CAPACITY
+    jae .rc_full
+    mov edi, ecx
+    imul edi, RINGBUF_RECORD_SIZE
+    add edi, ringbuf_table
+    cmp dword [edi + RINGBUF_STATE], RINGBUF_STATE_FREE
+    je .rc_found
+    inc ecx
+    jmp .rc_scan
+.rc_found:
+    mov eax, [ringbuf_next_id]
+    mov [edi + RINGBUF_ID],            eax
+    mov dword [edi + RINGBUF_ELEM_CAPACITY], RINGBUF_ELEMENT_CAP
+    mov dword [edi + RINGBUF_READ_POS],  0
+    mov dword [edi + RINGBUF_WRITE_POS], 0
+    mov dword [edi + RINGBUF_STATE],   RINGBUF_STATE_ACTIVE
+    mov dword [edi + RINGBUF_FLAGS],   0
+    mov dword [edi + RINGBUF_COUNT],   0
+    mov eax, [ringbuf_generations + ecx * 4]
+    inc eax
+    mov [ringbuf_generations + ecx * 4], eax
+    mov [edi + RINGBUF_GENERATION],    eax
+    inc dword [ringbuf_next_id]
+    inc dword [ringbuf_live_count]
+    mov eax, ecx
+    pop edi
+    pop ecx
+    clc
+    ret
+.rc_full:
+    pop edi
+    pop ecx
+    stc
+    ret
+
+; Schreibt ein 16-Byte-Element. EAX=Slot (0..CAPACITY-1), ESI=Quell-Ptr.
+; CF=0 ok, CF=1 voll oder ungueltig.
+ringbuf_write:
+    push ebx
+    push ecx
+    push edx
+    push edi
+    cmp eax, RINGBUF_CAPACITY
+    jae .rw_bad
+    mov ebx, eax
+    imul ebx, RINGBUF_RECORD_SIZE
+    add ebx, ringbuf_table
+    cmp dword [ebx + RINGBUF_STATE], RINGBUF_STATE_ACTIVE
+    jne .rw_bad
+    mov ecx, [ebx + RINGBUF_COUNT]
+    cmp ecx, RINGBUF_ELEMENT_CAP
+    jae .rw_full
+    mov edx, eax
+    imul edx, RINGBUF_ELEMENT_CAP * RINGBUF_ELEMENT_SIZE
+    add edx, ringbuf_storage
+    mov ecx, [ebx + RINGBUF_WRITE_POS]
+    imul ecx, RINGBUF_ELEMENT_SIZE
+    add edx, ecx
+    mov edi, edx
+    mov ecx, RINGBUF_ELEMENT_SIZE / 4
+    rep movsd
+    mov ecx, [ebx + RINGBUF_WRITE_POS]
+    inc ecx
+    cmp ecx, RINGBUF_ELEMENT_CAP
+    jb .rw_no_wrap
+    xor ecx, ecx
+.rw_no_wrap:
+    mov [ebx + RINGBUF_WRITE_POS], ecx
+    inc dword [ebx + RINGBUF_COUNT]
+    pop edi
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.rw_full:
+.rw_bad:
+    pop edi
+    pop edx
+    pop ecx
+    pop ebx
+    stc
+    ret
+
+; Liest ein 16-Byte-Element. EAX=Slot (0..CAPACITY-1), EDI=Ziel-Ptr.
+; CF=0 ok, CF=1 leer oder ungueltig.
+ringbuf_read:
+    push ebx
+    push ecx
+    push edx
+    push esi
+    cmp eax, RINGBUF_CAPACITY
+    jae .rr_bad
+    mov ebx, eax
+    imul ebx, RINGBUF_RECORD_SIZE
+    add ebx, ringbuf_table
+    cmp dword [ebx + RINGBUF_STATE], RINGBUF_STATE_ACTIVE
+    jne .rr_bad
+    cmp dword [ebx + RINGBUF_COUNT], 0
+    je .rr_empty
+    mov edx, eax
+    imul edx, RINGBUF_ELEMENT_CAP * RINGBUF_ELEMENT_SIZE
+    add edx, ringbuf_storage
+    mov ecx, [ebx + RINGBUF_READ_POS]
+    imul ecx, RINGBUF_ELEMENT_SIZE
+    add edx, ecx
+    mov esi, edx
+    mov ecx, RINGBUF_ELEMENT_SIZE / 4
+    rep movsd
+    mov ecx, [ebx + RINGBUF_READ_POS]
+    inc ecx
+    cmp ecx, RINGBUF_ELEMENT_CAP
+    jb .rr_no_wrap
+    xor ecx, ecx
+.rr_no_wrap:
+    mov [ebx + RINGBUF_READ_POS], ecx
+    dec dword [ebx + RINGBUF_COUNT]
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.rr_empty:
+.rr_bad:
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    stc
+    ret
+
+; Self-Test: 7 Tests (Init, Create, Write, Read, Wrap, Count-Invarianten).
+ringbuf_self_test:
+    push ebx
+    push esi
+    push edi
+    sub esp, 32                          ; [esp+0..15]=Schreibpuf, [esp+16..31]=Lesepuf
+    xor ebx, ebx                         ; Fehlerzaehler
+
+    ; Test 1: Manager bereit
+    cmp dword [ringbuf_manager_ready], 1
+    je .rbt2
+    inc ebx
+
+.rbt2:
+    ; Test 2: Create liefert Slot 0
+    call ringbuf_create
+    jnc .rbt3
+    inc ebx
+    jmp .rbt_done
+.rbt3:
+    cmp eax, 0
+    je .rbt4
+    inc ebx
+
+.rbt4:
+    ; Test 3: Count == 0 nach Create
+    mov esi, ringbuf_table
+    cmp dword [esi + RINGBUF_COUNT], 0
+    je .rbt5
+    inc ebx
+
+.rbt5:
+    ; Test 4: Write schreibt ohne Fehler
+    mov dword [esp +  0], 0xAABBCCDD
+    mov dword [esp +  4], 0x11223344
+    mov dword [esp +  8], 0xDEADBEEF
+    mov dword [esp + 12], 0xCAFEBABE
+    xor eax, eax
+    lea esi, [esp]
+    call ringbuf_write
+    jnc .rbt6
+    inc ebx
+
+.rbt6:
+    ; Test 5: Count == 1 nach Write
+    mov esi, ringbuf_table
+    cmp dword [esi + RINGBUF_COUNT], 1
+    je .rbt7
+    inc ebx
+
+.rbt7:
+    ; Test 6: Read liefert identische Daten
+    xor eax, eax
+    lea edi, [esp + 16]
+    call ringbuf_read
+    jnc .rbt7_check
+    inc ebx
+    jmp .rbt8
+.rbt7_check:
+    cmp dword [esp + 16], 0xAABBCCDD
+    je .rbt8
+    inc ebx
+
+.rbt8:
+    ; Test 7: Count == 0 nach Read
+    mov esi, ringbuf_table
+    cmp dword [esi + RINGBUF_COUNT], 0
+    je .rbt_done
+    inc ebx
+
+.rbt_done:
+    test ebx, ebx
+    jnz .rbt_fail
+    add esp, 32
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+.rbt_fail:
+    add esp, 32
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+ringbuf_manager_ready: dd 0
+ringbuf_next_id:       dd 0
+ringbuf_live_count:    dd 0
+align 4
+ringbuf_generations:
+    times RINGBUF_CAPACITY dd 0
+ringbuf_table:
+    times RINGBUF_CAPACITY * RINGBUF_RECORD_SIZE db 0
+ringbuf_storage:
+    times RINGBUF_CAPACITY * RINGBUF_ELEMENT_CAP * RINGBUF_ELEMENT_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
@@ -32595,6 +32884,10 @@ message_dma_iommu_lifecycle_ok:
     db "NOVA: DMA IOMMU Lifecycle fuer linear und Scatter Gather aktiv", 13, 10, 0
 message_iommu_fault_propagation_ok:
     db "NOVA: IOMMU Fault beendet DMA und IO Request kontrolliert", 13, 10, 0
+message_ringbuf_ok:
+    db "NOVA: Ring Buffer 1.0 bereit (SPSC, 4 Instanzen, 16 Slots)", 13, 10, 0
+message_ringbuf_error:
+    db "NOVA PANIC: Ring Buffer Manager nicht initialisierbar", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:
