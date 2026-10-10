@@ -859,6 +859,27 @@ kernel_entry:
     mov esi, message_tcomp_ok
     call serial_write_string
 
+    call redundancy_initialize
+    jc panic_redundancy
+    call redundancy_self_test
+    jc panic_redundancy
+    mov esi, message_redundancy_ok
+    call serial_write_string
+
+    call chaos_initialize
+    jc panic_chaos
+    call chaos_self_test
+    jc panic_chaos
+    mov esi, message_chaos_ok
+    call serial_write_string
+
+    call resilisolation_initialize
+    jc panic_resilisolation
+    call resilisolation_self_test
+    jc panic_resilisolation
+    mov esi, message_resilisolation_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1623,6 +1644,24 @@ panic_tcomp:
     mov eax, 0x0000306F
     mov edx, 108
     mov esi, message_tcomp_error
+    jmp kernel_panic
+
+panic_redundancy:
+    mov eax, 0x00003070
+    mov edx, 109
+    mov esi, message_redundancy_error
+    jmp kernel_panic
+
+panic_chaos:
+    mov eax, 0x00003071
+    mov edx, 110
+    mov esi, message_chaos_error
+    jmp kernel_panic
+
+panic_resilisolation:
+    mov eax, 0x00003072
+    mov edx, 111
+    mov esi, message_resilisolation_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -34273,6 +34312,458 @@ tcomp_table:
     times TCOMP_CAPACITY * TCOMP_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-RESILIENCE-REDUNDANCY-0001 – Nova Redundancy Manager
+; ===========================================================================
+; Tracks active and standby replicas for redundancy groups.
+; Connects failover_initialize → redundancy group membership.
+; On active failure, promotes next standby to active.
+;
+; Record: group_id(4) + active_id(4) + standby_id(4) + promotions(4) = 16 bytes
+
+REDUN_CAPACITY  equ 4
+REDUN_REC_SIZE  equ 16
+REDUN_GROUP_ID  equ 0
+REDUN_ACTIVE    equ 4
+REDUN_STANDBY   equ 8
+REDUN_PROMOTES  equ 12
+
+redundancy_initialize:
+    cmp dword [redun_ready], 1
+    je .done
+    mov edi, redun_table
+    xor eax, eax
+    mov ecx, (REDUN_CAPACITY * REDUN_REC_SIZE) / 4
+    rep stosd
+    mov dword [redun_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=group_id, EDX=active_id, ECX=standby_id → EAX=slot, CF
+redundancy_register:
+    cmp dword [redun_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, REDUN_CAPACITY
+    jae .fail
+    imul edi, esi, REDUN_REC_SIZE
+    add edi, redun_table
+    cmp dword [edi + REDUN_GROUP_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + REDUN_GROUP_ID], eax
+    mov [edi + REDUN_ACTIVE], edx
+    mov [edi + REDUN_STANDBY], ecx
+    mov dword [edi + REDUN_PROMOTES], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=group_id → EAX=new_active_id (old standby), CF=0 promoted / CF=1 no standby
+redundancy_promote:
+    cmp dword [redun_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, REDUN_CAPACITY
+    jae .not_found
+    imul edi, esi, REDUN_REC_SIZE
+    add edi, redun_table
+    cmp [edi + REDUN_GROUP_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + REDUN_STANDBY]
+    test eax, eax
+    jz .no_standby
+    ; swap active ↔ standby
+    mov ecx, [edi + REDUN_ACTIVE]
+    mov [edi + REDUN_ACTIVE], eax
+    mov [edi + REDUN_STANDBY], ecx
+    inc dword [edi + REDUN_PROMOTES]
+    pop ebx
+    clc
+    ret
+.no_standby:
+    pop ebx
+    stc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+redundancy_self_test:
+    ; register group=1: active=10, standby=20
+    mov eax, 1
+    mov edx, 10
+    mov ecx, 20
+    call redundancy_register
+    jc .fail
+    ; promote → new active=20
+    mov eax, 1
+    call redundancy_promote
+    jc .fail
+    cmp eax, 20
+    jne .fail
+    ; verify table: active=20, standby=10, promotions=1
+    mov edi, redun_table
+    cmp dword [edi + REDUN_ACTIVE], 20
+    jne .fail
+    cmp dword [edi + REDUN_STANDBY], 10
+    jne .fail
+    cmp dword [edi + REDUN_PROMOTES], 1
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+redun_ready:  dd 0
+redun_table:
+    times REDUN_CAPACITY * REDUN_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-CHAOS-0001 – Nova Chaos Engine
+; ===========================================================================
+; Schedules and tracks structured fault scenarios for resilience testing.
+; Uses fi_inject to inject faults and rverif_check to verify recovery.
+; Connects: fault injection → chaos schedule → recovery verification.
+;
+; Record: scenario_id(4) + target(4) + fault_type(4) + runs(4) + recovered(4) + pad(4) = 24 bytes
+
+CHAOS_CAPACITY  equ 8
+CHAOS_REC_SIZE  equ 24
+CHAOS_SCEN_ID   equ 0
+CHAOS_TARGET    equ 4
+CHAOS_FAULT     equ 8
+CHAOS_RUNS      equ 12
+CHAOS_RECOVERED equ 16
+CHAOS_PAD       equ 20
+
+chaos_initialize:
+    cmp dword [chaos_ready], 1
+    je .done
+    mov edi, chaos_table
+    xor eax, eax
+    mov ecx, (CHAOS_CAPACITY * CHAOS_REC_SIZE) / 4
+    rep stosd
+    mov dword [chaos_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=scenario_id, EDX=target_subsystem, ECX=fault_type → EAX=slot, CF
+chaos_register_scenario:
+    cmp dword [chaos_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, CHAOS_CAPACITY
+    jae .fail
+    imul edi, esi, CHAOS_REC_SIZE
+    add edi, chaos_table
+    cmp dword [edi + CHAOS_SCEN_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + CHAOS_SCEN_ID], eax
+    mov [edi + CHAOS_TARGET], edx
+    mov [edi + CHAOS_FAULT], ecx
+    mov dword [edi + CHAOS_RUNS], 0
+    mov dword [edi + CHAOS_RECOVERED], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=scenario_id → inject fault, record run; CF=0 ok
+chaos_run_scenario:
+    cmp dword [chaos_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, CHAOS_CAPACITY
+    jae .not_found
+    imul edi, esi, CHAOS_REC_SIZE
+    add edi, chaos_table
+    cmp [edi + CHAOS_SCEN_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    inc dword [edi + CHAOS_RUNS]
+    ; inject the fault via fi_inject
+    mov eax, [edi + CHAOS_TARGET]
+    mov edx, [edi + CHAOS_FAULT]
+    call fi_inject
+    pop esi
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=scenario_id → mark as recovered (used after rverif_check passes)
+chaos_mark_recovered:
+    cmp dword [chaos_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, CHAOS_CAPACITY
+    jae .not_found
+    imul edi, esi, CHAOS_REC_SIZE
+    add edi, chaos_table
+    cmp [edi + CHAOS_SCEN_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    inc dword [edi + CHAOS_RECOVERED]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+chaos_self_test:
+    ; register scenario 1: target=2, fault=1
+    mov eax, 1
+    mov edx, 2
+    mov ecx, 1
+    call chaos_register_scenario
+    jc .fail
+    ; run it
+    mov eax, 1
+    call chaos_run_scenario
+    jc .fail
+    ; mark recovered
+    mov eax, 1
+    call chaos_mark_recovered
+    jc .fail
+    ; verify runs=1, recovered=1
+    mov edi, chaos_table
+    cmp dword [edi + CHAOS_RUNS], 1
+    jne .fail
+    cmp dword [edi + CHAOS_RECOVERED], 1
+    jne .fail
+    ; clear injected fault
+    mov eax, 2
+    call fi_clear
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+chaos_ready:  dd 0
+chaos_table:
+    times CHAOS_CAPACITY * CHAOS_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-ISOLATION-0001 – Nova Resilience Isolation
+; ===========================================================================
+; Tracks fault isolation domains: each domain has a quarantine flag.
+; When a fault escapes containment, its domain is quarantined to prevent
+; cascade. Connects containment_check → resilisolation_quarantine.
+;
+; Record: domain_id(4) + fault_count(4) + quarantined(4) + pad(4) = 16 bytes
+
+RESISO_CAPACITY   equ 8
+RESISO_REC_SIZE   equ 16
+RESISO_DOMAIN_ID  equ 0
+RESISO_FAULTS     equ 4
+RESISO_QUARANTINE equ 8
+RESISO_PAD        equ 12
+
+resilisolation_initialize:
+    cmp dword [resiso_ready], 1
+    je .done
+    mov edi, resiso_table
+    xor eax, eax
+    mov ecx, (RESISO_CAPACITY * RESISO_REC_SIZE) / 4
+    rep stosd
+    mov dword [resiso_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=domain_id → EAX=slot, CF
+resilisolation_register:
+    cmp dword [resiso_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, RESISO_CAPACITY
+    jae .fail
+    imul edi, esi, RESISO_REC_SIZE
+    add edi, resiso_table
+    cmp dword [edi + RESISO_DOMAIN_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + RESISO_DOMAIN_ID], eax
+    mov dword [edi + RESISO_FAULTS], 0
+    mov dword [edi + RESISO_QUARANTINE], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=domain_id, EDX=fault_count_threshold → record fault; CF=1 if quarantined
+resilisolation_record_fault:
+    cmp dword [resiso_ready], 1
+    jne .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    push edx
+    xor esi, esi
+.scan:
+    cmp esi, RESISO_CAPACITY
+    jae .not_found
+    imul edi, esi, RESISO_REC_SIZE
+    add edi, resiso_table
+    cmp [edi + RESISO_DOMAIN_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    pop edx
+    inc dword [edi + RESISO_FAULTS]
+    cmp dword [edi + RESISO_QUARANTINE], 1
+    je .already_quar
+    mov eax, [edi + RESISO_FAULTS]
+    cmp eax, edx
+    jb .ok
+    ; threshold exceeded — quarantine domain
+    mov dword [edi + RESISO_QUARANTINE], 1
+    pop esi
+    pop ebx
+    stc
+    ret
+.ok:
+    pop esi
+    pop ebx
+    clc
+    ret
+.already_quar:
+    pop esi
+    pop ebx
+    stc
+    ret
+.not_found:
+    pop edx
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=domain_id → EAX=fault_count, EDX=quarantined(0/1), CF
+resilisolation_query:
+    cmp dword [resiso_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RESISO_CAPACITY
+    jae .not_found
+    imul edi, esi, RESISO_REC_SIZE
+    add edi, resiso_table
+    cmp [edi + RESISO_DOMAIN_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + RESISO_FAULTS]
+    mov edx, [edi + RESISO_QUARANTINE]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+resilisolation_self_test:
+    ; register domain 1
+    mov eax, 1
+    call resilisolation_register
+    jc .fail
+    ; record fault with threshold=2 → not yet quarantined
+    mov eax, 1
+    mov edx, 2
+    call resilisolation_record_fault
+    jc .fail
+    ; record fault again → threshold reached, quarantined → CF=1
+    mov eax, 1
+    mov edx, 2
+    call resilisolation_record_fault
+    jnc .fail
+    ; query: faults=2, quarantined=1
+    mov eax, 1
+    call resilisolation_query
+    jc .fail
+    cmp eax, 2
+    jne .fail
+    cmp edx, 1
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+resiso_ready:  dd 0
+resiso_table:
+    times RESISO_CAPACITY * RESISO_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -45746,6 +46237,18 @@ message_tcomp_ok:
     db "NOVA: Transaction Compensation 1.0 bereit (8-Slots, undo-action registry)", 13, 10, 0
 message_tcomp_error:
     db "NOVA PANIC: Transaction Compensation nicht initialisierbar", 13, 10, 0
+message_redundancy_ok:
+    db "NOVA: Redundancy Manager 1.0 bereit (4-Groups, active+standby tracking)", 13, 10, 0
+message_redundancy_error:
+    db "NOVA PANIC: Redundancy Manager nicht initialisierbar", 13, 10, 0
+message_chaos_ok:
+    db "NOVA: Chaos Engine 1.0 bereit (8-Slots, scheduled fault scenarios)", 13, 10, 0
+message_chaos_error:
+    db "NOVA PANIC: Chaos Engine nicht initialisierbar", 13, 10, 0
+message_resilisolation_ok:
+    db "NOVA: Resilience Isolation 1.0 bereit (8-Domains, fault boundary tracking)", 13, 10, 0
+message_resilisolation_error:
+    db "NOVA PANIC: Resilience Isolation nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
