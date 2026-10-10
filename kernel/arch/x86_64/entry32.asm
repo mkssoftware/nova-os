@@ -796,6 +796,27 @@ kernel_entry:
     mov esi, message_fi_ok
     call serial_write_string
 
+    call fclass_initialize
+    jc panic_fclass
+    call fclass_self_test
+    jc panic_fclass
+    mov esi, message_fclass_ok
+    call serial_write_string
+
+    call rpol_initialize
+    jc panic_rpol
+    call rpol_self_test
+    jc panic_rpol
+    mov esi, message_rpol_ok
+    call serial_write_string
+
+    call rverif_initialize
+    jc panic_rverif
+    call rverif_self_test
+    jc panic_rverif
+    mov esi, message_rverif_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1506,6 +1527,24 @@ panic_fi:
     mov eax, 0x00003066
     mov edx, 99
     mov esi, message_fi_error
+    jmp kernel_panic
+
+panic_fclass:
+    mov eax, 0x00003067
+    mov edx, 100
+    mov esi, message_fclass_error
+    jmp kernel_panic
+
+panic_rpol:
+    mov eax, 0x00003068
+    mov edx, 101
+    mov esi, message_rpol_error
+    jmp kernel_panic
+
+panic_rverif:
+    mov eax, 0x00003069
+    mov edx, 102
+    mov esi, message_rverif_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -32932,6 +32971,445 @@ fi_table:
     times FI_CAPACITY * FI_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-RESILIENCE-CLASSIFICATION-0001 – Nova Fault Classification
+; ===========================================================================
+; Classifies detected faults by severity and source domain so recovery
+; policy can select the right action. Connects detection → policy pipeline.
+;
+; Classes: UNKNOWN=0 / TRANSIENT=1 / SOFT=2 / HARD=3 / CRITICAL=4
+; Sources: KERNEL=1 / SCHED=2 / MEMORY=3 / SECURITY=4 / DRIVER=5 / USER=6
+; Record: class_id(4) + severity(4) + source(4) + count(4) = 16 bytes
+
+FCLASS_CAPACITY  equ 8
+FCLASS_REC_SIZE  equ 16
+FCLASS_CLS_ID    equ 0
+FCLASS_SEVERITY  equ 4
+FCLASS_SOURCE    equ 8
+FCLASS_COUNT     equ 12
+
+FCLASS_UNKNOWN   equ 0
+FCLASS_TRANSIENT equ 1
+FCLASS_SOFT      equ 2
+FCLASS_HARD      equ 3
+FCLASS_CRITICAL  equ 4
+
+FCLASS_SRC_KERNEL   equ 1
+FCLASS_SRC_SCHED    equ 2
+FCLASS_SRC_MEMORY   equ 3
+FCLASS_SRC_SECURITY equ 4
+FCLASS_SRC_DRIVER   equ 5
+FCLASS_SRC_USER     equ 6
+
+fclass_initialize:
+    cmp dword [fclass_ready], 1
+    je .done
+    mov edi, fclass_table
+    xor eax, eax
+    mov ecx, (FCLASS_CAPACITY * FCLASS_REC_SIZE) / 4
+    rep stosd
+    mov dword [fclass_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=class_id(1..CAPACITY), EDX=severity, ECX=source → CF=0 registered / CF=1 err
+fclass_register:
+    cmp dword [fclass_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    cmp eax, FCLASS_CAPACITY
+    ja .fail
+    cmp edx, FCLASS_CRITICAL
+    ja .fail
+    test ecx, ecx
+    jz .fail
+    push eax
+    push edx
+    push ecx
+    dec eax
+    imul edi, eax, FCLASS_REC_SIZE
+    add edi, fclass_table
+    pop ecx
+    pop edx
+    pop eax
+    push eax
+    dec eax
+    imul edi, eax, FCLASS_REC_SIZE
+    add edi, fclass_table
+    pop eax
+    mov [edi + FCLASS_CLS_ID], eax
+    mov [edi + FCLASS_SEVERITY], edx
+    mov [edi + FCLASS_SOURCE], ecx
+    mov dword [edi + FCLASS_COUNT], 0
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=class_id → count at [edi+FCLASS_COUNT], EAX=severity, EDX=source, CF
+fclass_classify:
+    cmp dword [fclass_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    cmp eax, FCLASS_CAPACITY
+    ja .fail
+    push eax
+    dec eax
+    imul edi, eax, FCLASS_REC_SIZE
+    add edi, fclass_table
+    pop eax
+    cmp dword [edi + FCLASS_CLS_ID], 0
+    je .fail
+    inc dword [edi + FCLASS_COUNT]
+    mov eax, [edi + FCLASS_SEVERITY]
+    mov edx, [edi + FCLASS_SOURCE]
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+fclass_self_test:
+    xor esi, esi
+    ; register class 1: HARD / KERNEL
+    mov eax, 1
+    mov edx, FCLASS_HARD
+    mov ecx, FCLASS_SRC_KERNEL
+    call fclass_register
+    jc .fail
+    ; classify it twice
+    mov eax, 1
+    call fclass_classify
+    jc .fail
+    cmp eax, FCLASS_HARD
+    jne .fail
+    cmp edx, FCLASS_SRC_KERNEL
+    jne .fail
+    mov eax, 1
+    call fclass_classify
+    jc .fail
+    ; verify count=2
+    mov edi, fclass_table       ; slot 0
+    cmp dword [edi + FCLASS_COUNT], 2
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+fclass_ready:  dd 0
+fclass_table:
+    times FCLASS_CAPACITY * FCLASS_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-RECOVERYPOLICY-0001 – Nova Recovery Policy Manager
+; ===========================================================================
+; Maps fault class + severity to a recovery action.
+; Connects fclass_classify → select action → dispatch to rmode/restart/failover.
+;
+; Actions: NONE=0 / LOG_ONLY=1 / RESTART=2 / FAILOVER=3 / DEGRADE=4 / PANIC=5
+; Record: class_id(4) + min_severity(4) + action(4) + fires(4) = 16 bytes
+
+RPOL_CAPACITY   equ 8
+RPOL_REC_SIZE   equ 16
+RPOL_CLS_ID     equ 0
+RPOL_MIN_SEV    equ 4
+RPOL_ACTION     equ 8
+RPOL_FIRES      equ 12
+
+RPOL_NONE       equ 0
+RPOL_LOG_ONLY   equ 1
+RPOL_RESTART    equ 2
+RPOL_FAILOVER   equ 3
+RPOL_DEGRADE    equ 4
+RPOL_PANIC_ACT  equ 5
+
+rpol_initialize:
+    cmp dword [rpol_ready], 1
+    je .done
+    mov edi, rpol_table
+    xor eax, eax
+    mov ecx, (RPOL_CAPACITY * RPOL_REC_SIZE) / 4
+    rep stosd
+    mov dword [rpol_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=class_id, EDX=min_severity, ECX=action → EAX=slot, CF
+rpol_register:
+    cmp dword [rpol_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, RPOL_CAPACITY
+    jae .fail
+    imul edi, esi, RPOL_REC_SIZE
+    add edi, rpol_table
+    cmp dword [edi + RPOL_CLS_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + RPOL_CLS_ID], eax
+    mov [edi + RPOL_MIN_SEV], edx
+    mov [edi + RPOL_ACTION], ecx
+    mov dword [edi + RPOL_FIRES], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=class_id, EDX=observed_severity → EAX=action, CF=0 found / CF=1 no policy
+rpol_evaluate:
+    cmp dword [rpol_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RPOL_CAPACITY
+    jae .not_found
+    imul edi, esi, RPOL_REC_SIZE
+    add edi, rpol_table
+    cmp [edi + RPOL_CLS_ID], ebx
+    jne .next
+    ; class matches — check severity threshold
+    cmp edx, [edi + RPOL_MIN_SEV]
+    jb .next
+    inc dword [edi + RPOL_FIRES]
+    mov eax, [edi + RPOL_ACTION]
+    pop ebx
+    clc
+    ret
+.next:
+    inc esi
+    jmp .scan
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+rpol_self_test:
+    ; register policy: class=1, min_severity=HARD, action=DEGRADE
+    mov eax, 1
+    mov edx, FCLASS_HARD
+    mov ecx, RPOL_DEGRADE
+    call rpol_register
+    jc .fail
+    ; evaluate with severity=HARD → should get DEGRADE
+    mov eax, 1
+    mov edx, FCLASS_HARD
+    call rpol_evaluate
+    jc .fail
+    cmp eax, RPOL_DEGRADE
+    jne .fail
+    ; evaluate with severity=SOFT (below threshold) → no policy match
+    mov eax, 1
+    mov edx, FCLASS_SOFT
+    call rpol_evaluate
+    jnc .fail              ; CF=1 expected (no match)
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+rpol_ready:  dd 0
+rpol_table:
+    times RPOL_CAPACITY * RPOL_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-VERIFICATION-0001 – Nova Resilience Verification
+; ===========================================================================
+; After a recovery action completes, verifies the subsystem returned to
+; a healthy state. Connects selfheal_repair → rverif_check → sgraph_query.
+;
+; States: UNKNOWN=0 / HEALTHY=1 / DEGRADED=2 / FAILED=3
+; Record: subsys_id(4) + expected_state(4) + observed_state(4) + checks(4) = 16 bytes
+
+RVERIF_CAPACITY    equ 8
+RVERIF_REC_SIZE    equ 16
+RVERIF_SUBSYS      equ 0
+RVERIF_EXPECTED    equ 4
+RVERIF_OBSERVED    equ 8
+RVERIF_CHECKS      equ 12
+
+RVERIF_UNKNOWN     equ 0
+RVERIF_HEALTHY     equ 1
+RVERIF_DEGRADED    equ 2
+RVERIF_FAILED      equ 3
+
+rverif_initialize:
+    cmp dword [rverif_ready], 1
+    je .done
+    mov edi, rverif_table
+    xor eax, eax
+    mov ecx, (RVERIF_CAPACITY * RVERIF_REC_SIZE) / 4
+    rep stosd
+    mov dword [rverif_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=subsys_id, EDX=expected_state → EAX=slot, CF
+rverif_register:
+    cmp dword [rverif_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, RVERIF_CAPACITY
+    jae .fail
+    imul edi, esi, RVERIF_REC_SIZE
+    add edi, rverif_table
+    cmp dword [edi + RVERIF_SUBSYS], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + RVERIF_SUBSYS], eax
+    mov [edi + RVERIF_EXPECTED], edx
+    mov dword [edi + RVERIF_OBSERVED], RVERIF_UNKNOWN
+    mov dword [edi + RVERIF_CHECKS], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=subsys_id, EDX=observed_state → CF=0 healthy / CF=1 mismatch/unknown
+rverif_check:
+    cmp dword [rverif_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RVERIF_CAPACITY
+    jae .not_found
+    imul edi, esi, RVERIF_REC_SIZE
+    add edi, rverif_table
+    cmp [edi + RVERIF_SUBSYS], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    inc dword [edi + RVERIF_CHECKS]
+    mov [edi + RVERIF_OBSERVED], edx
+    cmp edx, [edi + RVERIF_EXPECTED]
+    jne .mismatch
+    pop ebx
+    clc
+    ret
+.mismatch:
+    ; log violation via rtv contract mechanism
+    call security_audit_log_violation
+    pop ebx
+    stc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=subsys_id → EAX=observed_state, EDX=expected_state, CF
+rverif_query:
+    cmp dword [rverif_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RVERIF_CAPACITY
+    jae .not_found
+    imul edi, esi, RVERIF_REC_SIZE
+    add edi, rverif_table
+    cmp [edi + RVERIF_SUBSYS], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + RVERIF_OBSERVED]
+    mov edx, [edi + RVERIF_EXPECTED]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+rverif_self_test:
+    ; register subsys=1, expected=HEALTHY
+    mov eax, 1
+    mov edx, RVERIF_HEALTHY
+    call rverif_register
+    jc .fail
+    ; check with HEALTHY → CF=0
+    mov eax, 1
+    mov edx, RVERIF_HEALTHY
+    call rverif_check
+    jc .fail
+    ; query → observed=HEALTHY, expected=HEALTHY
+    mov eax, 1
+    call rverif_query
+    jc .fail
+    cmp eax, RVERIF_HEALTHY
+    jne .fail
+    cmp edx, RVERIF_HEALTHY
+    jne .fail
+    ; check with FAILED → CF=1 (mismatch)
+    mov eax, 1
+    mov edx, RVERIF_FAILED
+    call rverif_check
+    jnc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; Internal helper: log a resilience verification violation to the audit trail
+security_audit_log_violation:
+    ; Forward to security_audit_log with VIOLATION event type (3)
+    ; EAX=3(VIOLATION), EDX=RVERIF subsystem tag
+    push eax
+    push edx
+    mov eax, 3
+    mov edx, 0x52564552   ; "RVER"
+    call security_audit_log
+    pop edx
+    pop eax
+    ret
+
+align 4
+rverif_ready:  dd 0
+rverif_table:
+    times RVERIF_CAPACITY * RVERIF_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -44369,6 +44847,18 @@ message_fi_ok:
     db "NOVA: Fault Injection 1.0 bereit (8-Slot, inject/check/clear)", 13, 10, 0
 message_fi_error:
     db "NOVA PANIC: Fault Injection Framework nicht initialisierbar", 13, 10, 0
+message_fclass_ok:
+    db "NOVA: Fault Classification 1.0 bereit (8-Klassen, Schweregrad+Quelle)", 13, 10, 0
+message_fclass_error:
+    db "NOVA PANIC: Fault Classification nicht initialisierbar", 13, 10, 0
+message_rpol_ok:
+    db "NOVA: Recovery Policy 1.0 bereit (8-Regeln, Aktion nach Fehlerklasse)", 13, 10, 0
+message_rpol_error:
+    db "NOVA PANIC: Recovery Policy Manager nicht initialisierbar", 13, 10, 0
+message_rverif_ok:
+    db "NOVA: Resilience Verification 1.0 bereit (8-Slots, post-recovery checks)", 13, 10, 0
+message_rverif_error:
+    db "NOVA PANIC: Resilience Verification nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
