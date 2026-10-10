@@ -135,6 +135,27 @@ kernel_entry:
     mov esi, message_slab_ok
     call serial_write_string
 
+    call aslr_initialize
+    jc panic_aslr
+    call aslr_self_test
+    jc panic_aslr
+    mov esi, message_aslr_ok
+    call serial_write_string
+
+    call cow_initialize
+    jc panic_cow
+    call cow_self_test
+    jc panic_cow
+    mov esi, message_cow_ok
+    call serial_write_string
+
+    call oom_initialize
+    jc panic_oom
+    call oom_self_test
+    jc panic_oom
+    mov esi, message_oom_ok
+    call serial_write_string
+
     call object_manager_initialize
     jc panic_object_manager
     call object_manager_self_test
@@ -1301,6 +1322,24 @@ panic_slab:
     mov eax, 0x0000303B
     mov edx, 56
     mov esi, message_slab_error
+    jmp kernel_panic
+
+panic_aslr:
+    mov eax, 0x00003047
+    mov edx, 68
+    mov esi, message_aslr_error
+    jmp kernel_panic
+
+panic_cow:
+    mov eax, 0x00003048
+    mov edx, 69
+    mov esi, message_cow_error
+    jmp kernel_panic
+
+panic_oom:
+    mov eax, 0x00003049
+    mov edx, 70
+    mov esi, message_oom_error
     jmp kernel_panic
 
 panic_interrupt_manager:
@@ -3165,6 +3204,441 @@ slab_pool_0:    times SLAB_SIZE_0 * SLAB_OBJECTS_PER db 0
 slab_pool_1:    times SLAB_SIZE_1 * SLAB_OBJECTS_PER db 0
 slab_pool_2:    times SLAB_SIZE_2 * SLAB_OBJECTS_PER db 0
 slab_pool_3:    times SLAB_SIZE_3 * SLAB_OBJECTS_PER db 0
+
+; ===========================================================================
+; NPSPEC-MEMORY-ASLR-0001 – Nova Address Space Layout Randomization
+; Seed-basierte Offset-Erzeugung für zukünftige VA-Randomisierung.
+; Im Flat-Binary-Kernel: verwaltet Randomisierungs-Zustand und -API.
+; ===========================================================================
+
+ASLR_REGION_COUNT    equ 8
+ASLR_RECORD_SIZE     equ 16
+
+ASLR_TYPE_STACK      equ 1
+ASLR_TYPE_HEAP       equ 2
+ASLR_TYPE_MMAP       equ 3
+ASLR_TYPE_VDSO       equ 4
+
+ASLR_REG_TYPE        equ 0
+ASLR_REG_BASE        equ 4
+ASLR_REG_OFFSET      equ 8
+ASLR_REG_FLAGS       equ 12
+
+aslr_initialize:
+    ; LCG-Seed aus TSC + wd_global_tick
+    rdtsc
+    xor eax, [wd_global_tick]
+    mov [aslr_seed], eax
+    mov edi, aslr_regions
+    mov ecx, ASLR_REGION_COUNT * ASLR_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [aslr_ready], 1
+    mov dword [aslr_count], 0
+    clc
+    ret
+
+; LCG-Zufall: nächster Pseudo-Zufall → EAX
+aslr_next_random:
+    mov eax, [aslr_seed]
+    imul eax, eax, 1664525
+    add eax, 1013904223
+    mov [aslr_seed], eax
+    ret
+
+; EAX=region_type  EDX=base_hint → EAX=randomized_offset CF=0/CF=1 voll
+aslr_randomize_region:
+    push esi
+    push ecx
+    push ebx
+    cmp dword [aslr_count], ASLR_REGION_COUNT
+    jae .arr_nostore
+    ; Offset erzeugen: Zufall & Alignment-Maske (4KB-Granularität)
+    push eax
+    push edx
+    call aslr_next_random
+    and eax, 0x000FF000    ; max 255 × 4 KB = 1020 KB Versatz
+    mov ebx, eax           ; Offset
+    pop edx
+    pop eax
+    ; In Tabelle speichern
+    mov ecx, [aslr_count]
+    imul esi, ecx, ASLR_RECORD_SIZE
+    add esi, aslr_regions
+    mov [esi + ASLR_REG_TYPE], eax
+    mov [esi + ASLR_REG_BASE], edx
+    mov [esi + ASLR_REG_OFFSET], ebx
+    mov dword [esi + ASLR_REG_FLAGS], 1
+    inc dword [aslr_count]
+    mov eax, ebx
+    clc
+    pop ebx
+    pop ecx
+    pop esi
+    ret
+.arr_nostore:
+    ; Kein freier Slot – trotzdem Offset zurückgeben
+    call aslr_next_random
+    and eax, 0x000FF000
+    clc
+    pop ebx
+    pop ecx
+    pop esi
+    ret
+
+aslr_self_test:
+    push esi
+    xor esi, esi
+    cmp dword [aslr_ready], 1
+    je .ast1
+    inc esi
+.ast1:
+    ; Zwei verschiedene Offsets erzeugen
+    mov eax, ASLR_TYPE_STACK
+    mov edx, 0xC0000000
+    call aslr_randomize_region
+    mov esi, eax
+    push esi
+    mov eax, ASLR_TYPE_HEAP
+    mov edx, 0xC0100000
+    call aslr_randomize_region
+    pop esi
+    ; Beide 4KB-aligned
+    test esi, 0xFFF
+    jz .ast2
+    inc esi
+.ast2:
+    test eax, 0xFFF
+    jz .ast3
+    inc esi
+.ast3:
+    ; aslr_count=2
+    cmp dword [aslr_count], 2
+    je .ast4
+    inc esi
+.ast4:
+    test esi, esi
+    jnz .astf
+    clc
+    pop esi
+    ret
+.astf:
+    stc
+    pop esi
+    ret
+
+aslr_ready:  dd 0
+aslr_seed:   dd 0
+aslr_count:  dd 0
+align 4
+aslr_regions:
+    times ASLR_REGION_COUNT * ASLR_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-MEMORY-COW-0001 – Nova Copy-on-Write Tracking
+; Verwaltet CoW-Referenzen: Seiten mit refcount>1 werden bei Schreibzugriff
+; kopiert. Kernel-seitig: Tracking-Tabelle für CoW-Deskriptoren.
+; ===========================================================================
+
+COW_CAPACITY         equ 16
+COW_RECORD_SIZE      equ 16
+
+COW_STATE_FREE       equ 0
+COW_STATE_SHARED     equ 1
+COW_STATE_COPIED     equ 2
+
+COW_ID               equ 0
+COW_STATE_OFF        equ 4
+COW_PHYS_ADDR        equ 8
+COW_REFCOUNT         equ 12
+
+cow_initialize:
+    mov edi, cow_table
+    mov ecx, COW_CAPACITY * COW_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [cow_ready], 1
+    mov dword [cow_next_id], 0
+    mov dword [cow_copies], 0
+    clc
+    ret
+
+; EAX=phys_addr → EAX=slot CF=0 / CF=1 voll
+cow_register_page:
+    push esi
+    push ecx
+    mov esi, cow_table
+    xor ecx, ecx
+.cowrp_scan:
+    cmp ecx, COW_CAPACITY
+    jae .cowrp_full
+    cmp dword [esi + COW_STATE_OFF], COW_STATE_FREE
+    je .cowrp_found
+    add esi, COW_RECORD_SIZE
+    inc ecx
+    jmp .cowrp_scan
+.cowrp_found:
+    push eax
+    mov eax, [cow_next_id]
+    inc dword [cow_next_id]
+    mov [esi + COW_ID], eax
+    pop eax
+    mov dword [esi + COW_STATE_OFF], COW_STATE_SHARED
+    mov [esi + COW_PHYS_ADDR], eax
+    mov dword [esi + COW_REFCOUNT], 2   ; Minimal 2 Referenzen für CoW
+    mov eax, ecx
+    clc
+    pop ecx
+    pop esi
+    ret
+.cowrp_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; EAX=slot → simuliert Schreibzugriff (refcount>1 → copy); CF=0/CF=1
+cow_on_write:
+    push esi
+    cmp eax, COW_CAPACITY
+    jae .cowow_fail
+    imul esi, eax, COW_RECORD_SIZE
+    add esi, cow_table
+    cmp dword [esi + COW_STATE_OFF], COW_STATE_FREE
+    je .cowow_fail
+    cmp dword [esi + COW_REFCOUNT], 1
+    jbe .cowow_no_copy   ; Einziger Referent → kein CoW nötig
+    ; Refcount verringern (die "andere" Referenz behält die alte Seite)
+    dec dword [esi + COW_REFCOUNT]
+    mov dword [esi + COW_STATE_OFF], COW_STATE_COPIED
+    inc dword [cow_copies]
+    clc
+    pop esi
+    ret
+.cowow_no_copy:
+    clc
+    pop esi
+    ret
+.cowow_fail:
+    stc
+    pop esi
+    ret
+
+cow_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+    cmp dword [cow_ready], 1
+    je .cwst1
+    inc esi
+.cwst1:
+    ; Seite registrieren
+    mov eax, 0x00100000
+    call cow_register_page
+    jnc .cwst2
+    inc esi
+.cwst2:
+    mov ebx, eax
+    ; refcount=2, on_write → COPIED
+    mov eax, ebx
+    call cow_on_write
+    jnc .cwst3
+    inc esi
+.cwst3:
+    cmp dword [cow_copies], 1
+    je .cwst4
+    inc esi
+.cwst4:
+    ; State=COPIED prüfen
+    push ecx
+    imul ecx, ebx, COW_RECORD_SIZE
+    add ecx, cow_table
+    cmp dword [ecx + COW_STATE_OFF], COW_STATE_COPIED
+    je .cwst5
+    inc esi
+.cwst5:
+    pop ecx
+    test esi, esi
+    jnz .cwstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.cwstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+cow_ready:    dd 0
+cow_next_id:  dd 0
+cow_copies:   dd 0
+align 4
+cow_table:
+    times COW_CAPACITY * COW_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-MEMORY-OOM-0001 – Nova Out-of-Memory Handler
+; Wenn Speicher erschöpft: Kandidaten-Auswahl nach OOM-Score, Terminierung.
+; ===========================================================================
+
+OOM_CAND_COUNT       equ 8
+OOM_RECORD_SIZE      equ 16
+
+OOM_STATE_FREE       equ 0
+OOM_STATE_ACTIVE     equ 1
+OOM_STATE_KILLED     equ 2
+
+OOM_ID               equ 0
+OOM_STATE_OFF        equ 4
+OOM_PID              equ 8
+OOM_SCORE            equ 12   ; höherer Score = wird zuerst terminiert
+
+oom_initialize:
+    mov edi, oom_table
+    mov ecx, OOM_CAND_COUNT * OOM_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [oom_ready], 1
+    mov dword [oom_kills], 0
+    mov dword [oom_events], 0
+    clc
+    ret
+
+; EAX=pid  EDX=score → EAX=slot CF=0 / CF=1 voll
+oom_register_candidate:
+    push esi
+    push ecx
+    mov esi, oom_table
+    xor ecx, ecx
+.oomrc_scan:
+    cmp ecx, OOM_CAND_COUNT
+    jae .oomrc_full
+    cmp dword [esi + OOM_STATE_OFF], OOM_STATE_FREE
+    je .oomrc_found
+    cmp dword [esi + OOM_STATE_OFF], OOM_STATE_KILLED
+    je .oomrc_found   ; Wiederverwendbar
+    add esi, OOM_RECORD_SIZE
+    inc ecx
+    jmp .oomrc_scan
+.oomrc_found:
+    push eax
+    mov eax, ecx
+    mov [esi + OOM_ID], eax
+    pop eax
+    mov dword [esi + OOM_STATE_OFF], OOM_STATE_ACTIVE
+    mov [esi + OOM_PID], eax
+    mov [esi + OOM_SCORE], edx
+    mov eax, ecx
+    clc
+    pop ecx
+    pop esi
+    ret
+.oomrc_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; Wählt Kandidat mit höchstem Score und "terminiert" ihn → EAX=pid CF=0 / CF=1 kein
+oom_kill_victim:
+    push esi
+    push ecx
+    push edx
+    push ebx
+    mov esi, oom_table
+    mov edx, 0           ; bester Score
+    mov ebx, -1          ; Kandidat-Slot
+    xor ecx, ecx
+.oomkv_scan:
+    cmp ecx, OOM_CAND_COUNT
+    jae .oomkv_done
+    cmp dword [esi + OOM_STATE_OFF], OOM_STATE_ACTIVE
+    jne .oomkv_next
+    cmp dword [esi + OOM_SCORE], edx
+    jbe .oomkv_next
+    mov edx, [esi + OOM_SCORE]
+    mov ebx, ecx
+.oomkv_next:
+    add esi, OOM_RECORD_SIZE
+    inc ecx
+    jmp .oomkv_scan
+.oomkv_done:
+    cmp ebx, -1
+    je .oomkv_empty
+    imul esi, ebx, OOM_RECORD_SIZE
+    add esi, oom_table
+    mov dword [esi + OOM_STATE_OFF], OOM_STATE_KILLED
+    mov eax, [esi + OOM_PID]
+    inc dword [oom_kills]
+    inc dword [oom_events]
+    clc
+    pop ebx
+    pop edx
+    pop ecx
+    pop esi
+    ret
+.oomkv_empty:
+    inc dword [oom_events]
+    stc
+    pop ebx
+    pop edx
+    pop ecx
+    pop esi
+    ret
+
+oom_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+    cmp dword [oom_ready], 1
+    je .oomst1
+    inc esi
+.oomst1:
+    ; Register pid=1 score=50, pid=2 score=80
+    mov eax, 1
+    mov edx, 50
+    call oom_register_candidate
+    jnc .oomst2
+    inc esi
+.oomst2:
+    mov eax, 2
+    mov edx, 80
+    call oom_register_candidate
+    jnc .oomst3
+    inc esi
+.oomst3:
+    ; Kill → muss pid=2 (höchster Score) sein
+    call oom_kill_victim
+    jnc .oomst4_cf
+    inc esi
+.oomst4_cf:
+    cmp eax, 2
+    je .oomst4
+    inc esi
+.oomst4:
+    cmp dword [oom_kills], 1
+    je .oomst5
+    inc esi
+.oomst5:
+    test esi, esi
+    jnz .oomstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.oomstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+oom_ready:   dd 0
+oom_kills:   dd 0
+oom_events:  dd 0
+align 4
+oom_table:
+    times OOM_CAND_COUNT * OOM_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Strukturiertes Early-/Kernel-Logging (NPSPEC-KERNEL-0023)
@@ -38317,6 +38791,18 @@ message_slab_ok:
     db "NOVA: Slab Allocator 1.0 bereit (4 Klassen: 16/32/64/128 Byte)", 13, 10, 0
 message_slab_error:
     db "NOVA PANIC: Slab Allocator nicht initialisierbar", 13, 10, 0
+message_aslr_ok:
+    db "NOVA: ASLR 1.0 bereit (TSC-Seed, 4KB-granular, 8 Regionen)", 13, 10, 0
+message_aslr_error:
+    db "NOVA PANIC: ASLR nicht initialisierbar", 13, 10, 0
+message_cow_ok:
+    db "NOVA: Copy-on-Write 1.0 bereit (16 Tracking-Slots)", 13, 10, 0
+message_cow_error:
+    db "NOVA PANIC: Copy-on-Write nicht initialisierbar", 13, 10, 0
+message_oom_ok:
+    db "NOVA: OOM Handler 1.0 bereit (8 Kandidaten, Score-basiert)", 13, 10, 0
+message_oom_error:
+    db "NOVA PANIC: OOM Handler nicht initialisierbar", 13, 10, 0
 message_restart_ok:
     db "NOVA: Supervised Restart 1.0 bereit (8 Slots, Policy/Backoff)", 13, 10, 0
 message_restart_error:
