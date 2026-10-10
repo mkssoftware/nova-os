@@ -712,6 +712,27 @@ kernel_entry:
     mov esi, message_adaptive_ok
     call serial_write_string
 
+    call radmit_initialize
+    jc panic_radmit
+    call radmit_self_test
+    jc panic_radmit
+    mov esi, message_radmit_ok
+    call serial_write_string
+
+    call excon_initialize
+    jc panic_excon
+    call excon_self_test
+    jc panic_excon
+    mov esi, message_excon_ok
+    call serial_write_string
+
+    call tmpiso_initialize
+    jc panic_tmpiso
+    call tmpiso_self_test
+    jc panic_tmpiso
+    mov esi, message_tmpiso_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1350,6 +1371,24 @@ panic_adaptive:
     mov eax, 0x0000305A
     mov edx, 87
     mov esi, message_adaptive_error
+    jmp kernel_panic
+
+panic_radmit:
+    mov eax, 0x0000305B
+    mov edx, 88
+    mov esi, message_radmit_error
+    jmp kernel_panic
+
+panic_excon:
+    mov eax, 0x0000305C
+    mov edx, 89
+    mov esi, message_excon_error
+    jmp kernel_panic
+
+panic_tmpiso:
+    mov eax, 0x0000305D
+    mov edx, 90
+    mov esi, message_tmpiso_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -30958,6 +30997,488 @@ align 4
 adapt_slots:
     times ADAPT_SLOT_COUNT * ADAPT_REC_SIZE db 0
 
+; ---------------------------------------------------------------------------
+; NPSPEC-RESOURCE-ADMISSION-0001 – Nova Resource Admission Control
+; ---------------------------------------------------------------------------
+; Prüft vor Ausführung ob CPU+Memory-Budget verfügbar ist.
+; Admission ≠ Authorization ≠ Scheduling. Rejected ≠ Permanently Impossible.
+; ---------------------------------------------------------------------------
+RADMIT_CAPACITY     equ 8
+RADMIT_REC_SIZE     equ 20
+
+RADMIT_ID_OFF       equ 0
+RADMIT_CPU_OFF      equ 4    ; CPU units reserved
+RADMIT_MEM_OFF      equ 8    ; memory units reserved
+RADMIT_STATE_OFF    equ 12   ; 0=free, 1=active
+RADMIT_OWNER_OFF    equ 16
+
+RADMIT_CPU_MAX      equ 256  ; total CPU units
+RADMIT_MEM_MAX      equ 1024 ; total memory units (arbitrary)
+
+radmit_initialize:
+    mov edi, radmit_table
+    xor eax, eax
+    mov ecx, (RADMIT_CAPACITY * RADMIT_REC_SIZE) / 4
+    rep stosd
+    mov dword [radmit_ready], 0
+    mov dword [radmit_cpu_used], 0
+    mov dword [radmit_mem_used], 0
+    mov dword [radmit_next_id], 1
+    mov dword [radmit_rejected], 0
+    mov dword [radmit_ready], 1
+    clc
+    ret
+
+; EAX=cpu_units  EDX=mem_units  ECX=owner → EAX=slot  CF=0 admitted / CF=1 rejected
+radmit_request:
+    cmp dword [radmit_ready], 1
+    jne .rr_fail
+    ; check CPU budget
+    push ebx
+    push esi
+    push edi
+    mov ebx, ecx          ; save owner
+    ; cpu check: used + requested ≤ max
+    mov ecx, [radmit_cpu_used]
+    add ecx, eax
+    cmp ecx, RADMIT_CPU_MAX
+    ja .rr_reject
+    ; mem check: used + requested ≤ max
+    push ecx
+    mov ecx, [radmit_mem_used]
+    add ecx, edx
+    cmp ecx, RADMIT_MEM_MAX
+    pop ecx
+    ja .rr_reject
+    ; find free slot
+    xor esi, esi
+.rr_scan:
+    cmp esi, RADMIT_CAPACITY
+    jae .rr_reject
+    imul edi, esi, RADMIT_REC_SIZE
+    add edi, radmit_table
+    cmp dword [edi + RADMIT_STATE_OFF], 0
+    je .rr_slot
+    inc esi
+    jmp .rr_scan
+.rr_slot:
+    push eax
+    mov eax, [radmit_next_id]
+    mov [edi + RADMIT_ID_OFF], eax
+    inc dword [radmit_next_id]
+    pop eax
+    mov [edi + RADMIT_CPU_OFF], eax
+    mov [edi + RADMIT_MEM_OFF], edx
+    mov dword [edi + RADMIT_STATE_OFF], 1
+    mov [edi + RADMIT_OWNER_OFF], ebx
+    add [radmit_cpu_used], eax
+    add [radmit_mem_used], edx
+    mov eax, esi
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+.rr_reject:
+    inc dword [radmit_rejected]
+    pop edi
+    pop esi
+    pop ebx
+.rr_fail:
+    stc
+    ret
+
+; EAX=slot — release resources
+radmit_release:
+    cmp eax, RADMIT_CAPACITY
+    jae .rel_bad
+    push edi
+    imul edi, eax, RADMIT_REC_SIZE
+    add edi, radmit_table
+    cmp dword [edi + RADMIT_STATE_OFF], 1
+    jne .rel_skip
+    mov eax, [edi + RADMIT_CPU_OFF]
+    sub [radmit_cpu_used], eax
+    mov eax, [edi + RADMIT_MEM_OFF]
+    sub [radmit_mem_used], eax
+    mov dword [edi + RADMIT_STATE_OFF], 0
+    mov dword [edi + RADMIT_ID_OFF], 0
+.rel_skip:
+    pop edi
+    clc
+    ret
+.rel_bad:
+    stc
+    ret
+
+radmit_self_test:
+    ; Admit cpu=10, mem=50
+    mov eax, 10
+    mov edx, 50
+    mov ecx, 1
+    call radmit_request
+    jc .rastf
+    push eax
+    ; Verify cpu_used=10
+    cmp dword [radmit_cpu_used], 10
+    jne .rastf_pop
+    ; Release
+    call radmit_release
+    ; Verify cpu_used=0 after release
+    cmp dword [radmit_cpu_used], 0
+    jne .rastf
+    ; Overflow: request cpu=300 (>256)
+    mov eax, 300
+    mov edx, 0
+    mov ecx, 0
+    call radmit_request
+    jnc .rastf   ; must be rejected
+    clc
+    ret
+.rastf_pop:
+    pop eax
+.rastf:
+    stc
+    ret
+
+radmit_ready:     dd 0
+radmit_cpu_used:  dd 0
+radmit_mem_used:  dd 0
+radmit_next_id:   dd 1
+radmit_rejected:  dd 0
+align 4
+radmit_table:
+    times RADMIT_CAPACITY * RADMIT_REC_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-EXECUTION-CONTRACT-0001 – Nova Execution Contract
+; ---------------------------------------------------------------------------
+; Deklarative Beschreibung was ausgeführt wird und unter welchen Bedingungen.
+; Types: BEST_EFFORT=1 / BOUNDED=2 / HARD_RT=3.
+; States: CREATED=1 / ACTIVE=2 / COMPLETED=3 / VIOLATED=4.
+; contract_activate verbindet mit scheduler_admit_task.
+; ---------------------------------------------------------------------------
+EXCON_CAPACITY      equ 8
+EXCON_REC_SIZE      equ 24
+
+EXCON_TYPE_BE       equ 1   ; best effort
+EXCON_TYPE_BOUNDED  equ 2   ; bounded latency
+EXCON_TYPE_HARD_RT  equ 3   ; hard realtime
+
+EXCON_STATE_CREATED equ 1
+EXCON_STATE_ACTIVE  equ 2
+EXCON_STATE_DONE    equ 3
+EXCON_STATE_VIOL    equ 4
+
+EXCON_ID_OFF        equ 0
+EXCON_TYPE_OFF2     equ 4
+EXCON_STATE_OFF2    equ 8
+EXCON_CPU_OFF       equ 12
+EXCON_DEADLINE_OFF  equ 16
+EXCON_PRIO_OFF      equ 20
+
+excon_initialize:
+    mov edi, excon_table
+    xor eax, eax
+    mov ecx, (EXCON_CAPACITY * EXCON_REC_SIZE) / 4
+    rep stosd
+    mov dword [excon_ready], 0
+    mov dword [excon_next_id], 1
+    mov dword [excon_violations], 0
+    mov dword [excon_ready], 1
+    clc
+    ret
+
+; EAX=type  EDX=cpu_budget  ECX=priority → EAX=slot  CF=0/CF=1 full
+excon_create:
+    cmp dword [excon_ready], 1
+    jne .ec_fail
+    cmp eax, EXCON_TYPE_HARD_RT
+    ja .ec_fail
+    test eax, eax
+    jz .ec_fail
+    push esi
+    push edi
+    push ebx
+    mov ebx, ecx    ; save priority
+    xor esi, esi
+.ec_scan:
+    cmp esi, EXCON_CAPACITY
+    jae .ec_nospc
+    imul edi, esi, EXCON_REC_SIZE
+    add edi, excon_table
+    cmp dword [edi + EXCON_ID_OFF], 0
+    je .ec_slot
+    inc esi
+    jmp .ec_scan
+.ec_slot:
+    push eax
+    mov eax, [excon_next_id]
+    mov [edi + EXCON_ID_OFF], eax
+    inc dword [excon_next_id]
+    pop eax
+    mov [edi + EXCON_TYPE_OFF2], eax
+    mov dword [edi + EXCON_STATE_OFF2], EXCON_STATE_CREATED
+    mov [edi + EXCON_CPU_OFF], edx
+    mov eax, [wd_global_tick]
+    add eax, 1000
+    mov [edi + EXCON_DEADLINE_OFF], eax
+    mov [edi + EXCON_PRIO_OFF], ebx
+    mov eax, esi
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.ec_nospc:
+    pop ebx
+    pop edi
+    pop esi
+.ec_fail:
+    stc
+    ret
+
+; EAX=slot — activate contract (dispatch to scheduler)
+excon_activate:
+    cmp eax, EXCON_CAPACITY
+    jae .ea_bad
+    push edi
+    push ebx
+    imul edi, eax, EXCON_REC_SIZE
+    add edi, excon_table
+    cmp dword [edi + EXCON_ID_OFF], 0
+    je .ea_bad2
+    mov dword [edi + EXCON_STATE_OFF2], EXCON_STATE_ACTIVE
+    ; dispatch to scheduler: owner=slot, prio from contract, qos=NORMAL
+    mov eax, esi
+    mov eax, [edi + EXCON_ID_OFF]   ; owner = contract id
+    mov edx, [edi + EXCON_PRIO_OFF]
+    mov ecx, 2                       ; QOS_CLASS_NORMAL
+    call scheduler_admit_task
+    pop ebx
+    pop edi
+    clc
+    ret
+.ea_bad2:
+    pop ebx
+.ea_bad:
+    pop edi
+    stc
+    ret
+
+; EAX=slot  EDX=actual_cpu_used — verify contract compliance
+excon_verify:
+    cmp eax, EXCON_CAPACITY
+    jae .ev_bad
+    push edi
+    imul edi, eax, EXCON_REC_SIZE
+    add edi, excon_table
+    cmp dword [edi + EXCON_ID_OFF], 0
+    je .ev_bad2
+    ; check: actual ≤ cpu_budget
+    cmp edx, [edi + EXCON_CPU_OFF]
+    jbe .ev_ok
+    mov dword [edi + EXCON_STATE_OFF2], EXCON_STATE_VIOL
+    inc dword [excon_violations]
+    pop edi
+    stc
+    ret
+.ev_ok:
+    mov dword [edi + EXCON_STATE_OFF2], EXCON_STATE_DONE
+    pop edi
+    clc
+    ret
+.ev_bad2:
+    pop edi
+.ev_bad:
+    stc
+    ret
+
+excon_self_test:
+    ; Create BOUNDED contract
+    mov eax, EXCON_TYPE_BOUNDED
+    mov edx, 50
+    mov ecx, 100
+    call excon_create
+    jc .ecstf
+    push eax
+    ; Verify within budget (actual=30 ≤ 50)
+    mov edx, 30
+    call excon_verify
+    jc .ecstf_pop   ; CF=0 expected
+    ; Create HARD_RT contract
+    pop eax
+    mov eax, EXCON_TYPE_HARD_RT
+    mov edx, 10
+    mov ecx, 200
+    call excon_create
+    jc .ecstf
+    push eax
+    ; Verify exceeds budget (actual=20 > 10) → CF=1
+    mov edx, 20
+    call excon_verify
+    jnc .ecstf_pop  ; CF=1 expected
+    pop eax
+    clc
+    ret
+.ecstf_pop:
+    pop eax
+.ecstf:
+    stc
+    ret
+
+excon_ready:      dd 0
+excon_next_id:    dd 1
+excon_violations: dd 0
+align 4
+excon_table:
+    times EXCON_CAPACITY * EXCON_REC_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-REALTIME-TEMPORALISOLATION-0001 – Nova RT Temporal Isolation
+; ---------------------------------------------------------------------------
+; Zeit-Partitionierung: jede RT-Partition erhält ein Budget pro Epoche (Ticks).
+; tmpiso_admit prüft ob eine Partition noch Budget hat.
+; tmpiso_new_epoch setzt alle Partitions-Budgets zurück.
+; Verhindert dass eine RT-Task andere temporär aushungert.
+; ---------------------------------------------------------------------------
+TMPISO_CAPACITY     equ 4
+TMPISO_REC_SIZE     equ 16
+
+TMPISO_ID_OFF       equ 0
+TMPISO_BUDGET_OFF   equ 4   ; budget per epoch (ticks)
+TMPISO_USED_OFF     equ 8   ; used this epoch
+TMPISO_EPOCH_OFF    equ 12  ; epoch at last reset
+
+tmpiso_initialize:
+    mov edi, tmpiso_partitions
+    xor eax, eax
+    mov ecx, (TMPISO_CAPACITY * TMPISO_REC_SIZE) / 4
+    rep stosd
+    mov dword [tmpiso_ready], 0
+    mov dword [tmpiso_epoch], 0
+    mov dword [tmpiso_violations], 0
+    ; Default: 4 partitions, budget=250 ticks each
+    xor esi, esi
+.tiso_init_loop:
+    cmp esi, TMPISO_CAPACITY
+    jae .tiso_init_done
+    imul edi, esi, TMPISO_REC_SIZE
+    add edi, tmpiso_partitions
+    mov [edi + TMPISO_ID_OFF], esi
+    mov dword [edi + TMPISO_BUDGET_OFF], 250
+    mov dword [edi + TMPISO_USED_OFF], 0
+    mov dword [edi + TMPISO_EPOCH_OFF], 0
+    inc esi
+    jmp .tiso_init_loop
+.tiso_init_done:
+    mov dword [tmpiso_ready], 1
+    clc
+    ret
+
+; EAX=partition(0-3)  EDX=ticks_needed → CF=0 admitted / CF=1 budget exhausted
+tmpiso_admit:
+    cmp dword [tmpiso_ready], 1
+    jne .ta_fail
+    cmp eax, TMPISO_CAPACITY
+    jae .ta_fail
+    push edi
+    imul edi, eax, TMPISO_REC_SIZE
+    add edi, tmpiso_partitions
+    mov ecx, [edi + TMPISO_USED_OFF]
+    add ecx, edx
+    cmp ecx, [edi + TMPISO_BUDGET_OFF]
+    ja .ta_over
+    mov [edi + TMPISO_USED_OFF], ecx
+    pop edi
+    clc
+    ret
+.ta_over:
+    inc dword [tmpiso_violations]
+    pop edi
+.ta_fail:
+    stc
+    ret
+
+; Reset all partition budgets (new epoch)
+tmpiso_new_epoch:
+    cmp dword [tmpiso_ready], 1
+    jne .tne_ret
+    inc dword [tmpiso_epoch]
+    push esi
+    push edi
+    xor esi, esi
+.tne_loop:
+    cmp esi, TMPISO_CAPACITY
+    jae .tne_done
+    imul edi, esi, TMPISO_REC_SIZE
+    add edi, tmpiso_partitions
+    mov dword [edi + TMPISO_USED_OFF], 0
+    mov eax, [tmpiso_epoch]
+    mov [edi + TMPISO_EPOCH_OFF], eax
+    inc esi
+    jmp .tne_loop
+.tne_done:
+    pop edi
+    pop esi
+.tne_ret:
+    clc
+    ret
+
+; EAX=partition → EAX=budget  EDX=used  CF=0/CF=1
+tmpiso_query:
+    cmp eax, TMPISO_CAPACITY
+    jae .tq_bad
+    push edi
+    imul edi, eax, TMPISO_REC_SIZE
+    add edi, tmpiso_partitions
+    mov eax, [edi + TMPISO_BUDGET_OFF]
+    mov edx, [edi + TMPISO_USED_OFF]
+    pop edi
+    clc
+    ret
+.tq_bad:
+    xor eax, eax
+    xor edx, edx
+    stc
+    ret
+
+tmpiso_self_test:
+    ; Admit 100 ticks to partition 0 (budget=250)
+    mov eax, 0
+    mov edx, 100
+    call tmpiso_admit
+    jc .tistf
+    ; Admit 100 more → used=200, still within 250
+    mov eax, 0
+    mov edx, 100
+    call tmpiso_admit
+    jc .tistf
+    ; Admit 100 more → used would be 300 > 250 → CF=1
+    mov eax, 0
+    mov edx, 100
+    call tmpiso_admit
+    jnc .tistf   ; CF=1 expected
+    ; New epoch → resets used
+    call tmpiso_new_epoch
+    ; Now 100 ticks should be admitted again
+    mov eax, 0
+    mov edx, 100
+    call tmpiso_admit
+    jc .tistf    ; CF=0 expected
+    clc
+    ret
+.tistf:
+    stc
+    ret
+
+tmpiso_ready:      dd 0
+tmpiso_epoch:      dd 0
+tmpiso_violations: dd 0
+align 4
+tmpiso_partitions:
+    times TMPISO_CAPACITY * TMPISO_REC_SIZE db 0
+
 ; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
@@ -42348,6 +42869,18 @@ message_adaptive_ok:
     db "NOVA: Adaptive Feedback 1.0 bereit (8-Slot, Thermal/QoS/Sched/Memory)", 13, 10, 0
 message_adaptive_error:
     db "NOVA PANIC: Adaptive Feedback Loop nicht initialisierbar", 13, 10, 0
+message_radmit_ok:
+    db "NOVA: Resource Admission 1.0 bereit (8-Slot, CPU+MEM Budget, reject on overflow)", 13, 10, 0
+message_radmit_error:
+    db "NOVA PANIC: Resource Admission Control nicht initialisierbar", 13, 10, 0
+message_excon_ok:
+    db "NOVA: Execution Contract 1.0 bereit (8-Slot, BE/BOUNDED/HARD_RT, verify)", 13, 10, 0
+message_excon_error:
+    db "NOVA PANIC: Execution Contract Manager nicht initialisierbar", 13, 10, 0
+message_tmpiso_ok:
+    db "NOVA: Temporal Isolation 1.0 bereit (4 Partitionen, Epoch-Budget, RT-Guard)", 13, 10, 0
+message_tmpiso_error:
+    db "NOVA PANIC: Temporal Isolation Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
