@@ -35249,6 +35249,436 @@ rreclaim_table:
     times RRECLAIM_CAPACITY * RRECLAIM_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-AUTONOMY-SELFDIAGNOSIS-0001 – Nova Self-Diagnosis
+; ===========================================================================
+; Records observed symptoms and maps them to diagnoses. Connects:
+; detection_record_fault → sdiag_observe → sdiag_diagnose → selfheal_repair
+;
+; Symptom types: LATENCY=1 / MEMORY=2 / CPU=3 / CRASH=4 / SILENT=5
+; Diagnoses: UNKNOWN=0 / OVERLOAD=1 / LEAK=2 / CORRUPTION=3 / HANG=4
+;
+; Record: diag_id(4) + symptom(4) + diagnosis(4) + count(4) = 16 bytes
+
+SDIAG_CAPACITY  equ 8
+SDIAG_REC_SIZE  equ 16
+SDIAG_ID        equ 0
+SDIAG_SYMPTOM   equ 4
+SDIAG_DIAG      equ 8
+SDIAG_COUNT     equ 12
+
+SDIAG_SYM_LATENCY  equ 1
+SDIAG_SYM_MEMORY   equ 2
+SDIAG_SYM_CPU      equ 3
+SDIAG_SYM_CRASH    equ 4
+SDIAG_SYM_SILENT   equ 5
+
+SDIAG_DIAG_UNKNOWN    equ 0
+SDIAG_DIAG_OVERLOAD   equ 1
+SDIAG_DIAG_LEAK       equ 2
+SDIAG_DIAG_CORRUPTION equ 3
+SDIAG_DIAG_HANG       equ 4
+
+sdiag_initialize:
+    cmp dword [sdiag_ready], 1
+    je .done
+    mov edi, sdiag_table
+    xor eax, eax
+    mov ecx, (SDIAG_CAPACITY * SDIAG_REC_SIZE) / 4
+    rep stosd
+    mov dword [sdiag_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=diag_id, EDX=symptom_type, ECX=diagnosis → EAX=slot, CF
+sdiag_register:
+    cmp dword [sdiag_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, SDIAG_CAPACITY
+    jae .fail
+    imul edi, esi, SDIAG_REC_SIZE
+    add edi, sdiag_table
+    cmp dword [edi + SDIAG_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + SDIAG_ID], eax
+    mov [edi + SDIAG_SYMPTOM], edx
+    mov [edi + SDIAG_DIAG], ecx
+    mov dword [edi + SDIAG_COUNT], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=symptom_type → EAX=diagnosis, EDX=count, CF=0 found / CF=1 unknown
+sdiag_diagnose:
+    cmp dword [sdiag_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SDIAG_CAPACITY
+    jae .not_found
+    imul edi, esi, SDIAG_REC_SIZE
+    add edi, sdiag_table
+    cmp [edi + SDIAG_SYMPTOM], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    inc dword [edi + SDIAG_COUNT]
+    mov eax, [edi + SDIAG_DIAG]
+    mov edx, [edi + SDIAG_COUNT]
+    pop ebx
+    clc
+    ret
+.not_found:
+    mov eax, SDIAG_DIAG_UNKNOWN
+    xor edx, edx
+    pop ebx
+    stc
+    ret
+.fail:
+    stc
+    ret
+
+sdiag_self_test:
+    ; register: id=1, symptom=MEMORY → diagnosis=LEAK
+    mov eax, 1
+    mov edx, SDIAG_SYM_MEMORY
+    mov ecx, SDIAG_DIAG_LEAK
+    call sdiag_register
+    jc .fail
+    ; diagnose MEMORY → LEAK
+    mov eax, SDIAG_SYM_MEMORY
+    call sdiag_diagnose
+    jc .fail
+    cmp eax, SDIAG_DIAG_LEAK
+    jne .fail
+    ; diagnose unknown symptom → CF=1
+    mov eax, 99
+    call sdiag_diagnose
+    jnc .fail
+    cmp eax, SDIAG_DIAG_UNKNOWN
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+sdiag_ready:  dd 0
+sdiag_table:
+    times SDIAG_CAPACITY * SDIAG_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-AUTONOMY-SELFCONFIG-0001 – Nova Self-Configuration
+; ===========================================================================
+; Runtime key→value configuration store. Allows subsystems to read/write
+; tunable parameters at runtime without rebuild. Connects adapt_observe
+; feedback → sconf_set to auto-tune thresholds.
+;
+; Record: key(4) + value(4) + version(4) + pad(4) = 16 bytes
+
+SCONF_CAPACITY  equ 8
+SCONF_REC_SIZE  equ 16
+SCONF_KEY       equ 0
+SCONF_VALUE     equ 4
+SCONF_VERSION   equ 8
+SCONF_PAD       equ 12
+
+sconf_initialize:
+    cmp dword [sconf_ready], 1
+    je .done
+    mov edi, sconf_table
+    xor eax, eax
+    mov ecx, (SCONF_CAPACITY * SCONF_REC_SIZE) / 4
+    rep stosd
+    mov dword [sconf_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=key, EDX=value → CF
+sconf_set:
+    cmp dword [sconf_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SCONF_CAPACITY
+    jae .full
+    imul edi, esi, SCONF_REC_SIZE
+    add edi, sconf_table
+    cmp dword [edi + SCONF_KEY], 0
+    je .slot
+    cmp [edi + SCONF_KEY], ebx
+    je .update
+    inc esi
+    jmp .scan
+.update:
+    mov [edi + SCONF_VALUE], edx
+    inc dword [edi + SCONF_VERSION]
+    pop ebx
+    clc
+    ret
+.slot:
+    mov [edi + SCONF_KEY], ebx
+    mov [edi + SCONF_VALUE], edx
+    mov dword [edi + SCONF_VERSION], 1
+    pop ebx
+    clc
+    ret
+.full:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=key → EAX=value, EDX=version, CF=0 found / CF=1 not found
+sconf_get:
+    cmp dword [sconf_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SCONF_CAPACITY
+    jae .not_found
+    imul edi, esi, SCONF_REC_SIZE
+    add edi, sconf_table
+    cmp [edi + SCONF_KEY], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + SCONF_VALUE]
+    mov edx, [edi + SCONF_VERSION]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+sconf_self_test:
+    ; set key=1 → value=42
+    mov eax, 1
+    mov edx, 42
+    call sconf_set
+    jc .fail
+    ; get key=1 → 42
+    mov eax, 1
+    call sconf_get
+    jc .fail
+    cmp eax, 42
+    jne .fail
+    cmp edx, 1
+    jne .fail
+    ; update key=1 → value=100
+    mov eax, 1
+    mov edx, 100
+    call sconf_set
+    jc .fail
+    mov eax, 1
+    call sconf_get
+    jc .fail
+    cmp eax, 100
+    jne .fail
+    cmp edx, 2       ; version incremented
+    jne .fail
+    ; get unknown key=99 → CF=1
+    mov eax, 99
+    call sconf_get
+    jnc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+sconf_ready:  dd 0
+sconf_table:
+    times SCONF_CAPACITY * SCONF_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-ADAPTIVE-PREDICTION-0001 – Nova Adaptive Prediction (EWMA)
+; ===========================================================================
+; Exponentially-weighted moving average predictor per tracked metric.
+; Connects prof_hottest → apred_update → adapt_observe for demand
+; forecasting. EWMA: new_pred = (alpha * observed + (1-alpha) * old_pred) >> 8
+; where alpha=128 means 50% weighting (alpha/256).
+;
+; Record: metric_id(4) + prediction(4) + alpha(4) + samples(4) = 16 bytes
+
+APRED_CAPACITY  equ 8
+APRED_REC_SIZE  equ 16
+APRED_METRIC_ID equ 0
+APRED_PREDICT   equ 4
+APRED_ALPHA     equ 8
+APRED_SAMPLES   equ 12
+
+apred_initialize:
+    cmp dword [apred_ready], 1
+    je .done
+    mov edi, apred_table
+    xor eax, eax
+    mov ecx, (APRED_CAPACITY * APRED_REC_SIZE) / 4
+    rep stosd
+    mov dword [apred_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=metric_id, EDX=initial_value, ECX=alpha(1-255) → EAX=slot, CF
+apred_register:
+    cmp dword [apred_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    test ecx, ecx
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, APRED_CAPACITY
+    jae .fail
+    imul edi, esi, APRED_REC_SIZE
+    add edi, apred_table
+    cmp dword [edi + APRED_METRIC_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + APRED_METRIC_ID], eax
+    mov [edi + APRED_PREDICT], edx
+    mov [edi + APRED_ALPHA], ecx
+    mov dword [edi + APRED_SAMPLES], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=metric_id, EDX=observed → EAX=new_prediction, CF
+apred_update:
+    cmp dword [apred_ready], 1
+    jne .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, APRED_CAPACITY
+    jae .not_found
+    imul edi, esi, APRED_REC_SIZE
+    add edi, apred_table
+    cmp [edi + APRED_METRIC_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    ; EWMA: new = (alpha*observed + (256-alpha)*old) / 256
+    mov eax, [edi + APRED_ALPHA]
+    mul edx                        ; eax = alpha * observed (edx:eax)
+    mov ecx, eax                   ; save alpha*observed low
+    mov eax, 256
+    sub eax, [edi + APRED_ALPHA]  ; (256-alpha)
+    mov ebx, [edi + APRED_PREDICT]
+    mul ebx                        ; eax = (256-alpha)*old
+    add eax, ecx                   ; sum
+    shr eax, 8                     ; /256
+    mov [edi + APRED_PREDICT], eax
+    inc dword [edi + APRED_SAMPLES]
+    pop esi
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=metric_id → EAX=prediction, EDX=samples, CF
+apred_query:
+    cmp dword [apred_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, APRED_CAPACITY
+    jae .not_found
+    imul edi, esi, APRED_REC_SIZE
+    add edi, apred_table
+    cmp [edi + APRED_METRIC_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + APRED_PREDICT]
+    mov edx, [edi + APRED_SAMPLES]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+apred_self_test:
+    ; register metric=1, initial=100, alpha=128 (50%)
+    mov eax, 1
+    mov edx, 100
+    mov ecx, 128
+    call apred_register
+    jc .fail
+    ; update with observed=200 → new = (128*200 + 128*100)/256 = 150
+    mov eax, 1
+    mov edx, 200
+    call apred_update
+    jc .fail
+    cmp eax, 150
+    jne .fail
+    ; query → prediction=150, samples=1
+    mov eax, 1
+    call apred_query
+    jc .fail
+    cmp eax, 150
+    jne .fail
+    cmp edx, 1
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+apred_ready:  dd 0
+apred_table:
+    times APRED_CAPACITY * APRED_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
