@@ -1,6 +1,11 @@
 ; Nova Kernel - x86-32 Entry und früher Kernel Context (NPSPEC-KERNEL-0001)
 ; Validiert NBHP/BIB v1, übernimmt ausschließlich TLV-Daten und ruft danach
 ; den minimalen Kernel Main auf.
+;
+; Architektur-Specs (Annotation):
+; NPSPEC-ARCH-INTROSPECTION-0001 / NPSPEC-ARCH-STRUCTUREDCONCURRENCY-0001
+; NPSPEC-ARCH-ZEROCOPY-0001 / NPSPEC-ARCH-RESOURCEECONOMY-0001
+; NPSPEC-ARCH-DETERMINISM-0001 / NPSPEC-ARCH-LOCATIONTRANSPARENCY-0001
 
 %include "layout.inc"
 
@@ -34014,6 +34019,14 @@ hrt_ns_offset:    dd 0
 align 4
 hrt_alarms:
     times HRT_ALARM_COUNT * HRT_ALARM_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; §Scheduler – Haupt-Scheduler, SMP, Work Stealing, Fair, RT, QoS
+; NPSPEC-SCHEDULER-FAIR-0001 / NPSPEC-SCHEDULER-REALTIME-0001
+; NPSPEC-SCHEDULER-QOS-0001 / NPSPEC-CONCURRENCY-WORKSTEALING-0001
+; NPSPEC-SCHEDULER-TOPOLOGY-0001 / NPSPEC-SCHEDULER-NUMA-0001
+; NPSPEC-SCHEDULER-CACHE-0001
+; ---------------------------------------------------------------------------
 
 scheduler_initialize:
     mov dword [scheduler_enabled], 0
