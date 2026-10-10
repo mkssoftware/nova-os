@@ -135,6 +135,10 @@ kernel_entry:
 
     call handle_manager_initialize
     jc panic_handle_manager
+    call handle_manager_self_test
+    jc panic_handle_manager
+    mov esi, message_handle_manager_ok
+    call serial_write_string
 
     call component_manager_initialize
     jc panic_component_manager
@@ -3069,6 +3073,134 @@ handle_close:
     clc
     ret
 .invalid:
+    stc
+    ret
+
+; §013 §53: Self-Test – 9 Tests, EDI = Fehler-Zähler
+handle_manager_self_test:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 8                          ; [ebp-16]=obj_handle, [ebp-20]=proc_handle
+    xor edi, edi
+    mov dword [ebp - 16], 0
+    mov dword [ebp - 20], 0
+
+    ; Test 1: handle_active_count == 0 nach init
+    cmp dword [handle_active_count], 0
+    je .t2
+    inc edi
+
+.t2:
+    ; Test 2: Testobjekt anlegen (Typ 0x48444C54 = "HDLT")
+    mov dword [handle_owner_pid], 1
+    mov eax, 0x48444C54
+    xor edx, edx
+    xor ebx, ebx
+    call object_create
+    jnc .t2_ok
+    inc edi
+    jmp .cleanup
+.t2_ok:
+    mov [ebp - 16], eax
+
+.t3:
+    ; Test 3: handle_create
+    mov eax, 1
+    mov edx, [ebp - 16]
+    mov ebx, 0x48444C54
+    mov ecx, HANDLE_RIGHT_QUERY | HANDLE_RIGHT_WAIT
+    xor esi, esi
+    call handle_create
+    jnc .t3_ok
+    inc edi
+    jmp .cleanup_obj
+.t3_ok:
+    mov [ebp - 20], eax
+
+.t4:
+    ; Test 4: handle_active_count == 1
+    cmp dword [handle_active_count], 1
+    je .t5
+    inc edi
+
+.t5:
+    ; Test 5: handle_resolve mit korrektem Typ und Rechten
+    mov eax, 1
+    mov edx, [ebp - 20]
+    mov ebx, 0x48444C54
+    mov ecx, HANDLE_RIGHT_QUERY
+    call handle_resolve
+    jnc .t6
+    inc edi
+
+.t6:
+    ; Test 6: handle_resolve mit falschem Typ → muss scheitern
+    mov eax, 1
+    mov edx, [ebp - 20]
+    mov ebx, 0x44454144                 ; "DEAD"
+    mov ecx, HANDLE_RIGHT_QUERY
+    call handle_resolve
+    jc .t7
+    inc edi
+
+.t7:
+    ; Test 7: handle_close
+    mov eax, 1
+    mov edx, [ebp - 20]
+    call handle_close
+    jnc .t8
+    inc edi
+    jmp .cleanup_handle
+
+.t8:
+    ; Test 8: handle nach close → veraltete Generation
+    mov eax, 1
+    mov edx, [ebp - 20]
+    mov ebx, 0x48444C54
+    mov ecx, HANDLE_RIGHT_QUERY
+    call handle_resolve
+    jc .t9
+    inc edi
+
+.t9:
+    ; Test 9: handle_active_count == 0 nach close
+    cmp dword [handle_active_count], 0
+    je .cleanup_obj
+    inc edi
+    jmp .cleanup_obj
+
+.cleanup_handle:
+    ; Handle noch offen (t7 fehlgeschlagen): schließen
+    mov eax, 1
+    mov edx, [ebp - 20]
+    call handle_close
+
+.cleanup_obj:
+    mov eax, [ebp - 16]
+    test eax, eax
+    jz .cleanup
+    call object_release
+
+.cleanup:
+    mov dword [handle_owner_pid], 0
+    test edi, edi
+    jnz .selftest_fail
+    add esp, 8
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    clc
+    ret
+.selftest_fail:
+    add esp, 8
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     stc
     ret
 
@@ -31761,6 +31893,8 @@ message_object_manager_ok:
     db "NOVA: Object Manager ABI 1.0 bereit", 13, 10, 0
 message_object_manager_error:
     db "NOVA PANIC: Kernel Object Manager nicht initialisierbar", 13, 10, 0
+message_handle_manager_ok:
+    db "NOVA: Handle Manager ABI 1.0 bereit", 13, 10, 0
 message_handle_manager_error:
     db "NOVA PANIC: Prozesslokaler Handle Manager nicht initialisierbar", 13, 10, 0
 message_component_manager_ok:
