@@ -761,6 +761,20 @@ kernel_entry:
     mov esi, message_rmode_ok
     call serial_write_string
 
+    call rtv_initialize
+    jc panic_rtv
+    call rtv_self_test
+    jc panic_rtv
+    mov esi, message_rtv_ok
+    call serial_write_string
+
+    call sgraph_initialize
+    jc panic_sgraph
+    call sgraph_self_test
+    jc panic_sgraph
+    mov esi, message_sgraph_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1441,6 +1455,18 @@ panic_rmode:
     mov eax, 0x00003061
     mov edx, 94
     mov esi, message_rmode_error
+    jmp kernel_panic
+
+panic_rtv:
+    mov eax, 0x00003062
+    mov edx, 95
+    mov esi, message_rtv_error
+    jmp kernel_panic
+
+panic_sgraph:
+    mov eax, 0x00003063
+    mov edx, 96
+    mov esi, message_sgraph_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -32043,6 +32069,313 @@ rmode_ready:       dd 0
 rmode_current:     dd 0
 rmode_transitions: dd 0
 
+; ---------------------------------------------------------------------------
+; NPSPEC-VERIFY-RUNTIME-0001 – Nova Runtime Verification Monitor
+; ---------------------------------------------------------------------------
+; Überwacht registrierte Runtime Contracts (Invarianten).
+; Contract: lower_bound ≤ observed_value ≤ upper_bound.
+; Verletzung → inc rtv_violations + audit VIOLATION.
+; ---------------------------------------------------------------------------
+RTV_CAPACITY        equ 8
+RTV_REC_SIZE        equ 20
+
+RTV_ID_OFF          equ 0
+RTV_LO_OFF          equ 4    ; lower bound (inclusive)
+RTV_HI_OFF          equ 8    ; upper bound (inclusive)
+RTV_OBSERVED_OFF    equ 12
+RTV_VIOL_OFF        equ 16   ; per-contract violation count
+
+rtv_initialize:
+    mov edi, rtv_contracts
+    xor eax, eax
+    mov ecx, (RTV_CAPACITY * RTV_REC_SIZE) / 4
+    rep stosd
+    mov dword [rtv_ready], 0
+    mov dword [rtv_violations], 0
+    mov dword [rtv_checks], 0
+    mov dword [rtv_ready], 1
+    clc
+    ret
+
+; EAX=contract_id  EDX=lower_bound  ECX=upper_bound → CF=0/CF=1 full
+rtv_register:
+    push esi
+    push edi
+    xor esi, esi
+.rtvr_scan:
+    cmp esi, RTV_CAPACITY
+    jae .rtvr_full
+    imul edi, esi, RTV_REC_SIZE
+    add edi, rtv_contracts
+    cmp dword [edi + RTV_ID_OFF], 0
+    je .rtvr_slot
+    inc esi
+    jmp .rtvr_scan
+.rtvr_slot:
+    mov [edi + RTV_ID_OFF], eax
+    mov [edi + RTV_LO_OFF], edx
+    mov [edi + RTV_HI_OFF], ecx
+    mov dword [edi + RTV_OBSERVED_OFF], 0
+    mov dword [edi + RTV_VIOL_OFF], 0
+    pop edi
+    pop esi
+    clc
+    ret
+.rtvr_full:
+    pop edi
+    pop esi
+    stc
+    ret
+
+; EAX=contract_id  EDX=observed_value → CF=0 satisfied / CF=1 violated
+rtv_check:
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.rtvc_loop:
+    cmp esi, RTV_CAPACITY
+    jae .rtvc_notfound
+    imul edi, esi, RTV_REC_SIZE
+    add edi, rtv_contracts
+    cmp [edi + RTV_ID_OFF], ebx
+    jne .rtvc_next
+    mov [edi + RTV_OBSERVED_OFF], edx
+    inc dword [rtv_checks]
+    cmp edx, [edi + RTV_LO_OFF]
+    jb .rtvc_violated
+    cmp edx, [edi + RTV_HI_OFF]
+    ja .rtvc_violated
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.rtvc_violated:
+    inc dword [edi + RTV_VIOL_OFF]
+    inc dword [rtv_violations]
+    ; log violation to security audit
+    push eax
+    push edx
+    mov eax, 5             ; AUDIT_TYPE_VIOLATION
+    mov edx, ebx          ; subject=contract_id
+    xor ecx, ecx
+    xor ebx, ebx
+    call security_audit_log
+    pop edx
+    pop eax
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+.rtvc_next:
+    inc esi
+    jmp .rtvc_loop
+.rtvc_notfound:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+rtv_self_test:
+    ; Register: id=10, lo=0, hi=100
+    mov eax, 10
+    mov edx, 0
+    mov ecx, 100
+    call rtv_register
+    jc .rtvstf
+    ; Check 50 → satisfied
+    mov eax, 10
+    mov edx, 50
+    call rtv_check
+    jc .rtvstf
+    ; Check 150 → violated
+    mov eax, 10
+    mov edx, 150
+    call rtv_check
+    jnc .rtvstf
+    ; Violations count ≥ 1
+    cmp dword [rtv_violations], 1
+    jb .rtvstf
+    clc
+    ret
+.rtvstf:
+    stc
+    ret
+
+rtv_ready:      dd 0
+rtv_violations: dd 0
+rtv_checks:     dd 0
+align 4
+rtv_contracts:
+    times RTV_CAPACITY * RTV_REC_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-OBSERVABILITY-STATEGRAPH-0001 – Nova System State Graph
+; ---------------------------------------------------------------------------
+; Registriert Systemobjekte mit Zustand + Vorgänger-Zustand.
+; Ermöglicht Fragen: Welcher Zustand, von wem abhängig, wie entstanden.
+; sgraph_transition: Zustandsübergang mit Tick-Stempel.
+; ---------------------------------------------------------------------------
+SGRAPH_CAPACITY     equ 16
+SGRAPH_REC_SIZE     equ 20
+
+SGRAPH_OBJ_ID_OFF   equ 0
+SGRAPH_STATE_OFF    equ 4
+SGRAPH_PREV_OFF     equ 8
+SGRAPH_PARENT_OFF   equ 12   ; depended-on object id
+SGRAPH_TICK_OFF     equ 16
+
+sgraph_initialize:
+    mov edi, sgraph_nodes
+    xor eax, eax
+    mov ecx, (SGRAPH_CAPACITY * SGRAPH_REC_SIZE) / 4
+    rep stosd
+    mov dword [sgraph_ready], 0
+    mov dword [sgraph_transitions], 0
+    mov dword [sgraph_ready], 1
+    clc
+    ret
+
+; EAX=obj_id  EDX=initial_state  ECX=parent_obj_id → CF=0/CF=1 full
+sgraph_register:
+    push esi
+    push edi
+    push ebx
+    mov ebx, ecx
+    xor esi, esi
+.sg_scan:
+    cmp esi, SGRAPH_CAPACITY
+    jae .sg_full
+    imul edi, esi, SGRAPH_REC_SIZE
+    add edi, sgraph_nodes
+    cmp dword [edi + SGRAPH_OBJ_ID_OFF], 0
+    je .sg_slot
+    inc esi
+    jmp .sg_scan
+.sg_slot:
+    mov [edi + SGRAPH_OBJ_ID_OFF], eax
+    mov [edi + SGRAPH_STATE_OFF], edx
+    mov dword [edi + SGRAPH_PREV_OFF], 0
+    mov [edi + SGRAPH_PARENT_OFF], ebx
+    push eax
+    mov eax, [wd_global_tick]
+    mov [edi + SGRAPH_TICK_OFF], eax
+    pop eax
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.sg_full:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; EAX=obj_id  EDX=new_state → CF=0 ok / CF=1 not found
+sgraph_transition:
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.sgt_loop:
+    cmp esi, SGRAPH_CAPACITY
+    jae .sgt_notfound
+    imul edi, esi, SGRAPH_REC_SIZE
+    add edi, sgraph_nodes
+    cmp [edi + SGRAPH_OBJ_ID_OFF], ebx
+    jne .sgt_next
+    ; record transition
+    mov ecx, [edi + SGRAPH_STATE_OFF]
+    mov [edi + SGRAPH_PREV_OFF], ecx
+    mov [edi + SGRAPH_STATE_OFF], edx
+    mov eax, [wd_global_tick]
+    mov [edi + SGRAPH_TICK_OFF], eax
+    inc dword [sgraph_transitions]
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.sgt_next:
+    inc esi
+    jmp .sgt_loop
+.sgt_notfound:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; EAX=obj_id → EAX=state  EDX=prev_state  CF=0/CF=1
+sgraph_query:
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.sgq_loop:
+    cmp esi, SGRAPH_CAPACITY
+    jae .sgq_notfound
+    imul edi, esi, SGRAPH_REC_SIZE
+    add edi, sgraph_nodes
+    cmp [edi + SGRAPH_OBJ_ID_OFF], ebx
+    jne .sgq_next
+    mov eax, [edi + SGRAPH_STATE_OFF]
+    mov edx, [edi + SGRAPH_PREV_OFF]
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.sgq_next:
+    inc esi
+    jmp .sgq_loop
+.sgq_notfound:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+sgraph_self_test:
+    ; Register object 50, state=1, parent=0
+    mov eax, 50
+    mov edx, 1
+    xor ecx, ecx
+    call sgraph_register
+    jc .sgstf
+    ; Transition to state=2
+    mov eax, 50
+    mov edx, 2
+    call sgraph_transition
+    jc .sgstf
+    ; Query: state=2, prev=1
+    mov eax, 50
+    call sgraph_query
+    jc .sgstf
+    cmp eax, 2
+    jne .sgstf
+    cmp edx, 1
+    jne .sgstf
+    clc
+    ret
+.sgstf:
+    stc
+    ret
+
+sgraph_ready:       dd 0
+sgraph_transitions: dd 0
+align 4
+sgraph_nodes:
+    times SGRAPH_CAPACITY * SGRAPH_REC_SIZE db 0
+
 ; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
@@ -43461,6 +43794,14 @@ message_rmode_ok:
     db "NOVA: Recovery Mode 1.0 bereit (NORMAL/DEGRADED/EMERGENCY/MAINTENANCE)", 13, 10, 0
 message_rmode_error:
     db "NOVA PANIC: Recovery Mode Manager nicht initialisierbar", 13, 10, 0
+message_rtv_ok:
+    db "NOVA: Runtime Verify 1.0 bereit (8 Contracts, bounds-check, audit-on-violation)", 13, 10, 0
+message_rtv_error:
+    db "NOVA PANIC: Runtime Verification Monitor nicht initialisierbar", 13, 10, 0
+message_sgraph_ok:
+    db "NOVA: State Graph 1.0 bereit (16-Node, transition+parent tracking)", 13, 10, 0
+message_sgraph_error:
+    db "NOVA PANIC: State Graph Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
