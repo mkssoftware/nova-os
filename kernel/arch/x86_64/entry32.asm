@@ -461,6 +461,27 @@ kernel_entry:
     mov esi, message_resource_accounting_ok
     call serial_write_string
 
+    call failover_initialize
+    jc panic_failover
+    call failover_self_test
+    jc panic_failover
+    mov esi, message_failover_ok
+    call serial_write_string
+
+    call containment_initialize
+    jc panic_containment
+    call containment_self_test
+    jc panic_containment
+    mov esi, message_containment_ok
+    call serial_write_string
+
+    call checkpoint_initialize
+    jc panic_checkpoint
+    call checkpoint_self_test
+    jc panic_checkpoint
+    mov esi, message_checkpoint_ok
+    call serial_write_string
+
     call io_scheduler_initialize
     jc panic_io_scheduler
     call io_scheduler_self_test
@@ -1004,6 +1025,24 @@ panic_resource_accounting:
     mov eax, 0x0000303D
     mov edx, 58
     mov esi, message_resource_accounting_error
+    jmp kernel_panic
+
+panic_failover:
+    mov eax, 0x00003044
+    mov edx, 65
+    mov esi, message_failover_error
+    jmp kernel_panic
+
+panic_containment:
+    mov eax, 0x00003045
+    mov edx, 66
+    mov esi, message_containment_error
+    jmp kernel_panic
+
+panic_checkpoint:
+    mov eax, 0x00003046
+    mov edx, 67
+    mov esi, message_checkpoint_error
     jmp kernel_panic
 
 panic_io_scheduler:
@@ -14560,6 +14599,535 @@ racct_violations:  dd 0
 align 4
 racct_table:
     times RACCT_CAPACITY * RACCT_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-FAILOVER-0001 – Nova Failover Manager
+; Registriert Primär/Backup-Paare. Erkennt Ausfall und aktiviert Backup.
+; ===========================================================================
+
+FO_CAPACITY          equ 4
+FO_RECORD_SIZE       equ 24
+
+FO_STATE_FREE        equ 0
+FO_STATE_PRIMARY_OK  equ 1
+FO_STATE_FAILED      equ 2
+FO_STATE_FAILOVER    equ 3
+
+FO_ID                equ 0
+FO_STATE_OFF         equ 4
+FO_PRIMARY           equ 8   ; ID/Bezeichner des Primärsystems
+FO_BACKUP            equ 12  ; ID/Bezeichner des Backupsystems
+FO_FAIL_TICK         equ 16  ; Tick des letzten Ausfalls
+FO_SWITCHES          equ 20  ; Anzahl Failover-Wechsel
+
+failover_initialize:
+    mov edi, fo_table
+    mov ecx, FO_CAPACITY * FO_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [fo_ready], 1
+    mov dword [fo_next_id], 0
+    mov dword [fo_total_switches], 0
+    clc
+    ret
+
+; EAX=primary_id  EDX=backup_id → EAX=slot CF=0 / CF=1 voll
+failover_register:
+    push esi
+    push ecx
+    mov esi, fo_table
+    xor ecx, ecx
+.for_scan:
+    cmp ecx, FO_CAPACITY
+    jae .for_full
+    cmp dword [esi + FO_STATE_OFF], FO_STATE_FREE
+    je .for_found
+    add esi, FO_RECORD_SIZE
+    inc ecx
+    jmp .for_scan
+.for_found:
+    push eax
+    mov eax, [fo_next_id]
+    inc dword [fo_next_id]
+    mov [esi + FO_ID], eax
+    pop eax
+    mov dword [esi + FO_STATE_OFF], FO_STATE_PRIMARY_OK
+    mov [esi + FO_PRIMARY], eax
+    mov [esi + FO_BACKUP], edx
+    mov dword [esi + FO_FAIL_TICK], 0
+    mov dword [esi + FO_SWITCHES], 0
+    mov eax, ecx
+    clc
+    pop ecx
+    pop esi
+    ret
+.for_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; EAX=slot → aktiviert Failover (Backup übernimmt) CF=0 / CF=1 invalid/schon failover
+failover_trigger:
+    push esi
+    cmp eax, FO_CAPACITY
+    jae .fot_fail
+    imul esi, eax, FO_RECORD_SIZE
+    add esi, fo_table
+    cmp dword [esi + FO_STATE_OFF], FO_STATE_PRIMARY_OK
+    jne .fot_fail
+    mov dword [esi + FO_STATE_OFF], FO_STATE_FAILOVER
+    push eax
+    mov eax, [wd_global_tick]
+    mov [esi + FO_FAIL_TICK], eax
+    pop eax
+    inc dword [esi + FO_SWITCHES]
+    inc dword [fo_total_switches]
+    clc
+    pop esi
+    ret
+.fot_fail:
+    stc
+    pop esi
+    ret
+
+; EAX=slot → EAX=state  EDX=primary  ECX=backup  CF=0 / CF=1
+failover_query:
+    push esi
+    cmp eax, FO_CAPACITY
+    jae .foq_fail
+    imul esi, eax, FO_RECORD_SIZE
+    add esi, fo_table
+    cmp dword [esi + FO_STATE_OFF], FO_STATE_FREE
+    je .foq_fail
+    mov eax, [esi + FO_STATE_OFF]
+    mov edx, [esi + FO_PRIMARY]
+    mov ecx, [esi + FO_BACKUP]
+    clc
+    pop esi
+    ret
+.foq_fail:
+    stc
+    pop esi
+    ret
+
+failover_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+    cmp dword [fo_ready], 1
+    je .fst1
+    inc esi
+.fst1:
+    mov eax, 10   ; primary=10
+    mov edx, 20   ; backup=20
+    call failover_register
+    jnc .fst2
+    inc esi
+.fst2:
+    mov ebx, eax
+    ; Trigger → Failover
+    mov eax, ebx
+    call failover_trigger
+    jnc .fst3
+    inc esi
+.fst3:
+    ; State muss FO_STATE_FAILOVER sein
+    mov eax, ebx
+    call failover_query
+    jnc .fst4_cf
+    inc esi
+.fst4_cf:
+    cmp eax, FO_STATE_FAILOVER
+    je .fst4
+    inc esi
+.fst4:
+    ; fo_total_switches=1
+    cmp dword [fo_total_switches], 1
+    je .fst5
+    inc esi
+.fst5:
+    ; Nochmal trigger → CF=1 (nicht PRIMARY_OK)
+    mov eax, ebx
+    call failover_trigger
+    jc .fst6
+    inc esi
+.fst6:
+    test esi, esi
+    jnz .fstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.fstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+fo_ready:          dd 0
+fo_next_id:        dd 0
+fo_total_switches: dd 0
+align 4
+fo_table:
+    times FO_CAPACITY * FO_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-CONTAINMENT-0001 – Nova Fault Containment
+; Isoliert fehlerhafte Subsysteme damit Fehler nicht auf andere überspringen.
+; ===========================================================================
+
+CONT_CAPACITY        equ 8
+CONT_RECORD_SIZE     equ 20
+
+CONT_STATE_FREE      equ 0
+CONT_STATE_OK        equ 1
+CONT_STATE_DEGRADED  equ 2
+CONT_STATE_ISOLATED  equ 3
+
+CONT_ID              equ 0
+CONT_STATE_OFF       equ 4
+CONT_SUBSYSTEM       equ 8
+CONT_FAULT_COUNT     equ 12
+CONT_THRESHOLD       equ 16
+
+containment_initialize:
+    mov edi, cont_table
+    mov ecx, CONT_CAPACITY * CONT_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [cont_ready], 1
+    mov dword [cont_next_id], 0
+    mov dword [cont_isolated_count], 0
+    clc
+    ret
+
+; EAX=subsystem_id  EDX=fault_threshold → EAX=slot CF=0/CF=1 voll
+containment_register:
+    push esi
+    push ecx
+    mov esi, cont_table
+    xor ecx, ecx
+.conr_scan:
+    cmp ecx, CONT_CAPACITY
+    jae .conr_full
+    cmp dword [esi + CONT_STATE_OFF], CONT_STATE_FREE
+    je .conr_found
+    add esi, CONT_RECORD_SIZE
+    inc ecx
+    jmp .conr_scan
+.conr_found:
+    push eax
+    mov eax, [cont_next_id]
+    inc dword [cont_next_id]
+    mov [esi + CONT_ID], eax
+    pop eax
+    mov dword [esi + CONT_STATE_OFF], CONT_STATE_OK
+    mov [esi + CONT_SUBSYSTEM], eax
+    mov dword [esi + CONT_FAULT_COUNT], 0
+    mov [esi + CONT_THRESHOLD], edx
+    mov eax, ecx
+    clc
+    pop ecx
+    pop esi
+    ret
+.conr_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; EAX=slot → meldet Fehler, bei Threshold→ISOLATED; CF=0/CF=1
+containment_report_fault:
+    push esi
+    cmp eax, CONT_CAPACITY
+    jae .corf_fail
+    imul esi, eax, CONT_RECORD_SIZE
+    add esi, cont_table
+    cmp dword [esi + CONT_STATE_OFF], CONT_STATE_FREE
+    je .corf_fail
+    cmp dword [esi + CONT_STATE_OFF], CONT_STATE_ISOLATED
+    je .corf_already
+    inc dword [esi + CONT_FAULT_COUNT]
+    ; Schwellwert-Check
+    mov edx, [esi + CONT_FAULT_COUNT]
+    cmp edx, [esi + CONT_THRESHOLD]
+    jb .corf_degraded
+    mov dword [esi + CONT_STATE_OFF], CONT_STATE_ISOLATED
+    inc dword [cont_isolated_count]
+    clc
+    pop esi
+    ret
+.corf_degraded:
+    mov dword [esi + CONT_STATE_OFF], CONT_STATE_DEGRADED
+    clc
+    pop esi
+    ret
+.corf_already:
+    clc
+    pop esi
+    ret
+.corf_fail:
+    stc
+    pop esi
+    ret
+
+; EAX=slot → prüft ob isoliert; CF=0 ok / CF=1 isoliert
+containment_check:
+    push esi
+    cmp eax, CONT_CAPACITY
+    jae .coch_fail
+    imul esi, eax, CONT_RECORD_SIZE
+    add esi, cont_table
+    cmp dword [esi + CONT_STATE_OFF], CONT_STATE_ISOLATED
+    je .coch_isolated
+    clc
+    pop esi
+    ret
+.coch_isolated:
+    stc
+    pop esi
+    ret
+.coch_fail:
+    stc
+    pop esi
+    ret
+
+containment_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+    cmp dword [cont_ready], 1
+    je .cst1
+    inc esi
+.cst1:
+    ; Register subsystem 1, threshold=2
+    mov eax, 1
+    mov edx, 2
+    call containment_register
+    jnc .cst2
+    inc esi
+.cst2:
+    mov ebx, eax
+    ; 1. Fault → DEGRADED
+    mov eax, ebx
+    call containment_report_fault
+    jnc .cst3
+    inc esi
+.cst3:
+    ; Check → noch nicht isoliert
+    mov eax, ebx
+    call containment_check
+    jnc .cst4
+    inc esi
+.cst4:
+    ; 2. Fault → ISOLATED (threshold=2)
+    mov eax, ebx
+    call containment_report_fault
+    jnc .cst5
+    inc esi
+.cst5:
+    ; Check → isoliert (CF=1)
+    mov eax, ebx
+    call containment_check
+    jc .cst6
+    inc esi
+.cst6:
+    cmp dword [cont_isolated_count], 1
+    je .cst7
+    inc esi
+.cst7:
+    test esi, esi
+    jnz .cstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.cstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+cont_ready:          dd 0
+cont_next_id:        dd 0
+cont_isolated_count: dd 0
+align 4
+cont_table:
+    times CONT_CAPACITY * CONT_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-CHECKPOINT-0001 – Nova Checkpoint / Restore
+; Speichert Schnappschuss eines Task-Zustands für Wiederherstellung.
+; (Kernel-seitig: Register-Satz + Stack-Pointer als leichtgewichtiger CP)
+; ===========================================================================
+
+CP_CAPACITY          equ 4
+CP_RECORD_SIZE       equ 48
+
+CP_STATE_FREE        equ 0
+CP_STATE_VALID       equ 1
+CP_STATE_RESTORED    equ 2
+
+CP_ID                equ 0
+CP_STATE_OFF         equ 4
+CP_OWNER             equ 8
+CP_TICK              equ 12
+CP_EAX               equ 16
+CP_EBX               equ 20
+CP_ECX               equ 24
+CP_EDX               equ 28
+CP_ESI               equ 32
+CP_EDI               equ 36
+CP_EBP               equ 40
+CP_ESP               equ 44
+
+checkpoint_initialize:
+    mov edi, cp_table
+    mov ecx, CP_CAPACITY * CP_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [cp_ready], 1
+    mov dword [cp_next_id], 0
+    mov dword [cp_total_saves], 0
+    mov dword [cp_total_restores], 0
+    clc
+    ret
+
+; Speichert aktuellen Registerkontext; EAX=owner_id → EAX=slot CF=0/CF=1 voll
+checkpoint_save:
+    push esi
+    push ecx
+    push edi
+    ; Slot suchen
+    mov edi, cp_table
+    xor ecx, ecx
+.cps_scan:
+    cmp ecx, CP_CAPACITY
+    jae .cps_full
+    cmp dword [edi + CP_STATE_OFF], CP_STATE_FREE
+    je .cps_found
+    cmp dword [edi + CP_STATE_OFF], CP_STATE_RESTORED
+    je .cps_found   ; Wiederverwendbar
+    add edi, CP_RECORD_SIZE
+    inc ecx
+    jmp .cps_scan
+.cps_found:
+    push eax
+    push edx
+    mov edx, [cp_next_id]
+    inc dword [cp_next_id]
+    mov [edi + CP_ID], edx
+    pop edx
+    pop eax
+    mov dword [edi + CP_STATE_OFF], CP_STATE_VALID
+    mov [edi + CP_OWNER], eax
+    push eax
+    mov eax, [wd_global_tick]
+    mov [edi + CP_TICK], eax
+    pop eax
+    ; Register sichern (EAX=owner, daher aus Stack)
+    mov [edi + CP_EBX], ebx
+    mov [edi + CP_ECX], ecx
+    mov [edi + CP_EDX], edx
+    mov [edi + CP_ESI], esi
+    push eax
+    lea eax, [esp + 16]   ; ESP vor dem call
+    mov [edi + CP_ESP], eax
+    pop eax
+    mov [edi + CP_EBP], ebp
+    xor eax, eax           ; EAX im Checkpoint = 0 (kann nicht self-save)
+    mov [edi + CP_EAX], eax
+    push eax
+    mov eax, ecx
+    inc dword [cp_total_saves]
+    pop eax
+    clc
+    pop edi
+    pop ecx
+    pop esi
+    ret
+.cps_full:
+    stc
+    pop edi
+    pop ecx
+    pop esi
+    ret
+
+; EAX=slot → markiert Checkpoint als wiederhergestellt (symbolisch); CF=0/CF=1
+checkpoint_restore:
+    push esi
+    cmp eax, CP_CAPACITY
+    jae .cpr_fail
+    imul esi, eax, CP_RECORD_SIZE
+    add esi, cp_table
+    cmp dword [esi + CP_STATE_OFF], CP_STATE_VALID
+    jne .cpr_fail
+    mov dword [esi + CP_STATE_OFF], CP_STATE_RESTORED
+    inc dword [cp_total_restores]
+    clc
+    pop esi
+    ret
+.cpr_fail:
+    stc
+    pop esi
+    ret
+
+checkpoint_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+    cmp dword [cp_ready], 1
+    je .cpst1
+    inc esi
+.cpst1:
+    ; Save mit owner=42
+    mov eax, 42
+    call checkpoint_save
+    jnc .cpst2
+    inc esi
+.cpst2:
+    mov ebx, eax   ; slot
+    ; Prüfe cp_total_saves=1
+    cmp dword [cp_total_saves], 1
+    je .cpst3
+    inc esi
+.cpst3:
+    ; Restore
+    mov eax, ebx
+    call checkpoint_restore
+    jnc .cpst4
+    inc esi
+.cpst4:
+    cmp dword [cp_total_restores], 1
+    je .cpst5
+    inc esi
+.cpst5:
+    ; Nochmaliger Restore → CF=1 (nicht mehr VALID)
+    mov eax, ebx
+    call checkpoint_restore
+    jc .cpst6
+    inc esi
+.cpst6:
+    test esi, esi
+    jnz .cpstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.cpstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+cp_ready:           dd 0
+cp_next_id:         dd 0
+cp_total_saves:     dd 0
+cp_total_restores:  dd 0
+align 4
+cp_table:
+    times CP_CAPACITY * CP_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
@@ -37757,6 +38325,18 @@ message_resource_accounting_ok:
     db "NOVA: Resource Accounting 1.0 bereit (8 Slots, CPU/Mem/IO Limits)", 13, 10, 0
 message_resource_accounting_error:
     db "NOVA PANIC: Resource Accounting nicht initialisierbar", 13, 10, 0
+message_failover_ok:
+    db "NOVA: Failover Manager 1.0 bereit (4 Primaer/Backup-Paare)", 13, 10, 0
+message_failover_error:
+    db "NOVA PANIC: Failover Manager nicht initialisierbar", 13, 10, 0
+message_containment_ok:
+    db "NOVA: Fault Containment 1.0 bereit (8 Subsysteme, Isolation)", 13, 10, 0
+message_containment_error:
+    db "NOVA PANIC: Fault Containment nicht initialisierbar", 13, 10, 0
+message_checkpoint_ok:
+    db "NOVA: Checkpoint/Restore 1.0 bereit (4 Slots, Register-Satz)", 13, 10, 0
+message_checkpoint_error:
+    db "NOVA PANIC: Checkpoint/Restore nicht initialisierbar", 13, 10, 0
 message_security_audit_ok:
     db "NOVA: Security Audit 1.0 bereit (32 Ereignisse, CAP/VIOLATION/POLICY)", 13, 10, 0
 message_security_audit_error:
