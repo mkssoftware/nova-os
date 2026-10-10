@@ -176,6 +176,17 @@ kernel_entry:
     mov esi, message_deferred_ok
     call serial_write_string
 
+    call time_monotonic_initialize
+    jc panic_time
+    call time_monotonic_self_test
+    jc panic_time
+    call rtc_initialize
+    jc panic_time
+    call rtc_self_test
+    jc panic_time
+    mov esi, message_time_ok
+    call serial_write_string
+
     call ipc_initialize
     jc panic_ipc
     call ipc_self_test
@@ -1109,6 +1120,12 @@ panic_deferred:
     mov eax, 0x00003034
     mov edx, 49
     mov esi, message_deferred_error
+    jmp kernel_panic
+
+panic_time:
+    mov eax, 0x00003036
+    mov edx, 51
+    mov esi, message_time_error
     jmp kernel_panic
 
 panic_memory_manager:
@@ -28969,6 +28986,286 @@ align 4
 deferred_queue:
     times DEFERRED_CAPACITY * DEFERRED_ENTRY_SIZE db 0
 
+; ===========================================================================
+; NPSPEC-TIME-MONOTONIC-0001 / NPSPEC-TIME-RTC-0001 – Nova Time Services
+; Monotone Zeit (PIT-Ticks), RTC-Uhrzeit/-Datum via CMOS (Port 0x70/0x71).
+; ===========================================================================
+
+TIME_HZ             equ 100        ; PIT läuft auf 100 Hz
+TIME_MS_PER_TICK    equ 10         ; 10 ms pro Tick
+
+RTC_PORT_INDEX      equ 0x70
+RTC_PORT_DATA       equ 0x71
+RTC_REG_SECONDS     equ 0x00
+RTC_REG_MINUTES     equ 0x02
+RTC_REG_HOURS       equ 0x04
+RTC_REG_DAY         equ 0x07
+RTC_REG_MONTH       equ 0x08
+RTC_REG_YEAR        equ 0x09
+RTC_REG_STATUSB     equ 0x0B
+
+; ---------- Monotone Zeit ---------------------------------------------------
+
+time_monotonic_initialize:
+    cmp dword [timer_ticks], 0
+    ; Timer muss bereits laufen (nach timer_initialize/sti aufrufen)
+    mov dword [time_mono_ready], 1
+    clc
+    ret
+
+; → EAX = Tick-Zähler seit Boot
+time_monotonic_get_ticks:
+    mov eax, [timer_ticks]
+    ret
+
+; → EAX = Millisekunden seit Boot (ticks * 10 bei 100 Hz)
+time_monotonic_get_ms:
+    mov eax, [timer_ticks]
+    imul eax, eax, TIME_MS_PER_TICK
+    ret
+
+time_monotonic_self_test:
+    push ebx
+    xor ebx, ebx
+
+    ; T1: ready
+    cmp dword [time_mono_ready], 1
+    je .tmst1_ok
+    inc ebx
+.tmst1_ok:
+
+    ; T2: timer läuft (ticks > 0)
+    call time_monotonic_get_ticks
+    test eax, eax
+    jnz .tmst2_ok
+    inc ebx
+.tmst2_ok:
+
+    ; T3: get_ms = ticks * 10
+    call time_monotonic_get_ticks
+    push eax
+    call time_monotonic_get_ms
+    pop ecx
+    imul ecx, ecx, TIME_MS_PER_TICK
+    cmp eax, ecx
+    je .tmst3_ok
+    inc ebx
+.tmst3_ok:
+
+    ; T4-T7: get_ms >= get_ticks (ms ist größer als tick-zähler)
+    call time_monotonic_get_ms
+    push eax
+    call time_monotonic_get_ticks
+    pop ecx
+    cmp ecx, eax     ; ms >= ticks
+    jae .tmst4_ok
+    inc ebx
+.tmst4_ok:
+
+    test ebx, ebx
+    jnz .tmstf
+    clc
+    pop ebx
+    ret
+.tmstf:
+    stc
+    pop ebx
+    ret
+
+; ---------- RTC (CMOS) -------------------------------------------------------
+
+; intern: EAX=Register-Index → EAX=Wert (roh, BCD oder Binary)
+rtc_read_reg:
+    push edx
+    out RTC_PORT_INDEX, al
+    in al, RTC_PORT_DATA
+    movzx eax, al
+    pop edx
+    ret
+
+; intern: → EAX=1 wenn BCD-Modus, EAX=0 wenn Binary-Modus
+rtc_is_bcd:
+    push edx
+    mov al, RTC_REG_STATUSB
+    out RTC_PORT_INDEX, al
+    in al, RTC_PORT_DATA
+    test al, 0x04
+    jnz .rib_bin
+    mov eax, 1
+    pop edx
+    ret
+.rib_bin:
+    xor eax, eax
+    pop edx
+    ret
+
+; EAX=BCD-Byte → EAX=Binärwert
+rtc_bcd_to_bin:
+    push edx
+    mov edx, eax
+    shr edx, 4
+    and eax, 0x0F
+    imul edx, edx, 10
+    add eax, edx
+    pop edx
+    ret
+
+; → EAX=Stunden(0-23)  EDX=Minuten(0-59)  ECX=Sekunden(0-59)
+rtc_get_time:
+    push ebx
+    mov al, RTC_REG_SECONDS
+    call rtc_read_reg
+    mov [rtc_tmp_sec], eax
+    mov al, RTC_REG_MINUTES
+    call rtc_read_reg
+    mov [rtc_tmp_min], eax
+    mov al, RTC_REG_HOURS
+    call rtc_read_reg
+    mov [rtc_tmp_hour], eax
+    call rtc_is_bcd
+    test eax, eax
+    jz .rgt_bin
+    mov eax, [rtc_tmp_sec]
+    call rtc_bcd_to_bin
+    mov [rtc_tmp_sec], eax
+    mov eax, [rtc_tmp_min]
+    call rtc_bcd_to_bin
+    mov [rtc_tmp_min], eax
+    mov eax, [rtc_tmp_hour]
+    call rtc_bcd_to_bin
+    mov [rtc_tmp_hour], eax
+.rgt_bin:
+    mov eax, [rtc_tmp_hour]
+    mov edx, [rtc_tmp_min]
+    mov ecx, [rtc_tmp_sec]
+    pop ebx
+    clc
+    ret
+
+; → EAX=Jahr(2000+y)  EDX=Monat(1-12)  ECX=Tag(1-31)
+rtc_get_date:
+    push ebx
+    mov al, RTC_REG_DAY
+    call rtc_read_reg
+    mov [rtc_tmp_day], eax
+    mov al, RTC_REG_MONTH
+    call rtc_read_reg
+    mov [rtc_tmp_month], eax
+    mov al, RTC_REG_YEAR
+    call rtc_read_reg
+    mov [rtc_tmp_year], eax
+    call rtc_is_bcd
+    test eax, eax
+    jz .rgd_bin
+    mov eax, [rtc_tmp_day]
+    call rtc_bcd_to_bin
+    mov [rtc_tmp_day], eax
+    mov eax, [rtc_tmp_month]
+    call rtc_bcd_to_bin
+    mov [rtc_tmp_month], eax
+    mov eax, [rtc_tmp_year]
+    call rtc_bcd_to_bin
+    mov [rtc_tmp_year], eax
+.rgd_bin:
+    mov eax, [rtc_tmp_year]
+    add eax, 2000
+    mov edx, [rtc_tmp_month]
+    mov ecx, [rtc_tmp_day]
+    pop ebx
+    clc
+    ret
+
+rtc_initialize:
+    mov al, RTC_REG_STATUSB
+    out RTC_PORT_INDEX, al
+    in al, RTC_PORT_DATA
+    ; RTC ist immer vorhanden auf x86-PC
+    mov dword [rtc_ready], 1
+    clc
+    ret
+
+rtc_self_test:
+    push ebx
+    xor ebx, ebx
+
+    ; T1: ready
+    cmp dword [rtc_ready], 1
+    je .rst1_ok
+    inc ebx
+.rst1_ok:
+
+    ; T2: rtc_get_time – Stunden im Bereich 0-23
+    call rtc_get_time
+    cmp eax, 23
+    jbe .rst2h_ok
+    inc ebx
+.rst2h_ok:
+    ; Minuten 0-59
+    cmp edx, 59
+    jbe .rst2m_ok
+    inc ebx
+.rst2m_ok:
+    ; Sekunden 0-59
+    cmp ecx, 59
+    jbe .rst2s_ok
+    inc ebx
+.rst2s_ok:
+
+    ; T3: rtc_get_date – Jahr 2000-2099
+    call rtc_get_date
+    cmp eax, 2000
+    jae .rst3y_ok
+    inc ebx
+.rst3y_ok:
+    cmp eax, 2099
+    jbe .rst3yh_ok
+    inc ebx
+.rst3yh_ok:
+    ; Monat 1-12
+    cmp edx, 1
+    jae .rst3ml_ok
+    inc ebx
+.rst3ml_ok:
+    cmp edx, 12
+    jbe .rst3mh_ok
+    inc ebx
+.rst3mh_ok:
+
+    ; T4: bcd_to_bin(0x59)=59
+    mov eax, 0x59
+    call rtc_bcd_to_bin
+    cmp eax, 59
+    je .rst4_ok
+    inc ebx
+.rst4_ok:
+
+    ; T5: bcd_to_bin(0x23)=23
+    mov eax, 0x23
+    call rtc_bcd_to_bin
+    cmp eax, 23
+    je .rst5_ok
+    inc ebx
+.rst5_ok:
+
+    test ebx, ebx
+    jnz .rstf
+    clc
+    pop ebx
+    ret
+.rstf:
+    stc
+    pop ebx
+    ret
+
+time_mono_ready:    dd 0
+rtc_ready:          dd 0
+rtc_tmp_sec:        dd 0
+rtc_tmp_min:        dd 0
+rtc_tmp_hour:       dd 0
+rtc_tmp_day:        dd 0
+rtc_tmp_month:      dd 0
+rtc_tmp_year:       dd 0
+
 scheduler_initialize:
     mov dword [scheduler_enabled], 0
     mov dword [scheduler_current], 0
@@ -34428,6 +34725,10 @@ message_trace_ok:
     db "NOVA: Kernel Trace 1.0 bereit (64-Slot-Ring, seq/subsys/args)", 13, 10, 0
 message_trace_error:
     db "NOVA PANIC: Kernel Trace Ring nicht initialisierbar", 13, 10, 0
+message_time_ok:
+    db "NOVA: Time 1.0 bereit (Monoton 100Hz + RTC CMOS Uhr/Datum)", 13, 10, 0
+message_time_error:
+    db "NOVA PANIC: Time Services nicht initialisierbar", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:
