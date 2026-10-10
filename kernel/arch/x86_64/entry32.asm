@@ -747,6 +747,20 @@ kernel_entry:
     mov esi, message_privlabel_ok
     call serial_write_string
 
+    call retry_initialize
+    jc panic_retry
+    call retry_self_test
+    jc panic_retry
+    mov esi, message_retry_ok
+    call serial_write_string
+
+    call rmode_initialize
+    jc panic_rmode
+    call rmode_self_test
+    jc panic_rmode
+    mov esi, message_rmode_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1415,6 +1429,18 @@ panic_privlabel:
     mov eax, 0x0000305F
     mov edx, 92
     mov esi, message_privlabel_error
+    jmp kernel_panic
+
+panic_retry:
+    mov eax, 0x00003060
+    mov edx, 93
+    mov esi, message_retry_error
+    jmp kernel_panic
+
+panic_rmode:
+    mov eax, 0x00003061
+    mov edx, 94
+    mov esi, message_rmode_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -31777,6 +31803,246 @@ align 4
 priv_table:
     times PRIV_OBJ_COUNT * PRIV_REC_SIZE db 0
 
+; ---------------------------------------------------------------------------
+; NPSPEC-RESILIENCE-RETRY-0001 + NPSPEC-RESILIENCE-BACKOFF-0001
+; Nova Retry Manager mit Exponential Backoff
+; ---------------------------------------------------------------------------
+; Jeder Retry-Slot verwaltet: attempts, max_attempts, backoff_ticks.
+; retry_attempt: CF=0 → nochmal versuchen / CF=1 → max erreicht.
+; retry_backoff: berechnet backoff_ticks = base_delay << attempts (saturating).
+; ---------------------------------------------------------------------------
+RETRY_CAPACITY      equ 8
+RETRY_REC_SIZE      equ 20
+
+RETRY_ID_OFF        equ 0
+RETRY_ATTEMPTS_OFF  equ 4
+RETRY_MAX_OFF       equ 8
+RETRY_BACKOFF_OFF   equ 12   ; current backoff in ticks
+RETRY_BASEDEL_OFF   equ 16   ; base delay in ticks
+
+retry_initialize:
+    mov edi, retry_table
+    xor eax, eax
+    mov ecx, (RETRY_CAPACITY * RETRY_REC_SIZE) / 4
+    rep stosd
+    mov dword [retry_ready], 0
+    mov dword [retry_total_retries], 0
+    mov dword [retry_exhausted], 0
+    mov dword [retry_ready], 1
+    clc
+    ret
+
+; EAX=max_attempts  EDX=base_delay_ticks → EAX=slot  CF=0/CF=1 full
+retry_register:
+    push esi
+    push edi
+    xor esi, esi
+.rtr_scan:
+    cmp esi, RETRY_CAPACITY
+    jae .rtr_full
+    imul edi, esi, RETRY_REC_SIZE
+    add edi, retry_table
+    cmp dword [edi + RETRY_ID_OFF], 0
+    je .rtr_slot
+    inc esi
+    jmp .rtr_scan
+.rtr_slot:
+    mov dword [edi + RETRY_ID_OFF], esi
+    mov dword [edi + RETRY_ATTEMPTS_OFF], 0
+    mov [edi + RETRY_MAX_OFF], eax
+    mov [edi + RETRY_BASEDEL_OFF], edx
+    mov [edi + RETRY_BACKOFF_OFF], edx    ; initial backoff = base
+    mov eax, esi
+    pop edi
+    pop esi
+    clc
+    ret
+.rtr_full:
+    pop edi
+    pop esi
+    stc
+    ret
+
+; EAX=slot → CF=0 retry allowed / CF=1 exhausted
+retry_attempt:
+    cmp eax, RETRY_CAPACITY
+    jae .ra_bad
+    push edi
+    imul edi, eax, RETRY_REC_SIZE
+    add edi, retry_table
+    cmp dword [edi + RETRY_ID_OFF], 0
+    je .ra_bad2
+    mov eax, [edi + RETRY_ATTEMPTS_OFF]
+    cmp eax, [edi + RETRY_MAX_OFF]
+    jae .ra_exhausted
+    inc dword [edi + RETRY_ATTEMPTS_OFF]
+    inc dword [retry_total_retries]
+    ; double backoff (saturate at 0x7FFFFFFF)
+    mov eax, [edi + RETRY_BACKOFF_OFF]
+    test eax, 0x40000000
+    jnz .ra_saturate
+    shl eax, 1
+    jmp .ra_store
+.ra_saturate:
+    mov eax, 0x7FFFFFFF
+.ra_store:
+    mov [edi + RETRY_BACKOFF_OFF], eax
+    pop edi
+    clc
+    ret
+.ra_exhausted:
+    inc dword [retry_exhausted]
+    pop edi
+    stc
+    ret
+.ra_bad2:
+    pop edi
+.ra_bad:
+    stc
+    ret
+
+; EAX=slot → EAX=current_backoff_ticks  EDX=attempts_remaining
+retry_query_backoff:
+    cmp eax, RETRY_CAPACITY
+    jae .rqb_bad
+    push edi
+    imul edi, eax, RETRY_REC_SIZE
+    add edi, retry_table
+    mov eax, [edi + RETRY_BACKOFF_OFF]
+    mov ecx, [edi + RETRY_MAX_OFF]
+    sub ecx, [edi + RETRY_ATTEMPTS_OFF]
+    mov edx, ecx
+    pop edi
+    clc
+    ret
+.rqb_bad:
+    xor eax, eax
+    xor edx, edx
+    stc
+    ret
+
+retry_self_test:
+    ; Register: max=3, base_delay=10
+    mov eax, 3
+    mov edx, 10
+    call retry_register
+    jc .rstf
+    push eax
+    ; 3 attempts should succeed
+    call retry_attempt
+    jc .rstf_pop
+    call retry_attempt
+    jc .rstf_pop
+    call retry_attempt
+    jc .rstf_pop
+    ; 4th attempt → CF=1 (exhausted)
+    call retry_attempt
+    jnc .rstf_pop
+    ; backoff should have doubled: 10→20→40
+    call retry_query_backoff
+    cmp eax, 40
+    jb .rstf_pop
+    pop eax
+    clc
+    ret
+.rstf_pop:
+    pop eax
+.rstf:
+    stc
+    ret
+
+retry_ready:         dd 0
+retry_total_retries: dd 0
+retry_exhausted:     dd 0
+align 4
+retry_table:
+    times RETRY_CAPACITY * RETRY_REC_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-RESILIENCE-RECOVERYMODE-0001 – Nova Recovery Mode Manager
+; ---------------------------------------------------------------------------
+; Systemweiter Recovery-Mode: NORMAL/DEGRADED/EMERGENCY/MAINTENANCE.
+; Übergänge sind geordnet; nicht jede Transition ist erlaubt.
+; Bei EMERGENCY: QoS-Epoch erzwingen + alle nicht-kritischen Tasks throtteln.
+; ---------------------------------------------------------------------------
+RMODE_NORMAL        equ 0
+RMODE_DEGRADED      equ 1
+RMODE_EMERGENCY     equ 2
+RMODE_MAINTENANCE   equ 3
+
+rmode_initialize:
+    mov dword [rmode_current], RMODE_NORMAL
+    mov dword [rmode_transitions], 0
+    mov dword [rmode_ready], 1
+    clc
+    ret
+
+; EAX=target_mode → CF=0 transition OK / CF=1 invalid
+rmode_transition:
+    cmp eax, RMODE_MAINTENANCE
+    ja .rm_bad
+    cmp [rmode_current], eax
+    je .rm_same
+    ; Enforce ordering: EMERGENCY→NORMAL only via DEGRADED
+    cmp dword [rmode_current], RMODE_EMERGENCY
+    jne .rm_ok
+    cmp eax, RMODE_NORMAL
+    je .rm_bad   ; must go EMERGENCY→DEGRADED first
+.rm_ok:
+    mov [rmode_current], eax
+    inc dword [rmode_transitions]
+    ; if entering EMERGENCY: force QoS epoch + tmpiso new epoch
+    cmp eax, RMODE_EMERGENCY
+    jne .rm_done
+    call qos_new_epoch
+    call tmpiso_new_epoch
+.rm_done:
+.rm_same:
+    clc
+    ret
+.rm_bad:
+    stc
+    ret
+
+; → EAX=current_mode
+rmode_query:
+    mov eax, [rmode_current]
+    clc
+    ret
+
+rmode_self_test:
+    ; Start NORMAL, go DEGRADED
+    mov eax, RMODE_DEGRADED
+    call rmode_transition
+    jc .rmstf
+    ; Go EMERGENCY
+    mov eax, RMODE_EMERGENCY
+    call rmode_transition
+    jc .rmstf
+    ; Try NORMAL directly → must fail
+    mov eax, RMODE_NORMAL
+    call rmode_transition
+    jnc .rmstf
+    ; Go DEGRADED first, then NORMAL
+    mov eax, RMODE_DEGRADED
+    call rmode_transition
+    jc .rmstf
+    mov eax, RMODE_NORMAL
+    call rmode_transition
+    jc .rmstf
+    call rmode_query
+    cmp eax, RMODE_NORMAL
+    jne .rmstf
+    clc
+    ret
+.rmstf:
+    stc
+    ret
+
+rmode_ready:       dd 0
+rmode_current:     dd 0
+rmode_transitions: dd 0
+
 ; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
@@ -43187,6 +43453,14 @@ message_privlabel_ok:
     db "NOVA: Privacy Label 1.0 bereit (16-Slot, PUBLIC/SENSITIVE/PRIVATE/CONF)", 13, 10, 0
 message_privlabel_error:
     db "NOVA PANIC: Privacy Label Manager nicht initialisierbar", 13, 10, 0
+message_retry_ok:
+    db "NOVA: Retry+Backoff 1.0 bereit (8-Slot, Exp-Backoff, max-attempts)", 13, 10, 0
+message_retry_error:
+    db "NOVA PANIC: Retry Manager nicht initialisierbar", 13, 10, 0
+message_rmode_ok:
+    db "NOVA: Recovery Mode 1.0 bereit (NORMAL/DEGRADED/EMERGENCY/MAINTENANCE)", 13, 10, 0
+message_rmode_error:
+    db "NOVA PANIC: Recovery Mode Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
