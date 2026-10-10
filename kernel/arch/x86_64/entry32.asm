@@ -901,6 +901,27 @@ kernel_entry:
     mov esi, message_rreclaim_ok
     call serial_write_string
 
+    call sdiag_initialize
+    jc panic_sdiag
+    call sdiag_self_test
+    jc panic_sdiag
+    mov esi, message_sdiag_ok
+    call serial_write_string
+
+    call sconf_initialize
+    jc panic_sconf
+    call sconf_self_test
+    jc panic_sconf
+    mov esi, message_sconf_ok
+    call serial_write_string
+
+    call apred_initialize
+    jc panic_apred
+    call apred_self_test
+    jc panic_apred
+    mov esi, message_apred_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1701,6 +1722,24 @@ panic_rreclaim:
     mov eax, 0x00003075
     mov edx, 114
     mov esi, message_rreclaim_error
+    jmp kernel_panic
+
+panic_sdiag:
+    mov eax, 0x00003076
+    mov edx, 115
+    mov esi, message_sdiag_error
+    jmp kernel_panic
+
+panic_sconf:
+    mov eax, 0x00003077
+    mov edx, 116
+    mov esi, message_sconf_error
+    jmp kernel_panic
+
+panic_apred:
+    mov eax, 0x00003078
+    mov edx, 117
+    mov esi, message_apred_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -46707,6 +46746,18 @@ message_rreclaim_ok:
     db "NOVA: Resource Reclaim 1.0 bereit (8-Slots, release+reuse tracking)", 13, 10, 0
 message_rreclaim_error:
     db "NOVA PANIC: Resource Reclaim Manager nicht initialisierbar", 13, 10, 0
+message_sdiag_ok:
+    db "NOVA: Self-Diagnosis 1.0 bereit (8-Slots, symptom+diagnosis tracking)", 13, 10, 0
+message_sdiag_error:
+    db "NOVA PANIC: Self-Diagnosis Engine nicht initialisierbar", 13, 10, 0
+message_sconf_ok:
+    db "NOVA: Self-Config 1.0 bereit (8-Params, runtime config key/value store)", 13, 10, 0
+message_sconf_error:
+    db "NOVA PANIC: Self-Config Manager nicht initialisierbar", 13, 10, 0
+message_apred_ok:
+    db "NOVA: Adaptive Prediction 1.0 bereit (8-Slots, EWMA demand forecasting)", 13, 10, 0
+message_apred_error:
+    db "NOVA PANIC: Adaptive Prediction Engine nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
