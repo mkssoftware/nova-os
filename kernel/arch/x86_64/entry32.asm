@@ -531,6 +531,27 @@ kernel_entry:
     mov esi, message_security_audit_ok
     call serial_write_string
 
+    call mac_initialize
+    jc panic_mac
+    call mac_self_test
+    jc panic_mac
+    mov esi, message_mac_ok
+    call serial_write_string
+
+    call dac_initialize
+    jc panic_dac
+    call dac_self_test
+    jc panic_dac
+    mov esi, message_dac_ok
+    call serial_write_string
+
+    call rbac_initialize
+    jc panic_rbac
+    call rbac_self_test
+    jc panic_rbac
+    mov esi, message_rbac_ok
+    call serial_write_string
+
     call boot_health_initialize
     jc panic_boot_health
     call boot_health_self_test
@@ -1102,6 +1123,24 @@ panic_security_audit:
     mov eax, 0x0000303E
     mov edx, 59
     mov esi, message_security_audit_error
+    jmp kernel_panic
+
+panic_mac:
+    mov eax, 0x0000304C
+    mov edx, 73
+    mov esi, message_mac_error
+    jmp kernel_panic
+
+panic_dac:
+    mov eax, 0x0000304D
+    mov edx, 74
+    mov esi, message_dac_error
+    jmp kernel_panic
+
+panic_rbac:
+    mov eax, 0x0000304E
+    mov edx, 75
+    mov esi, message_rbac_error
     jmp kernel_panic
 
 panic_boot_health:
@@ -21399,6 +21438,563 @@ align 4
 audit_log:
     times AUDIT_CAPACITY * AUDIT_EVENT_SIZE db 0
 
+; ===========================================================================
+; NPSPEC-SECURITY-MAC-0001 – Nova Mandatory Access Control
+; Sensitivity-Labels für Subjects und Objects; Dominanz-Check: Subject muss
+; Object dominieren (Label >= Object-Label) für Lesezugriff.
+; ===========================================================================
+
+MAC_SUBJECT_COUNT    equ 8
+MAC_OBJECT_COUNT     equ 8
+MAC_RECORD_SIZE      equ 12
+
+MAC_LABEL_PUBLIC     equ 0
+MAC_LABEL_INTERNAL   equ 1
+MAC_LABEL_CONFIDENTIAL equ 2
+MAC_LABEL_SECRET     equ 3
+
+MAC_SUB_ID           equ 0
+MAC_SUB_LABEL        equ 4
+MAC_SUB_FLAGS        equ 8
+
+mac_initialize:
+    mov edi, mac_subjects
+    mov ecx, MAC_SUBJECT_COUNT * MAC_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov edi, mac_objects
+    mov ecx, MAC_OBJECT_COUNT * MAC_RECORD_SIZE / 4
+    rep stosd
+    mov dword [mac_ready], 1
+    mov dword [mac_denials], 0
+    clc
+    ret
+
+; EAX=subject_id  EDX=label → registriert Subjekt; CF=0/CF=1 voll
+mac_register_subject:
+    push esi
+    push ecx
+    mov esi, mac_subjects
+    xor ecx, ecx
+.macrs_scan:
+    cmp ecx, MAC_SUBJECT_COUNT
+    jae .macrs_full
+    cmp dword [esi + MAC_SUB_ID], 0
+    je .macrs_found
+    add esi, MAC_RECORD_SIZE
+    inc ecx
+    jmp .macrs_scan
+.macrs_found:
+    mov [esi + MAC_SUB_ID], eax
+    mov [esi + MAC_SUB_LABEL], edx
+    mov dword [esi + MAC_SUB_FLAGS], 1  ; aktiv
+    clc
+    pop ecx
+    pop esi
+    ret
+.macrs_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; EAX=object_id  EDX=label → registriert Objekt
+mac_register_object:
+    push esi
+    push ecx
+    mov esi, mac_objects
+    xor ecx, ecx
+.macro_scan:
+    cmp ecx, MAC_OBJECT_COUNT
+    jae .macro_full
+    cmp dword [esi + MAC_SUB_ID], 0
+    je .macro_found
+    add esi, MAC_RECORD_SIZE
+    inc ecx
+    jmp .macro_scan
+.macro_found:
+    mov [esi + MAC_SUB_ID], eax
+    mov [esi + MAC_SUB_LABEL], edx
+    mov dword [esi + MAC_SUB_FLAGS], 1
+    clc
+    pop ecx
+    pop esi
+    ret
+.macro_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; EAX=subject_id  EDX=object_id → CF=0 erlaubt / CF=1 verboten (simple dominance)
+mac_check:
+    push esi
+    push edi
+    push ecx
+    ; Subject-Label suchen
+    mov esi, mac_subjects
+    xor ecx, ecx
+.macc_sub:
+    cmp ecx, MAC_SUBJECT_COUNT
+    jae .macc_deny
+    cmp dword [esi + MAC_SUB_ID], eax
+    je .macc_sub_found
+    add esi, MAC_RECORD_SIZE
+    inc ecx
+    jmp .macc_sub
+.macc_sub_found:
+    push dword [esi + MAC_SUB_LABEL]   ; subject_label auf Stack
+    ; Object-Label suchen
+    mov edi, mac_objects
+    xor ecx, ecx
+.macc_obj:
+    cmp ecx, MAC_OBJECT_COUNT
+    jae .macc_deny_pop
+    cmp dword [edi + MAC_SUB_ID], edx
+    je .macc_obj_found
+    add edi, MAC_RECORD_SIZE
+    inc ecx
+    jmp .macc_obj
+.macc_obj_found:
+    pop ecx                             ; subject_label
+    ; Dominanz: subject_label >= object_label
+    cmp ecx, [edi + MAC_SUB_LABEL]
+    jb .macc_deny2
+    clc
+    pop ecx
+    pop edi
+    pop esi
+    ret
+.macc_deny_pop:
+    pop ecx
+.macc_deny:
+.macc_deny2:
+    inc dword [mac_denials]
+    stc
+    pop ecx
+    pop edi
+    pop esi
+    ret
+
+mac_self_test:
+    push esi
+    xor esi, esi
+    cmp dword [mac_ready], 1
+    je .mst1
+    inc esi
+.mst1:
+    ; Subject 1 = CONFIDENTIAL, Object 10 = INTERNAL → erlaubt (2>=1)
+    mov eax, 1
+    mov edx, MAC_LABEL_CONFIDENTIAL
+    call mac_register_subject
+    mov eax, 10
+    mov edx, MAC_LABEL_INTERNAL
+    call mac_register_object
+    mov eax, 1
+    mov edx, 10
+    call mac_check
+    jnc .mst2
+    inc esi
+.mst2:
+    ; Subject 2 = PUBLIC, Object 20 = SECRET → verboten (0<3)
+    mov eax, 2
+    mov edx, MAC_LABEL_PUBLIC
+    call mac_register_subject
+    mov eax, 20
+    mov edx, MAC_LABEL_SECRET
+    call mac_register_object
+    mov eax, 2
+    mov edx, 20
+    call mac_check
+    jc .mst3
+    inc esi
+.mst3:
+    cmp dword [mac_denials], 1
+    je .mst4
+    inc esi
+.mst4:
+    test esi, esi
+    jnz .mstf
+    clc
+    pop esi
+    ret
+.mstf:
+    stc
+    pop esi
+    ret
+
+mac_ready:   dd 0
+mac_denials: dd 0
+align 4
+mac_subjects:
+    times MAC_SUBJECT_COUNT * MAC_RECORD_SIZE db 0
+mac_objects:
+    times MAC_OBJECT_COUNT * MAC_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-SECURITY-DAC-0001 – Nova Discretionary Access Control
+; Besitzer-basierte Zugriffsrechte: Read/Write/Execute-Bits pro Eintrag.
+; ===========================================================================
+
+DAC_ENTRY_COUNT      equ 16
+DAC_RECORD_SIZE      equ 16
+
+DAC_PERM_READ        equ 0x01
+DAC_PERM_WRITE       equ 0x02
+DAC_PERM_EXEC        equ 0x04
+
+DAC_OBJ_ID           equ 0
+DAC_OWNER            equ 4
+DAC_OWNER_PERMS      equ 8
+DAC_OTHERS_PERMS     equ 12
+
+dac_initialize:
+    mov edi, dac_table
+    mov ecx, DAC_ENTRY_COUNT * DAC_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [dac_ready], 1
+    mov dword [dac_denials], 0
+    clc
+    ret
+
+; EAX=obj_id  EDX=owner  ECX=owner_perms  EBX=others_perms → CF=0/CF=1 voll
+dac_register:
+    push esi
+    push edi
+    mov esi, dac_table
+    push ecx
+    xor ecx, ecx
+.dacr_scan:
+    cmp ecx, DAC_ENTRY_COUNT
+    jae .dacr_full
+    cmp dword [esi + DAC_OBJ_ID], 0
+    je .dacr_found
+    add esi, DAC_RECORD_SIZE
+    inc ecx
+    jmp .dacr_scan
+.dacr_found:
+    pop ecx
+    mov [esi + DAC_OBJ_ID], eax
+    mov [esi + DAC_OWNER], edx
+    mov [esi + DAC_OWNER_PERMS], ecx
+    mov [esi + DAC_OTHERS_PERMS], ebx
+    clc
+    pop edi
+    pop esi
+    ret
+.dacr_full:
+    pop ecx
+    stc
+    pop edi
+    pop esi
+    ret
+
+; EAX=obj_id  EDX=caller_id  ECX=requested_perms → CF=0 ok / CF=1 deny
+dac_check:
+    push esi
+    push ebx
+    push ecx
+    mov esi, dac_table
+    push ecx
+    xor ecx, ecx
+.dacc_scan:
+    cmp ecx, DAC_ENTRY_COUNT
+    jae .dacc_deny
+    cmp dword [esi + DAC_OBJ_ID], eax
+    je .dacc_found
+    add esi, DAC_RECORD_SIZE
+    inc ecx
+    jmp .dacc_scan
+.dacc_found:
+    pop ecx   ; requested_perms
+    ; Ist caller der Besitzer?
+    cmp dword [esi + DAC_OWNER], edx
+    je .dacc_owner
+    ; Andere Nutzer: others_perms
+    mov ebx, [esi + DAC_OTHERS_PERMS]
+    jmp .dacc_check_bits
+.dacc_owner:
+    mov ebx, [esi + DAC_OWNER_PERMS]
+.dacc_check_bits:
+    and ebx, ecx
+    cmp ebx, ecx
+    je .dacc_ok
+    inc dword [dac_denials]
+    stc
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+.dacc_ok:
+    clc
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+.dacc_deny:
+    pop ecx
+    inc dword [dac_denials]
+    stc
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+
+dac_self_test:
+    push esi
+    push ebx
+    xor esi, esi
+    cmp dword [dac_ready], 1
+    je .dst1
+    inc esi
+.dst1:
+    ; Objekt 100: owner=1, owner_perms=RWX, others_perms=R
+    mov eax, 100
+    mov edx, 1
+    mov ecx, DAC_PERM_READ | DAC_PERM_WRITE | DAC_PERM_EXEC
+    mov ebx, DAC_PERM_READ
+    call dac_register
+    jnc .dst2
+    inc esi
+.dst2:
+    ; Owner liest → ok
+    mov eax, 100
+    mov edx, 1
+    mov ecx, DAC_PERM_READ
+    call dac_check
+    jnc .dst3
+    inc esi
+.dst3:
+    ; Anderer schreibt → verboten
+    mov eax, 100
+    mov edx, 2
+    mov ecx, DAC_PERM_WRITE
+    call dac_check
+    jc .dst4
+    inc esi
+.dst4:
+    cmp dword [dac_denials], 1
+    je .dst5
+    inc esi
+.dst5:
+    test esi, esi
+    jnz .dstf
+    clc
+    pop ebx
+    pop esi
+    ret
+.dstf:
+    stc
+    pop ebx
+    pop esi
+    ret
+
+dac_ready:   dd 0
+dac_denials: dd 0
+align 4
+dac_table:
+    times DAC_ENTRY_COUNT * DAC_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-SECURITY-RBAC-0001 – Nova Role-Based Access Control
+; Rollen mit Permission-Masken; Subjects werden Rollen zugewiesen.
+; ===========================================================================
+
+RBAC_ROLE_COUNT      equ 8
+RBAC_ASSIGN_COUNT    equ 16
+RBAC_ROLE_SIZE       equ 12
+RBAC_ASSIGN_SIZE     equ 8
+
+RBAC_ROLE_ID         equ 0
+RBAC_ROLE_PERMS      equ 4   ; Bitmaske der erlaubten Operationen
+RBAC_ROLE_FLAGS      equ 8
+
+RBAC_ASSIGN_SUBJECT  equ 0
+RBAC_ASSIGN_ROLE_ID  equ 4
+
+rbac_initialize:
+    mov edi, rbac_roles
+    mov ecx, RBAC_ROLE_COUNT * RBAC_ROLE_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov edi, rbac_assignments
+    mov ecx, RBAC_ASSIGN_COUNT * RBAC_ASSIGN_SIZE / 4
+    rep stosd
+    mov dword [rbac_ready], 1
+    mov dword [rbac_denials], 0
+    clc
+    ret
+
+; EAX=role_id  EDX=permission_mask → CF=0/CF=1 voll
+rbac_define_role:
+    push esi
+    push ecx
+    mov esi, rbac_roles
+    xor ecx, ecx
+.rdr_scan:
+    cmp ecx, RBAC_ROLE_COUNT
+    jae .rdr_full
+    cmp dword [esi + RBAC_ROLE_FLAGS], 0
+    je .rdr_found
+    add esi, RBAC_ROLE_SIZE
+    inc ecx
+    jmp .rdr_scan
+.rdr_found:
+    mov [esi + RBAC_ROLE_ID], eax
+    mov [esi + RBAC_ROLE_PERMS], edx
+    mov dword [esi + RBAC_ROLE_FLAGS], 1
+    clc
+    pop ecx
+    pop esi
+    ret
+.rdr_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; EAX=subject_id  EDX=role_id → CF=0/CF=1 voll
+rbac_assign_role:
+    push esi
+    push ecx
+    mov esi, rbac_assignments
+    xor ecx, ecx
+.rar_scan:
+    cmp ecx, RBAC_ASSIGN_COUNT
+    jae .rar_full
+    cmp dword [esi + RBAC_ASSIGN_SUBJECT], 0
+    je .rar_found
+    add esi, RBAC_ASSIGN_SIZE
+    inc ecx
+    jmp .rar_scan
+.rar_found:
+    mov [esi + RBAC_ASSIGN_SUBJECT], eax
+    mov [esi + RBAC_ASSIGN_ROLE_ID], edx
+    clc
+    pop ecx
+    pop esi
+    ret
+.rar_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; EAX=subject_id  EDX=requested_perm → CF=0 erlaubt / CF=1 verboten
+rbac_check:
+    push esi
+    push edi
+    push ecx
+    push ebx
+    ; Alle Zuweisungen für subject durchsuchen
+    mov esi, rbac_assignments
+    xor ecx, ecx
+.rbcc_assign:
+    cmp ecx, RBAC_ASSIGN_COUNT
+    jae .rbcc_deny
+    cmp dword [esi + RBAC_ASSIGN_SUBJECT], eax
+    je .rbcc_found_assign
+    add esi, RBAC_ASSIGN_SIZE
+    inc ecx
+    jmp .rbcc_assign
+.rbcc_found_assign:
+    ; Rolle laden
+    push dword [esi + RBAC_ASSIGN_ROLE_ID]
+    mov edi, rbac_roles
+    xor ecx, ecx
+.rbcc_role:
+    cmp ecx, RBAC_ROLE_COUNT
+    jae .rbcc_deny_pop
+    pop ebx    ; role_id
+    cmp dword [edi + RBAC_ROLE_ID], ebx
+    je .rbcc_found_role
+    push ebx
+    add edi, RBAC_ROLE_SIZE
+    inc ecx
+    jmp .rbcc_role
+.rbcc_found_role:
+    ; Permission prüfen
+    mov ebx, [edi + RBAC_ROLE_PERMS]
+    and ebx, edx
+    cmp ebx, edx
+    je .rbcc_ok
+    jmp .rbcc_deny
+.rbcc_deny_pop:
+    pop ebx
+.rbcc_deny:
+    inc dword [rbac_denials]
+    stc
+    pop ebx
+    pop ecx
+    pop edi
+    pop esi
+    ret
+.rbcc_ok:
+    clc
+    pop ebx
+    pop ecx
+    pop edi
+    pop esi
+    ret
+
+rbac_self_test:
+    push esi
+    xor esi, esi
+    cmp dword [rbac_ready], 1
+    je .rbst1
+    inc esi
+.rbst1:
+    ; Rolle 1: READ|WRITE  Rolle 2: READ only
+    mov eax, 1
+    mov edx, DAC_PERM_READ | DAC_PERM_WRITE
+    call rbac_define_role
+    mov eax, 2
+    mov edx, DAC_PERM_READ
+    call rbac_define_role
+    ; Subject 10 = Rolle 1, Subject 20 = Rolle 2
+    mov eax, 10
+    mov edx, 1
+    call rbac_assign_role
+    mov eax, 20
+    mov edx, 2
+    call rbac_assign_role
+    ; Subject 10 schreibt → ok
+    mov eax, 10
+    mov edx, DAC_PERM_WRITE
+    call rbac_check
+    jnc .rbst2
+    inc esi
+.rbst2:
+    ; Subject 20 schreibt → verboten
+    mov eax, 20
+    mov edx, DAC_PERM_WRITE
+    call rbac_check
+    jc .rbst3
+    inc esi
+.rbst3:
+    cmp dword [rbac_denials], 1
+    je .rbst4
+    inc esi
+.rbst4:
+    test esi, esi
+    jnz .rbstf
+    clc
+    pop esi
+    ret
+.rbstf:
+    stc
+    pop esi
+    ret
+
+rbac_ready:   dd 0
+rbac_denials: dd 0
+align 4
+rbac_roles:
+    times RBAC_ROLE_COUNT * RBAC_ROLE_SIZE db 0
+rbac_assignments:
+    times RBAC_ASSIGN_COUNT * RBAC_ASSIGN_SIZE db 0
+
 ; ---------------------------------------------------------------------------
 ; Boot Health Authority ABI 1.0
 ; Capability-geschuetzte, generationsgebundene Provider-Aggregation.
@@ -39237,6 +39833,18 @@ message_security_audit_ok:
     db "NOVA: Security Audit 1.0 bereit (32 Ereignisse, CAP/VIOLATION/POLICY)", 13, 10, 0
 message_security_audit_error:
     db "NOVA PANIC: Security Audit Log nicht initialisierbar", 13, 10, 0
+message_mac_ok:
+    db "NOVA: MAC 1.0 bereit (8 Subjects, 8 Objects, 4 Sensitivity-Labels)", 13, 10, 0
+message_mac_error:
+    db "NOVA PANIC: MAC nicht initialisierbar", 13, 10, 0
+message_dac_ok:
+    db "NOVA: DAC 1.0 bereit (16 Eintraege, RWX-Bits, Besitzer-Check)", 13, 10, 0
+message_dac_error:
+    db "NOVA PANIC: DAC nicht initialisierbar", 13, 10, 0
+message_rbac_ok:
+    db "NOVA: RBAC 1.0 bereit (8 Rollen, 16 Zuweisungen, Perm-Masken)", 13, 10, 0
+message_rbac_error:
+    db "NOVA PANIC: RBAC nicht initialisierbar", 13, 10, 0
 message_rt_scheduler_ok:
     db "NOVA: RT Scheduler 1.0 bereit (8 Tasks, EDF/FIFO-RT)", 13, 10, 0
 message_rt_scheduler_error:
