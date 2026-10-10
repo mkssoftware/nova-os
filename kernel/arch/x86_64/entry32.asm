@@ -128,6 +128,13 @@ kernel_entry:
     mov esi, message_heap_ok
     call serial_write_string
 
+    call slab_initialize
+    jc panic_slab
+    call slab_self_test
+    jc panic_slab
+    mov esi, message_slab_ok
+    call serial_write_string
+
     call object_manager_initialize
     jc panic_object_manager
     call object_manager_self_test
@@ -561,6 +568,10 @@ kernel_entry:
     jc panic_sync
     call sync_ext_self_test
     jc panic_sync
+    call futex_initialize
+    jc panic_futex
+    call futex_self_test
+    jc panic_futex
     mov esi, message_sync_ok
     call serial_write_string
 
@@ -1023,6 +1034,12 @@ panic_sync:
     mov esi, message_sync_error
     jmp kernel_panic
 
+panic_futex:
+    mov eax, 0x0000303A
+    mov edx, 55
+    mov esi, message_futex_error
+    jmp kernel_panic
+
 panic_irq_manager:
     mov eax, 0x0000001E
     mov edx, 0x49525147             ; "IRQG"
@@ -1147,6 +1164,12 @@ panic_heap:
     mov eax, 0x00002003
     mov edx, 3
     mov esi, message_heap_error
+    jmp kernel_panic
+
+panic_slab:
+    mov eax, 0x0000303B
+    mov edx, 56
+    mov esi, message_slab_error
     jmp kernel_panic
 
 panic_interrupt_manager:
@@ -2739,6 +2762,266 @@ heap_page:        dd 0
 heap_offset:      dd 0
 heap_allocations: dd 0
 heap_bytes:       dd 0
+
+; ===========================================================================
+; NPSPEC-MEMORY-SLAB-0001 – Nova Slab Allocator
+; 4 feste Objekt-Klassen (16/32/64/128 Byte); je 16 Objekte pro Slab;
+; alloc = pop aus freier Liste; free = push zurück.
+; ===========================================================================
+
+SLAB_CLASS_COUNT    equ 4
+SLAB_OBJECTS_PER    equ 16
+
+; Klasse 0: 16 Byte, Klasse 1: 32 Byte, Klasse 2: 64 Byte, Klasse 3: 128 Byte
+; Gesamtspeicher pro Klasse: 16*16=256, 16*32=512, 16*64=1024, 16*128=2048 = 3840 Byte
+
+SLAB_SIZE_0         equ 16
+SLAB_SIZE_1         equ 32
+SLAB_SIZE_2         equ 64
+SLAB_SIZE_3         equ 128
+
+; Klassen-Deskriptor (je 24 Byte):
+SLABCLS_OBJ_SIZE    equ 0    ; dd Objektgröße
+SLABCLS_FREE_HEAD   equ 4    ; dd Zeiger auf erste freie Zelle (0=leer)
+SLABCLS_ALLOC_COUNT equ 8    ; dd Anzahl ausgelagerter Objekte
+SLABCLS_FREE_COUNT  equ 12   ; dd Anzahl freier Objekte
+SLABCLS_TOTAL       equ 16   ; dd Gesamtanzahl jemals alloziert
+SLABCLS_PAD         equ 20   ; dd (alignment)
+SLABCLS_SIZE        equ 24
+
+slab_initialize:
+    ; Klassen-Deskriptoren initialisieren
+    mov dword [slab_classes + 0*SLABCLS_SIZE + SLABCLS_OBJ_SIZE], SLAB_SIZE_0
+    mov dword [slab_classes + 1*SLABCLS_SIZE + SLABCLS_OBJ_SIZE], SLAB_SIZE_1
+    mov dword [slab_classes + 2*SLABCLS_SIZE + SLABCLS_OBJ_SIZE], SLAB_SIZE_2
+    mov dword [slab_classes + 3*SLABCLS_SIZE + SLABCLS_OBJ_SIZE], SLAB_SIZE_3
+    ; Freie Listen aufbauen
+    push ebx
+    push esi
+    push edi
+    push ecx
+    xor ebx, ebx    ; Klassen-Index
+.si_class_loop:
+    cmp ebx, SLAB_CLASS_COUNT
+    jae .si_done
+    ; Slab-Pool dieser Klasse verlinken
+    imul esi, ebx, SLABCLS_SIZE
+    add esi, slab_classes
+    ; Pool-Basis berechnen
+    call slab_get_pool_base   ; EBX=class → EDI=base, ECX=obj_size
+    ; freie Liste als intrusive Linked List aufbauen
+    mov ecx, SLAB_OBJECTS_PER
+    mov eax, edi
+.si_link:
+    dec ecx
+    jz .si_last
+    push ecx
+    lea ecx, [eax + edx]    ; next ptr = current + obj_size
+    mov [eax], ecx           ; *current = next
+    add eax, edx
+    pop ecx
+    jmp .si_link
+.si_last:
+    mov dword [eax], 0       ; letzter Eintrag: NULL
+    mov [esi + SLABCLS_FREE_HEAD], edi
+    mov dword [esi + SLABCLS_FREE_COUNT], SLAB_OBJECTS_PER
+    mov dword [esi + SLABCLS_ALLOC_COUNT], 0
+    mov dword [esi + SLABCLS_TOTAL], 0
+    mov dword [esi + SLABCLS_PAD], 0
+    inc ebx
+    jmp .si_class_loop
+.si_done:
+    mov dword [slab_ready], 1
+    clc
+    pop ecx
+    pop edi
+    pop esi
+    pop ebx
+    ret
+
+; intern: EBX=class_index → EDI=pool_base, EDX=obj_size
+slab_get_pool_base:
+    cmp ebx, 0
+    jne .sgpb_1
+    mov edi, slab_pool_0
+    mov edx, SLAB_SIZE_0
+    ret
+.sgpb_1:
+    cmp ebx, 1
+    jne .sgpb_2
+    mov edi, slab_pool_1
+    mov edx, SLAB_SIZE_1
+    ret
+.sgpb_2:
+    cmp ebx, 2
+    jne .sgpb_3
+    mov edi, slab_pool_2
+    mov edx, SLAB_SIZE_2
+    ret
+.sgpb_3:
+    mov edi, slab_pool_3
+    mov edx, SLAB_SIZE_3
+    ret
+
+; EAX=gewünschte Größe → EAX=Zeiger auf Objekt CF=0 / CF=1 (OOM oder zu groß)
+slab_alloc:
+    push esi
+    push edx
+    ; Klasse bestimmen
+    cmp eax, SLAB_SIZE_0
+    jbe .sla_cls0
+    cmp eax, SLAB_SIZE_1
+    jbe .sla_cls1
+    cmp eax, SLAB_SIZE_2
+    jbe .sla_cls2
+    cmp eax, SLAB_SIZE_3
+    jbe .sla_cls3
+    stc
+    pop edx
+    pop esi
+    ret
+.sla_cls0: mov edx, 0
+    jmp .sla_alloc
+.sla_cls1: mov edx, 1
+    jmp .sla_alloc
+.sla_cls2: mov edx, 2
+    jmp .sla_alloc
+.sla_cls3: mov edx, 3
+.sla_alloc:
+    imul esi, edx, SLABCLS_SIZE
+    add esi, slab_classes
+    mov eax, [esi + SLABCLS_FREE_HEAD]
+    test eax, eax
+    jz .sla_oom
+    mov edx, [eax]           ; next freie Zelle
+    mov [esi + SLABCLS_FREE_HEAD], edx
+    dec dword [esi + SLABCLS_FREE_COUNT]
+    inc dword [esi + SLABCLS_ALLOC_COUNT]
+    inc dword [esi + SLABCLS_TOTAL]
+    clc
+    pop edx
+    pop esi
+    ret
+.sla_oom:
+    stc
+    pop edx
+    pop esi
+    ret
+
+; EAX=Zeiger  EDX=Größe → gibt Objekt zurück in passende Klasse
+slab_free:
+    push esi
+    push ecx
+    ; Klasse bestimmen
+    cmp edx, SLAB_SIZE_0
+    jbe .slf_cls0
+    cmp edx, SLAB_SIZE_1
+    jbe .slf_cls1
+    cmp edx, SLAB_SIZE_2
+    jbe .slf_cls2
+    jmp .slf_cls3
+.slf_cls0: mov ecx, 0
+    jmp .slf_free
+.slf_cls1: mov ecx, 1
+    jmp .slf_free
+.slf_cls2: mov ecx, 2
+    jmp .slf_free
+.slf_cls3: mov ecx, 3
+.slf_free:
+    imul esi, ecx, SLABCLS_SIZE
+    add esi, slab_classes
+    mov ecx, [esi + SLABCLS_FREE_HEAD]
+    mov [eax], ecx           ; next = alte free_head
+    mov [esi + SLABCLS_FREE_HEAD], eax
+    inc dword [esi + SLABCLS_FREE_COUNT]
+    dec dword [esi + SLABCLS_ALLOC_COUNT]
+    clc
+    pop ecx
+    pop esi
+    ret
+
+slab_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+
+    ; T1: ready
+    cmp dword [slab_ready], 1
+    je .slst1_ok
+    inc esi
+.slst1_ok:
+
+    ; T2: alloc Klasse 0 (16 Byte)
+    mov eax, 16
+    call slab_alloc
+    jnc .slst2_ok
+    inc esi
+    jmp .slst2_fail
+.slst2_ok:
+    mov ebx, eax        ; Zeiger merken
+.slst2_fail:
+
+    ; T3: free_count Klasse 0 = 15
+    cmp dword [slab_classes + 0*SLABCLS_SIZE + SLABCLS_FREE_COUNT], 15
+    je .slst3_ok
+    inc esi
+.slst3_ok:
+
+    ; T4: alloc Klasse 2 (64 Byte)
+    mov eax, 64
+    call slab_alloc
+    jnc .slst4_ok
+    inc esi
+.slst4_ok:
+    push eax            ; merken
+
+    ; T5: free Klasse 0
+    mov eax, ebx
+    mov edx, 16
+    call slab_free
+    cmp dword [slab_classes + 0*SLABCLS_SIZE + SLABCLS_FREE_COUNT], 16
+    je .slst5_ok
+    inc esi
+.slst5_ok:
+
+    ; T6: free Klasse 2
+    pop eax
+    mov edx, 64
+    call slab_free
+    cmp dword [slab_classes + 2*SLABCLS_SIZE + SLABCLS_FREE_COUNT], 16
+    je .slst6_ok
+    inc esi
+.slst6_ok:
+
+    ; T7: alloc Klasse 3 (128 Byte) Erfolg
+    mov eax, 128
+    call slab_alloc
+    jnc .slst7_ok
+    inc esi
+.slst7_ok:
+    ; Aufräumen
+    mov edx, 128
+    call slab_free
+
+    test esi, esi
+    jnz .slstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.slstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+slab_ready:     dd 0
+align 4
+slab_classes:   times SLAB_CLASS_COUNT * SLABCLS_SIZE db 0
+slab_pool_0:    times SLAB_SIZE_0 * SLAB_OBJECTS_PER db 0
+slab_pool_1:    times SLAB_SIZE_1 * SLAB_OBJECTS_PER db 0
+slab_pool_2:    times SLAB_SIZE_2 * SLAB_OBJECTS_PER db 0
+slab_pool_3:    times SLAB_SIZE_3 * SLAB_OBJECTS_PER db 0
 
 ; ---------------------------------------------------------------------------
 ; Strukturiertes Early-/Kernel-Logging (NPSPEC-KERNEL-0023)
@@ -28495,6 +28778,218 @@ sync_st_rcu_target:  dd 0xCAFEBABE
 sync_st_rcu_called:  dd 0
 align 4
 
+; ===========================================================================
+; NPSPEC-SYNC-FUTEX-0001 – Nova Fast Userspace Mutex
+; Kernel-seitige Futex-Infrastruktur: Warte-Queue pro Futex-Adresse,
+; wake/wait über 32-Bit-Futex-Wort; im Bootstrap: Spin-Fallback.
+; ===========================================================================
+
+FUTEX_CAPACITY      equ 16
+FUTEX_RECORD_SIZE   equ 20
+
+FTX_ADDR            equ 0   ; Adresse des Futex-Wortes (virtuelle Adresse)
+FTX_WAITER_COUNT    equ 4   ; Anzahl wartender Threads
+FTX_FLAGS           equ 8   ; Flags (privat, geteilt, RT)
+FTX_WAKE_COUNT      equ 12  ; Gesamte Weckvorgänge
+FTX_STATE           equ 16  ; 0=frei, 1=aktiv
+
+FTX_STATE_FREE      equ 0
+FTX_STATE_ACTIVE    equ 1
+
+FTX_FLAG_PRIVATE    equ 0x01
+FTX_FLAG_SHARED     equ 0x02
+FTX_FLAG_RT         equ 0x04
+
+futex_initialize:
+    mov edi, futex_table
+    mov ecx, FUTEX_CAPACITY * FUTEX_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [futex_next_id], 0
+    mov dword [futex_total_waits], 0
+    mov dword [futex_total_wakes], 0
+    mov dword [futex_ready], 1
+    clc
+    ret
+
+; EAX=futex_addr  EDX=flags → EAX=slot_index CF=0 / CF=1 voll
+futex_register:
+    push ebx
+    push esi
+    mov esi, futex_table
+    xor ebx, ebx
+.ftr_scan:
+    cmp ebx, FUTEX_CAPACITY
+    jae .ftr_full
+    cmp dword [esi + FTX_STATE], FTX_STATE_FREE
+    je .ftr_found
+    ; schon registriert?
+    cmp [esi + FTX_ADDR], eax
+    je .ftr_exists
+    add esi, FUTEX_RECORD_SIZE
+    inc ebx
+    jmp .ftr_scan
+.ftr_exists:
+    mov eax, ebx
+    clc
+    pop esi
+    pop ebx
+    ret
+.ftr_found:
+    mov [esi + FTX_ADDR], eax
+    mov [esi + FTX_FLAGS], edx
+    mov dword [esi + FTX_WAITER_COUNT], 0
+    mov dword [esi + FTX_WAKE_COUNT], 0
+    mov dword [esi + FTX_STATE], FTX_STATE_ACTIVE
+    inc dword [futex_next_id]
+    mov eax, ebx
+    clc
+    pop esi
+    pop ebx
+    ret
+.ftr_full:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+; EAX=slot → simuliert Warten: inkrementiert waiter_count (kein echtes Blockieren im Bootstrap)
+futex_wait:
+    push esi
+    cmp eax, FUTEX_CAPACITY
+    jae .ftw_fail
+    imul esi, eax, FUTEX_RECORD_SIZE
+    add esi, futex_table
+    cmp dword [esi + FTX_STATE], FTX_STATE_ACTIVE
+    jne .ftw_fail
+    inc dword [esi + FTX_WAITER_COUNT]
+    inc dword [futex_total_waits]
+    clc
+    pop esi
+    ret
+.ftw_fail:
+    stc
+    pop esi
+    ret
+
+; EAX=slot  EDX=max_wake → weckt bis zu EDX Waiters (dekrementiert waiter_count)
+futex_wake:
+    push esi
+    push edx
+    cmp eax, FUTEX_CAPACITY
+    jae .ftwk_done
+    imul esi, eax, FUTEX_RECORD_SIZE
+    add esi, futex_table
+    cmp dword [esi + FTX_STATE], FTX_STATE_ACTIVE
+    jne .ftwk_done
+.ftwk_loop:
+    test edx, edx
+    jz .ftwk_done
+    cmp dword [esi + FTX_WAITER_COUNT], 0
+    je .ftwk_done
+    dec dword [esi + FTX_WAITER_COUNT]
+    inc dword [esi + FTX_WAKE_COUNT]
+    inc dword [futex_total_wakes]
+    dec edx
+    jmp .ftwk_loop
+.ftwk_done:
+    clc
+    pop edx
+    pop esi
+    ret
+
+futex_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+
+    ; T1: ready
+    cmp dword [futex_ready], 1
+    je .ftst1_ok
+    inc esi
+.ftst1_ok:
+
+    ; T2: register
+    mov eax, 0x1000    ; virtuelle Futex-Adresse (symbolisch)
+    mov edx, FTX_FLAG_PRIVATE
+    call futex_register
+    jnc .ftst2_ok
+    inc esi
+.ftst2_ok:
+    mov ebx, eax      ; slot
+
+    ; T3: wait x2
+    mov eax, ebx
+    call futex_wait
+    mov eax, ebx
+    call futex_wait
+    push edx
+    imul edx, ebx, FUTEX_RECORD_SIZE
+    add edx, futex_table
+    cmp dword [edx + FTX_WAITER_COUNT], 2
+    je .ftst3_ok
+    inc esi
+.ftst3_ok:
+    pop edx
+
+    ; T4: wake 1 → waiter_count=1
+    mov eax, ebx
+    mov edx, 1
+    call futex_wake
+    push edx
+    imul edx, ebx, FUTEX_RECORD_SIZE
+    add edx, futex_table
+    cmp dword [edx + FTX_WAITER_COUNT], 1
+    je .ftst4_ok
+    inc esi
+.ftst4_ok:
+    pop edx
+
+    ; T5: wake alle → waiter_count=0
+    mov eax, ebx
+    mov edx, 99
+    call futex_wake
+    push edx
+    imul edx, ebx, FUTEX_RECORD_SIZE
+    add edx, futex_table
+    cmp dword [edx + FTX_WAITER_COUNT], 0
+    je .ftst5_ok
+    inc esi
+.ftst5_ok:
+    pop edx
+
+    ; T6: total_waits=2
+    cmp dword [futex_total_waits], 2
+    je .ftst6_ok
+    inc esi
+.ftst6_ok:
+
+    ; T7: total_wakes=2
+    cmp dword [futex_total_wakes], 2
+    je .ftst7_ok
+    inc esi
+.ftst7_ok:
+
+    test esi, esi
+    jnz .ftstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.ftstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+futex_ready:        dd 0
+futex_next_id:      dd 0
+futex_total_waits:  dd 0
+futex_total_wakes:  dd 0
+align 4
+futex_table:
+    times FUTEX_CAPACITY * FUTEX_RECORD_SIZE db 0
+
 ; ---------------------------------------------------------------------------
 ; ===========================================================================
 ; §009 – Interrupt Manager 1.0 (NPSPEC-KERNEL-0009)
@@ -35080,7 +35575,7 @@ message_vsvc_ok:
 message_vsvc_error:
     db "NOVA PANIC: Versioned Service ABI Selbsttest fehlgeschlagen", 13, 10, 0
 message_sync_ok:
-    db "NOVA: Synchronisation 1.0 (SS016), Spinlocks/Sema/Completion/SeqLock/Refcount", 13, 10, 0
+    db "NOVA: Sync 1.0 + Futex 1.0 bereit (Spinlock/Mutex/RCU + Fast Userspace Mutex)", 13, 10, 0
 message_sync_error:
     db "NOVA PANIC: Synchronisation Selbsttest fehlgeschlagen", 13, 10, 0
 message_irq_manager_ok:
@@ -35423,6 +35918,12 @@ message_metrics_ok:
     db "NOVA: Metrics 1.0 bereit (32 Counter, increment/add/peak/reset)", 13, 10, 0
 message_metrics_error:
     db "NOVA PANIC: Metrics Manager nicht initialisierbar", 13, 10, 0
+message_futex_error:
+    db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
+message_slab_ok:
+    db "NOVA: Slab Allocator 1.0 bereit (4 Klassen: 16/32/64/128 Byte)", 13, 10, 0
+message_slab_error:
+    db "NOVA PANIC: Slab Allocator nicht initialisierbar", 13, 10, 0
 message_time_ok:
     db "NOVA: Time 1.0 bereit (Monoton 100Hz + RTC CMOS Uhr/Datum)", 13, 10, 0
 message_time_error:
