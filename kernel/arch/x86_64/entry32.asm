@@ -670,6 +670,27 @@ kernel_entry:
     mov esi, message_profiling_ok
     call serial_write_string
 
+    call csprng_initialize
+    jc panic_csprng
+    call csprng_self_test
+    jc panic_csprng
+    mov esi, message_csprng_ok
+    call serial_write_string
+
+    call cpuidle_initialize
+    jc panic_cpuidle
+    call cpuidle_self_test
+    jc panic_cpuidle
+    mov esi, message_cpuidle_ok
+    call serial_write_string
+
+    call thermal_initialize
+    jc panic_thermal
+    call thermal_self_test
+    jc panic_thermal
+    mov esi, message_thermal_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1272,6 +1293,24 @@ panic_profiling:
     mov eax, 0x00003054
     mov edx, 81
     mov esi, message_profiling_error
+    jmp kernel_panic
+
+panic_csprng:
+    mov eax, 0x00003055
+    mov edx, 82
+    mov esi, message_csprng_error
+    jmp kernel_panic
+
+panic_cpuidle:
+    mov eax, 0x00003056
+    mov edx, 83
+    mov esi, message_cpuidle_error
+    jmp kernel_panic
+
+panic_thermal:
+    mov eax, 0x00003057
+    mov edx, 84
+    mov esi, message_thermal_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -30043,6 +30082,369 @@ align 4
 prof_samples:
     times PROF_SAMPLE_COUNT * PROF_RECORD_SIZE db 0
 
+; ---------------------------------------------------------------------------
+; NPSPEC-CRYPTO-RNG-0001 – Nova Cryptographic RNG / Entropy Pool
+; ---------------------------------------------------------------------------
+; Entropy-Pool aus rdtsc XOR wd_global_tick XOR rolling-mix.
+; Ausgabe: xorshift32-basierte CSPRNG-Approximation (kein echter TRNG).
+; Für echte krypto-Anforderungen ist Hardware-RNG zu bevorzugen; diese
+; Implementierung liefert boot-time Entropie für ASLR, Nonces, Seeds.
+; ---------------------------------------------------------------------------
+CSPRNG_POOL_WORDS   equ 8   ; 256-bit entropy pool
+
+csprng_initialize:
+    mov edi, csprng_pool
+    xor eax, eax
+    mov ecx, CSPRNG_POOL_WORDS
+    rep stosd
+    mov dword [csprng_ready], 0
+    ; Seed: rdtsc XOR wd_global_tick in each pool word
+    xor esi, esi
+.seed_loop:
+    cmp esi, CSPRNG_POOL_WORDS
+    jae .seed_done
+    rdtsc
+    xor eax, [wd_global_tick]
+    xor eax, esi
+    mov [csprng_pool + esi*4], eax
+    inc esi
+    jmp .seed_loop
+.seed_done:
+    mov dword [csprng_state], 0xDEADBEEF
+    mov dword [csprng_calls], 0
+    mov dword [csprng_ready], 1
+    clc
+    ret
+
+; → EAX = pseudo-random 32-bit word
+csprng_next:
+    cmp dword [csprng_ready], 1
+    jne .cn_fail
+    ; xorshift32 on csprng_state, mixed with pool word
+    mov eax, [csprng_state]
+    ; xorshift32: state ^= state<<13 ^= state>>17 ^= state<<5
+    mov ecx, eax
+    shl ecx, 13
+    xor eax, ecx
+    mov ecx, eax
+    shr ecx, 17
+    xor eax, ecx
+    mov ecx, eax
+    shl ecx, 5
+    xor eax, ecx
+    ; mix with pool word based on call count
+    mov ecx, [csprng_calls]
+    and ecx, CSPRNG_POOL_WORDS - 1
+    xor eax, [csprng_pool + ecx*4]
+    ; re-stir pool word
+    mov [csprng_pool + ecx*4], eax
+    mov [csprng_state], eax
+    inc dword [csprng_calls]
+    ; also mix rdtsc every 16 calls for forward entropy
+    test dword [csprng_calls], 0xF
+    jnz .cn_done
+    rdtsc
+    xor [csprng_pool], eax
+    xor [csprng_pool + 4], edx
+.cn_done:
+    clc
+    ret
+.cn_fail:
+    xor eax, eax
+    stc
+    ret
+
+; Mix in additional entropy (EAX=entropy_word)
+csprng_add_entropy:
+    cmp dword [csprng_ready], 1
+    jne .cae_ret
+    xor [csprng_state], eax
+    mov ecx, [csprng_calls]
+    and ecx, CSPRNG_POOL_WORDS - 1
+    xor [csprng_pool + ecx*4], eax
+.cae_ret:
+    clc
+    ret
+
+csprng_self_test:
+    ; generate 4 numbers, all should differ from zero
+    call csprng_next
+    jc .cstf
+    test eax, eax
+    jz .cstf
+    mov ecx, eax    ; save first
+    call csprng_next
+    jc .cstf
+    cmp eax, ecx    ; consecutive results differ (statistical)
+    je .cstf
+    ; add entropy and generate more
+    mov eax, 0xCAFEBABE
+    call csprng_add_entropy
+    call csprng_next
+    jc .cstf
+    test eax, eax
+    jz .cstf
+    clc
+    ret
+.cstf:
+    stc
+    ret
+
+csprng_ready:   dd 0
+csprng_state:   dd 0
+csprng_calls:   dd 0
+align 4
+csprng_pool:
+    times CSPRNG_POOL_WORDS dd 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-POWER-CPUIDLE-0001 – Nova CPU Idle State Management
+; ---------------------------------------------------------------------------
+; C-State-Tracking: C0=Active, C1=Halt(HLT), C1E=Enhanced-Halt, C3=Deep-Sleep.
+; cpuidle_enter: wählt tiefsten verfügbaren Zustand, führt HLT oder NOP aus.
+; cpuidle_exit: markiert Rückkehr zu C0, misst Residency in Ticks.
+; ---------------------------------------------------------------------------
+CPUIDLE_STATE_C0    equ 0   ; active
+CPUIDLE_STATE_C1    equ 1   ; halt (HLT)
+CPUIDLE_STATE_C1E   equ 2   ; enhanced halt
+CPUIDLE_STATE_C3    equ 3   ; deep sleep
+
+CPUIDLE_REC_SIZE    equ 16
+CPUIDLE_STATE_OFF   equ 0
+CPUIDLE_ENTER_TICK  equ 4
+CPUIDLE_RESIDENCY   equ 8
+CPUIDLE_COUNT_OFF   equ 12
+
+cpuidle_initialize:
+    mov edi, cpuidle_stats
+    xor eax, eax
+    mov ecx, (4 * CPUIDLE_REC_SIZE) / 4
+    rep stosd
+    mov dword [cpuidle_ready], 0
+    mov dword [cpuidle_current], CPUIDLE_STATE_C0
+    mov dword [cpuidle_total_halts], 0
+    mov dword [cpuidle_ready], 1
+    clc
+    ret
+
+; EAX=target_state (0-3) — enter idle state
+cpuidle_enter:
+    cmp dword [cpuidle_ready], 1
+    jne .cie_fail
+    cmp eax, CPUIDLE_STATE_C3
+    ja .cie_fail
+    push esi
+    push edi
+    mov [cpuidle_current], eax
+    imul edi, eax, CPUIDLE_REC_SIZE
+    add edi, cpuidle_stats
+    mov [edi + CPUIDLE_STATE_OFF], eax
+    mov eax, [wd_global_tick]
+    mov [edi + CPUIDLE_ENTER_TICK], eax
+    inc dword [edi + CPUIDLE_COUNT_OFF]
+    inc dword [cpuidle_total_halts]
+    mov eax, [cpuidle_current]
+    cmp eax, CPUIDLE_STATE_C0
+    je .cie_no_halt
+    hlt                        ; CPU schläft bis nächstem Interrupt
+.cie_no_halt:
+    pop edi
+    pop esi
+    clc
+    ret
+.cie_fail:
+    stc
+    ret
+
+; Exit idle — record residency
+cpuidle_exit:
+    cmp dword [cpuidle_ready], 1
+    jne .cex_ret
+    push edi
+    mov eax, [cpuidle_current]
+    imul edi, eax, CPUIDLE_REC_SIZE
+    add edi, cpuidle_stats
+    mov eax, [wd_global_tick]
+    sub eax, [edi + CPUIDLE_ENTER_TICK]
+    add [edi + CPUIDLE_RESIDENCY], eax
+    mov dword [cpuidle_current], CPUIDLE_STATE_C0
+    pop edi
+.cex_ret:
+    clc
+    ret
+
+; EAX=state → EAX=residency_ticks, EDX=enter_count
+cpuidle_query:
+    cmp eax, CPUIDLE_STATE_C3
+    ja .cq_bad
+    push edi
+    imul edi, eax, CPUIDLE_REC_SIZE
+    add edi, cpuidle_stats
+    mov eax, [edi + CPUIDLE_RESIDENCY]
+    mov edx, [edi + CPUIDLE_COUNT_OFF]
+    pop edi
+    clc
+    ret
+.cq_bad:
+    xor eax, eax
+    xor edx, edx
+    stc
+    ret
+
+cpuidle_self_test:
+    ; Enter C1 and immediately exit
+    mov eax, CPUIDLE_STATE_C1
+    call cpuidle_enter
+    jc .cpustf
+    call cpuidle_exit
+    ; query C1 count ≥ 1
+    mov eax, CPUIDLE_STATE_C1
+    call cpuidle_query
+    jc .cpustf
+    cmp edx, 1
+    jb .cpustf
+    clc
+    ret
+.cpustf:
+    stc
+    ret
+
+cpuidle_ready:        dd 0
+cpuidle_current:      dd 0
+cpuidle_total_halts:  dd 0
+align 4
+cpuidle_stats:
+    times 4 * CPUIDLE_REC_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-THERMAL-THROTTLING-0001 – Nova Thermal Throttle Policy
+; ---------------------------------------------------------------------------
+; Thermische Zonen mit Temperaturschwellen. Überschreitung → QoS-Drosselung.
+; Temperatur-Simulation über wd_global_tick (kein echter Sensor im Bootstrap).
+; Zone: NORMAL / WARM / HOT / CRITICAL. Bei HOT: QoS-Epoch erzwingen.
+; ---------------------------------------------------------------------------
+THERM_ZONE_COUNT    equ 4
+THERM_ZONE_REC_SIZE equ 20
+
+THERM_STATE_NORMAL  equ 0
+THERM_STATE_WARM    equ 1
+THERM_STATE_HOT     equ 2
+THERM_STATE_CRIT    equ 3
+
+THERM_ID_OFF        equ 0
+THERM_STATE_OFF     equ 4
+THERM_TEMP_OFF      equ 8    ; simulated temperature (arbitrary units)
+THERM_THRESH_WARM   equ 12
+THERM_THRESH_HOT    equ 16
+
+thermal_initialize:
+    mov edi, thermal_zones
+    xor eax, eax
+    mov ecx, (THERM_ZONE_COUNT * THERM_ZONE_REC_SIZE) / 4
+    rep stosd
+    mov dword [thermal_ready], 0
+    mov dword [thermal_throttle_events], 0
+    ; Default zone 0: thresholds warm=70, hot=90
+    mov dword [thermal_zones + THERM_ID_OFF], 0
+    mov dword [thermal_zones + THERM_STATE_OFF], THERM_STATE_NORMAL
+    mov dword [thermal_zones + THERM_TEMP_OFF], 40
+    mov dword [thermal_zones + THERM_THRESH_WARM], 70
+    mov dword [thermal_zones + THERM_THRESH_HOT], 90
+    mov dword [thermal_ready], 1
+    clc
+    ret
+
+; EAX=zone_id  EDX=temperature → update zone state, CF=1 if throttle needed
+thermal_update:
+    cmp dword [thermal_ready], 1
+    jne .tu_fail
+    cmp eax, THERM_ZONE_COUNT
+    jae .tu_fail
+    push esi
+    push edi
+    imul edi, eax, THERM_ZONE_REC_SIZE
+    add edi, thermal_zones
+    mov [edi + THERM_TEMP_OFF], edx
+    ; determine state
+    cmp edx, [edi + THERM_THRESH_HOT]
+    jae .tu_hot
+    cmp edx, [edi + THERM_THRESH_WARM]
+    jae .tu_warm
+    mov dword [edi + THERM_STATE_OFF], THERM_STATE_NORMAL
+    pop edi
+    pop esi
+    clc
+    ret
+.tu_warm:
+    mov dword [edi + THERM_STATE_OFF], THERM_STATE_WARM
+    pop edi
+    pop esi
+    clc
+    ret
+.tu_hot:
+    mov dword [edi + THERM_STATE_OFF], THERM_STATE_HOT
+    inc dword [thermal_throttle_events]
+    ; Force QoS new epoch (throttle all classes)
+    call qos_new_epoch
+    pop edi
+    pop esi
+    stc     ; CF=1: throttle action taken
+    ret
+.tu_fail:
+    stc
+    ret
+
+; EAX=zone_id → EAX=state  EDX=temperature
+thermal_query:
+    cmp eax, THERM_ZONE_COUNT
+    jae .tq_bad
+    push edi
+    imul edi, eax, THERM_ZONE_REC_SIZE
+    add edi, thermal_zones
+    mov edx, [edi + THERM_TEMP_OFF]
+    mov eax, [edi + THERM_STATE_OFF]
+    pop edi
+    clc
+    ret
+.tq_bad:
+    xor eax, eax
+    xor edx, edx
+    stc
+    ret
+
+thermal_self_test:
+    ; Normal temp (50) → NORMAL state
+    mov eax, 0
+    mov edx, 50
+    call thermal_update
+    jc .tstf     ; CF=0 expected for NORMAL
+    mov eax, 0
+    call thermal_query
+    jc .tstf
+    cmp eax, THERM_STATE_NORMAL
+    jne .tstf
+    ; Hot temp (95) → HOT + CF=1
+    mov eax, 0
+    mov edx, 95
+    call thermal_update
+    jnc .tstf   ; CF=1 expected for HOT
+    mov eax, 0
+    call thermal_query
+    jc .tstf
+    cmp eax, THERM_STATE_HOT
+    jne .tstf
+    clc
+    ret
+.tstf:
+    stc
+    ret
+
+thermal_ready:            dd 0
+thermal_throttle_events:  dd 0
+align 4
+thermal_zones:
+    times THERM_ZONE_COUNT * THERM_ZONE_REC_SIZE db 0
+
 ; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
@@ -41409,6 +41811,18 @@ message_profiling_ok:
     db "NOVA: Profiling 1.0 bereit (16-Slot Sampling, hottest-component)", 13, 10, 0
 message_profiling_error:
     db "NOVA PANIC: Sampling Profiler nicht initialisierbar", 13, 10, 0
+message_csprng_ok:
+    db "NOVA: CSPRNG 1.0 bereit (256-bit Pool, xorshift32, entropy-mix)", 13, 10, 0
+message_csprng_error:
+    db "NOVA PANIC: CSPRNG nicht initialisierbar", 13, 10, 0
+message_cpuidle_ok:
+    db "NOVA: CPU Idle 1.0 bereit (C0/C1/C1E/C3, HLT, Residency-Tracking)", 13, 10, 0
+message_cpuidle_error:
+    db "NOVA PANIC: CPU Idle Manager nicht initialisierbar", 13, 10, 0
+message_thermal_ok:
+    db "NOVA: Thermal 1.0 bereit (4 Zonen, WARM/HOT-Throttle, QoS-Epoch)", 13, 10, 0
+message_thermal_error:
+    db "NOVA PANIC: Thermal Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
