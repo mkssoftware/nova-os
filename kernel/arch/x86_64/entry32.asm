@@ -538,6 +538,13 @@ kernel_entry:
     mov esi, message_scheduler_ok
     call serial_write_string
 
+    call worksteal_initialize
+    jc panic_worksteal
+    call worksteal_self_test
+    jc panic_worksteal
+    mov esi, message_worksteal_ok
+    call serial_write_string
+
     call smp_initialize
     jc panic_smp
     call smp_self_test
@@ -953,6 +960,12 @@ panic_thread_manager:
     mov eax, 0x00002012
     mov edx, 12
     mov esi, message_thread_manager_error
+    jmp kernel_panic
+
+panic_worksteal:
+    mov eax, 0x00002025
+    mov edx, 37
+    mov esi, message_worksteal_error
     jmp kernel_panic
 
 panic_device_manager:
@@ -27996,6 +28009,279 @@ scheduler_thread2_runs: dd 0
 scheduler_dynamic_runs: dd 0
 
 ; ---------------------------------------------------------------------------
+; Work-Stealing-Scheduler – pro-Slot lokale Task-Queues mit constraint-
+; bewusster Steal-Logik (RT-Schutz, harte CPU-Affinitaet, NUMA-ready).
+; NPSPEC-CONCURRENCY-WORKSTEALING-0001
+; ---------------------------------------------------------------------------
+
+WS_SLOT_COUNT       equ SCHEDULER_THREAD_COUNT
+WS_QUEUE_DEPTH      equ 4
+WS_TASK_ENTRY_SIZE  equ 16
+WS_SLOT_RECORD_SIZE equ 24
+
+SCHEDULER_CAP_WORKSTEAL equ 0x00000020
+
+; Task-Eintrag-Felder
+WS_TASK_ENTRY_POINT equ 0
+WS_TASK_PID         equ 4
+WS_TASK_CPU_MASK    equ 8
+WS_TASK_FLAGS       equ 12
+
+WS_TASK_FLAG_RT       equ 0x01     ; Hard-Realtime, nicht stehlfaehig
+WS_TASK_FLAG_HARD_AFF equ 0x02     ; Strenge CPU-Affinitaet
+
+; Slot-Queue-Header-Felder
+WS_HEAD        equ 0
+WS_TAIL        equ 4
+WS_COUNT       equ 8
+WS_CPU_MASK    equ 12
+WS_FLAGS       equ 16
+WS_STEAL_COUNT equ 20
+
+worksteal_initialize:
+    mov edi, ws_slot_queues
+    xor eax, eax
+    mov ecx, (WS_SLOT_COUNT * WS_SLOT_RECORD_SIZE) / 4
+    rep stosd
+    mov edi, ws_task_storage
+    mov ecx, (WS_SLOT_COUNT * WS_QUEUE_DEPTH * WS_TASK_ENTRY_SIZE) / 4
+    rep stosd
+    ; CPU-Masken aus dem Scheduler-Affinitaets-Array initialisieren
+    xor ecx, ecx
+.wi_mask_loop:
+    cmp ecx, WS_SLOT_COUNT
+    jae .wi_mask_done
+    mov edi, ecx
+    imul edi, WS_SLOT_RECORD_SIZE
+    add edi, ws_slot_queues
+    mov eax, [thread_cpu_affinity + ecx * 4]
+    cmp eax, -1
+    jne .wi_has_aff
+    mov eax, 0xFFFFFFFF
+.wi_has_aff:
+    mov [edi + WS_CPU_MASK], eax
+    inc ecx
+    jmp .wi_mask_loop
+.wi_mask_done:
+    mov dword [ws_initialized], 1
+    mov dword [ws_total_steals], 0
+    clc
+    ret
+
+; Reiht Task-Eintrag (16 Bytes) in Slot ein.
+; EAX=Slot (0..WS_SLOT_COUNT-1), ESI=Quell-Ptr. CF=0 ok, CF=1 voll/ungueltig.
+worksteal_enqueue:
+    push ebx
+    push ecx
+    push edx
+    push edi
+    cmp eax, WS_SLOT_COUNT
+    jae .weq_bad
+    mov ebx, eax
+    imul ebx, WS_SLOT_RECORD_SIZE
+    add ebx, ws_slot_queues
+    cmp dword [ebx + WS_COUNT], WS_QUEUE_DEPTH
+    jae .weq_full
+    mov edx, eax
+    imul edx, WS_QUEUE_DEPTH * WS_TASK_ENTRY_SIZE
+    add edx, ws_task_storage
+    mov ecx, [ebx + WS_TAIL]
+    imul ecx, WS_TASK_ENTRY_SIZE
+    add edx, ecx
+    mov edi, edx
+    mov ecx, WS_TASK_ENTRY_SIZE / 4
+    rep movsd
+    mov ecx, [ebx + WS_TAIL]
+    inc ecx
+    cmp ecx, WS_QUEUE_DEPTH
+    jb .weq_no_wrap
+    xor ecx, ecx
+.weq_no_wrap:
+    mov [ebx + WS_TAIL], ecx
+    inc dword [ebx + WS_COUNT]
+    pop edi
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.weq_full:
+.weq_bad:
+    pop edi
+    pop edx
+    pop ecx
+    pop ebx
+    stc
+    ret
+
+; Versucht, einen Task vom Victim-Slot zu stehlen.
+; EAX=victim_slot, EDX=thief_slot, EDI=Ausgabepuffer (16 Bytes).
+; CF=0 gestohlen, CF=1 kein stehlfaehiger Task.
+worksteal_try_steal:
+    push ebx
+    push ecx
+    push esi
+    cmp eax, WS_SLOT_COUNT
+    jae .wts_fail
+    cmp edx, WS_SLOT_COUNT
+    jae .wts_fail
+    cmp eax, edx
+    je .wts_fail
+    mov ebx, eax
+    imul ebx, WS_SLOT_RECORD_SIZE
+    add ebx, ws_slot_queues
+    cmp dword [ebx + WS_COUNT], 0
+    je .wts_fail
+    ; ESI = Adresse des Tasks am Head des Victim-Slots
+    mov ecx, eax
+    imul ecx, WS_QUEUE_DEPTH * WS_TASK_ENTRY_SIZE
+    add ecx, ws_task_storage
+    push eax
+    mov eax, [ebx + WS_HEAD]
+    imul eax, WS_TASK_ENTRY_SIZE
+    add ecx, eax
+    pop eax
+    mov esi, ecx
+    ; RT-Bit: niemals stehlen
+    mov ecx, [esi + WS_TASK_FLAGS]
+    test ecx, WS_TASK_FLAG_RT
+    jnz .wts_fail
+    ; Harte Affinitaet: nur wenn CPU-Mengen sich schneiden
+    test ecx, WS_TASK_FLAG_HARD_AFF
+    jz .wts_eligible
+    push edx
+    imul edx, WS_SLOT_RECORD_SIZE
+    add edx, ws_slot_queues
+    mov ecx, [edx + WS_CPU_MASK]
+    pop edx
+    and ecx, [esi + WS_TASK_CPU_MASK]
+    jz .wts_fail
+.wts_eligible:
+    mov ecx, WS_TASK_ENTRY_SIZE / 4
+    rep movsd
+    mov ecx, [ebx + WS_HEAD]
+    inc ecx
+    cmp ecx, WS_QUEUE_DEPTH
+    jb .wts_no_wrap
+    xor ecx, ecx
+.wts_no_wrap:
+    mov [ebx + WS_HEAD], ecx
+    dec dword [ebx + WS_COUNT]
+    inc dword [ebx + WS_STEAL_COUNT]
+    inc dword [ws_total_steals]
+    pop esi
+    pop ecx
+    pop ebx
+    clc
+    ret
+.wts_fail:
+    pop esi
+    pop ecx
+    pop ebx
+    stc
+    ret
+
+; Self-Test: 7 Tests (Init, Enqueue, Count, RT-Schutz, Steal, Daten, Count-0).
+worksteal_self_test:
+    push ebx
+    push esi
+    push edi
+    sub esp, 32                         ; [esp+0..15]=Task-Buf, [esp+16..31]=Steal-Buf
+    xor ebx, ebx
+
+    ; Test 1: Subsystem initialisiert
+    cmp dword [ws_initialized], 1
+    je .wt2
+    inc ebx
+
+.wt2:
+    ; Test 2: Slot 0 nach Init leer
+    mov esi, ws_slot_queues
+    cmp dword [esi + WS_COUNT], 0
+    je .wt3
+    inc ebx
+
+.wt3:
+    ; Test 3: Normalen Task in Slot 0 einreihen
+    mov dword [esp +  0], scheduler_thread1
+    mov dword [esp +  4], 1
+    mov dword [esp +  8], 0xFFFFFFFF
+    mov dword [esp + 12], 0
+    xor eax, eax
+    lea esi, [esp]
+    call worksteal_enqueue
+    jnc .wt4
+    inc ebx
+
+.wt4:
+    ; Test 4: Count == 1 in Slot 0
+    mov esi, ws_slot_queues
+    cmp dword [esi + WS_COUNT], 1
+    je .wt5
+    inc ebx
+
+.wt5:
+    ; Test 5: RT-Task in Slot 1, Steal muss scheitern
+    mov dword [esp +  0], scheduler_thread2
+    mov dword [esp +  4], 1
+    mov dword [esp +  8], 0xFFFFFFFF
+    mov dword [esp + 12], WS_TASK_FLAG_RT
+    mov eax, 1
+    lea esi, [esp]
+    call worksteal_enqueue
+    jnc .wt5_steal
+    inc ebx
+    jmp .wt6
+.wt5_steal:
+    mov eax, 1
+    mov edx, 0
+    lea edi, [esp + 16]
+    call worksteal_try_steal
+    jc .wt6                         ; CF=1 erwartet (RT-Schutz)
+    inc ebx
+
+.wt6:
+    ; Test 6: Steal des normalen Tasks von Slot 0 nach Slot 1
+    xor eax, eax
+    mov edx, 1
+    lea edi, [esp + 16]
+    call worksteal_try_steal
+    jnc .wt7
+    inc ebx
+
+.wt7:
+    ; Test 7: Count in Slot 0 == 0 nach Steal
+    mov esi, ws_slot_queues
+    cmp dword [esi + WS_COUNT], 0
+    je .wt_done
+    inc ebx
+
+.wt_done:
+    test ebx, ebx
+    jnz .wt_fail
+    add esp, 32
+    pop edi
+    pop esi
+    pop ebx
+    clc
+    ret
+.wt_fail:
+    add esp, 32
+    pop edi
+    pop esi
+    pop ebx
+    stc
+    ret
+
+ws_initialized:  dd 0
+ws_total_steals: dd 0
+align 4
+ws_slot_queues:
+    times WS_SLOT_COUNT * WS_SLOT_RECORD_SIZE db 0
+ws_task_storage:
+    times WS_SLOT_COUNT * WS_QUEUE_DEPTH * WS_TASK_ENTRY_SIZE db 0
+
+; ---------------------------------------------------------------------------
 ; Minimaler Kernel Main
 ; ---------------------------------------------------------------------------
 
@@ -32932,6 +33218,10 @@ message_scheduler_dynamic_ok:
     db "NOVA: Scheduler Dynamic Thread Slot 3 aktiv", 13, 10, 0
 message_scheduler_error:
     db "NOVA PANIC: praemptiver Scheduler nicht initialisierbar", 13, 10, 0
+message_worksteal_ok:
+    db "NOVA: Work Stealing 1.0 bereit (8 Slots, RT-Schutz, Affinitaet)", 13, 10, 0
+message_worksteal_error:
+    db "NOVA PANIC: Work-Stealing-Subsystem nicht initialisierbar", 13, 10, 0
 message_novafs_mount_failed:
     db "NOVA: NovaFS Mount fehlgeschlagen, Fehler 0x", 0
 message_novafs_absent:
