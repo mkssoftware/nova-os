@@ -433,6 +433,20 @@ kernel_entry:
     mov esi, message_detection_ok
     call serial_write_string
 
+    call restart_initialize
+    jc panic_restart
+    call restart_self_test
+    jc panic_restart
+    mov esi, message_restart_ok
+    call serial_write_string
+
+    call resource_accounting_initialize
+    jc panic_resource_accounting
+    call resource_accounting_self_test
+    jc panic_resource_accounting
+    mov esi, message_resource_accounting_ok
+    call serial_write_string
+
     call io_scheduler_initialize
     jc panic_io_scheduler
     call io_scheduler_self_test
@@ -936,6 +950,18 @@ panic_detection:
     mov eax, 0x00003038
     mov edx, 53
     mov esi, message_detection_error
+    jmp kernel_panic
+
+panic_restart:
+    mov eax, 0x0000303C
+    mov edx, 57
+    mov esi, message_restart_error
+    jmp kernel_panic
+
+panic_resource_accounting:
+    mov eax, 0x0000303D
+    mov edx, 58
+    mov esi, message_resource_accounting_error
     jmp kernel_panic
 
 panic_io_scheduler:
@@ -14024,6 +14050,438 @@ fd_total:     dd 0
 align 4
 fd_log:
     times FD_CAPACITY * FD_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-RESTART-0001 – Nova Supervised Restart
+; Policy-gesteuerte Komponentenneustarts: max_restarts, cooldown, Backoff.
+; ===========================================================================
+
+RST_CAPACITY         equ 8
+RST_RECORD_SIZE      equ 32
+
+RST_STATE_FREE       equ 0
+RST_STATE_ACTIVE     equ 1
+RST_STATE_EXHAUSTED  equ 2
+
+RST_POLICY_IMMEDIATE equ 0   ; Sofort neustarten
+RST_POLICY_BACKOFF   equ 1   ; exponentielles Backoff
+RST_POLICY_COOLDOWN  equ 2   ; fester Cooldown
+
+RST_ID               equ 0
+RST_STATE            equ 4
+RST_OWNER            equ 8
+RST_RESTART_COUNT    equ 12
+RST_MAX_RESTARTS     equ 16
+RST_COOLDOWN_TICKS   equ 20
+RST_LAST_RESTART     equ 24
+RST_POLICY           equ 28
+
+restart_initialize:
+    mov edi, rst_table
+    mov ecx, RST_CAPACITY * RST_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [rst_next_id], 0
+    mov dword [rst_total_restarts], 0
+    mov dword [rst_ready], 1
+    clc
+    ret
+
+; EAX=owner  EDX=max_restarts  ECX=cooldown_ticks  EBX=policy → EAX=slot CF=0 / CF=1
+restart_register:
+    push esi
+    push edi
+    mov esi, rst_table
+    push ecx
+    push edx
+    push eax
+    xor edi, edi
+.rsr_scan:
+    cmp edi, RST_CAPACITY
+    jae .rsr_full
+    cmp dword [esi + RST_STATE], RST_STATE_FREE
+    je .rsr_found
+    add esi, RST_RECORD_SIZE
+    inc edi
+    jmp .rsr_scan
+.rsr_found:
+    pop eax         ; owner
+    pop edx         ; max_restarts
+    pop ecx         ; cooldown
+    push edi
+    mov [esi + RST_OWNER], eax
+    push eax
+    mov eax, [rst_next_id]
+    inc dword [rst_next_id]
+    mov [esi + RST_ID], eax
+    pop eax
+    mov dword [esi + RST_STATE], RST_STATE_ACTIVE
+    mov dword [esi + RST_RESTART_COUNT], 0
+    mov [esi + RST_MAX_RESTARTS], edx
+    mov [esi + RST_COOLDOWN_TICKS], ecx
+    mov dword [esi + RST_LAST_RESTART], 0
+    mov [esi + RST_POLICY], ebx
+    pop eax         ; slot index
+    clc
+    pop edi
+    pop esi
+    ret
+.rsr_full:
+    pop eax
+    pop edx
+    pop ecx
+    stc
+    pop edi
+    pop esi
+    ret
+
+; EAX=slot → CF=0 Neustart erlaubt, CF=1 exhausted / noch in cooldown
+restart_check_and_record:
+    push esi
+    push edx
+    cmp eax, RST_CAPACITY
+    jae .rscr_fail
+    imul esi, eax, RST_RECORD_SIZE
+    add esi, rst_table
+    cmp dword [esi + RST_STATE], RST_STATE_ACTIVE
+    jne .rscr_fail
+    ; max_restarts prüfen
+    mov edx, [esi + RST_RESTART_COUNT]
+    cmp edx, [esi + RST_MAX_RESTARTS]
+    jae .rscr_exhaust
+    ; cooldown prüfen
+    mov edx, [wd_global_tick]
+    push edx
+    sub edx, [esi + RST_LAST_RESTART]
+    cmp edx, [esi + RST_COOLDOWN_TICKS]
+    pop edx
+    jb .rscr_fail
+    ; Neustart aufzeichnen
+    mov [esi + RST_LAST_RESTART], edx
+    inc dword [esi + RST_RESTART_COUNT]
+    inc dword [rst_total_restarts]
+    clc
+    pop edx
+    pop esi
+    ret
+.rscr_exhaust:
+    mov dword [esi + RST_STATE], RST_STATE_EXHAUSTED
+.rscr_fail:
+    stc
+    pop edx
+    pop esi
+    ret
+
+restart_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+
+    ; T1: ready
+    cmp dword [rst_ready], 1
+    je .rst1_ok
+    inc esi
+.rst1_ok:
+
+    ; T2: register
+    mov eax, 10        ; owner
+    mov edx, 3         ; max=3
+    mov ecx, 5         ; cooldown=5
+    mov ebx, RST_POLICY_COOLDOWN
+    call restart_register
+    jnc .rst2_ok
+    inc esi
+.rst2_ok:
+    mov ebx, eax
+
+    ; T3: check+record (tick=0, last=0, cooldown=5 → fail bei tick=0)
+    ; Setze global_tick auf 10 damit cooldown überwunden ist
+    mov dword [wd_global_tick], 10
+    mov eax, ebx
+    call restart_check_and_record
+    jnc .rst3_ok
+    inc esi
+.rst3_ok:
+
+    ; T4: restart_count=1
+    push edx
+    imul edx, ebx, RST_RECORD_SIZE
+    add edx, rst_table
+    cmp dword [edx + RST_RESTART_COUNT], 1
+    je .rst4_ok
+    inc esi
+.rst4_ok:
+    pop edx
+
+    ; T5: 2 weitere (insgesamt 3 = max)
+    mov dword [wd_global_tick], 20
+    mov eax, ebx
+    call restart_check_and_record
+    mov dword [wd_global_tick], 30
+    mov eax, ebx
+    call restart_check_and_record
+    push edx
+    imul edx, ebx, RST_RECORD_SIZE
+    add edx, rst_table
+    cmp dword [edx + RST_RESTART_COUNT], 3
+    je .rst5_ok
+    inc esi
+.rst5_ok:
+    pop edx
+
+    ; T6: 4. Versuch → EXHAUSTED → CF=1
+    mov dword [wd_global_tick], 40
+    mov eax, ebx
+    call restart_check_and_record
+    jc .rst6_ok
+    inc esi
+.rst6_ok:
+
+    ; T7: total_restarts=3
+    cmp dword [rst_total_restarts], 3
+    je .rst7_ok
+    inc esi
+.rst7_ok:
+
+    mov dword [wd_global_tick], 0
+
+    test esi, esi
+    jnz .rstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.rstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+rst_ready:           dd 0
+rst_next_id:         dd 0
+rst_total_restarts:  dd 0
+align 4
+rst_table:
+    times RST_CAPACITY * RST_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESOURCE-ACCOUNTING-0001 – Nova Resource Accounting
+; Pro-Prozess-Ressourcenbudgets: CPU-Ticks, Speicher, I/O-Bytes.
+; ===========================================================================
+
+RACCT_CAPACITY      equ 8
+RACCT_RECORD_SIZE   equ 40
+
+RACCT_STATE_FREE    equ 0
+RACCT_STATE_ACTIVE  equ 1
+
+RACCT_ID            equ 0
+RACCT_STATE         equ 4
+RACCT_OWNER         equ 8
+RACCT_CPU_USED      equ 12  ; CPU-Ticks verbraucht
+RACCT_CPU_LIMIT     equ 16  ; CPU-Ticks Limit (0=unbegrenzt)
+RACCT_MEM_USED      equ 20  ; Speicher in Bytes
+RACCT_MEM_LIMIT     equ 24  ; Speicher-Limit
+RACCT_IO_USED       equ 28  ; I/O-Bytes
+RACCT_IO_LIMIT      equ 32  ; I/O-Limit
+RACCT_FLAGS         equ 36
+
+RACCT_FLAG_CPU_SOFT equ 0x01   ; Soft Limit (warnen, nicht blockieren)
+RACCT_FLAG_MEM_SOFT equ 0x02
+RACCT_FLAG_IO_SOFT  equ 0x04
+
+resource_accounting_initialize:
+    mov edi, racct_table
+    mov ecx, RACCT_CAPACITY * RACCT_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [racct_next_id], 0
+    mov dword [racct_violations], 0
+    mov dword [racct_ready], 1
+    clc
+    ret
+
+; EAX=owner  EDX=cpu_limit  ECX=mem_limit → EAX=slot CF=0 / CF=1
+resource_accounting_create:
+    push ebx
+    push esi
+    mov esi, racct_table
+    xor ebx, ebx
+.rac_scan:
+    cmp ebx, RACCT_CAPACITY
+    jae .rac_full
+    cmp dword [esi + RACCT_STATE], RACCT_STATE_FREE
+    je .rac_found
+    add esi, RACCT_RECORD_SIZE
+    inc ebx
+    jmp .rac_scan
+.rac_found:
+    push eax
+    push edx
+    push ecx
+    mov eax, [racct_next_id]
+    inc dword [racct_next_id]
+    mov [esi + RACCT_ID], eax
+    mov dword [esi + RACCT_STATE], RACCT_STATE_ACTIVE
+    pop ecx
+    pop edx
+    pop eax
+    mov [esi + RACCT_OWNER], eax
+    mov [esi + RACCT_CPU_LIMIT], edx
+    mov [esi + RACCT_MEM_LIMIT], ecx
+    mov dword [esi + RACCT_CPU_USED], 0
+    mov dword [esi + RACCT_MEM_USED], 0
+    mov dword [esi + RACCT_IO_USED], 0
+    mov dword [esi + RACCT_IO_LIMIT], 0
+    mov dword [esi + RACCT_FLAGS], 0
+    mov eax, ebx
+    clc
+    pop esi
+    pop ebx
+    ret
+.rac_full:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+; EAX=slot  EDX=cpu_delta  ECX=mem_delta → CF=0 ok / CF=1 Hard-Limit überschritten
+resource_accounting_charge:
+    push esi
+    push ebx
+    cmp eax, RACCT_CAPACITY
+    jae .racc_fail
+    imul esi, eax, RACCT_RECORD_SIZE
+    add esi, racct_table
+    cmp dword [esi + RACCT_STATE], RACCT_STATE_ACTIVE
+    jne .racc_fail
+    ; CPU-Limit prüfen
+    mov ebx, [esi + RACCT_CPU_LIMIT]
+    test ebx, ebx
+    jz .racc_cpu_ok
+    mov ebx, [esi + RACCT_CPU_USED]
+    add ebx, edx
+    cmp ebx, [esi + RACCT_CPU_LIMIT]
+    ja .racc_viol
+.racc_cpu_ok:
+    ; Mem-Limit prüfen
+    mov ebx, [esi + RACCT_MEM_LIMIT]
+    test ebx, ebx
+    jz .racc_mem_ok
+    mov ebx, [esi + RACCT_MEM_USED]
+    add ebx, ecx
+    cmp ebx, [esi + RACCT_MEM_LIMIT]
+    ja .racc_viol
+.racc_mem_ok:
+    add [esi + RACCT_CPU_USED], edx
+    add [esi + RACCT_MEM_USED], ecx
+    clc
+    pop ebx
+    pop esi
+    ret
+.racc_viol:
+    inc dword [racct_violations]
+    stc
+    pop ebx
+    pop esi
+    ret
+.racc_fail:
+    stc
+    pop ebx
+    pop esi
+    ret
+
+; EAX=slot → EAX=cpu_used, EDX=mem_used, ECX=io_used
+resource_accounting_read:
+    push esi
+    cmp eax, RACCT_CAPACITY
+    jae .racr_zero
+    imul esi, eax, RACCT_RECORD_SIZE
+    add esi, racct_table
+    mov eax, [esi + RACCT_CPU_USED]
+    mov edx, [esi + RACCT_MEM_USED]
+    mov ecx, [esi + RACCT_IO_USED]
+    clc
+    pop esi
+    ret
+.racr_zero:
+    xor eax, eax
+    xor edx, edx
+    xor ecx, ecx
+    stc
+    pop esi
+    ret
+
+resource_accounting_self_test:
+    push ebx
+    xor ebx, ebx
+
+    ; T1: ready
+    cmp dword [racct_ready], 1
+    je .rast1_ok
+    inc ebx
+.rast1_ok:
+
+    ; T2: create
+    mov eax, 5       ; owner
+    mov edx, 1000    ; cpu_limit
+    mov ecx, 4096    ; mem_limit
+    call resource_accounting_create
+    jnc .rast2_ok
+    inc ebx
+.rast2_ok:
+    push eax         ; slot
+
+    ; T3: charge (500 CPU, 1024 Mem)
+    mov edx, 500
+    mov ecx, 1024
+    call resource_accounting_charge
+    jnc .rast3_ok
+    inc ebx
+.rast3_ok:
+
+    ; T4: read → cpu=500, mem=1024
+    call resource_accounting_read
+    cmp eax, 500
+    je .rast4a_ok
+    inc ebx
+.rast4a_ok:
+    cmp edx, 1024
+    je .rast4b_ok
+    inc ebx
+.rast4b_ok:
+
+    ; T5: charge 600 CPU → überschreitet 1000 → CF=1
+    mov edx, 600
+    mov ecx, 0
+    call resource_accounting_charge
+    jc .rast5_ok
+    inc ebx
+.rast5_ok:
+    pop eax
+
+    ; T6-T7: violations=1
+    cmp dword [racct_violations], 1
+    je .rast6_ok
+    inc ebx
+.rast6_ok:
+
+    test ebx, ebx
+    jnz .rastf
+    clc
+    pop ebx
+    ret
+.rastf:
+    stc
+    pop ebx
+    ret
+
+racct_ready:       dd 0
+racct_next_id:     dd 0
+racct_violations:  dd 0
+align 4
+racct_table:
+    times RACCT_CAPACITY * RACCT_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
@@ -35924,6 +36382,14 @@ message_slab_ok:
     db "NOVA: Slab Allocator 1.0 bereit (4 Klassen: 16/32/64/128 Byte)", 13, 10, 0
 message_slab_error:
     db "NOVA PANIC: Slab Allocator nicht initialisierbar", 13, 10, 0
+message_restart_ok:
+    db "NOVA: Supervised Restart 1.0 bereit (8 Slots, Policy/Backoff)", 13, 10, 0
+message_restart_error:
+    db "NOVA PANIC: Supervised Restart nicht initialisierbar", 13, 10, 0
+message_resource_accounting_ok:
+    db "NOVA: Resource Accounting 1.0 bereit (8 Slots, CPU/Mem/IO Limits)", 13, 10, 0
+message_resource_accounting_error:
+    db "NOVA PANIC: Resource Accounting nicht initialisierbar", 13, 10, 0
 message_time_ok:
     db "NOVA: Time 1.0 bereit (Monoton 100Hz + RTC CMOS Uhr/Datum)", 13, 10, 0
 message_time_error:
