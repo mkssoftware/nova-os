@@ -649,6 +649,27 @@ kernel_entry:
     mov esi, message_metrics_ok
     call serial_write_string
 
+    call obslog_initialize
+    jc panic_log_ring
+    call obslog_self_test
+    jc panic_log_ring
+    mov esi, message_log_ring_ok
+    call serial_write_string
+
+    call intro_initialize
+    jc panic_introspection
+    call intro_self_test
+    jc panic_introspection
+    mov esi, message_introspection_ok
+    call serial_write_string
+
+    call prof_initialize
+    jc panic_profiling
+    call prof_self_test
+    jc panic_profiling
+    mov esi, message_profiling_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1233,6 +1254,24 @@ panic_metrics:
     mov eax, 0x00003039
     mov edx, 54
     mov esi, message_metrics_error
+    jmp kernel_panic
+
+panic_log_ring:
+    mov eax, 0x00003052
+    mov edx, 79
+    mov esi, message_log_ring_error
+    jmp kernel_panic
+
+panic_introspection:
+    mov eax, 0x00003053
+    mov edx, 80
+    mov esi, message_introspection_error
+    jmp kernel_panic
+
+panic_profiling:
+    mov eax, 0x00003054
+    mov edx, 81
+    mov esi, message_profiling_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -29504,6 +29543,506 @@ align 4
 metrics_table:
     times METRICS_CAPACITY * METRICS_RECORD_SIZE db 0
 
+; ---------------------------------------------------------------------------
+; NPSPEC-OBSERVABILITY-LOGGING-0001 – Nova Kernel Structured Log Ring
+; ---------------------------------------------------------------------------
+; Strukturierter Observability-Log-Ring. Ergänzt Security Audit (SECURITY-AUDIT)
+; und Trace Ring (OBSERVABILITY-TRACING). Eigene Kanäle, keine Überlappung.
+; Severity: DEBUG/INFO/WARN/ERROR/CRIT. Kein dynamischer Speicher.
+; Präfix OBSLOG_ um Kollision mit frühem LOG_RECORD_SIZE (line ~3794) zu vermeiden.
+; ---------------------------------------------------------------------------
+OBSLOG_CAPACITY     equ 32
+OBSLOG_REC_SIZE     equ 32
+OBSLOG_SEV_DEBUG    equ 0
+OBSLOG_SEV_INFO     equ 1
+OBSLOG_SEV_WARN     equ 2
+OBSLOG_SEV_ERROR    equ 3
+OBSLOG_SEV_CRIT     equ 4
+
+OBSLOG_SEQ_OFF      equ 0
+OBSLOG_TICK_OFF     equ 4
+OBSLOG_SEV_OFF      equ 8
+OBSLOG_COMP_OFF     equ 12
+OBSLOG_TYPE_OFF     equ 16
+OBSLOG_FLAGS_OFF    equ 20
+OBSLOG_MSG_LO_OFF   equ 24
+OBSLOG_MSG_HI_OFF   equ 28
+
+obslog_initialize:
+    mov edi, obslog_ring
+    xor eax, eax
+    mov ecx, (OBSLOG_CAPACITY * OBSLOG_REC_SIZE) / 4
+    rep stosd
+    mov dword [obslog_ready], 0
+    mov dword [obslog_write_pos], 0
+    mov dword [obslog_seq], 0
+    mov dword [obslog_total], 0
+    mov dword [obslog_errors], 0
+    mov dword [obslog_ready], 1
+    clc
+    ret
+
+; EAX=severity  EDX=component  ECX=event_type  EBX=msg_id
+obslog_write:
+    cmp dword [obslog_ready], 1
+    jne .olw_fail
+    cmp eax, OBSLOG_SEV_CRIT
+    ja .olw_fail
+    push esi
+    push edi
+    mov esi, [obslog_write_pos]
+    cmp esi, OBSLOG_CAPACITY
+    jb .olw_ok_pos
+    xor esi, esi
+.olw_ok_pos:
+    imul edi, esi, OBSLOG_REC_SIZE
+    add edi, obslog_ring
+    push eax
+    mov eax, [obslog_seq]
+    mov [edi + OBSLOG_SEQ_OFF], eax
+    inc dword [obslog_seq]
+    pop eax
+    push eax
+    mov eax, [wd_global_tick]
+    mov [edi + OBSLOG_TICK_OFF], eax
+    pop eax
+    mov [edi + OBSLOG_SEV_OFF], eax
+    mov [edi + OBSLOG_COMP_OFF], edx
+    mov [edi + OBSLOG_TYPE_OFF], ecx
+    mov dword [edi + OBSLOG_FLAGS_OFF], 0
+    mov [edi + OBSLOG_MSG_LO_OFF], ebx
+    mov dword [edi + OBSLOG_MSG_HI_OFF], 0
+    inc esi
+    cmp esi, OBSLOG_CAPACITY
+    jb .olw_no_wrap
+    xor esi, esi
+.olw_no_wrap:
+    mov [obslog_write_pos], esi
+    inc dword [obslog_total]
+    cmp eax, OBSLOG_SEV_ERROR
+    jb .olw_done
+    inc dword [obslog_errors]
+.olw_done:
+    pop edi
+    pop esi
+    clc
+    ret
+.olw_fail:
+    stc
+    ret
+
+; EAX=severity → EAX=count (O(n) scan)
+obslog_count:
+    cmp dword [obslog_ready], 1
+    jne .olc_bad
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor eax, eax
+    xor esi, esi
+.olc_loop:
+    cmp esi, OBSLOG_CAPACITY
+    jae .olc_done
+    imul edi, esi, OBSLOG_REC_SIZE
+    add edi, obslog_ring
+    cmp dword [edi + OBSLOG_SEQ_OFF], 0
+    je .olc_next
+    cmp [edi + OBSLOG_SEV_OFF], ebx
+    jne .olc_next
+    inc eax
+.olc_next:
+    inc esi
+    jmp .olc_loop
+.olc_done:
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.olc_bad:
+    xor eax, eax
+    stc
+    ret
+
+obslog_self_test:
+    xor esi, esi
+    mov eax, OBSLOG_SEV_INFO
+    mov edx, 1
+    mov ecx, 1
+    mov ebx, 0x4C4F4701
+    call obslog_write
+    jc .olstf
+    inc esi
+    mov eax, OBSLOG_SEV_ERROR
+    mov edx, 2
+    mov ecx, 2
+    mov ebx, 0x4C4F4702
+    call obslog_write
+    jc .olstf
+    inc esi
+    mov eax, OBSLOG_SEV_WARN
+    call obslog_count
+    jc .olstf
+    test eax, eax
+    jnz .olstf
+    inc esi
+    mov eax, OBSLOG_SEV_ERROR
+    call obslog_count
+    jc .olstf
+    test eax, eax
+    jz .olstf
+    inc esi
+    cmp dword [obslog_errors], 1
+    jb .olstf
+    inc esi
+    test esi, esi
+    jnz .olstf_ok
+.olstf:
+    stc
+    ret
+.olstf_ok:
+    clc
+    ret
+
+obslog_ready:       dd 0
+obslog_write_pos:   dd 0
+obslog_seq:         dd 0
+obslog_total:       dd 0
+obslog_errors:      dd 0
+align 4
+obslog_ring:
+    times OBSLOG_CAPACITY * OBSLOG_REC_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-OBSERVABILITY-INTROSPECTION-0001 – Nova Subsystem Introspection Registry
+; ---------------------------------------------------------------------------
+; Einheitliche Registrierung von Subsystem-Query-Funktionen.
+; Jedes Subsystem registriert eine Query-fn; Aufrufer fragen per Subsystem-ID ab.
+; Vorbelegte IDs: KERNEL=1, SCHED=2, MEMORY=3, SECURITY=4, RESILIENCE=5.
+; ---------------------------------------------------------------------------
+INTRO_CAPACITY      equ 16
+INTRO_RECORD_SIZE   equ 12
+
+INTRO_ID_OFF        equ 0
+INTRO_SYS_OFF       equ 4
+INTRO_FN_OFF        equ 8
+
+INTRO_SYS_KERNEL    equ 1
+INTRO_SYS_SCHED     equ 2
+INTRO_SYS_MEMORY    equ 3
+INTRO_SYS_SECURITY  equ 4
+INTRO_SYS_RESILIENCE equ 5
+
+intro_initialize:
+    mov edi, intro_registry
+    xor eax, eax
+    mov ecx, (INTRO_CAPACITY * INTRO_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [intro_ready], 0
+    mov dword [intro_count], 0
+    mov dword [intro_next_id], 1
+    ; Pre-register 5 built-in providers (fn=0 → stub)
+    mov eax, INTRO_SYS_KERNEL
+    xor edx, edx
+    call intro_register
+    jc .init_fail
+    mov eax, INTRO_SYS_SCHED
+    xor edx, edx
+    call intro_register
+    jc .init_fail
+    mov eax, INTRO_SYS_MEMORY
+    xor edx, edx
+    call intro_register
+    jc .init_fail
+    mov eax, INTRO_SYS_SECURITY
+    xor edx, edx
+    call intro_register
+    jc .init_fail
+    mov eax, INTRO_SYS_RESILIENCE
+    xor edx, edx
+    call intro_register
+    jc .init_fail
+    mov dword [intro_ready], 1
+    clc
+    ret
+.init_fail:
+    stc
+    ret
+
+; EAX=subsystem_id  EDX=query_fn → EAX=slot  CF=0/CF=1 full
+intro_register:
+    cmp dword [intro_count], INTRO_CAPACITY
+    jae .ir_full
+    push esi
+    push edi
+    xor esi, esi
+.ir_scan:
+    cmp esi, INTRO_CAPACITY
+    jae .ir_noslot
+    imul edi, esi, INTRO_RECORD_SIZE
+    add edi, intro_registry
+    cmp dword [edi + INTRO_ID_OFF], 0
+    je .ir_slot
+    inc esi
+    jmp .ir_scan
+.ir_slot:
+    push eax
+    mov eax, [intro_next_id]
+    mov [edi + INTRO_ID_OFF], eax
+    inc dword [intro_next_id]
+    pop eax
+    mov [edi + INTRO_SYS_OFF], eax
+    mov [edi + INTRO_FN_OFF], edx
+    inc dword [intro_count]
+    mov eax, esi
+    pop edi
+    pop esi
+    clc
+    ret
+.ir_noslot:
+    pop edi
+    pop esi
+.ir_full:
+    stc
+    ret
+
+; EAX=subsystem_id → EAX=slot  CF=0 found / CF=1 not found
+intro_query:
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.iq_loop:
+    cmp esi, INTRO_CAPACITY
+    jae .iq_notfound
+    imul edi, esi, INTRO_RECORD_SIZE
+    add edi, intro_registry
+    cmp dword [edi + INTRO_ID_OFF], 0
+    je .iq_next
+    cmp [edi + INTRO_SYS_OFF], ebx
+    jne .iq_next
+    mov eax, esi
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.iq_next:
+    inc esi
+    jmp .iq_loop
+.iq_notfound:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+intro_self_test:
+    ; Query KERNEL → must find
+    mov eax, INTRO_SYS_KERNEL
+    call intro_query
+    jc .istf
+    ; Query unknown (99) → CF=1
+    mov eax, 99
+    call intro_query
+    jnc .istf
+    ; Register new provider
+    mov eax, 10
+    mov edx, 0
+    call intro_register
+    jc .istf
+    ; Query it back
+    mov eax, 10
+    call intro_query
+    jc .istf
+    clc
+    ret
+.istf:
+    stc
+    ret
+
+intro_ready:      dd 0
+intro_count:      dd 0
+intro_next_id:    dd 1
+align 4
+intro_registry:
+    times INTRO_CAPACITY * INTRO_RECORD_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-OBSERVABILITY-PROFILING-0001 – Nova Tick-Based Sampling Profiler
+; ---------------------------------------------------------------------------
+; Tick-basierter Sampling-Profiler. Pro Sample: component-ID + Tick aufzeichnen.
+; prof_hottest liefert die Komponente mit den meisten Samples.
+; prof_reset löscht alle Samples (neue Messperiode).
+; ---------------------------------------------------------------------------
+PROF_SAMPLE_COUNT   equ 16
+PROF_RECORD_SIZE    equ 16
+
+PROF_TICK_OFF       equ 0
+PROF_COMP_OFF       equ 4
+PROF_CNT_OFF        equ 8
+PROF_HOT_OFF        equ 12
+
+prof_initialize:
+    mov edi, prof_samples
+    xor eax, eax
+    mov ecx, (PROF_SAMPLE_COUNT * PROF_RECORD_SIZE) / 4
+    rep stosd
+    mov dword [prof_ready], 0
+    mov dword [prof_total], 0
+    mov dword [prof_ready], 1
+    clc
+    ret
+
+; EAX=component_id  — record sample; wraps ring
+prof_sample:
+    cmp dword [prof_ready], 1
+    jne .ps_fail
+    push esi
+    push edi
+    ; search existing slot for this component
+    xor esi, esi
+.ps_search:
+    cmp esi, PROF_SAMPLE_COUNT
+    jae .ps_new_slot
+    imul edi, esi, PROF_RECORD_SIZE
+    add edi, prof_samples
+    cmp [edi + PROF_COMP_OFF], eax
+    je .ps_found
+    inc esi
+    jmp .ps_search
+.ps_found:
+    ; existing entry: update tick, increment count and hotness
+    push eax
+    mov eax, [wd_global_tick]
+    mov [edi + PROF_TICK_OFF], eax
+    pop eax
+    inc dword [edi + PROF_CNT_OFF]
+    inc dword [edi + PROF_HOT_OFF]
+    inc dword [prof_total]
+    pop edi
+    pop esi
+    clc
+    ret
+.ps_new_slot:
+    ; find free slot (COMP=0)
+    xor esi, esi
+.ps_free:
+    cmp esi, PROF_SAMPLE_COUNT
+    jae .ps_evict
+    imul edi, esi, PROF_RECORD_SIZE
+    add edi, prof_samples
+    cmp dword [edi + PROF_COMP_OFF], 0
+    je .ps_alloc
+    inc esi
+    jmp .ps_free
+.ps_evict:
+    ; ring: overwrite slot 0 (simplest eviction)
+    mov edi, prof_samples
+    mov esi, 0
+.ps_alloc:
+    push eax
+    mov eax, [wd_global_tick]
+    mov [edi + PROF_TICK_OFF], eax
+    pop eax
+    mov [edi + PROF_COMP_OFF], eax
+    mov dword [edi + PROF_CNT_OFF], 1
+    mov dword [edi + PROF_HOT_OFF], 1
+    inc dword [prof_total]
+    pop edi
+    pop esi
+    clc
+    ret
+.ps_fail:
+    stc
+    ret
+
+; → EAX=component_id  EDX=count  CF=0 found / CF=1 empty
+prof_hottest:
+    cmp dword [prof_ready], 1
+    jne .ph_fail
+    push esi
+    push edi
+    xor esi, esi
+    xor eax, eax   ; best component
+    xor edx, edx   ; best count
+.ph_loop:
+    cmp esi, PROF_SAMPLE_COUNT
+    jae .ph_done
+    imul edi, esi, PROF_RECORD_SIZE
+    add edi, prof_samples
+    cmp dword [edi + PROF_COMP_OFF], 0
+    je .ph_next
+    cmp dword [edi + PROF_CNT_OFF], 0
+    je .ph_next
+    mov ecx, [edi + PROF_CNT_OFF]
+    cmp ecx, edx
+    jbe .ph_next
+    mov edx, ecx
+    mov eax, [edi + PROF_COMP_OFF]
+.ph_next:
+    inc esi
+    jmp .ph_loop
+.ph_done:
+    pop edi
+    pop esi
+    test eax, eax
+    jz .ph_fail
+    clc
+    ret
+.ph_fail:
+    xor eax, eax
+    xor edx, edx
+    stc
+    ret
+
+; Reset all samples (new profiling period)
+prof_reset:
+    mov edi, prof_samples
+    xor eax, eax
+    mov ecx, (PROF_SAMPLE_COUNT * PROF_RECORD_SIZE) / 4
+    rep stosd
+    clc
+    ret
+
+prof_self_test:
+    ; sample component 1 twice
+    mov eax, 1
+    call prof_sample
+    jc .pstf
+    mov eax, 1
+    call prof_sample
+    jc .pstf
+    ; sample component 2 once
+    mov eax, 2
+    call prof_sample
+    jc .pstf
+    ; hottest → component 1 (count=2)
+    call prof_hottest
+    jc .pstf
+    cmp eax, 1
+    jne .pstf
+    cmp edx, 2
+    jb .pstf
+    ; reset
+    call prof_reset
+    ; after reset, hottest → CF=1 (empty)
+    call prof_hottest
+    jnc .pstf
+    clc
+    ret
+.pstf:
+    stc
+    ret
+
+prof_ready:   dd 0
+prof_total:   dd 0
+align 4
+prof_samples:
+    times PROF_SAMPLE_COUNT * PROF_RECORD_SIZE db 0
+
 ; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
@@ -40858,6 +41397,18 @@ message_metrics_ok:
     db "NOVA: Metrics 1.0 bereit (32 Counter, increment/add/peak/reset)", 13, 10, 0
 message_metrics_error:
     db "NOVA PANIC: Metrics Manager nicht initialisierbar", 13, 10, 0
+message_log_ring_ok:
+    db "NOVA: Log Ring 1.0 bereit (32-Slot, DEBUG/INFO/WARN/ERROR/CRIT)", 13, 10, 0
+message_log_ring_error:
+    db "NOVA PANIC: Kernel Log Ring nicht initialisierbar", 13, 10, 0
+message_introspection_ok:
+    db "NOVA: Introspection 1.0 bereit (16-Provider-Registry, 5 Subsysteme)", 13, 10, 0
+message_introspection_error:
+    db "NOVA PANIC: Introspection Registry nicht initialisierbar", 13, 10, 0
+message_profiling_ok:
+    db "NOVA: Profiling 1.0 bereit (16-Slot Sampling, hottest-component)", 13, 10, 0
+message_profiling_error:
+    db "NOVA PANIC: Sampling Profiler nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
