@@ -76,6 +76,8 @@ kernel_entry:
     call acpi_rsdp_initialize
     call early_security_entropy_initialize
     jc panic_invalid_handoff
+    call early_security_entropy_self_test
+    jc panic_invalid_handoff
     mov dword [boot_phase_last_success], BOOT_PHASE_HANDOFF
     mov dword [boot_phase_current], BOOT_PHASE_EARLY_ARCH
     call boot_phase_log
@@ -2181,6 +2183,16 @@ early_security_entropy_initialize:
     ret
 .invalid:
     stc
+    ret
+
+; stack_canary_seed != 0 nach early_security_entropy_initialize.
+early_security_entropy_self_test:
+    cmp dword [stack_canary_seed], 0
+    jne .ok
+    stc
+    ret
+.ok:
+    clc
     ret
 
 ; ---------------------------------------------------------------------------
