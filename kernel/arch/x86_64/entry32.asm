@@ -169,6 +169,13 @@ kernel_entry:
     mov esi, message_interrupts_ok
     call serial_write_string
 
+    call deferred_initialize
+    jc panic_deferred
+    call deferred_self_test
+    jc panic_deferred
+    mov esi, message_deferred_ok
+    call serial_write_string
+
     call ipc_initialize
     jc panic_ipc
     call ipc_self_test
@@ -1083,6 +1090,12 @@ panic_interrupt_manager:
     mov eax, 0x00002007
     mov edx, 7
     mov esi, message_interrupts_error
+    jmp kernel_panic
+
+panic_deferred:
+    mov eax, 0x00003034
+    mov edx, 49
+    mov esi, message_deferred_error
     jmp kernel_panic
 
 panic_memory_manager:
@@ -28587,6 +28600,196 @@ thread_table:
 thread_task_ids:
     times THREAD_CAPACITY dd 0
 
+; ===========================================================================
+; NPSPEC-INTERRUPT-DEFERRED-0001 – Nova Deferred Interrupt Handler
+; Bottom-Half-Mechanismus: IRQ-Handler queuen Handler-Fn + Kontext;
+; deferred_process_queue() läuft außerhalb des IRQ-Kontexts.
+; ===========================================================================
+
+DEFERRED_CAPACITY   equ 16
+DEFERRED_ENTRY_SIZE equ 12
+DEF_HANDLER         equ 0
+DEF_CTX_A           equ 4
+DEF_CTX_B           equ 8
+
+deferred_initialize:
+    mov edi, deferred_queue
+    mov ecx, DEFERRED_CAPACITY * DEFERRED_ENTRY_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [deferred_head], 0
+    mov dword [deferred_tail], 0
+    mov dword [deferred_count], 0
+    mov dword [deferred_dropped], 0
+    mov dword [deferred_processed], 0
+    mov dword [deferred_ready], 1
+    clc
+    ret
+
+; EAX=handler_fn  EDX=ctx_a  ECX=ctx_b → CF=0 ok / CF=1 Queue voll
+deferred_queue_add:
+    push esi
+    push ebx
+    cmp dword [deferred_count], DEFERRED_CAPACITY
+    jae .dqa_full
+    mov ebx, [deferred_tail]
+    imul esi, ebx, DEFERRED_ENTRY_SIZE
+    add esi, deferred_queue
+    mov [esi + DEF_HANDLER], eax
+    mov [esi + DEF_CTX_A], edx
+    mov [esi + DEF_CTX_B], ecx
+    inc ebx
+    cmp ebx, DEFERRED_CAPACITY
+    jb .dqa_nowrap
+    xor ebx, ebx
+.dqa_nowrap:
+    mov [deferred_tail], ebx
+    inc dword [deferred_count]
+    clc
+    pop ebx
+    pop esi
+    ret
+.dqa_full:
+    inc dword [deferred_dropped]
+    stc
+    pop ebx
+    pop esi
+    ret
+
+; Verarbeitet alle pending deferred Einträge (aus Nicht-IRQ-Kontext aufrufen)
+; Handler-Konvention: EAX=ctx_a, EDX=ctx_b
+deferred_process_queue:
+    push eax
+    push edx
+    push ebx
+    push esi
+.dpq_loop:
+    cmp dword [deferred_count], 0
+    je .dpq_done
+    mov ebx, [deferred_head]
+    imul esi, ebx, DEFERRED_ENTRY_SIZE
+    add esi, deferred_queue
+    mov edx, [esi + DEF_HANDLER]
+    test edx, edx
+    jz .dpq_skip
+    mov eax, [esi + DEF_CTX_A]
+    push dword [esi + DEF_CTX_B]
+    call edx
+    pop edx
+    inc dword [deferred_processed]
+.dpq_skip:
+    inc ebx
+    cmp ebx, DEFERRED_CAPACITY
+    jb .dpq_nowrap2
+    xor ebx, ebx
+.dpq_nowrap2:
+    mov [deferred_head], ebx
+    dec dword [deferred_count]
+    jmp .dpq_loop
+.dpq_done:
+    pop esi
+    pop ebx
+    pop edx
+    pop eax
+    clc
+    ret
+
+deferred_self_test:
+    push ebx
+    push esi
+    xor ebx, ebx   ; Fehlerz.
+
+    ; T1: ready
+    cmp dword [deferred_ready], 1
+    je .dst1_ok
+    inc ebx
+.dst1_ok:
+
+    ; T2: queue_add
+    mov dword [deferred_test_flag], 0
+    mov eax, deferred_test_handler
+    mov edx, 99
+    mov ecx, 88
+    call deferred_queue_add
+    jnc .dst2_ok
+    inc ebx
+.dst2_ok:
+
+    ; T3: count=1
+    cmp dword [deferred_count], 1
+    je .dst3_ok
+    inc ebx
+.dst3_ok:
+
+    ; T4: process_queue
+    call deferred_process_queue
+    jnc .dst4_ok
+    inc ebx
+.dst4_ok:
+
+    ; T5: handler wurde aufgerufen
+    cmp dword [deferred_test_flag], 1
+    je .dst5_ok
+    inc ebx
+.dst5_ok:
+
+    ; T6: count=0 nach processing
+    cmp dword [deferred_count], 0
+    je .dst6_ok
+    inc ebx
+.dst6_ok:
+
+    ; T7: Queue bis Kapazitaet fuellen, dann overflow pruefen
+    mov esi, DEFERRED_CAPACITY
+.dst7_fill:
+    test esi, esi
+    jz .dst7_filled
+    mov eax, deferred_test_handler
+    xor edx, edx
+    xor ecx, ecx
+    call deferred_queue_add
+    dec esi
+    jmp .dst7_fill
+.dst7_filled:
+    ; eine weitere sollte CF=1 liefern
+    mov eax, deferred_test_handler
+    xor edx, edx
+    xor ecx, ecx
+    call deferred_queue_add
+    jc .dst7_ok
+    inc ebx
+.dst7_ok:
+    ; Queue wieder leeren
+    call deferred_process_queue
+
+    test ebx, ebx
+    jnz .dstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.dstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+; Test-Handler: setzt deferred_test_flag=1
+deferred_test_handler:
+    mov dword [deferred_test_flag], 1
+    ret
+
+deferred_ready:      dd 0
+deferred_head:       dd 0
+deferred_tail:       dd 0
+deferred_count:      dd 0
+deferred_dropped:    dd 0
+deferred_processed:  dd 0
+deferred_test_flag:  dd 0
+align 4
+deferred_queue:
+    times DEFERRED_CAPACITY * DEFERRED_ENTRY_SIZE db 0
+
 scheduler_initialize:
     mov dword [scheduler_enabled], 0
     mov dword [scheduler_current], 0
@@ -34038,6 +34241,10 @@ message_watchdog_ok:
     db "NOVA: Watchdog 1.0 bereit (4 Slots, Kick/Arm/Expire/Disarm)", 13, 10, 0
 message_watchdog_error:
     db "NOVA PANIC: Watchdog Manager nicht initialisierbar", 13, 10, 0
+message_deferred_ok:
+    db "NOVA: Deferred IRQ 1.0 bereit (16-Slot-Queue, Bottom-Half)", 13, 10, 0
+message_deferred_error:
+    db "NOVA PANIC: Deferred Interrupt Manager nicht initialisierbar", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:
