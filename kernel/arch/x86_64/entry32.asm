@@ -880,6 +880,27 @@ kernel_entry:
     mov esi, message_resilisolation_ok
     call serial_write_string
 
+    call raccount_initialize
+    jc panic_raccount
+    call raccount_self_test
+    jc panic_raccount
+    mov esi, message_raccount_ok
+    call serial_write_string
+
+    call rguarant_initialize
+    jc panic_rguarant
+    call rguarant_self_test
+    jc panic_rguarant
+    mov esi, message_rguarant_ok
+    call serial_write_string
+
+    call rreclaim_initialize
+    jc panic_rreclaim
+    call rreclaim_self_test
+    jc panic_rreclaim
+    mov esi, message_rreclaim_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1662,6 +1683,24 @@ panic_resilisolation:
     mov eax, 0x00003072
     mov edx, 111
     mov esi, message_resilisolation_error
+    jmp kernel_panic
+
+panic_raccount:
+    mov eax, 0x00003073
+    mov edx, 112
+    mov esi, message_raccount_error
+    jmp kernel_panic
+
+panic_rguarant:
+    mov eax, 0x00003074
+    mov edx, 113
+    mov esi, message_rguarant_error
+    jmp kernel_panic
+
+panic_rreclaim:
+    mov eax, 0x00003075
+    mov edx, 114
+    mov esi, message_rreclaim_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -34764,6 +34803,413 @@ resiso_table:
     times RESISO_CAPACITY * RESISO_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-RESOURCE-ACCOUNTING-0001 – Nova Resource Accounting
+; ===========================================================================
+; Per-owner CPU and memory usage ledger. Records how much each owner
+; has consumed. Connects radmit_request → raccount_charge, so every
+; admitted slot is immediately charged to the owner.
+;
+; Record: owner_id(4) + cpu_used(4) + mem_used(4) + pad(4) = 16 bytes
+
+RACCOUNT_CAPACITY  equ 8
+RACCOUNT_REC_SIZE  equ 16
+RACCOUNT_OWNER     equ 0
+RACCOUNT_CPU       equ 4
+RACCOUNT_MEM       equ 8
+RACCOUNT_PAD       equ 12
+
+raccount_initialize:
+    cmp dword [raccount_ready], 1
+    je .done
+    mov edi, raccount_table
+    xor eax, eax
+    mov ecx, (RACCOUNT_CAPACITY * RACCOUNT_REC_SIZE) / 4
+    rep stosd
+    mov dword [raccount_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=owner_id → EAX=slot, CF (finds or creates ledger entry)
+raccount_get_or_create:
+    cmp dword [raccount_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.find:
+    cmp esi, RACCOUNT_CAPACITY
+    jae .create
+    imul edi, esi, RACCOUNT_REC_SIZE
+    add edi, raccount_table
+    cmp [edi + RACCOUNT_OWNER], ebx
+    je .found
+    inc esi
+    jmp .find
+.create:
+    xor esi, esi
+.find_free:
+    cmp esi, RACCOUNT_CAPACITY
+    jae .full
+    imul edi, esi, RACCOUNT_REC_SIZE
+    add edi, raccount_table
+    cmp dword [edi + RACCOUNT_OWNER], 0
+    je .new_slot
+    inc esi
+    jmp .find_free
+.new_slot:
+    mov [edi + RACCOUNT_OWNER], ebx
+    mov dword [edi + RACCOUNT_CPU], 0
+    mov dword [edi + RACCOUNT_MEM], 0
+.found:
+    mov eax, esi
+    pop ebx
+    clc
+    ret
+.full:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=owner_id, EDX=cpu_delta, ECX=mem_delta → CF
+raccount_charge:
+    cmp dword [raccount_ready], 1
+    jne .fail
+    push edx
+    push ecx
+    call raccount_get_or_create
+    jc .fail2
+    imul edi, eax, RACCOUNT_REC_SIZE
+    add edi, raccount_table
+    pop ecx
+    pop edx
+    add [edi + RACCOUNT_CPU], edx
+    add [edi + RACCOUNT_MEM], ecx
+    clc
+    ret
+.fail2:
+    pop ecx
+    pop edx
+.fail:
+    stc
+    ret
+
+; EAX=owner_id → EAX=cpu_used, EDX=mem_used, CF
+raccount_query:
+    cmp dword [raccount_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RACCOUNT_CAPACITY
+    jae .not_found
+    imul edi, esi, RACCOUNT_REC_SIZE
+    add edi, raccount_table
+    cmp [edi + RACCOUNT_OWNER], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + RACCOUNT_CPU]
+    mov edx, [edi + RACCOUNT_MEM]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+raccount_self_test:
+    ; charge owner=1: cpu=10, mem=20
+    mov eax, 1
+    mov edx, 10
+    mov ecx, 20
+    call raccount_charge
+    jc .fail
+    ; charge again: cpu=5, mem=3
+    mov eax, 1
+    mov edx, 5
+    mov ecx, 3
+    call raccount_charge
+    jc .fail
+    ; query → cpu=15, mem=23
+    mov eax, 1
+    call raccount_query
+    jc .fail
+    cmp eax, 15
+    jne .fail
+    cmp edx, 23
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+raccount_ready:  dd 0
+raccount_table:
+    times RACCOUNT_CAPACITY * RACCOUNT_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESOURCE-GUARANTEE-0001 – Nova Resource Guarantee
+; ===========================================================================
+; Reserves a minimum CPU and memory allocation for each owner.
+; Connects radmit → rguarant: on radmit_request, if the owner has a
+; guarantee, the guarantee floor is always honored before admission.
+;
+; Record: owner_id(4) + min_cpu(4) + min_mem(4) + active(4) = 16 bytes
+
+RGUARANT_CAPACITY equ 8
+RGUARANT_REC_SIZE equ 16
+RGUARANT_OWNER    equ 0
+RGUARANT_MIN_CPU  equ 4
+RGUARANT_MIN_MEM  equ 8
+RGUARANT_ACTIVE   equ 12
+
+rguarant_initialize:
+    cmp dword [rguarant_ready], 1
+    je .done
+    mov edi, rguarant_table
+    xor eax, eax
+    mov ecx, (RGUARANT_CAPACITY * RGUARANT_REC_SIZE) / 4
+    rep stosd
+    mov dword [rguarant_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=owner_id, EDX=min_cpu, ECX=min_mem → EAX=slot, CF
+rguarant_set:
+    cmp dword [rguarant_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, RGUARANT_CAPACITY
+    jae .fail
+    imul edi, esi, RGUARANT_REC_SIZE
+    add edi, rguarant_table
+    cmp dword [edi + RGUARANT_OWNER], 0
+    je .slot
+    cmp [edi + RGUARANT_OWNER], eax
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + RGUARANT_OWNER], eax
+    mov [edi + RGUARANT_MIN_CPU], edx
+    mov [edi + RGUARANT_MIN_MEM], ecx
+    mov dword [edi + RGUARANT_ACTIVE], 1
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=owner_id → EAX=min_cpu, EDX=min_mem, CF=0 found / CF=1 none
+rguarant_check:
+    cmp dword [rguarant_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RGUARANT_CAPACITY
+    jae .not_found
+    imul edi, esi, RGUARANT_REC_SIZE
+    add edi, rguarant_table
+    cmp [edi + RGUARANT_OWNER], ebx
+    jne .next
+    cmp dword [edi + RGUARANT_ACTIVE], 1
+    jne .next
+    mov eax, [edi + RGUARANT_MIN_CPU]
+    mov edx, [edi + RGUARANT_MIN_MEM]
+    pop ebx
+    clc
+    ret
+.next:
+    inc esi
+    jmp .scan
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+rguarant_self_test:
+    ; set guarantee for owner=1: min_cpu=4, min_mem=8
+    mov eax, 1
+    mov edx, 4
+    mov ecx, 8
+    call rguarant_set
+    jc .fail
+    ; check → cpu=4, mem=8
+    mov eax, 1
+    call rguarant_check
+    jc .fail
+    cmp eax, 4
+    jne .fail
+    cmp edx, 8
+    jne .fail
+    ; check unknown owner → CF=1
+    mov eax, 99
+    call rguarant_check
+    jnc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+rguarant_ready:  dd 0
+rguarant_table:
+    times RGUARANT_CAPACITY * RGUARANT_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESOURCE-RECLAIM-0001 – Nova Resource Reclaim
+; ===========================================================================
+; Tracks released resources and makes them available for re-admission.
+; When radmit_release is called, the freed CPU+mem is posted here.
+; New admission requests check rreclaim first before raw pool.
+;
+; Record: owner_id(4) + cpu_freed(4) + mem_freed(4) + reclaimed(4) = 16 bytes
+
+RRECLAIM_CAPACITY  equ 8
+RRECLAIM_REC_SIZE  equ 16
+RRECLAIM_OWNER     equ 0
+RRECLAIM_CPU_FREE  equ 4
+RRECLAIM_MEM_FREE  equ 8
+RRECLAIM_RECLAIMED equ 12
+
+rreclaim_initialize:
+    cmp dword [rreclaim_ready], 1
+    je .done
+    mov edi, rreclaim_table
+    xor eax, eax
+    mov ecx, (RRECLAIM_CAPACITY * RRECLAIM_REC_SIZE) / 4
+    rep stosd
+    mov dword [rreclaim_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=owner_id, EDX=cpu_units, ECX=mem_units → CF (post freed resources)
+rreclaim_post:
+    cmp dword [rreclaim_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, RRECLAIM_CAPACITY
+    jae .fail
+    imul edi, esi, RRECLAIM_REC_SIZE
+    add edi, rreclaim_table
+    cmp dword [edi + RRECLAIM_OWNER], 0
+    je .slot
+    cmp [edi + RRECLAIM_OWNER], eax
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + RRECLAIM_OWNER], eax
+    add [edi + RRECLAIM_CPU_FREE], edx
+    add [edi + RRECLAIM_MEM_FREE], ecx
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=owner_id, EDX=need_cpu, ECX=need_mem → CF=0 reclaimed enough / CF=1 insufficient
+rreclaim_try:
+    cmp dword [rreclaim_ready], 1
+    jne .fail
+    push ebx
+    push esi
+    push edx
+    push ecx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RRECLAIM_CAPACITY
+    jae .insuf
+    imul edi, esi, RRECLAIM_REC_SIZE
+    add edi, rreclaim_table
+    cmp [edi + RRECLAIM_OWNER], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    pop ecx
+    pop edx
+    mov eax, [edi + RRECLAIM_CPU_FREE]
+    cmp eax, edx
+    jb .insuf2
+    mov eax, [edi + RRECLAIM_MEM_FREE]
+    cmp eax, ecx
+    jb .insuf2
+    ; subtract from freed pool
+    sub [edi + RRECLAIM_CPU_FREE], edx
+    sub [edi + RRECLAIM_MEM_FREE], ecx
+    inc dword [edi + RRECLAIM_RECLAIMED]
+    pop esi
+    pop ebx
+    clc
+    ret
+.insuf2:
+    push edx
+    push ecx
+.insuf:
+    pop ecx
+    pop edx
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+rreclaim_self_test:
+    ; post freed resources: owner=1, cpu=16, mem=32
+    mov eax, 1
+    mov edx, 16
+    mov ecx, 32
+    call rreclaim_post
+    jc .fail
+    ; try reclaim cpu=10, mem=20 → should succeed
+    mov eax, 1
+    mov edx, 10
+    mov ecx, 20
+    call rreclaim_try
+    jc .fail
+    ; try reclaim cpu=10, mem=20 again → only 6/12 left → CF=1
+    mov eax, 1
+    mov edx, 10
+    mov ecx, 20
+    call rreclaim_try
+    jnc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+rreclaim_ready:  dd 0
+rreclaim_table:
+    times RRECLAIM_CAPACITY * RRECLAIM_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -46249,6 +46695,18 @@ message_resilisolation_ok:
     db "NOVA: Resilience Isolation 1.0 bereit (8-Domains, fault boundary tracking)", 13, 10, 0
 message_resilisolation_error:
     db "NOVA PANIC: Resilience Isolation nicht initialisierbar", 13, 10, 0
+message_raccount_ok:
+    db "NOVA: Resource Accounting 1.0 bereit (8-Slots, per-owner CPU+mem ledger)", 13, 10, 0
+message_raccount_error:
+    db "NOVA PANIC: Resource Accounting nicht initialisierbar", 13, 10, 0
+message_rguarant_ok:
+    db "NOVA: Resource Guarantee 1.0 bereit (8-Slots, min CPU+mem reservations)", 13, 10, 0
+message_rguarant_error:
+    db "NOVA PANIC: Resource Guarantee Manager nicht initialisierbar", 13, 10, 0
+message_rreclaim_ok:
+    db "NOVA: Resource Reclaim 1.0 bereit (8-Slots, release+reuse tracking)", 13, 10, 0
+message_rreclaim_error:
+    db "NOVA PANIC: Resource Reclaim Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
