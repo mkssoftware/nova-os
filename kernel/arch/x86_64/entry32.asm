@@ -500,6 +500,13 @@ kernel_entry:
     mov esi, message_diag_ok
     call serial_write_string
 
+    call trace_initialize
+    jc panic_trace
+    call trace_self_test
+    jc panic_trace
+    mov esi, message_trace_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -940,6 +947,12 @@ panic_diag:
     mov eax, 0x00000018
     mov edx, 0x44494100             ; "DIA\0"
     mov esi, message_diag_error
+    jmp kernel_panic
+
+panic_trace:
+    mov eax, 0x00003035
+    mov edx, 50
+    mov esi, message_trace_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -25577,6 +25590,172 @@ diag_tmp_event:     dd 0
 diag_tmp_value:     dd 0
 
 ; ===========================================================================
+; NPSPEC-OBSERVABILITY-TRACING-0001 – Nova Kernel Trace Ring
+; 64-Slot-Ringpuffer für strukturierte Kernel-Events (subsys/id/args/seq).
+; ===========================================================================
+
+TRACE_CAPACITY      equ 64
+TRACE_EVENT_SIZE    equ 32
+
+TRACE_SEQ           equ 0
+TRACE_TIMESTAMP     equ 4
+TRACE_SUBSYSTEM     equ 8
+TRACE_EVENT_ID      equ 12
+TRACE_ARG_A         equ 16
+TRACE_ARG_B         equ 20
+TRACE_ARG_C         equ 24
+TRACE_FLAGS         equ 28
+
+TRACE_SYS_KERNEL    equ 1
+TRACE_SYS_IRQ       equ 2
+TRACE_SYS_SCHED     equ 3
+TRACE_SYS_MEM       equ 4
+TRACE_SYS_IPC       equ 5
+
+trace_initialize:
+    mov edi, trace_ring
+    mov ecx, TRACE_CAPACITY * TRACE_EVENT_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [trace_write_pos], 0
+    mov dword [trace_seq], 0
+    mov dword [trace_total_emitted], 0
+    mov dword [trace_wrapped], 0
+    mov dword [trace_ready], 1
+    clc
+    ret
+
+; EAX=subsys  EDX=event_id  ECX=arg_a  EBX=arg_b → CF=0
+; Überschreibt älteste Einträge wenn Ring voll (Ringpuffer-Semantik).
+trace_emit:
+    push ebx
+    push esi
+    push edi
+    mov edi, [trace_write_pos]
+    imul esi, edi, TRACE_EVENT_SIZE
+    add esi, trace_ring
+    push eax            ; save subsys
+    mov eax, [trace_seq]
+    mov [esi + TRACE_SEQ], eax
+    inc dword [trace_seq]
+    mov eax, [wd_global_tick]
+    mov [esi + TRACE_TIMESTAMP], eax
+    pop eax
+    mov [esi + TRACE_SUBSYSTEM], eax
+    mov [esi + TRACE_EVENT_ID], edx
+    mov [esi + TRACE_ARG_A], ecx
+    mov [esi + TRACE_ARG_B], ebx
+    mov dword [esi + TRACE_ARG_C], 0
+    mov dword [esi + TRACE_FLAGS], 0
+    inc edi
+    cmp edi, TRACE_CAPACITY
+    jb .te_nowrap
+    xor edi, edi
+    inc dword [trace_wrapped]
+.te_nowrap:
+    mov [trace_write_pos], edi
+    inc dword [trace_total_emitted]
+    clc
+    pop edi
+    pop esi
+    pop ebx
+    ret
+
+trace_self_test:
+    push ebx
+    push esi
+    xor ebx, ebx    ; Fehlerz.
+
+    ; T1: ready
+    cmp dword [trace_ready], 1
+    je .tst1_ok
+    inc ebx
+.tst1_ok:
+
+    ; T2: emit ein Event
+    mov eax, TRACE_SYS_KERNEL
+    mov edx, 0x100
+    mov ecx, 42
+    mov ebx, 99
+    call trace_emit
+    jnc .tst2_ok
+    inc ebx
+.tst2_ok:
+    xor ebx, ebx
+
+    ; T3: total_emitted=1
+    cmp dword [trace_total_emitted], 1
+    je .tst3_ok
+    inc ebx
+.tst3_ok:
+
+    ; T4: slot 0 hat korrektes Subsystem
+    cmp dword [trace_ring + TRACE_SUBSYSTEM], TRACE_SYS_KERNEL
+    je .tst4_ok
+    inc ebx
+.tst4_ok:
+
+    ; T5: write_pos=1
+    cmp dword [trace_write_pos], 1
+    je .tst5_ok
+    inc ebx
+.tst5_ok:
+
+    ; T6: 63 weitere Events emittieren (Ring voll = 64 total)
+    mov esi, 63
+.tst6_fill:
+    test esi, esi
+    jz .tst6_done
+    mov eax, TRACE_SYS_IRQ
+    mov edx, 0x200
+    mov ecx, 0
+    push ebx
+    xor ebx, ebx
+    call trace_emit
+    pop ebx
+    dec esi
+    jmp .tst6_fill
+.tst6_done:
+    cmp dword [trace_total_emitted], 64
+    je .tst6_ok
+    inc ebx
+.tst6_ok:
+
+    ; T7: wrapped=1 nach Ring-Overflow (ein weiteres Event emittieren)
+    mov eax, TRACE_SYS_SCHED
+    mov edx, 0x300
+    mov ecx, 0
+    push ebx
+    xor ebx, ebx
+    call trace_emit
+    pop ebx
+    cmp dword [trace_wrapped], 1
+    je .tst7_ok
+    inc ebx
+.tst7_ok:
+
+    test ebx, ebx
+    jnz .tstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.tstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+trace_ready:         dd 0
+trace_write_pos:     dd 0
+trace_seq:           dd 0
+trace_total_emitted: dd 0
+trace_wrapped:       dd 0
+align 4
+trace_ring:
+    times TRACE_CAPACITY * TRACE_EVENT_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -34245,6 +34424,10 @@ message_deferred_ok:
     db "NOVA: Deferred IRQ 1.0 bereit (16-Slot-Queue, Bottom-Half)", 13, 10, 0
 message_deferred_error:
     db "NOVA PANIC: Deferred Interrupt Manager nicht initialisierbar", 13, 10, 0
+message_trace_ok:
+    db "NOVA: Kernel Trace 1.0 bereit (64-Slot-Ring, seq/subsys/args)", 13, 10, 0
+message_trace_error:
+    db "NOVA PANIC: Kernel Trace Ring nicht initialisierbar", 13, 10, 0
 message_io_scheduler_ok:
     db "NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv", 13, 10, 0
 message_io_scheduler_error:
