@@ -596,6 +596,13 @@ kernel_entry:
     mov esi, message_sync_ok
     call serial_write_string
 
+    call deadlock_initialize
+    jc panic_deadlock
+    call deadlock_self_test
+    jc panic_deadlock
+    mov esi, message_deadlock_ok
+    call serial_write_string
+
     call irq_manager_initialize
     jc panic_irq_manager
     call irq_manager_self_test
@@ -1084,6 +1091,12 @@ panic_futex:
     mov eax, 0x0000303A
     mov edx, 55
     mov esi, message_futex_error
+    jmp kernel_panic
+
+panic_deadlock:
+    mov eax, 0x00003040
+    mov edx, 61
+    mov esi, message_deadlock_error
     jmp kernel_panic
 
 panic_irq_manager:
@@ -29690,6 +29703,232 @@ align 4
 futex_table:
     times FUTEX_CAPACITY * FUTEX_RECORD_SIZE db 0
 
+; ===========================================================================
+; NPSPEC-SYNC-DEADLOCK-0001 – Nova Deadlock Detection (Wait-For Graph)
+; Erkennt zyklische Warteabhängigkeiten zwischen Tasks und Locks.
+; Wait-For Graph: bis zu DL_NODE_COUNT Knoten, Adjazenzmatrix.
+; ===========================================================================
+
+DL_NODE_COUNT        equ 8
+
+; Adjazenzmatrix: dl_wfg[i * DL_NODE_COUNT + j] = 1 → Task i wartet auf Task j
+; dl_owner[i] = Task-ID des aktuellen Lock-Halters für Slot i (0 = frei)
+
+deadlock_initialize:
+    mov edi, dl_wfg
+    mov ecx, DL_NODE_COUNT * DL_NODE_COUNT
+    xor eax, eax
+    rep stosd
+    mov edi, dl_owner
+    mov ecx, DL_NODE_COUNT
+    rep stosd
+    mov dword [dl_ready], 1
+    mov dword [dl_detected], 0
+    clc
+    ret
+
+; Trägt ein: Task EAX wartet auf Task EDX (beide < DL_NODE_COUNT)
+; CF=0 ok / CF=1 Deadlock erkannt
+deadlock_add_wait:
+    cmp eax, DL_NODE_COUNT
+    jae .daw_fail
+    cmp edx, DL_NODE_COUNT
+    jae .daw_fail
+    cmp eax, edx
+    je .daw_fail       ; Self-wait = Fehler
+    ; wfg[eax][edx] = 1
+    push eax
+    push edx
+    imul ecx, eax, DL_NODE_COUNT
+    add ecx, edx
+    mov dword [dl_wfg + ecx*4], 1
+    pop edx
+    pop eax
+    ; Zyklus prüfen
+    call deadlock_detect
+    jnc .daw_ok
+    inc dword [dl_detected]
+    stc
+    ret
+.daw_ok:
+    clc
+    ret
+.daw_fail:
+    stc
+    ret
+
+; Entfernt Kante: Task EAX wartet nicht mehr auf Task EDX
+deadlock_remove_wait:
+    cmp eax, DL_NODE_COUNT
+    jae .drw_ret
+    cmp edx, DL_NODE_COUNT
+    jae .drw_ret
+    imul ecx, eax, DL_NODE_COUNT
+    add ecx, edx
+    mov dword [dl_wfg + ecx*4], 0
+.drw_ret:
+    ret
+
+; DFS-basierte Zykluserkennung im Wait-For Graph
+; → CF=0 kein Zyklus, CF=1 Zyklus gefunden
+; Nutzt dl_visited/dl_stack als temporäre Felder
+deadlock_detect:
+    push esi
+    push edi
+    push ebx
+    push ecx
+    push edx
+    ; visited[] und in_stack[] zurücksetzen
+    mov edi, dl_visited
+    mov ecx, DL_NODE_COUNT * 2
+    xor eax, eax
+    rep stosd
+    ; DFS von jedem Knoten
+    xor esi, esi
+.ddet_outer:
+    cmp esi, DL_NODE_COUNT
+    jae .ddet_no_cycle
+    cmp dword [dl_visited + esi*4], 0
+    jne .ddet_next_outer
+    call deadlock_dfs_node   ; ESI = Startknoten
+    jc .ddet_cycle
+.ddet_next_outer:
+    inc esi
+    jmp .ddet_outer
+.ddet_cycle:
+    stc
+    pop edx
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    ret
+.ddet_no_cycle:
+    clc
+    pop edx
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    ret
+
+; DFS von Knoten ESI; CF=1 wenn Zyklus, nutzt dl_visited/dl_in_stack
+deadlock_dfs_node:
+    mov dword [dl_visited + esi*4], 1
+    mov dword [dl_in_stack + esi*4], 1
+    push esi
+    push ebx
+    xor ebx, ebx
+.ddn_edge:
+    cmp ebx, DL_NODE_COUNT
+    jae .ddn_done
+    ; Kante esi → ebx?
+    push eax
+    imul eax, esi, DL_NODE_COUNT
+    add eax, ebx
+    cmp dword [dl_wfg + eax*4], 0
+    pop eax
+    je .ddn_no_edge
+    ; Kante vorhanden: Nachbar besuchen?
+    cmp dword [dl_visited + ebx*4], 0
+    jne .ddn_check_stack
+    push esi
+    mov esi, ebx
+    call deadlock_dfs_node
+    pop esi
+    jc .ddn_cycle
+    jmp .ddn_no_edge
+.ddn_check_stack:
+    cmp dword [dl_in_stack + ebx*4], 1
+    je .ddn_cycle
+.ddn_no_edge:
+    inc ebx
+    jmp .ddn_edge
+.ddn_done:
+    mov dword [dl_in_stack + esi*4], 0
+    clc
+    pop ebx
+    pop esi
+    ret
+.ddn_cycle:
+    mov dword [dl_in_stack + esi*4], 0
+    stc
+    pop ebx
+    pop esi
+    ret
+
+deadlock_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+
+    ; T1: ready
+    cmp dword [dl_ready], 1
+    je .dlst1_ok
+    inc esi
+.dlst1_ok:
+
+    ; T2: 0→1, 1→2 – kein Zyklus
+    mov eax, 0
+    mov edx, 1
+    call deadlock_add_wait
+    jnc .dlst2_ok
+    inc esi
+.dlst2_ok:
+    mov eax, 1
+    mov edx, 2
+    call deadlock_add_wait
+    jnc .dlst3_ok
+    inc esi
+.dlst3_ok:
+
+    ; T3: 2→0 → Zyklus muss erkannt werden
+    mov eax, 2
+    mov edx, 0
+    call deadlock_add_wait
+    jc .dlst4_ok    ; CF=1 erwartet
+    inc esi
+.dlst4_ok:
+
+    ; T4: dl_detected=1
+    cmp dword [dl_detected], 1
+    je .dlst5_ok
+    inc esi
+.dlst5_ok:
+
+    ; T5: nach remove_wait kein Zyklus mehr
+    mov eax, 2
+    mov edx, 0
+    call deadlock_remove_wait
+    call deadlock_detect
+    jnc .dlst6_ok
+    inc esi
+.dlst6_ok:
+
+    test esi, esi
+    jnz .dlstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.dlstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+dl_ready:    dd 0
+dl_detected: dd 0
+align 4
+dl_wfg:
+    times DL_NODE_COUNT * DL_NODE_COUNT dd 0
+dl_owner:
+    times DL_NODE_COUNT dd 0
+dl_visited:
+    times DL_NODE_COUNT dd 0
+dl_in_stack:
+    times DL_NODE_COUNT dd 0
+
 ; ---------------------------------------------------------------------------
 ; ===========================================================================
 ; §009 – Interrupt Manager 1.0 (NPSPEC-KERNEL-0009)
@@ -36890,6 +37129,10 @@ message_rt_scheduler_ok:
     db "NOVA: RT Scheduler 1.0 bereit (8 Tasks, EDF/FIFO-RT)", 13, 10, 0
 message_rt_scheduler_error:
     db "NOVA PANIC: RT Scheduler nicht initialisierbar", 13, 10, 0
+message_deadlock_ok:
+    db "NOVA: Deadlock Detection 1.0 bereit (8 Knoten, Wait-For Graph DFS)", 13, 10, 0
+message_deadlock_error:
+    db "NOVA PANIC: Deadlock Detection nicht initialisierbar", 13, 10, 0
 message_time_ok:
     db "NOVA: Time 1.0 bereit (Monoton 100Hz + RTC CMOS Uhr/Datum)", 13, 10, 0
 message_time_error:
