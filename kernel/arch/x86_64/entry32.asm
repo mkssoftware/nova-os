@@ -412,6 +412,20 @@ kernel_entry:
     mov esi, message_watchdog_ok
     call serial_write_string
 
+    call circuitbreaker_initialize
+    jc panic_circuitbreaker
+    call circuitbreaker_self_test
+    jc panic_circuitbreaker
+    mov esi, message_circuitbreaker_ok
+    call serial_write_string
+
+    call detection_initialize
+    jc panic_detection
+    call detection_self_test
+    jc panic_detection
+    mov esi, message_detection_ok
+    call serial_write_string
+
     call io_scheduler_initialize
     jc panic_io_scheduler
     call io_scheduler_self_test
@@ -892,6 +906,18 @@ panic_watchdog:
     mov eax, 0x00003033
     mov edx, 48
     mov esi, message_watchdog_error
+    jmp kernel_panic
+
+panic_circuitbreaker:
+    mov eax, 0x00003037
+    mov edx, 52
+    mov esi, message_circuitbreaker_error
+    jmp kernel_panic
+
+panic_detection:
+    mov eax, 0x00003038
+    mov edx, 53
+    mov esi, message_detection_error
     jmp kernel_panic
 
 panic_io_scheduler:
@@ -13260,6 +13286,448 @@ wd_total_expires:  dd 0
 align 4
 wd_table:
     times WD_CAPACITY * WD_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-CIRCUITBREAKER-0001 – Nova Circuit Breaker
+; CLOSED→OPEN bei threshold Fehlern; OPEN→HALF-OPEN nach cooldown;
+; HALF-OPEN→CLOSED nach Erfolg; HALF-OPEN→OPEN bei erneutem Fehler.
+; ===========================================================================
+
+CB_CAPACITY         equ 8
+CB_RECORD_SIZE      equ 32
+
+CB_STATE_FREE       equ 0
+CB_STATE_CLOSED     equ 1
+CB_STATE_OPEN       equ 2
+CB_STATE_HALFOPEN   equ 3
+
+CB_ID               equ 0
+CB_STATE            equ 4
+CB_OWNER            equ 8
+CB_FAIL_COUNT       equ 12
+CB_FAIL_THRESHOLD   equ 16
+CB_LAST_FAIL_TICK   equ 20
+CB_COOLDOWN_TICKS   equ 24
+CB_SUCCESS_COUNT    equ 28
+
+circuitbreaker_initialize:
+    mov edi, cb_table
+    mov ecx, CB_CAPACITY * CB_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [cb_next_id], 0
+    mov dword [cb_live_count], 0
+    mov dword [cb_trips], 0
+    mov dword [cb_ready], 1
+    clc
+    ret
+
+; EAX=owner  EDX=fail_threshold  ECX=cooldown_ticks → EAX=slot CF=0 / CF=1 voll
+circuitbreaker_create:
+    push ebx
+    push esi
+    mov esi, cb_table
+    xor ebx, ebx
+.cbc_scan:
+    cmp ebx, CB_CAPACITY
+    jae .cbc_full
+    cmp dword [esi + CB_STATE], CB_STATE_FREE
+    je .cbc_found
+    add esi, CB_RECORD_SIZE
+    inc ebx
+    jmp .cbc_scan
+.cbc_found:
+    push eax
+    push edx
+    push ecx
+    mov eax, [cb_next_id]
+    inc dword [cb_next_id]
+    mov [esi + CB_ID], eax
+    mov dword [esi + CB_STATE], CB_STATE_CLOSED
+    pop ecx         ; cooldown
+    pop edx         ; threshold
+    pop eax         ; owner
+    mov [esi + CB_OWNER], eax
+    mov dword [esi + CB_FAIL_COUNT], 0
+    mov [esi + CB_FAIL_THRESHOLD], edx
+    mov dword [esi + CB_LAST_FAIL_TICK], 0
+    mov [esi + CB_COOLDOWN_TICKS], ecx
+    mov dword [esi + CB_SUCCESS_COUNT], 0
+    inc dword [cb_live_count]
+    mov eax, ebx
+    clc
+    pop esi
+    pop ebx
+    ret
+.cbc_full:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+; EAX=slot → CF=0 Aufruf erlaubt (CLOSED/HALF-OPEN) / CF=1 OPEN gesperrt
+circuitbreaker_check:
+    push esi
+    cmp eax, CB_CAPACITY
+    jae .cbchk_fail
+    imul esi, eax, CB_RECORD_SIZE
+    add esi, cb_table
+    mov eax, [esi + CB_STATE]
+    cmp eax, CB_STATE_OPEN
+    je .cbchk_fail
+    cmp eax, CB_STATE_FREE
+    je .cbchk_fail
+    clc
+    pop esi
+    ret
+.cbchk_fail:
+    stc
+    pop esi
+    ret
+
+; EAX=slot → Fehler aufzeichnen; bei threshold → OPEN
+circuitbreaker_record_failure:
+    push esi
+    push edx
+    cmp eax, CB_CAPACITY
+    jae .cbrf_done
+    imul esi, eax, CB_RECORD_SIZE
+    add esi, cb_table
+    mov edx, [esi + CB_STATE]
+    cmp edx, CB_STATE_FREE
+    je .cbrf_done
+    inc dword [esi + CB_FAIL_COUNT]
+    mov edx, [wd_global_tick]
+    mov [esi + CB_LAST_FAIL_TICK], edx
+    cmp dword [esi + CB_STATE], CB_STATE_HALFOPEN
+    je .cbrf_reopen
+    mov edx, [esi + CB_FAIL_COUNT]
+    cmp edx, [esi + CB_FAIL_THRESHOLD]
+    jb .cbrf_done
+    mov dword [esi + CB_STATE], CB_STATE_OPEN
+    inc dword [cb_trips]
+    jmp .cbrf_done
+.cbrf_reopen:
+    mov dword [esi + CB_STATE], CB_STATE_OPEN
+    mov dword [esi + CB_SUCCESS_COUNT], 0
+    inc dword [cb_trips]
+.cbrf_done:
+    clc
+    pop edx
+    pop esi
+    ret
+
+; EAX=slot → Erfolg aufzeichnen; HALF-OPEN→CLOSED nach erstem Erfolg
+circuitbreaker_record_success:
+    push esi
+    cmp eax, CB_CAPACITY
+    jae .cbrs_done
+    imul esi, eax, CB_RECORD_SIZE
+    add esi, cb_table
+    cmp dword [esi + CB_STATE], CB_STATE_HALFOPEN
+    jne .cbrs_done
+    inc dword [esi + CB_SUCCESS_COUNT]
+    mov dword [esi + CB_STATE], CB_STATE_CLOSED
+    mov dword [esi + CB_FAIL_COUNT], 0
+.cbrs_done:
+    clc
+    pop esi
+    ret
+
+; OPEN-Circuits prüfen: bei abgelaufenem cooldown → HALF-OPEN
+circuitbreaker_poll:
+    push ebx
+    push esi
+    push edx
+    mov esi, cb_table
+    xor ebx, ebx
+.cbp_loop:
+    cmp ebx, CB_CAPACITY
+    jae .cbp_done
+    cmp dword [esi + CB_STATE], CB_STATE_OPEN
+    jne .cbp_next
+    mov edx, [wd_global_tick]
+    sub edx, [esi + CB_LAST_FAIL_TICK]
+    cmp edx, [esi + CB_COOLDOWN_TICKS]
+    jb .cbp_next
+    mov dword [esi + CB_STATE], CB_STATE_HALFOPEN
+    mov dword [esi + CB_SUCCESS_COUNT], 0
+.cbp_next:
+    add esi, CB_RECORD_SIZE
+    inc ebx
+    jmp .cbp_loop
+.cbp_done:
+    pop edx
+    pop esi
+    pop ebx
+    clc
+    ret
+
+circuitbreaker_self_test:
+    push ebx
+    push esi
+    xor esi, esi    ; Fehlerz.
+
+    ; T1: ready
+    cmp dword [cb_ready], 1
+    je .cbst1_ok
+    inc esi
+.cbst1_ok:
+
+    ; T2: create
+    mov eax, 1          ; owner
+    mov edx, 3          ; fail_threshold=3
+    mov ecx, 10         ; cooldown=10 ticks
+    call circuitbreaker_create
+    jnc .cbst2_ok
+    inc esi
+.cbst2_ok:
+    mov ebx, eax        ; slot
+
+    ; T3: check → CF=0 (CLOSED)
+    mov eax, ebx
+    call circuitbreaker_check
+    jnc .cbst3_ok
+    inc esi
+.cbst3_ok:
+
+    ; T4: 3 Fehler → OPEN
+    mov eax, ebx
+    call circuitbreaker_record_failure
+    mov eax, ebx
+    call circuitbreaker_record_failure
+    mov eax, ebx
+    call circuitbreaker_record_failure
+    push edx
+    imul edx, ebx, CB_RECORD_SIZE
+    add edx, cb_table
+    cmp dword [edx + CB_STATE], CB_STATE_OPEN
+    je .cbst4_ok
+    inc esi
+.cbst4_ok:
+    pop edx
+
+    ; T5: check → CF=1 (OPEN gesperrt)
+    mov eax, ebx
+    call circuitbreaker_check
+    jc .cbst5_ok
+    inc esi
+.cbst5_ok:
+
+    ; T6: cooldown → HALF-OPEN (set last_fail to past)
+    push edx
+    imul edx, ebx, CB_RECORD_SIZE
+    add edx, cb_table
+    mov dword [edx + CB_LAST_FAIL_TICK], 0
+    pop edx
+    mov dword [wd_global_tick], 100
+    call circuitbreaker_poll
+    push edx
+    imul edx, ebx, CB_RECORD_SIZE
+    add edx, cb_table
+    cmp dword [edx + CB_STATE], CB_STATE_HALFOPEN
+    je .cbst6_ok
+    inc esi
+.cbst6_ok:
+    pop edx
+
+    ; T7: Erfolg → CLOSED
+    mov eax, ebx
+    call circuitbreaker_record_success
+    push edx
+    imul edx, ebx, CB_RECORD_SIZE
+    add edx, cb_table
+    cmp dword [edx + CB_STATE], CB_STATE_CLOSED
+    je .cbst7_ok
+    inc esi
+.cbst7_ok:
+    pop edx
+
+    mov dword [wd_global_tick], 0
+
+    test esi, esi
+    jnz .cbstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.cbstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+cb_ready:      dd 0
+cb_next_id:    dd 0
+cb_live_count: dd 0
+cb_trips:      dd 0
+align 4
+cb_table:
+    times CB_CAPACITY * CB_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESILIENCE-DETECTION-0001 – Nova Fault Detection
+; Strukturiertes Fault-Log: Type / Subsystem / Code / Tick / Sequence.
+; ===========================================================================
+
+FD_CAPACITY      equ 32
+FD_RECORD_SIZE   equ 24
+
+FD_TYPE_NONE     equ 0
+FD_TYPE_MEMORY   equ 1
+FD_TYPE_TIMING   equ 2
+FD_TYPE_RESOURCE equ 3
+FD_TYPE_SUBSYS   equ 4
+FD_TYPE_HARDWARE equ 5
+FD_TYPE_SECURITY equ 6
+
+FD_SEQ           equ 0
+FD_TYPE          equ 4
+FD_SUBSYSTEM     equ 8
+FD_CODE          equ 12
+FD_TICK          equ 16
+FD_FLAGS         equ 20
+
+detection_initialize:
+    mov edi, fd_log
+    mov ecx, FD_CAPACITY * FD_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [fd_write_pos], 0
+    mov dword [fd_seq], 0
+    mov dword [fd_total], 0
+    mov dword [fd_ready], 1
+    clc
+    ret
+
+; EAX=fault_type  EDX=subsystem  ECX=fault_code → CF=0
+detection_record_fault:
+    push esi
+    push edi
+    push ebx
+    mov edi, [fd_write_pos]
+    imul esi, edi, FD_RECORD_SIZE
+    add esi, fd_log
+    mov ebx, [fd_seq]
+    mov [esi + FD_SEQ], ebx
+    inc dword [fd_seq]
+    mov [esi + FD_TYPE], eax
+    mov [esi + FD_SUBSYSTEM], edx
+    mov [esi + FD_CODE], ecx
+    mov ebx, [wd_global_tick]
+    mov [esi + FD_TICK], ebx
+    mov dword [esi + FD_FLAGS], 0
+    inc edi
+    cmp edi, FD_CAPACITY
+    jb .drf_nowrap
+    xor edi, edi
+.drf_nowrap:
+    mov [fd_write_pos], edi
+    inc dword [fd_total]
+    clc
+    pop ebx
+    pop edi
+    pop esi
+    ret
+
+; EAX=fault_type → EAX=Anzahl Einträge dieses Typs (scan des gesamten Logs)
+detection_get_fault_count:
+    push ebx
+    push esi
+    push ecx
+    mov esi, fd_log
+    xor ebx, ebx
+    mov ecx, FD_CAPACITY
+.dgfc_loop:
+    cmp dword [esi + FD_TYPE], FD_TYPE_NONE
+    je .dgfc_next
+    cmp [esi + FD_TYPE], eax
+    jne .dgfc_next
+    inc ebx
+.dgfc_next:
+    add esi, FD_RECORD_SIZE
+    dec ecx
+    jnz .dgfc_loop
+    mov eax, ebx
+    pop ecx
+    pop esi
+    pop ebx
+    ret
+
+detection_self_test:
+    push ebx
+    xor ebx, ebx
+
+    ; T1: ready
+    cmp dword [fd_ready], 1
+    je .dst1_ok
+    inc ebx
+.dst1_ok:
+
+    ; T2: record_fault
+    mov eax, FD_TYPE_MEMORY
+    mov edx, 1
+    mov ecx, 0xDEAD
+    call detection_record_fault
+    jnc .dst2_ok
+    inc ebx
+.dst2_ok:
+
+    ; T3: total=1
+    cmp dword [fd_total], 1
+    je .dst3_ok
+    inc ebx
+.dst3_ok:
+
+    ; T4: slot 0 hat korrekten Type
+    cmp dword [fd_log + FD_TYPE], FD_TYPE_MEMORY
+    je .dst4_ok
+    inc ebx
+.dst4_ok:
+
+    ; T5: get_fault_count(MEMORY) >= 1
+    mov eax, FD_TYPE_MEMORY
+    call detection_get_fault_count
+    cmp eax, 1
+    jae .dst5_ok
+    inc ebx
+.dst5_ok:
+
+    ; T6: record HARDWARE fault
+    mov eax, FD_TYPE_HARDWARE
+    mov edx, 2
+    mov ecx, 0xBAD0
+    call detection_record_fault
+    mov eax, FD_TYPE_HARDWARE
+    call detection_get_fault_count
+    cmp eax, 1
+    je .dst6_ok
+    inc ebx
+.dst6_ok:
+
+    ; T7: fd_total=2
+    cmp dword [fd_total], 2
+    je .dst7_ok
+    inc ebx
+.dst7_ok:
+
+    test ebx, ebx
+    jnz .dstf
+    clc
+    pop ebx
+    ret
+.dstf:
+    stc
+    pop ebx
+    ret
+
+fd_ready:     dd 0
+fd_write_pos: dd 0
+fd_seq:       dd 0
+fd_total:     dd 0
+align 4
+fd_log:
+    times FD_CAPACITY * FD_RECORD_SIZE db 0
 
 ; ---------------------------------------------------------------------------
 ; Zentraler I/O-Scheduler: Deadline vor effektiver Prioritaet, danach FIFO.
@@ -34717,6 +35185,14 @@ message_watchdog_ok:
     db "NOVA: Watchdog 1.0 bereit (4 Slots, Kick/Arm/Expire/Disarm)", 13, 10, 0
 message_watchdog_error:
     db "NOVA PANIC: Watchdog Manager nicht initialisierbar", 13, 10, 0
+message_circuitbreaker_ok:
+    db "NOVA: Circuit Breaker 1.0 bereit (8 Slots, CLOSED/OPEN/HALF-OPEN)", 13, 10, 0
+message_circuitbreaker_error:
+    db "NOVA PANIC: Circuit Breaker nicht initialisierbar", 13, 10, 0
+message_detection_ok:
+    db "NOVA: Fault Detection 1.0 bereit (32-Slot-Log, 7 Typen)", 13, 10, 0
+message_detection_error:
+    db "NOVA PANIC: Fault Detection nicht initialisierbar", 13, 10, 0
 message_deferred_ok:
     db "NOVA: Deferred IRQ 1.0 bereit (16-Slot-Queue, Bottom-Half)", 13, 10, 0
 message_deferred_error:
