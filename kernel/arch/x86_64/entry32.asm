@@ -651,6 +651,20 @@ kernel_entry:
     mov esi, message_cap_integ_ok
     call serial_write_string
 
+    call capdis_initialize
+    jc panic_capdis
+    call capdis_self_test
+    jc panic_capdis
+    mov esi, message_capdis_ok
+    call serial_write_string
+
+    call capneg_initialize
+    jc panic_capneg
+    call capneg_self_test
+    jc panic_capneg
+    mov esi, message_capneg_ok
+    call serial_write_string
+
     call vsvc_initialize
     jc panic_vsvc
     call vsvc_self_test
@@ -1207,6 +1221,18 @@ panic_cap_integ:
     mov eax, 0x00000019
     mov edx, 0x43494E54             ; "CINT"
     mov esi, message_cap_integ_error
+    jmp kernel_panic
+
+panic_capdis:
+    mov eax, 0x0000304F
+    mov edx, 76
+    mov esi, message_capdis_error
+    jmp kernel_panic
+
+panic_capneg:
+    mov eax, 0x00003050
+    mov edx, 77
+    mov esi, message_capneg_error
     jmp kernel_panic
 
 panic_vsvc:
@@ -28239,6 +28265,309 @@ cap_st_id2:         dd 0
 cap_st_id3:         dd 0
 
 ; ===========================================================================
+; NPSPEC-CAPABILITY-DISCOVERY-0001 – Nova Capability Discovery
+; Abfrage welche Capabilities das System kennt und anbietet.
+; Registry: bis zu 16 bekannte Capability-Typen mit Name-Hash und Flags.
+; ===========================================================================
+
+CAPDIS_COUNT         equ 16
+CAPDIS_RECORD_SIZE   equ 12
+
+CAPDIS_TYPE_NONE     equ 0
+CAPDIS_TYPE_KERNEL   equ 1
+CAPDIS_TYPE_IO       equ 2
+CAPDIS_TYPE_NET      equ 3
+CAPDIS_TYPE_FS       equ 4
+CAPDIS_TYPE_DEVICE   equ 5
+CAPDIS_TYPE_SECURITY equ 6
+
+CAPDIS_ID            equ 0
+CAPDIS_TYPE          equ 4
+CAPDIS_FLAGS         equ 8
+
+CAPDIS_FLAG_AVAIL    equ 0x01
+CAPDIS_FLAG_DELEGATABLE equ 0x02
+
+capdis_initialize:
+    mov edi, capdis_registry
+    mov ecx, CAPDIS_COUNT * CAPDIS_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [capdis_ready], 1
+    mov dword [capdis_count], 0
+    ; Standard-Capabilities registrieren
+    mov eax, CAPDIS_TYPE_KERNEL
+    mov edx, CAPDIS_FLAG_AVAIL | CAPDIS_FLAG_DELEGATABLE
+    call capdis_register
+    mov eax, CAPDIS_TYPE_IO
+    mov edx, CAPDIS_FLAG_AVAIL
+    call capdis_register
+    mov eax, CAPDIS_TYPE_SECURITY
+    mov edx, CAPDIS_FLAG_AVAIL | CAPDIS_FLAG_DELEGATABLE
+    call capdis_register
+    clc
+    ret
+
+; EAX=cap_type  EDX=flags → CF=0/CF=1 voll
+capdis_register:
+    push esi
+    push ecx
+    cmp dword [capdis_count], CAPDIS_COUNT
+    jae .cdr_full
+    mov ecx, [capdis_count]
+    imul esi, ecx, CAPDIS_RECORD_SIZE
+    add esi, capdis_registry
+    mov [esi + CAPDIS_ID], ecx
+    mov [esi + CAPDIS_TYPE], eax
+    mov [esi + CAPDIS_FLAGS], edx
+    inc dword [capdis_count]
+    clc
+    pop ecx
+    pop esi
+    ret
+.cdr_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; EAX=cap_type → EAX=flags CF=0 gefunden / CF=1 nicht gefunden
+capdis_query:
+    push esi
+    push ecx
+    mov esi, capdis_registry
+    xor ecx, ecx
+.cdq_loop:
+    cmp ecx, [capdis_count]
+    jae .cdq_notfound
+    cmp dword [esi + CAPDIS_TYPE], eax
+    je .cdq_found
+    add esi, CAPDIS_RECORD_SIZE
+    inc ecx
+    jmp .cdq_loop
+.cdq_found:
+    mov eax, [esi + CAPDIS_FLAGS]
+    clc
+    pop ecx
+    pop esi
+    ret
+.cdq_notfound:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+capdis_self_test:
+    push esi
+    xor esi, esi
+    cmp dword [capdis_ready], 1
+    je .cdst1
+    inc esi
+.cdst1:
+    ; capdis_count=3 (KERNEL/IO/SECURITY)
+    cmp dword [capdis_count], 3
+    je .cdst2
+    inc esi
+.cdst2:
+    ; KERNEL-Typ abfragen → Flags=AVAIL|DELEGATABLE
+    mov eax, CAPDIS_TYPE_KERNEL
+    call capdis_query
+    jnc .cdst3_cf
+    inc esi
+.cdst3_cf:
+    cmp eax, CAPDIS_FLAG_AVAIL | CAPDIS_FLAG_DELEGATABLE
+    je .cdst3
+    inc esi
+.cdst3:
+    ; Unbekannter Typ → CF=1
+    mov eax, 0xFF
+    call capdis_query
+    jc .cdst4
+    inc esi
+.cdst4:
+    test esi, esi
+    jnz .cdstf
+    clc
+    pop esi
+    ret
+.cdstf:
+    stc
+    pop esi
+    ret
+
+capdis_ready:  dd 0
+capdis_count:  dd 0
+align 4
+capdis_registry:
+    times CAPDIS_COUNT * CAPDIS_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-CAPABILITY-NEGOTIATION-0001 – Nova Capability Negotiation
+; Anbieter und Anforderungen werden abgeglichen: Negotiation findet passenden
+; Provider. Requester meldet benötigte Capabilities; System liefert Match.
+; ===========================================================================
+
+CAPNEG_REQ_COUNT     equ 8
+CAPNEG_REQ_SIZE      equ 12
+
+CAPNEG_STATE_FREE    equ 0
+CAPNEG_STATE_PENDING equ 1
+CAPNEG_STATE_MATCHED equ 2
+CAPNEG_STATE_REJECTED equ 3
+
+CAPNEG_REQ_ID        equ 0
+CAPNEG_REQ_TYPE      equ 4
+CAPNEG_REQ_STATE     equ 8
+
+capneg_initialize:
+    mov edi, capneg_requests
+    mov ecx, CAPNEG_REQ_COUNT * CAPNEG_REQ_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [capneg_ready], 1
+    mov dword [capneg_matched], 0
+    mov dword [capneg_rejected], 0
+    clc
+    ret
+
+; EAX=cap_type → EAX=request_slot CF=0 / CF=1 voll
+capneg_request:
+    push esi
+    push ecx
+    mov esi, capneg_requests
+    xor ecx, ecx
+.cnreq_scan:
+    cmp ecx, CAPNEG_REQ_COUNT
+    jae .cnreq_full
+    cmp dword [esi + CAPNEG_REQ_STATE], CAPNEG_STATE_FREE
+    je .cnreq_found
+    add esi, CAPNEG_REQ_SIZE
+    inc ecx
+    jmp .cnreq_scan
+.cnreq_found:
+    mov [esi + CAPNEG_REQ_ID], ecx
+    mov [esi + CAPNEG_REQ_TYPE], eax
+    mov dword [esi + CAPNEG_REQ_STATE], CAPNEG_STATE_PENDING
+    mov eax, ecx
+    clc
+    pop ecx
+    pop esi
+    ret
+.cnreq_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; Verhandelt alle PENDING-Requests gegen capdis_registry; matched oder rejected
+capneg_negotiate_all:
+    push esi
+    push ecx
+    push edx
+    mov esi, capneg_requests
+    xor ecx, ecx
+.cnn_loop:
+    cmp ecx, CAPNEG_REQ_COUNT
+    jae .cnn_done
+    cmp dword [esi + CAPNEG_REQ_STATE], CAPNEG_STATE_PENDING
+    jne .cnn_next
+    ; In Discovery nachschlagen
+    push eax
+    push ecx
+    push esi
+    mov eax, [esi + CAPNEG_REQ_TYPE]
+    call capdis_query
+    pop esi
+    pop ecx
+    jnc .cnn_match
+    ; Nicht gefunden → REJECTED
+    mov dword [esi + CAPNEG_REQ_STATE], CAPNEG_STATE_REJECTED
+    inc dword [capneg_rejected]
+    pop eax
+    jmp .cnn_next
+.cnn_match:
+    ; Gefunden → MATCHED (nur wenn AVAIL gesetzt)
+    test eax, CAPDIS_FLAG_AVAIL
+    jz .cnn_unavail
+    pop eax
+    mov dword [esi + CAPNEG_REQ_STATE], CAPNEG_STATE_MATCHED
+    inc dword [capneg_matched]
+    jmp .cnn_next
+.cnn_unavail:
+    pop eax
+    mov dword [esi + CAPNEG_REQ_STATE], CAPNEG_STATE_REJECTED
+    inc dword [capneg_rejected]
+.cnn_next:
+    add esi, CAPNEG_REQ_SIZE
+    inc ecx
+    jmp .cnn_loop
+.cnn_done:
+    pop edx
+    pop ecx
+    pop esi
+    ret
+
+capneg_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+    cmp dword [capneg_ready], 1
+    je .cnst1
+    inc esi
+.cnst1:
+    ; Anfrage KERNEL (vorhanden) und DEVICE (nicht registriert)
+    mov eax, CAPDIS_TYPE_KERNEL
+    call capneg_request
+    jnc .cnst2
+    inc esi
+.cnst2:
+    mov ebx, eax   ; slot für KERNEL
+    mov eax, CAPDIS_TYPE_DEVICE
+    call capneg_request
+    jnc .cnst3
+    inc esi
+.cnst3:
+    ; Verhandeln
+    call capneg_negotiate_all
+    ; KERNEL-Request muss MATCHED sein
+    push ecx
+    imul ecx, ebx, CAPNEG_REQ_SIZE
+    add ecx, capneg_requests
+    cmp dword [ecx + CAPNEG_REQ_STATE], CAPNEG_STATE_MATCHED
+    je .cnst4
+    inc esi
+.cnst4:
+    pop ecx
+    ; capneg_matched=1
+    cmp dword [capneg_matched], 1
+    je .cnst5
+    inc esi
+.cnst5:
+    ; capneg_rejected=1 (DEVICE)
+    cmp dword [capneg_rejected], 1
+    je .cnst6
+    inc esi
+.cnst6:
+    test esi, esi
+    jnz .cnstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.cnstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+capneg_ready:    dd 0
+capneg_matched:  dd 0
+capneg_rejected: dd 0
+align 4
+capneg_requests:
+    times CAPNEG_REQ_COUNT * CAPNEG_REQ_SIZE db 0
+
+; ===========================================================================
 ; §104 – Kernel Diagnostics Framework 1.0 (NPSPEC-KERNEL-0104)
 ; ===========================================================================
 
@@ -39845,6 +40174,14 @@ message_rbac_ok:
     db "NOVA: RBAC 1.0 bereit (8 Rollen, 16 Zuweisungen, Perm-Masken)", 13, 10, 0
 message_rbac_error:
     db "NOVA PANIC: RBAC nicht initialisierbar", 13, 10, 0
+message_capdis_ok:
+    db "NOVA: Cap Discovery 1.0 bereit (16 Typen, KERNEL/IO/SECURITY)", 13, 10, 0
+message_capdis_error:
+    db "NOVA PANIC: Cap Discovery nicht initialisierbar", 13, 10, 0
+message_capneg_ok:
+    db "NOVA: Cap Negotiation 1.0 bereit (8 Requests, Match/Reject)", 13, 10, 0
+message_capneg_error:
+    db "NOVA PANIC: Cap Negotiation nicht initialisierbar", 13, 10, 0
 message_rt_scheduler_ok:
     db "NOVA: RT Scheduler 1.0 bereit (8 Tasks, EDF/FIFO-RT)", 13, 10, 0
 message_rt_scheduler_error:
