@@ -733,6 +733,20 @@ kernel_entry:
     mov esi, message_tmpiso_ok
     call serial_write_string
 
+    call selfheal_initialize
+    jc panic_selfheal
+    call selfheal_self_test
+    jc panic_selfheal
+    mov esi, message_selfheal_ok
+    call serial_write_string
+
+    call privlabel_initialize
+    jc panic_privlabel
+    call privlabel_self_test
+    jc panic_privlabel
+    mov esi, message_privlabel_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1389,6 +1403,18 @@ panic_tmpiso:
     mov eax, 0x0000305D
     mov edx, 90
     mov esi, message_tmpiso_error
+    jmp kernel_panic
+
+panic_selfheal:
+    mov eax, 0x0000305E
+    mov edx, 91
+    mov esi, message_selfheal_error
+    jmp kernel_panic
+
+panic_privlabel:
+    mov eax, 0x0000305F
+    mov edx, 92
+    mov esi, message_privlabel_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -31479,6 +31505,278 @@ align 4
 tmpiso_partitions:
     times TMPISO_CAPACITY * TMPISO_REC_SIZE db 0
 
+; ---------------------------------------------------------------------------
+; NPSPEC-AUTONOMY-SELFHEALING-0001 – Nova Autonomous Self-Healing
+; ---------------------------------------------------------------------------
+; Steuert Observe→Detect→Diagnose→Repair→Verify Pipeline.
+; Jeder Heal-Slot überwacht ein Subsystem. Bei Fehlern:
+;   - containment_report_fault → isolation check
+;   - restart_check_and_record → automatic restart
+;   - security_audit_log → Violation-Eintrag
+; ---------------------------------------------------------------------------
+HEAL_CAPACITY       equ 8
+HEAL_REC_SIZE       equ 16
+
+HEAL_STATE_OK       equ 0
+HEAL_STATE_DEGRADED equ 1
+HEAL_STATE_HEALING  equ 2
+HEAL_STATE_FAILED   equ 3
+
+HEAL_ID_OFF         equ 0
+HEAL_SYS_OFF        equ 4
+HEAL_STATE_OFF      equ 8
+HEAL_ATTEMPTS_OFF   equ 12
+
+selfheal_initialize:
+    mov edi, heal_table
+    xor eax, eax
+    mov ecx, (HEAL_CAPACITY * HEAL_REC_SIZE) / 4
+    rep stosd
+    mov dword [heal_ready], 0
+    mov dword [heal_total_repairs], 0
+    mov dword [heal_ready], 1
+    clc
+    ret
+
+; EAX=subsystem_id → EAX=slot  CF=0/CF=1 full
+selfheal_register:
+    push esi
+    push edi
+    xor esi, esi
+.shr_scan:
+    cmp esi, HEAL_CAPACITY
+    jae .shr_full
+    imul edi, esi, HEAL_REC_SIZE
+    add edi, heal_table
+    cmp dword [edi + HEAL_ID_OFF], 0
+    je .shr_slot
+    inc esi
+    jmp .shr_scan
+.shr_slot:
+    mov dword [edi + HEAL_ID_OFF], esi
+    mov [edi + HEAL_SYS_OFF], eax
+    mov dword [edi + HEAL_STATE_OFF], HEAL_STATE_OK
+    mov dword [edi + HEAL_ATTEMPTS_OFF], 0
+    mov eax, esi
+    pop edi
+    pop esi
+    clc
+    ret
+.shr_full:
+    pop edi
+    pop esi
+    stc
+    ret
+
+; EAX=slot  EDX=fault_type — attempt repair
+selfheal_repair:
+    cmp eax, HEAL_CAPACITY
+    jae .shrep_bad
+    push esi
+    push edi
+    imul edi, eax, HEAL_REC_SIZE
+    add edi, heal_table
+    cmp dword [edi + HEAL_ID_OFF], 0
+    je .shrep_noslt
+    mov dword [edi + HEAL_STATE_OFF], HEAL_STATE_HEALING
+    inc dword [edi + HEAL_ATTEMPTS_OFF]
+    inc dword [heal_total_repairs]
+    ; Use resilience pipeline: report fault, check isolation, attempt restart
+    push eax
+    push edx
+    mov eax, edx      ; fault_type
+    mov edx, [edi + HEAL_SYS_OFF]  ; subsystem
+    mov ecx, 0        ; fault_code=0
+    call resilience_fault_pipeline
+    pop edx
+    pop eax
+    ; Mark result: if containment check passes → OK, else FAILED
+    push eax
+    mov eax, [edi + HEAL_SYS_OFF]
+    ; find containment slot for this subsystem
+    call containment_check
+    pop eax
+    jc .shrep_isolated
+    mov dword [edi + HEAL_STATE_OFF], HEAL_STATE_OK
+    pop edi
+    pop esi
+    clc
+    ret
+.shrep_isolated:
+    mov dword [edi + HEAL_STATE_OFF], HEAL_STATE_FAILED
+    pop edi
+    pop esi
+    stc
+    ret
+.shrep_noslt:
+    pop edi
+    pop esi
+.shrep_bad:
+    stc
+    ret
+
+selfheal_self_test:
+    ; Register kernel subsystem
+    mov eax, INTRO_SYS_KERNEL
+    call selfheal_register
+    jc .shstf
+    push eax
+    ; State should be OK
+    imul edi, eax, HEAL_REC_SIZE
+    add edi, heal_table
+    cmp dword [edi + HEAL_STATE_OFF], HEAL_STATE_OK
+    jne .shstf_pop
+    pop eax
+    clc
+    ret
+.shstf_pop:
+    pop eax
+.shstf:
+    stc
+    ret
+
+heal_ready:         dd 0
+heal_total_repairs: dd 0
+align 4
+heal_table:
+    times HEAL_CAPACITY * HEAL_REC_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-PRIVACY-LABEL-0001 – Nova Privacy Label Policy
+; ---------------------------------------------------------------------------
+; Datenobjekte tragen Privacy-Labels (PUBLIC/SENSITIVE/PRIVATE/CONFIDENTIAL).
+; Ergänzt MAC-Labels um Datenschutz-Dimension.
+; Privacy Label ≠ Access Control Label — getrennte Policy-Ebene.
+; ---------------------------------------------------------------------------
+PRIV_OBJ_COUNT      equ 16
+PRIV_REC_SIZE       equ 12
+
+PRIV_LABEL_PUBLIC   equ 0
+PRIV_LABEL_SENSITIVE equ 1
+PRIV_LABEL_PRIVATE  equ 2
+PRIV_LABEL_CONF     equ 3
+
+PRIV_OBJ_ID_OFF     equ 0
+PRIV_LABEL_OFF      equ 4
+PRIV_RETENTION_OFF  equ 8   ; max retention in ticks (0=forever)
+
+privlabel_initialize:
+    mov edi, priv_table
+    xor eax, eax
+    mov ecx, (PRIV_OBJ_COUNT * PRIV_REC_SIZE) / 4
+    rep stosd
+    mov dword [privlabel_ready], 0
+    mov dword [privlabel_denials], 0
+    mov dword [privlabel_ready], 1
+    clc
+    ret
+
+; EAX=obj_id  EDX=label  ECX=retention → CF=0/CF=1 full
+privlabel_register:
+    cmp edx, PRIV_LABEL_CONF
+    ja .plr_bad
+    push esi
+    push edi
+    xor esi, esi
+.plr_scan:
+    cmp esi, PRIV_OBJ_COUNT
+    jae .plr_full
+    imul edi, esi, PRIV_REC_SIZE
+    add edi, priv_table
+    cmp dword [edi + PRIV_OBJ_ID_OFF], 0
+    je .plr_slot
+    inc esi
+    jmp .plr_scan
+.plr_slot:
+    mov [edi + PRIV_OBJ_ID_OFF], eax
+    mov [edi + PRIV_LABEL_OFF], edx
+    mov [edi + PRIV_RETENTION_OFF], ecx
+    pop edi
+    pop esi
+    clc
+    ret
+.plr_full:
+    pop edi
+    pop esi
+.plr_bad:
+    stc
+    ret
+
+; EAX=obj_id  EDX=required_label → CF=0 allowed (label ≤ required) / CF=1 denied
+privlabel_check:
+    push esi
+    push edi
+    push ebx
+    mov ebx, edx      ; required label
+    xor esi, esi
+.plc_loop:
+    cmp esi, PRIV_OBJ_COUNT
+    jae .plc_notfound
+    imul edi, esi, PRIV_REC_SIZE
+    add edi, priv_table
+    cmp [edi + PRIV_OBJ_ID_OFF], eax
+    jne .plc_next
+    ; label ≤ required → allowed
+    mov ecx, [edi + PRIV_LABEL_OFF]
+    cmp ecx, ebx
+    jbe .plc_allow
+    inc dword [privlabel_denials]
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+.plc_allow:
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.plc_next:
+    inc esi
+    jmp .plc_loop
+.plc_notfound:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+privlabel_self_test:
+    ; Register PUBLIC object
+    mov eax, 100
+    mov edx, PRIV_LABEL_PUBLIC
+    xor ecx, ecx
+    call privlabel_register
+    jc .plstf
+    ; Check with SENSITIVE → allowed (PUBLIC ≤ SENSITIVE)
+    mov eax, 100
+    mov edx, PRIV_LABEL_SENSITIVE
+    call privlabel_check
+    jc .plstf
+    ; Register CONFIDENTIAL object
+    mov eax, 101
+    mov edx, PRIV_LABEL_CONF
+    xor ecx, ecx
+    call privlabel_register
+    jc .plstf
+    ; Check CONFIDENTIAL with PRIVATE → denied (CONF > PRIVATE)
+    mov eax, 101
+    mov edx, PRIV_LABEL_PRIVATE
+    call privlabel_check
+    jnc .plstf   ; CF=1 expected
+    clc
+    ret
+.plstf:
+    stc
+    ret
+
+privlabel_ready:   dd 0
+privlabel_denials: dd 0
+align 4
+priv_table:
+    times PRIV_OBJ_COUNT * PRIV_REC_SIZE db 0
+
 ; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
@@ -42881,6 +43179,14 @@ message_tmpiso_ok:
     db "NOVA: Temporal Isolation 1.0 bereit (4 Partitionen, Epoch-Budget, RT-Guard)", 13, 10, 0
 message_tmpiso_error:
     db "NOVA PANIC: Temporal Isolation Manager nicht initialisierbar", 13, 10, 0
+message_selfheal_ok:
+    db "NOVA: Self-Healing 1.0 bereit (8-Slot, Observe/Detect/Repair/Verify)", 13, 10, 0
+message_selfheal_error:
+    db "NOVA PANIC: Self-Healing Manager nicht initialisierbar", 13, 10, 0
+message_privlabel_ok:
+    db "NOVA: Privacy Label 1.0 bereit (16-Slot, PUBLIC/SENSITIVE/PRIVATE/CONF)", 13, 10, 0
+message_privlabel_error:
+    db "NOVA PANIC: Privacy Label Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
