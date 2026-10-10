@@ -775,6 +775,27 @@ kernel_entry:
     mov esi, message_sgraph_ok
     call serial_write_string
 
+    call fsm_initialize
+    jc panic_fsm
+    call fsm_self_test
+    jc panic_fsm
+    mov esi, message_fsm_ok
+    call serial_write_string
+
+    call txroll_initialize
+    jc panic_txroll
+    call txroll_self_test
+    jc panic_txroll
+    mov esi, message_txroll_ok
+    call serial_write_string
+
+    call fi_initialize
+    jc panic_fi
+    call fi_self_test
+    jc panic_fi
+    mov esi, message_fi_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1467,6 +1488,24 @@ panic_sgraph:
     mov eax, 0x00003063
     mov edx, 96
     mov esi, message_sgraph_error
+    jmp kernel_panic
+
+panic_fsm:
+    mov eax, 0x00003064
+    mov edx, 97
+    mov esi, message_fsm_error
+    jmp kernel_panic
+
+panic_txroll:
+    mov eax, 0x00003065
+    mov edx, 98
+    mov esi, message_txroll_error
+    jmp kernel_panic
+
+panic_fi:
+    mov eax, 0x00003066
+    mov edx, 99
+    mov esi, message_fi_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -32376,6 +32415,522 @@ align 4
 sgraph_nodes:
     times SGRAPH_CAPACITY * SGRAPH_REC_SIZE db 0
 
+; ---------------------------------------------------------------------------
+; NPSPEC-STATE-MACHINE-0001 – Nova Generic Finite State Machine
+; ---------------------------------------------------------------------------
+; Registriert FSMs mit erlaubten Übergängen (Transition Table).
+; fsm_transition: prüft ob from→to erlaubt ist, führt Übergang durch.
+; Max. 4 FSMs, je 8 erlaubte Transitionen.
+; ---------------------------------------------------------------------------
+FSM_CAPACITY        equ 4
+FSM_TRANS_COUNT     equ 8
+FSM_REC_SIZE        equ 48  ; id(4) + current(4) + 8*trans(8*5=40 = from+to = 8 bytes each)
+
+; Layout: [FSM_ID][CURRENT_STATE][TRANS_0_FROM][TRANS_0_TO]...[TRANS_7_FROM][TRANS_7_TO]
+FSM_ID_OFF          equ 0
+FSM_CUR_OFF         equ 4
+FSM_TRANS_OFF       equ 8   ; 8 pairs of (from,to) = 8*8 = 64 bytes
+
+; Recalculate: id(4)+current(4)+8*(from4+to4)=4+4+64=72
+FSM_REC_SIZE2       equ 72
+
+fsm_initialize:
+    mov edi, fsm_table
+    xor eax, eax
+    mov ecx, (FSM_CAPACITY * FSM_REC_SIZE2) / 4
+    rep stosd
+    mov dword [fsm_ready], 0
+    mov dword [fsm_denied], 0
+    mov dword [fsm_ready], 1
+    clc
+    ret
+
+; EAX=fsm_id  EDX=initial_state → CF=0/CF=1 full
+fsm_register:
+    push esi
+    push edi
+    xor esi, esi
+.fsmr_scan:
+    cmp esi, FSM_CAPACITY
+    jae .fsmr_full
+    imul edi, esi, FSM_REC_SIZE2
+    add edi, fsm_table
+    cmp dword [edi + FSM_ID_OFF], 0
+    je .fsmr_slot
+    inc esi
+    jmp .fsmr_scan
+.fsmr_slot:
+    mov [edi + FSM_ID_OFF], eax
+    mov [edi + FSM_CUR_OFF], edx
+    ; zero transition table for this FSM
+    push ecx
+    lea ecx, [edi + FSM_TRANS_OFF]
+    push edi
+    mov edi, ecx
+    xor eax, eax
+    mov ecx, (FSM_TRANS_COUNT * 8) / 4
+    rep stosd
+    pop edi
+    pop ecx
+    mov eax, esi
+    pop edi
+    pop esi
+    clc
+    ret
+.fsmr_full:
+    pop edi
+    pop esi
+    stc
+    ret
+
+; EAX=fsm_id  EDX=from_state  ECX=to_state — add allowed transition
+fsm_add_transition:
+    push esi
+    push edi
+    push ebx
+    push edx
+    mov ebx, eax
+    xor esi, esi
+.fsmat_find:
+    cmp esi, FSM_CAPACITY
+    jae .fsmat_notfound
+    imul edi, esi, FSM_REC_SIZE2
+    add edi, fsm_table
+    cmp [edi + FSM_ID_OFF], ebx
+    je .fsmat_found
+    inc esi
+    jmp .fsmat_find
+.fsmat_found:
+    ; find free transition slot
+    push edi
+    lea edi, [edi + FSM_TRANS_OFF]
+    xor esi, esi
+.fsmat_tscan:
+    cmp esi, FSM_TRANS_COUNT
+    jae .fsmat_tfull
+    cmp dword [edi + esi*8], 0
+    je .fsmat_tslot
+    inc esi
+    jmp .fsmat_tscan
+.fsmat_tslot:
+    pop edx        ; from_state was on stack as edx
+    push esi
+    mov eax, edx
+    pop esi
+    ; edi+esi*8 = transition entry
+    lea ebx, [edi + esi*8]
+    mov [ebx], eax         ; from
+    mov [ebx + 4], ecx     ; to
+    pop edi
+    pop edx
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.fsmat_tfull:
+    pop edi
+.fsmat_notfound:
+    pop edx
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; EAX=fsm_id  EDX=to_state → CF=0 transition OK / CF=1 not allowed
+fsm_transition2:
+    push esi
+    push edi
+    push ebx
+    push ecx
+    mov ebx, eax
+    xor esi, esi
+.fsmt2_find:
+    cmp esi, FSM_CAPACITY
+    jae .fsmt2_notfound
+    imul edi, esi, FSM_REC_SIZE2
+    add edi, fsm_table
+    cmp [edi + FSM_ID_OFF], ebx
+    je .fsmt2_found
+    inc esi
+    jmp .fsmt2_find
+.fsmt2_found:
+    ; current state
+    mov ecx, [edi + FSM_CUR_OFF]
+    ; search transition table
+    push edi
+    lea edi, [edi + FSM_TRANS_OFF]
+    xor esi, esi
+.fsmt2_tscan:
+    cmp esi, FSM_TRANS_COUNT
+    jae .fsmt2_denied
+    lea ebx, [edi + esi*8]
+    cmp dword [ebx], 0
+    je .fsmt2_next
+    cmp [ebx], ecx        ; from == current?
+    jne .fsmt2_next
+    cmp [ebx + 4], edx    ; to == target?
+    jne .fsmt2_next
+    ; transition allowed
+    pop edi
+    mov [edi + FSM_CUR_OFF], edx
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.fsmt2_next:
+    inc esi
+    jmp .fsmt2_tscan
+.fsmt2_denied:
+    inc dword [fsm_denied]
+    pop edi
+.fsmt2_notfound:
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+fsm_self_test:
+    ; Register FSM id=1, initial=0
+    mov eax, 1
+    xor edx, edx
+    call fsm_register
+    jc .fsmstf
+    ; Add transition 0→1
+    mov eax, 1
+    mov edx, 0
+    mov ecx, 1
+    call fsm_add_transition
+    jc .fsmstf
+    ; Add transition 1→2
+    mov eax, 1
+    mov edx, 1
+    mov ecx, 2
+    call fsm_add_transition
+    jc .fsmstf
+    ; Transition to 1 → OK
+    mov eax, 1
+    mov edx, 1
+    call fsm_transition2
+    jc .fsmstf
+    ; Transition directly 1→3 → denied (not in table)
+    mov eax, 1
+    mov edx, 3
+    call fsm_transition2
+    jnc .fsmstf   ; CF=1 expected
+    ; Transition 1→2 → OK
+    mov eax, 1
+    mov edx, 2
+    call fsm_transition2
+    jc .fsmstf
+    clc
+    ret
+.fsmstf:
+    stc
+    ret
+
+fsm_ready:  dd 0
+fsm_denied: dd 0
+align 4
+fsm_table:
+    times FSM_CAPACITY * FSM_REC_SIZE2 db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-TRANSACTION-ROLLBACK-0001 – Nova Transaction Rollback Journal
+; ---------------------------------------------------------------------------
+; Rollback-Journal für atomare Operationen. Vor jeder Änderung: txroll_save.
+; Bei Fehler: txroll_undo stellt alle gespeicherten Werte wieder her.
+; Bei Erfolg: txroll_commit löscht das Journal.
+; ---------------------------------------------------------------------------
+TXROLL_CAPACITY     equ 8
+TXROLL_REC_SIZE     equ 12
+
+TXROLL_ADDR_OFF     equ 0   ; address of dword to save/restore
+TXROLL_VAL_OFF      equ 4   ; saved original value
+TXROLL_ACTIVE_OFF   equ 8   ; 1=active
+
+txroll_initialize:
+    mov edi, txroll_journal
+    xor eax, eax
+    mov ecx, (TXROLL_CAPACITY * TXROLL_REC_SIZE) / 4
+    rep stosd
+    mov dword [txroll_ready], 0
+    mov dword [txroll_count], 0
+    mov dword [txroll_undone], 0
+    mov dword [txroll_ready], 1
+    clc
+    ret
+
+; EAX=address_of_dword — save current value before modification
+txroll_save:
+    cmp dword [txroll_ready], 1
+    jne .trs_fail
+    cmp dword [txroll_count], TXROLL_CAPACITY
+    jae .trs_fail
+    push esi
+    push edi
+    xor esi, esi
+.trs_scan:
+    cmp esi, TXROLL_CAPACITY
+    jae .trs_nospc
+    imul edi, esi, TXROLL_REC_SIZE
+    add edi, txroll_journal
+    cmp dword [edi + TXROLL_ACTIVE_OFF], 0
+    je .trs_slot
+    inc esi
+    jmp .trs_scan
+.trs_slot:
+    mov [edi + TXROLL_ADDR_OFF], eax
+    push ecx
+    mov ecx, [eax]         ; read current value
+    mov [edi + TXROLL_VAL_OFF], ecx
+    pop ecx
+    mov dword [edi + TXROLL_ACTIVE_OFF], 1
+    inc dword [txroll_count]
+    pop edi
+    pop esi
+    clc
+    ret
+.trs_nospc:
+    pop edi
+    pop esi
+.trs_fail:
+    stc
+    ret
+
+; Undo all saved values (rollback)
+txroll_undo:
+    cmp dword [txroll_ready], 1
+    jne .tru_ret
+    push esi
+    push edi
+    xor esi, esi
+.tru_loop:
+    cmp esi, TXROLL_CAPACITY
+    jae .tru_done
+    imul edi, esi, TXROLL_REC_SIZE
+    add edi, txroll_journal
+    cmp dword [edi + TXROLL_ACTIVE_OFF], 1
+    jne .tru_next
+    push eax
+    push ecx
+    mov eax, [edi + TXROLL_ADDR_OFF]
+    mov ecx, [edi + TXROLL_VAL_OFF]
+    mov [eax], ecx         ; restore original value
+    pop ecx
+    pop eax
+    mov dword [edi + TXROLL_ACTIVE_OFF], 0
+    inc dword [txroll_undone]
+.tru_next:
+    inc esi
+    jmp .tru_loop
+.tru_done:
+    mov dword [txroll_count], 0
+    pop edi
+    pop esi
+.tru_ret:
+    clc
+    ret
+
+; Commit: clear journal (changes are permanent)
+txroll_commit:
+    mov edi, txroll_journal
+    xor eax, eax
+    mov ecx, (TXROLL_CAPACITY * TXROLL_REC_SIZE) / 4
+    rep stosd
+    mov dword [txroll_count], 0
+    clc
+    ret
+
+txroll_self_test:
+    ; Save a test value
+    mov dword [txroll_test_var], 42
+    mov eax, txroll_test_var
+    call txroll_save
+    jc .trstf
+    ; Modify it
+    mov dword [txroll_test_var], 99
+    ; Undo → should restore 42
+    call txroll_undo
+    cmp dword [txroll_test_var], 42
+    jne .trstf
+    ; Save and commit
+    mov dword [txroll_test_var], 77
+    mov eax, txroll_test_var
+    call txroll_save
+    jc .trstf
+    mov dword [txroll_test_var], 55
+    call txroll_commit
+    ; After commit, value stays at 55
+    cmp dword [txroll_test_var], 55
+    jne .trstf
+    clc
+    ret
+.trstf:
+    stc
+    ret
+
+txroll_ready:   dd 0
+txroll_count:   dd 0
+txroll_undone:  dd 0
+txroll_test_var: dd 0
+align 4
+txroll_journal:
+    times TXROLL_CAPACITY * TXROLL_REC_SIZE db 0
+
+; ---------------------------------------------------------------------------
+; NPSPEC-RESILIENCE-FAULTINJECTION-0001 – Nova Fault Injection Framework
+; ---------------------------------------------------------------------------
+; Kontrollierte Fehlerinjektion für Resilience-Tests.
+; fi_inject: aktiviert einen Fehler für ein Ziel-Subsystem.
+; fi_check: prüft ob ein aktiver injizierter Fehler vorliegt.
+; fi_clear: entfernt injizierten Fehler.
+; ---------------------------------------------------------------------------
+FI_CAPACITY         equ 8
+FI_REC_SIZE         equ 12
+
+FI_TARGET_OFF       equ 0   ; subsystem id
+FI_FAULT_OFF        equ 4   ; fault type
+FI_ACTIVE_OFF       equ 8   ; 1=active
+
+fi_initialize:
+    mov edi, fi_table
+    xor eax, eax
+    mov ecx, (FI_CAPACITY * FI_REC_SIZE) / 4
+    rep stosd
+    mov dword [fi_ready], 0
+    mov dword [fi_total_injected], 0
+    mov dword [fi_ready], 1
+    clc
+    ret
+
+; EAX=target_subsystem  EDX=fault_type → CF=0/CF=1 full
+fi_inject:
+    cmp dword [fi_ready], 1
+    jne .fi_fail
+    push esi
+    push edi
+    xor esi, esi
+.fi_scan:
+    cmp esi, FI_CAPACITY
+    jae .fi_full
+    imul edi, esi, FI_REC_SIZE
+    add edi, fi_table
+    cmp dword [edi + FI_ACTIVE_OFF], 0
+    je .fi_slot
+    inc esi
+    jmp .fi_scan
+.fi_slot:
+    mov [edi + FI_TARGET_OFF], eax
+    mov [edi + FI_FAULT_OFF], edx
+    mov dword [edi + FI_ACTIVE_OFF], 1
+    inc dword [fi_total_injected]
+    pop edi
+    pop esi
+    clc
+    ret
+.fi_full:
+    pop edi
+    pop esi
+.fi_fail:
+    stc
+    ret
+
+; EAX=target_subsystem → CF=0 fault active (EAX=fault_type) / CF=1 none
+fi_check:
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.fic_loop:
+    cmp esi, FI_CAPACITY
+    jae .fic_notfound
+    imul edi, esi, FI_REC_SIZE
+    add edi, fi_table
+    cmp dword [edi + FI_ACTIVE_OFF], 1
+    jne .fic_next
+    cmp [edi + FI_TARGET_OFF], ebx
+    jne .fic_next
+    mov eax, [edi + FI_FAULT_OFF]
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+.fic_next:
+    inc esi
+    jmp .fic_loop
+.fic_notfound:
+    pop ebx
+    pop edi
+    pop esi
+    stc
+    ret
+
+; EAX=target_subsystem — clear injected fault
+fi_clear:
+    push esi
+    push edi
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.ficlr_loop:
+    cmp esi, FI_CAPACITY
+    jae .ficlr_done
+    imul edi, esi, FI_REC_SIZE
+    add edi, fi_table
+    cmp dword [edi + FI_ACTIVE_OFF], 1
+    jne .ficlr_next
+    cmp [edi + FI_TARGET_OFF], ebx
+    jne .ficlr_next
+    mov dword [edi + FI_ACTIVE_OFF], 0
+.ficlr_next:
+    inc esi
+    jmp .ficlr_loop
+.ficlr_done:
+    pop ebx
+    pop edi
+    pop esi
+    clc
+    ret
+
+fi_self_test:
+    ; Inject fault on subsystem 7
+    mov eax, 7
+    mov edx, 3   ; fault_type=3
+    call fi_inject
+    jc .fistf
+    ; Check fault present
+    mov eax, 7
+    call fi_check
+    jc .fistf
+    cmp eax, 3
+    jne .fistf
+    ; Clear
+    mov eax, 7
+    call fi_clear
+    ; Check no fault
+    mov eax, 7
+    call fi_check
+    jnc .fistf   ; CF=1 expected (no fault)
+    clc
+    ret
+.fistf:
+    stc
+    ret
+
+fi_ready:          dd 0
+fi_total_injected: dd 0
+align 4
+fi_table:
+    times FI_CAPACITY * FI_REC_SIZE db 0
+
 ; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
@@ -43802,6 +44357,18 @@ message_sgraph_ok:
     db "NOVA: State Graph 1.0 bereit (16-Node, transition+parent tracking)", 13, 10, 0
 message_sgraph_error:
     db "NOVA PANIC: State Graph Manager nicht initialisierbar", 13, 10, 0
+message_fsm_ok:
+    db "NOVA: FSM 1.0 bereit (4 Machines, 8 Transitions each, denied-guard)", 13, 10, 0
+message_fsm_error:
+    db "NOVA PANIC: FSM Manager nicht initialisierbar", 13, 10, 0
+message_txroll_ok:
+    db "NOVA: Transaction Rollback 1.0 bereit (8-Slot Journal, save/undo/commit)", 13, 10, 0
+message_txroll_error:
+    db "NOVA PANIC: Transaction Rollback Journal nicht initialisierbar", 13, 10, 0
+message_fi_ok:
+    db "NOVA: Fault Injection 1.0 bereit (8-Slot, inject/check/clear)", 13, 10, 0
+message_fi_error:
+    db "NOVA PANIC: Fault Injection Framework nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
