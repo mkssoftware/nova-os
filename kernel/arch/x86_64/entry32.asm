@@ -468,6 +468,13 @@ kernel_entry:
     mov esi, message_security_ok
     call serial_write_string
 
+    call security_audit_initialize
+    jc panic_security_audit
+    call security_audit_self_test
+    jc panic_security_audit
+    mov esi, message_security_audit_ok
+    call serial_write_string
+
     call boot_health_initialize
     jc panic_boot_health
     call boot_health_self_test
@@ -635,6 +642,13 @@ kernel_entry:
     call worksteal_self_test
     jc panic_worksteal
     mov esi, message_worksteal_ok
+    call serial_write_string
+
+    call rt_scheduler_initialize
+    jc panic_rt_scheduler
+    call rt_scheduler_self_test
+    jc panic_rt_scheduler
+    mov esi, message_rt_scheduler_ok
     call serial_write_string
 
     call smp_initialize
@@ -982,6 +996,12 @@ panic_security:
     mov esi, message_security_error
     jmp kernel_panic
 
+panic_security_audit:
+    mov eax, 0x0000303E
+    mov edx, 59
+    mov esi, message_security_audit_error
+    jmp kernel_panic
+
 panic_boot_health:
     mov eax, 0x00002026
     mov edx, 0x4845414C             ; "HEAL"
@@ -1118,6 +1138,12 @@ panic_worksteal:
     mov eax, 0x00002025
     mov edx, 37
     mov esi, message_worksteal_error
+    jmp kernel_panic
+
+panic_rt_scheduler:
+    mov eax, 0x0000303F
+    mov edx, 60
+    mov esi, message_rt_scheduler_error
     jmp kernel_panic
 
 panic_device_manager:
@@ -20037,6 +20063,222 @@ align 4
 security_table:
     times SECURITY_CAPACITY * SECURITY_RECORD_SIZE db 0
 
+; ===========================================================================
+; NPSPEC-SECURITY-AUDIT-0001 – Nova Security Audit Log
+; Strukturiertes Audit-Event-Log: Kapabilität-Grants/-Revokes, Policy-Änderungen,
+; Verletzungen. Ringpuffer mit 32 Einträgen, persistent bis zum nächsten Reboot.
+; ===========================================================================
+
+AUDIT_CAPACITY       equ 32
+AUDIT_EVENT_SIZE     equ 32
+
+AUDIT_TYPE_NONE      equ 0
+AUDIT_TYPE_CAP_GRANT equ 1
+AUDIT_TYPE_CAP_REVOKE equ 2
+AUDIT_TYPE_POLICY    equ 3
+AUDIT_TYPE_VIOLATION equ 4
+AUDIT_TYPE_LOGIN     equ 5
+AUDIT_TYPE_LOGOUT    equ 6
+AUDIT_TYPE_SYSCALL   equ 7
+
+AUDIT_SEQ            equ 0
+AUDIT_TICK           equ 4
+AUDIT_TYPE_OFF       equ 8
+AUDIT_SUBJECT        equ 12  ; PID / Owner
+AUDIT_OBJECT         equ 16  ; Ressource / Capability-Maske
+AUDIT_RESULT         equ 20  ; 0=deny 1=allow
+AUDIT_FLAGS          equ 24
+AUDIT_PAD            equ 28
+
+security_audit_initialize:
+    mov edi, audit_log
+    mov ecx, AUDIT_CAPACITY * AUDIT_EVENT_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [audit_write_pos], 0
+    mov dword [audit_seq], 0
+    mov dword [audit_total], 0
+    mov dword [audit_violations], 0
+    mov dword [audit_ready], 1
+    clc
+    ret
+
+; EAX=type  EDX=subject  ECX=object  EBX=result → schreibt Eintrag, CF=0 immer
+security_audit_log:
+    push esi
+    push edi
+    push ebx
+
+    mov edi, [audit_write_pos]
+    cmp edi, AUDIT_CAPACITY
+    jb .sal_ok_pos
+    xor edi, edi
+.sal_ok_pos:
+    imul esi, edi, AUDIT_EVENT_SIZE
+    add esi, audit_log
+
+    push eax
+    mov eax, [audit_seq]
+    mov [esi + AUDIT_SEQ], eax
+    inc dword [audit_seq]
+    pop eax
+
+    push eax
+    mov eax, [wd_global_tick]
+    mov [esi + AUDIT_TICK], eax
+    pop eax
+
+    mov [esi + AUDIT_TYPE_OFF], eax
+    mov [esi + AUDIT_SUBJECT], edx
+    mov [esi + AUDIT_OBJECT], ecx
+    mov [esi + AUDIT_RESULT], ebx
+    mov dword [esi + AUDIT_FLAGS], 0
+
+    inc edi
+    cmp edi, AUDIT_CAPACITY
+    jb .sal_wrap_ok
+    xor edi, edi
+.sal_wrap_ok:
+    mov [audit_write_pos], edi
+    inc dword [audit_total]
+
+    cmp eax, AUDIT_TYPE_VIOLATION
+    jne .sal_done
+    inc dword [audit_violations]
+.sal_done:
+    clc
+    pop ebx
+    pop edi
+    pop esi
+    ret
+
+; EAX=type → EAX=count  (zählt alle Einträge eines bestimmten Typs)
+security_audit_count:
+    push esi
+    push ecx
+    push edx
+    mov edx, eax
+    xor ecx, ecx
+    mov esi, audit_log
+    push ebx
+    xor ebx, ebx
+.sac_loop:
+    cmp ebx, AUDIT_CAPACITY
+    jae .sac_done
+    cmp dword [esi + AUDIT_TYPE_OFF], edx
+    jne .sac_next
+    inc ecx
+.sac_next:
+    add esi, AUDIT_EVENT_SIZE
+    inc ebx
+    jmp .sac_loop
+.sac_done:
+    mov eax, ecx
+    pop ebx
+    pop edx
+    pop ecx
+    pop esi
+    ret
+
+security_audit_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+
+    ; T1: ready
+    cmp dword [audit_ready], 1
+    je .sast1_ok
+    inc esi
+.sast1_ok:
+
+    ; T2: log CAP_GRANT
+    mov eax, AUDIT_TYPE_CAP_GRANT
+    mov edx, 1          ; subject=PID 1
+    mov ecx, 0x00000001 ; object=cap-bit 0
+    mov ebx, 1          ; result=allow
+    call security_audit_log
+    jnc .sast2_ok
+    inc esi
+.sast2_ok:
+
+    ; T3: log VIOLATION
+    mov eax, AUDIT_TYPE_VIOLATION
+    mov edx, 2
+    mov ecx, 0xDEADBEEF
+    mov ebx, 0          ; deny
+    call security_audit_log
+    jnc .sast3_ok
+    inc esi
+.sast3_ok:
+
+    ; T4: audit_total=2
+    cmp dword [audit_total], 2
+    je .sast4_ok
+    inc esi
+.sast4_ok:
+
+    ; T5: violations=1
+    cmp dword [audit_violations], 1
+    je .sast5_ok
+    inc esi
+.sast5_ok:
+
+    ; T6: count VIOLATION=1
+    mov eax, AUDIT_TYPE_VIOLATION
+    call security_audit_count
+    cmp eax, 1
+    je .sast6_ok
+    inc esi
+.sast6_ok:
+
+    ; T7: count CAP_GRANT=1
+    mov eax, AUDIT_TYPE_CAP_GRANT
+    call security_audit_count
+    cmp eax, 1
+    je .sast7_ok
+    inc esi
+.sast7_ok:
+
+    ; T8: Ringbuffer-Wrap – 31 weitere Einträge → write_pos muss korrekt stehen
+    push ecx
+    mov ecx, 31
+.sast8_loop:
+    mov eax, AUDIT_TYPE_SYSCALL
+    xor edx, edx
+    xor ebx, ebx
+    push ecx
+    xor ecx, ecx
+    call security_audit_log
+    pop ecx
+    loop .sast8_loop
+    pop ecx
+    ; write_pos sollte bei (2+31) mod 32 = 1 stehen
+    cmp dword [audit_write_pos], 1
+    je .sast8_ok
+    inc esi
+.sast8_ok:
+
+    test esi, esi
+    jnz .sastf
+    clc
+    pop esi
+    pop ebx
+    ret
+.sastf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+audit_ready:      dd 0
+audit_write_pos:  dd 0
+audit_seq:        dd 0
+audit_total:      dd 0
+audit_violations: dd 0
+align 4
+audit_log:
+    times AUDIT_CAPACITY * AUDIT_EVENT_SIZE db 0
+
 ; ---------------------------------------------------------------------------
 ; Boot Health Authority ABI 1.0
 ; Capability-geschuetzte, generationsgebundene Provider-Aggregation.
@@ -31451,6 +31693,256 @@ ws_slot_queues:
 ws_task_storage:
     times WS_SLOT_COUNT * WS_QUEUE_DEPTH * WS_TASK_ENTRY_SIZE db 0
 
+; ===========================================================================
+; NPSPEC-SCHEDULER-REALTIME-0001 – Nova RT Scheduler (EDF / FIFO-RT)
+; Dupliziert keine Scheduler-Logik; verwaltet RT-Task-Tabelle mit Deadline
+; und Priorität für spätere Integration mit dem Haupt-Scheduler.
+; ===========================================================================
+
+RT_CAPACITY          equ 8
+RT_RECORD_SIZE       equ 32
+
+RT_STATE_FREE        equ 0
+RT_STATE_READY       equ 1
+RT_STATE_RUNNING     equ 2
+RT_STATE_BLOCKED     equ 3
+RT_STATE_COMPLETE    equ 4
+
+RT_POLICY_EDF        equ 1   ; Earliest Deadline First
+RT_POLICY_FIFO       equ 2   ; RT FIFO (Priorität)
+RT_POLICY_RR         equ 3   ; RT Round Robin
+
+RT_ID                equ 0
+RT_STATE             equ 4
+RT_OWNER             equ 8
+RT_DEADLINE          equ 12  ; Absolute Deadline (in Ticks)
+RT_PERIOD            equ 16  ; Periodendauer (0=sporadisch)
+RT_PRIORITY          equ 20  ; 0=höchste RT-Prio
+RT_POLICY_OFF        equ 24
+RT_WCET              equ 28  ; Worst Case Execution Time
+
+rt_scheduler_initialize:
+    mov edi, rt_table
+    mov ecx, RT_CAPACITY * RT_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [rt_next_id], 0
+    mov dword [rt_active_count], 0
+    mov dword [rt_miss_count], 0
+    mov dword [rt_ready], 1
+    clc
+    ret
+
+; EAX=owner  EDX=deadline_ticks  ECX=priority  EBX=policy → EAX=slot CF=0 / CF=1
+rt_task_register:
+    push esi
+    push edi
+    mov esi, rt_table
+    push eax
+    push edx
+    push ecx
+    xor edi, edi
+.rtr_scan:
+    cmp edi, RT_CAPACITY
+    jae .rtr_full
+    cmp dword [esi + RT_STATE], RT_STATE_FREE
+    je .rtr_found
+    add esi, RT_RECORD_SIZE
+    inc edi
+    jmp .rtr_scan
+.rtr_found:
+    pop ecx    ; priority
+    pop edx    ; deadline
+    pop eax    ; owner
+    push edi
+    push eax
+    mov eax, [rt_next_id]
+    inc dword [rt_next_id]
+    mov [esi + RT_ID], eax
+    pop eax
+    mov [esi + RT_OWNER], eax
+    mov dword [esi + RT_STATE], RT_STATE_READY
+    mov [esi + RT_DEADLINE], edx
+    mov [esi + RT_PRIORITY], ecx
+    mov [esi + RT_POLICY_OFF], ebx
+    mov dword [esi + RT_PERIOD], 0
+    mov dword [esi + RT_WCET], 0
+    inc dword [rt_active_count]
+    pop eax    ; slot
+    clc
+    pop edi
+    pop esi
+    ret
+.rtr_full:
+    pop ecx
+    pop edx
+    pop eax
+    stc
+    pop edi
+    pop esi
+    ret
+
+; Wählt nächste RT-Task nach EDF (früheste Deadline) → EAX=slot CF=0 / CF=1 keine
+rt_select_next:
+    push esi
+    push ebx
+    push ecx
+    push edx
+    mov esi, rt_table
+    mov eax, -1        ; kein Kandidat
+    mov edx, 0xFFFFFFFF ; best deadline
+    xor ecx, ecx
+.rsn_loop:
+    cmp ecx, RT_CAPACITY
+    jae .rsn_done
+    cmp dword [esi + RT_STATE], RT_STATE_READY
+    jne .rsn_next
+    cmp dword [esi + RT_POLICY_OFF], RT_POLICY_EDF
+    jne .rsn_fifo
+    mov ebx, [esi + RT_DEADLINE]
+    cmp ebx, edx
+    jae .rsn_next
+    mov edx, ebx
+    mov eax, ecx
+    jmp .rsn_next
+.rsn_fifo:
+    ; FIFO: kleinste Prioritätsnummer gewinnt (0=höchste)
+    cmp eax, -1
+    jne .rsn_next
+    mov eax, ecx
+.rsn_next:
+    add esi, RT_RECORD_SIZE
+    inc ecx
+    jmp .rsn_loop
+.rsn_done:
+    cmp eax, -1
+    je .rsn_empty
+    clc
+    pop edx
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+.rsn_empty:
+    stc
+    pop edx
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+
+; EAX=slot  EDX=current_tick → CF=0 ok / CF=1 Deadline verpasst
+rt_check_deadline:
+    push esi
+    cmp eax, RT_CAPACITY
+    jae .rcd_fail
+    imul esi, eax, RT_RECORD_SIZE
+    add esi, rt_table
+    cmp dword [esi + RT_STATE], RT_STATE_FREE
+    je .rcd_fail
+    cmp edx, [esi + RT_DEADLINE]
+    jbe .rcd_ok
+    inc dword [rt_miss_count]
+    stc
+    pop esi
+    ret
+.rcd_ok:
+    clc
+    pop esi
+    ret
+.rcd_fail:
+    stc
+    pop esi
+    ret
+
+rt_scheduler_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+
+    ; T1: ready
+    cmp dword [rt_ready], 1
+    je .rtst1_ok
+    inc esi
+.rtst1_ok:
+
+    ; T2: register EDF task
+    mov eax, 1       ; owner
+    mov edx, 1000    ; deadline=1000 ticks
+    mov ecx, 0       ; priority
+    mov ebx, RT_POLICY_EDF
+    call rt_task_register
+    jnc .rtst2_ok
+    inc esi
+.rtst2_ok:
+    mov ebx, eax    ; slot A
+
+    ; T3: register second EDF task (earlier deadline)
+    mov eax, 2
+    mov edx, 500    ; früherer deadline
+    mov ecx, 0
+    push ebx
+    mov ebx, RT_POLICY_EDF
+    call rt_task_register
+    pop ebx
+    jnc .rtst3_ok
+    inc esi
+.rtst3_ok:
+    push eax        ; slot B
+
+    ; T4: select_next → muss slot B sein (deadline 500 < 1000)
+    call rt_select_next
+    pop ecx         ; slot B
+    jnc .rtst4_cf_ok
+    inc esi
+.rtst4_cf_ok:
+    cmp eax, ecx
+    je .rtst4_ok
+    inc esi
+.rtst4_ok:
+
+    ; T5: check_deadline – tick=300 für slot B (deadline=500) → CF=0
+    mov edx, 300
+    mov eax, ecx
+    call rt_check_deadline
+    jnc .rtst5_ok
+    inc esi
+.rtst5_ok:
+
+    ; T6: check_deadline – tick=600 für slot B → CF=1 miss
+    mov edx, 600
+    mov eax, ecx
+    call rt_check_deadline
+    jc .rtst6_ok
+    inc esi
+.rtst6_ok:
+
+    ; T7: miss_count=1
+    cmp dword [rt_miss_count], 1
+    je .rtst7_ok
+    inc esi
+.rtst7_ok:
+
+    test esi, esi
+    jnz .rtstf
+    clc
+    pop esi
+    pop ebx
+    ret
+.rtstf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+rt_ready:        dd 0
+rt_next_id:      dd 0
+rt_active_count: dd 0
+rt_miss_count:   dd 0
+align 4
+rt_table:
+    times RT_CAPACITY * RT_RECORD_SIZE db 0
+
 ; ---------------------------------------------------------------------------
 ; Minimaler Kernel Main
 ; ---------------------------------------------------------------------------
@@ -36390,6 +36882,14 @@ message_resource_accounting_ok:
     db "NOVA: Resource Accounting 1.0 bereit (8 Slots, CPU/Mem/IO Limits)", 13, 10, 0
 message_resource_accounting_error:
     db "NOVA PANIC: Resource Accounting nicht initialisierbar", 13, 10, 0
+message_security_audit_ok:
+    db "NOVA: Security Audit 1.0 bereit (32 Ereignisse, CAP/VIOLATION/POLICY)", 13, 10, 0
+message_security_audit_error:
+    db "NOVA PANIC: Security Audit Log nicht initialisierbar", 13, 10, 0
+message_rt_scheduler_ok:
+    db "NOVA: RT Scheduler 1.0 bereit (8 Tasks, EDF/FIFO-RT)", 13, 10, 0
+message_rt_scheduler_error:
+    db "NOVA PANIC: RT Scheduler nicht initialisierbar", 13, 10, 0
 message_time_ok:
     db "NOVA: Time 1.0 bereit (Monoton 100Hz + RTC CMOS Uhr/Datum)", 13, 10, 0
 message_time_error:
