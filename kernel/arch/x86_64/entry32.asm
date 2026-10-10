@@ -721,6 +721,20 @@ kernel_entry:
     mov esi, message_rt_scheduler_ok
     call serial_write_string
 
+    call cfs_initialize
+    jc panic_cfs
+    call cfs_self_test
+    jc panic_cfs
+    mov esi, message_cfs_ok
+    call serial_write_string
+
+    call qos_initialize
+    jc panic_qos
+    call qos_self_test
+    jc panic_qos
+    mov esi, message_qos_ok
+    call serial_write_string
+
     call smp_initialize
     jc panic_smp
     call smp_self_test
@@ -1244,6 +1258,18 @@ panic_rt_scheduler:
     mov eax, 0x0000303F
     mov edx, 60
     mov esi, message_rt_scheduler_error
+    jmp kernel_panic
+
+panic_cfs:
+    mov eax, 0x0000304A
+    mov edx, 71
+    mov esi, message_cfs_error
+    jmp kernel_panic
+
+panic_qos:
+    mov eax, 0x0000304B
+    mov edx, 72
+    mov esi, message_qos_error
     jmp kernel_panic
 
 panic_device_manager:
@@ -33860,6 +33886,390 @@ align 4
 rt_table:
     times RT_CAPACITY * RT_RECORD_SIZE db 0
 
+; ===========================================================================
+; NPSPEC-SCHEDULER-FAIR-0001 – Nova Fair Scheduler (CFS-Analogon)
+; Virtuelle Laufzeit (vruntime) pro Task; immer der Task mit kleinster vruntime
+; wird als nächstes ausgewählt (Minimum-Scan über Task-Tabelle).
+; ===========================================================================
+
+CFS_CAPACITY         equ 8
+CFS_RECORD_SIZE      equ 24
+
+CFS_STATE_FREE       equ 0
+CFS_STATE_RUNNABLE   equ 1
+CFS_STATE_BLOCKED    equ 2
+
+CFS_ID               equ 0
+CFS_STATE_OFF        equ 4
+CFS_OWNER            equ 8
+CFS_VRUNTIME         equ 12   ; virtuelle Laufzeit in Ticks
+CFS_WEIGHT           equ 16   ; Prioritäts-Gewicht (niedrig = hohe Prio)
+CFS_LAST_RUN         equ 20
+
+cfs_initialize:
+    mov edi, cfs_table
+    mov ecx, CFS_CAPACITY * CFS_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [cfs_ready], 1
+    mov dword [cfs_next_id], 0
+    mov dword [cfs_switches], 0
+    clc
+    ret
+
+; EAX=owner  EDX=weight → EAX=slot CF=0/CF=1 voll
+cfs_task_enqueue:
+    push esi
+    push ecx
+    mov esi, cfs_table
+    xor ecx, ecx
+.cfse_scan:
+    cmp ecx, CFS_CAPACITY
+    jae .cfse_full
+    cmp dword [esi + CFS_STATE_OFF], CFS_STATE_FREE
+    je .cfse_found
+    add esi, CFS_RECORD_SIZE
+    inc ecx
+    jmp .cfse_scan
+.cfse_found:
+    push eax
+    mov eax, [cfs_next_id]
+    inc dword [cfs_next_id]
+    mov [esi + CFS_ID], eax
+    pop eax
+    mov dword [esi + CFS_STATE_OFF], CFS_STATE_RUNNABLE
+    mov [esi + CFS_OWNER], eax
+    mov dword [esi + CFS_VRUNTIME], 0
+    mov [esi + CFS_WEIGHT], edx
+    mov dword [esi + CFS_LAST_RUN], 0
+    mov eax, ecx
+    clc
+    pop ecx
+    pop esi
+    ret
+.cfse_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; Wählt Task mit kleinster vruntime → EAX=slot CF=0 / CF=1 kein runnable
+cfs_pick_next:
+    push esi
+    push ecx
+    push edx
+    push ebx
+    mov esi, cfs_table
+    mov edx, 0xFFFFFFFF
+    mov ebx, -1
+    xor ecx, ecx
+.cfspn_loop:
+    cmp ecx, CFS_CAPACITY
+    jae .cfspn_done
+    cmp dword [esi + CFS_STATE_OFF], CFS_STATE_RUNNABLE
+    jne .cfspn_next
+    cmp dword [esi + CFS_VRUNTIME], edx
+    jae .cfspn_next
+    mov edx, [esi + CFS_VRUNTIME]
+    mov ebx, ecx
+.cfspn_next:
+    add esi, CFS_RECORD_SIZE
+    inc ecx
+    jmp .cfspn_loop
+.cfspn_done:
+    cmp ebx, -1
+    je .cfspn_empty
+    mov eax, ebx
+    clc
+    pop ebx
+    pop edx
+    pop ecx
+    pop esi
+    ret
+.cfspn_empty:
+    stc
+    pop ebx
+    pop edx
+    pop ecx
+    pop esi
+    ret
+
+; EAX=slot  EDX=elapsed_ticks → vruntime += elapsed / weight; simuliert Fortschritt
+cfs_update_vruntime:
+    push esi
+    cmp eax, CFS_CAPACITY
+    jae .cfsuv_ret
+    imul esi, eax, CFS_RECORD_SIZE
+    add esi, cfs_table
+    cmp dword [esi + CFS_STATE_OFF], CFS_STATE_FREE
+    je .cfsuv_ret
+    ; delta_vruntime = elapsed / weight (integer-Division)
+    push eax
+    push edx
+    mov eax, edx
+    xor edx, edx
+    cmp dword [esi + CFS_WEIGHT], 0
+    je .cfsuv_no_div
+    div dword [esi + CFS_WEIGHT]
+.cfsuv_no_div:
+    add [esi + CFS_VRUNTIME], eax
+    push eax
+    mov eax, [wd_global_tick]
+    mov [esi + CFS_LAST_RUN], eax
+    pop eax
+    inc dword [cfs_switches]
+    pop edx
+    pop eax
+.cfsuv_ret:
+    pop esi
+    ret
+
+cfs_self_test:
+    push ebx
+    push esi
+    push ecx
+    xor esi, esi
+    cmp dword [cfs_ready], 1
+    je .cfst1
+    inc esi
+.cfst1:
+    ; Task A weight=1, Task B weight=2
+    mov eax, 1
+    mov edx, 1
+    call cfs_task_enqueue
+    jnc .cfst2
+    inc esi
+.cfst2:
+    mov ebx, eax   ; Task A slot
+    mov eax, 2
+    mov edx, 2
+    call cfs_task_enqueue
+    jnc .cfst3
+    inc esi
+.cfst3:
+    mov ecx, eax   ; Task B slot
+    ; pick_next → beide vruntime=0, wählt Slot mit kleinerem Index
+    call cfs_pick_next
+    jnc .cfst4_cf
+    inc esi
+.cfst4_cf:
+    ; update_vruntime für Task A: 10 Ticks / weight=1 = 10
+    mov eax, ebx
+    mov edx, 10
+    call cfs_update_vruntime
+    ; pick_next → Task B (vruntime=0 < 10)
+    call cfs_pick_next
+    jnc .cfst5_cf
+    inc esi
+.cfst5_cf:
+    cmp eax, ecx
+    je .cfst5
+    inc esi
+.cfst5:
+    test esi, esi
+    jnz .cfstf
+    clc
+    pop ecx
+    pop esi
+    pop ebx
+    ret
+.cfstf:
+    stc
+    pop ecx
+    pop esi
+    pop ebx
+    ret
+
+cfs_ready:    dd 0
+cfs_next_id:  dd 0
+cfs_switches: dd 0
+align 4
+cfs_table:
+    times CFS_CAPACITY * CFS_RECORD_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-SCHEDULER-QOS-0001 – Nova Quality-of-Service Scheduler
+; QoS-Klassen mit Bandbreiten-Budgets; verhindert Starvation durch
+; Budget-Buckets. Jede Klasse bekommt ihr Budget pro Epoche erneut.
+; ===========================================================================
+
+QOS_CLASS_COUNT      equ 4
+QOS_RECORD_SIZE      equ 20
+
+QOS_CLASS_RT         equ 0   ; Real-Time
+QOS_CLASS_HIGH       equ 1   ; High-Priority
+QOS_CLASS_NORMAL     equ 2   ; Normal
+QOS_CLASS_IDLE       equ 3   ; Idle/Background
+
+QOS_ID               equ 0
+QOS_CLASS_OFF        equ 4
+QOS_BUDGET           equ 8    ; verbleibendes Budget in Ticks
+QOS_MAX_BUDGET       equ 12   ; Budget pro Epoche
+QOS_USED             equ 16   ; verbrauchte Ticks gesamt
+
+qos_initialize:
+    mov edi, qos_table
+    mov ecx, QOS_CLASS_COUNT * QOS_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    ; Klassen mit Standard-Budgets füllen
+    mov esi, qos_table
+    ; RT: Budget=100 (höchste Garantie)
+    mov dword [esi + QOS_ID],         QOS_CLASS_RT
+    mov dword [esi + QOS_CLASS_OFF],  QOS_CLASS_RT
+    mov dword [esi + QOS_BUDGET],     100
+    mov dword [esi + QOS_MAX_BUDGET], 100
+    add esi, QOS_RECORD_SIZE
+    ; HIGH: Budget=70
+    mov dword [esi + QOS_ID],         QOS_CLASS_HIGH
+    mov dword [esi + QOS_CLASS_OFF],  QOS_CLASS_HIGH
+    mov dword [esi + QOS_BUDGET],     70
+    mov dword [esi + QOS_MAX_BUDGET], 70
+    add esi, QOS_RECORD_SIZE
+    ; NORMAL: Budget=40
+    mov dword [esi + QOS_ID],         QOS_CLASS_NORMAL
+    mov dword [esi + QOS_CLASS_OFF],  QOS_CLASS_NORMAL
+    mov dword [esi + QOS_BUDGET],     40
+    mov dword [esi + QOS_MAX_BUDGET], 40
+    add esi, QOS_RECORD_SIZE
+    ; IDLE: Budget=10
+    mov dword [esi + QOS_ID],         QOS_CLASS_IDLE
+    mov dword [esi + QOS_CLASS_OFF],  QOS_CLASS_IDLE
+    mov dword [esi + QOS_BUDGET],     10
+    mov dword [esi + QOS_MAX_BUDGET], 10
+    mov dword [qos_ready], 1
+    mov dword [qos_epoch], 0
+    mov dword [qos_throttled], 0
+    clc
+    ret
+
+; EAX=class → CF=0 Budget vorhanden (dekrementiert) / CF=1 ausgeschöpft (throttled)
+qos_consume:
+    push esi
+    cmp eax, QOS_CLASS_COUNT
+    jae .qosc_fail
+    imul esi, eax, QOS_RECORD_SIZE
+    add esi, qos_table
+    cmp dword [esi + QOS_BUDGET], 0
+    je .qosc_throttle
+    dec dword [esi + QOS_BUDGET]
+    inc dword [esi + QOS_USED]
+    clc
+    pop esi
+    ret
+.qosc_throttle:
+    inc dword [qos_throttled]
+    stc
+    pop esi
+    ret
+.qosc_fail:
+    stc
+    pop esi
+    ret
+
+; Setzt alle Klassen-Budgets zurück (neue Epoche)
+qos_new_epoch:
+    push esi
+    push ecx
+    mov esi, qos_table
+    xor ecx, ecx
+.qosne_loop:
+    cmp ecx, QOS_CLASS_COUNT
+    jae .qosne_done
+    push eax
+    mov eax, [esi + QOS_MAX_BUDGET]
+    mov [esi + QOS_BUDGET], eax
+    pop eax
+    add esi, QOS_RECORD_SIZE
+    inc ecx
+    jmp .qosne_loop
+.qosne_done:
+    inc dword [qos_epoch]
+    pop ecx
+    pop esi
+    ret
+
+; EAX=class → EAX=budget_remaining  EDX=max  CF=0/CF=1
+qos_query:
+    push esi
+    cmp eax, QOS_CLASS_COUNT
+    jae .qosq_fail
+    imul esi, eax, QOS_RECORD_SIZE
+    add esi, qos_table
+    mov eax, [esi + QOS_BUDGET]
+    mov edx, [esi + QOS_MAX_BUDGET]
+    clc
+    pop esi
+    ret
+.qosq_fail:
+    stc
+    pop esi
+    ret
+
+qos_self_test:
+    push esi
+    xor esi, esi
+    cmp dword [qos_ready], 1
+    je .qsst1
+    inc esi
+.qsst1:
+    ; RT-Klasse Budget=100 prüfen
+    mov eax, QOS_CLASS_RT
+    call qos_query
+    jnc .qsst2
+    inc esi
+.qsst2:
+    cmp eax, 100
+    je .qsst3
+    inc esi
+.qsst3:
+    ; consume RT bis auf 0
+    push ecx
+    mov ecx, 100
+.qsst_burn:
+    mov eax, QOS_CLASS_RT
+    call qos_consume
+    loop .qsst_burn
+    pop ecx
+    ; nächster consume → CF=1
+    mov eax, QOS_CLASS_RT
+    call qos_consume
+    jc .qsst4
+    inc esi
+.qsst4:
+    cmp dword [qos_throttled], 1
+    je .qsst5
+    inc esi
+.qsst5:
+    ; Neue Epoche → Budget zurück
+    call qos_new_epoch
+    mov eax, QOS_CLASS_RT
+    call qos_query
+    cmp eax, 100
+    je .qsst6
+    inc esi
+.qsst6:
+    cmp dword [qos_epoch], 1
+    je .qsst7
+    inc esi
+.qsst7:
+    test esi, esi
+    jnz .qsstf
+    clc
+    pop esi
+    ret
+.qsstf:
+    stc
+    pop esi
+    ret
+
+qos_ready:     dd 0
+qos_epoch:     dd 0
+qos_throttled: dd 0
+align 4
+qos_table:
+    times QOS_CLASS_COUNT * QOS_RECORD_SIZE db 0
+
 ; ---------------------------------------------------------------------------
 ; Minimaler Kernel Main
 ; ---------------------------------------------------------------------------
@@ -38831,6 +39241,14 @@ message_rt_scheduler_ok:
     db "NOVA: RT Scheduler 1.0 bereit (8 Tasks, EDF/FIFO-RT)", 13, 10, 0
 message_rt_scheduler_error:
     db "NOVA PANIC: RT Scheduler nicht initialisierbar", 13, 10, 0
+message_cfs_ok:
+    db "NOVA: Fair Scheduler 1.0 bereit (8 Tasks, vruntime-basiert)", 13, 10, 0
+message_cfs_error:
+    db "NOVA PANIC: Fair Scheduler nicht initialisierbar", 13, 10, 0
+message_qos_ok:
+    db "NOVA: QoS Scheduler 1.0 bereit (4 Klassen, Budget-Buckets)", 13, 10, 0
+message_qos_error:
+    db "NOVA PANIC: QoS Scheduler nicht initialisierbar", 13, 10, 0
 message_deadlock_ok:
     db "NOVA: Deadlock Detection 1.0 bereit (8 Knoten, Wait-For Graph DFS)", 13, 10, 0
 message_deadlock_error:
