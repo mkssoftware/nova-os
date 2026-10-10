@@ -603,6 +603,13 @@ kernel_entry:
     mov esi, message_deadlock_ok
     call serial_write_string
 
+    call pi_initialize
+    jc panic_pi_mutex
+    call pi_self_test
+    jc panic_pi_mutex
+    mov esi, message_pi_ok
+    call serial_write_string
+
     call irq_manager_initialize
     jc panic_irq_manager
     call irq_manager_self_test
@@ -1097,6 +1104,12 @@ panic_deadlock:
     mov eax, 0x00003040
     mov edx, 61
     mov esi, message_deadlock_error
+    jmp kernel_panic
+
+panic_pi_mutex:
+    mov eax, 0x00003041
+    mov edx, 62
+    mov esi, message_pi_error
     jmp kernel_panic
 
 panic_irq_manager:
@@ -29929,6 +29942,244 @@ dl_visited:
 dl_in_stack:
     times DL_NODE_COUNT dd 0
 
+; ===========================================================================
+; NPSPEC-SYNC-PRIORITYINHERITANCE-0001 – Nova Priority Inheritance Mutex
+; Verhindert Priority Inversion: Lock-Besitzer erbt die höchste Priorität
+; aller Wartenden bis zur Lock-Freigabe.
+; ===========================================================================
+
+PI_CAPACITY          equ 8
+PI_RECORD_SIZE       equ 24
+
+PI_STATE_FREE        equ 0
+PI_STATE_UNLOCKED    equ 1
+PI_STATE_LOCKED      equ 2
+
+PI_ID                equ 0
+PI_STATE_OFF         equ 4
+PI_OWNER             equ 8   ; Task-ID des aktuellen Inhabers
+PI_BASE_PRIO         equ 12  ; Basis-Priorität des Inhabers
+PI_EFF_PRIO          equ 16  ; Effektive Priorität (nach Vererbung)
+PI_WAITER_COUNT      equ 20
+
+pi_initialize:
+    mov edi, pi_table
+    mov ecx, PI_CAPACITY * PI_RECORD_SIZE / 4
+    xor eax, eax
+    rep stosd
+    mov dword [pi_ready], 1
+    mov dword [pi_next_id], 0
+    mov dword [pi_total_inherit], 0
+    clc
+    ret
+
+; Erzeugt neuen PI-Mutex → EAX=slot CF=0 / CF=1 voll
+pi_mutex_create:
+    push esi
+    push ecx
+    mov esi, pi_table
+    xor ecx, ecx
+.pic_scan:
+    cmp ecx, PI_CAPACITY
+    jae .pic_full
+    cmp dword [esi + PI_STATE_OFF], PI_STATE_FREE
+    je .pic_found
+    add esi, PI_RECORD_SIZE
+    inc ecx
+    jmp .pic_scan
+.pic_found:
+    push eax
+    mov eax, [pi_next_id]
+    inc dword [pi_next_id]
+    mov [esi + PI_ID], eax
+    pop eax
+    mov dword [esi + PI_STATE_OFF], PI_STATE_UNLOCKED
+    mov dword [esi + PI_OWNER], 0
+    mov dword [esi + PI_BASE_PRIO], 0
+    mov dword [esi + PI_EFF_PRIO], 0
+    mov dword [esi + PI_WAITER_COUNT], 0
+    mov eax, ecx
+    clc
+    pop ecx
+    pop esi
+    ret
+.pic_full:
+    stc
+    pop ecx
+    pop esi
+    ret
+
+; EAX=slot  EDX=task_id  ECX=task_base_prio → Lock versuchen
+; CF=0 Erfolg (Mutex gehört jetzt EDX), CF=1 bereits gesperrt (PI-Erhöhung trotzdem)
+pi_mutex_lock:
+    push esi
+    push ebx
+    cmp eax, PI_CAPACITY
+    jae .pml_fail
+    imul esi, eax, PI_RECORD_SIZE
+    add esi, pi_table
+    cmp dword [esi + PI_STATE_OFF], PI_STATE_UNLOCKED
+    je .pml_acquire
+    ; Bereits gesperrt: Priority Inheritance
+    inc dword [esi + PI_WAITER_COUNT]
+    ; Falls Wartender höhere Prio als effektive Prio des Besitzers → anpassen
+    cmp ecx, [esi + PI_EFF_PRIO]
+    jbe .pml_no_inherit
+    mov [esi + PI_EFF_PRIO], ecx
+    inc dword [pi_total_inherit]
+.pml_no_inherit:
+    stc
+    pop ebx
+    pop esi
+    ret
+.pml_acquire:
+    mov dword [esi + PI_STATE_OFF], PI_STATE_LOCKED
+    mov [esi + PI_OWNER], edx
+    mov [esi + PI_BASE_PRIO], ecx
+    mov [esi + PI_EFF_PRIO], ecx
+    clc
+    pop ebx
+    pop esi
+    ret
+.pml_fail:
+    stc
+    pop ebx
+    pop esi
+    ret
+
+; EAX=slot → Unlock, Effektiv-Prio auf Basis zurückgesetzt
+pi_mutex_unlock:
+    push esi
+    cmp eax, PI_CAPACITY
+    jae .pmu_fail
+    imul esi, eax, PI_RECORD_SIZE
+    add esi, pi_table
+    cmp dword [esi + PI_STATE_OFF], PI_STATE_LOCKED
+    jne .pmu_fail
+    mov dword [esi + PI_STATE_OFF], PI_STATE_UNLOCKED
+    mov dword [esi + PI_OWNER], 0
+    ; Effektivprio zurücksetzen
+    push eax
+    mov eax, [esi + PI_BASE_PRIO]
+    mov [esi + PI_EFF_PRIO], eax
+    pop eax
+    mov dword [esi + PI_WAITER_COUNT], 0
+    clc
+    pop esi
+    ret
+.pmu_fail:
+    stc
+    pop esi
+    ret
+
+; EAX=slot → EAX=eff_prio  EDX=owner  ECX=waiters  CF=0 / CF=1 invalid
+pi_mutex_query:
+    push esi
+    cmp eax, PI_CAPACITY
+    jae .pmq_fail
+    imul esi, eax, PI_RECORD_SIZE
+    add esi, pi_table
+    cmp dword [esi + PI_STATE_OFF], PI_STATE_FREE
+    je .pmq_fail
+    mov eax, [esi + PI_EFF_PRIO]
+    mov edx, [esi + PI_OWNER]
+    mov ecx, [esi + PI_WAITER_COUNT]
+    clc
+    pop esi
+    ret
+.pmq_fail:
+    stc
+    pop esi
+    ret
+
+pi_self_test:
+    push ebx
+    push esi
+    xor esi, esi
+
+    ; T1: ready
+    cmp dword [pi_ready], 1
+    je .pist1_ok
+    inc esi
+.pist1_ok:
+
+    ; T2: Mutex erzeugen
+    call pi_mutex_create
+    jnc .pist2_ok
+    inc esi
+.pist2_ok:
+    mov ebx, eax   ; slot
+
+    ; T3: Lock mit Task 1 Prio=5
+    mov eax, ebx
+    mov edx, 1
+    mov ecx, 5
+    call pi_mutex_lock
+    jnc .pist3_ok
+    inc esi
+.pist3_ok:
+
+    ; T4: Task 2 Prio=10 versucht → CF=1, PI→eff_prio=10
+    mov eax, ebx
+    mov edx, 2
+    mov ecx, 10
+    call pi_mutex_lock
+    jc .pist4_ok
+    inc esi
+.pist4_ok:
+
+    ; T5: eff_prio=10 prüfen
+    mov eax, ebx
+    call pi_mutex_query
+    jnc .pist5_cf
+    inc esi
+.pist5_cf:
+    cmp eax, 10
+    je .pist5_ok
+    inc esi
+.pist5_ok:
+
+    ; T6: pi_total_inherit=1
+    cmp dword [pi_total_inherit], 1
+    je .pist6_ok
+    inc esi
+.pist6_ok:
+
+    ; T7: Unlock → eff_prio zurück auf 5
+    mov eax, ebx
+    call pi_mutex_unlock
+    jnc .pist7_ok
+    inc esi
+.pist7_ok:
+
+    ; T8: nach Unlock wieder lock-bar (unlocked)
+    mov eax, ebx
+    mov edx, 3
+    mov ecx, 7
+    call pi_mutex_lock
+    jnc .pist8_ok
+    inc esi
+.pist8_ok:
+
+    test esi, esi
+    jnz .pistf
+    clc
+    pop esi
+    pop ebx
+    ret
+.pistf:
+    stc
+    pop esi
+    pop ebx
+    ret
+
+pi_ready:          dd 0
+pi_next_id:        dd 0
+pi_total_inherit:  dd 0
+align 4
+pi_table:
+    times PI_CAPACITY * PI_RECORD_SIZE db 0
+
 ; ---------------------------------------------------------------------------
 ; ===========================================================================
 ; §009 – Interrupt Manager 1.0 (NPSPEC-KERNEL-0009)
@@ -37133,6 +37384,10 @@ message_deadlock_ok:
     db "NOVA: Deadlock Detection 1.0 bereit (8 Knoten, Wait-For Graph DFS)", 13, 10, 0
 message_deadlock_error:
     db "NOVA PANIC: Deadlock Detection nicht initialisierbar", 13, 10, 0
+message_pi_ok:
+    db "NOVA: Priority Inheritance Mutex 1.0 bereit (8 Slots, Prio-Vererbung)", 13, 10, 0
+message_pi_error:
+    db "NOVA PANIC: Priority Inheritance Mutex nicht initialisierbar", 13, 10, 0
 message_time_ok:
     db "NOVA: Time 1.0 bereit (Monoton 100Hz + RTC CMOS Uhr/Datum)", 13, 10, 0
 message_time_error:
