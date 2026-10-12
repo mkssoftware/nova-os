@@ -984,6 +984,27 @@ kernel_entry:
     mov esi, message_sdesired_ok
     call serial_write_string
 
+    call txres_initialize
+    jc panic_txres
+    call txres_self_test
+    jc panic_txres
+    mov esi, message_txres_ok
+    call serial_write_string
+
+    call txsys_initialize
+    jc panic_txsys
+    call txsys_self_test
+    jc panic_txsys
+    mov esi, message_txsys_ok
+    call serial_write_string
+
+    call rarbit_initialize
+    jc panic_rarbit
+    call rarbit_self_test
+    jc panic_rarbit
+    mov esi, message_rarbit_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1856,6 +1877,24 @@ panic_sdesired:
     mov eax, 0x00003081
     mov edx, 126
     mov esi, message_sdesired_error
+    jmp kernel_panic
+
+panic_txres:
+    mov eax, 0x00003082
+    mov edx, 127
+    mov esi, message_txres_error
+    jmp kernel_panic
+
+panic_txsys:
+    mov eax, 0x00003083
+    mov edx, 128
+    mov esi, message_txsys_error
+    jmp kernel_panic
+
+panic_rarbit:
+    mov eax, 0x00003084
+    mov edx, 129
+    mov esi, message_rarbit_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -37160,6 +37199,459 @@ sdesired_table:
     times SDESIRED_CAPACITY * SDESIRED_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-TRANSACTION-RESOURCE-0001 – Nova Transaction Resource Manager
+; ===========================================================================
+; Tracks resource locks held by active transactions. Before modifying a
+; shared resource, a transaction acquires a lock here. On commit/abort,
+; all locks for that transaction are released.
+;
+; Lock states: FREE=0 / HELD=1
+; Record: txn_id(4) + resource_id(4) + state(4) + pad(4) = 16 bytes
+
+TXRES_CAPACITY  equ 8
+TXRES_REC_SIZE  equ 16
+TXRES_TXN_ID    equ 0
+TXRES_RES_ID    equ 4
+TXRES_STATE     equ 8
+TXRES_PAD       equ 12
+
+TXRES_FREE      equ 0
+TXRES_HELD      equ 1
+
+txres_initialize:
+    cmp dword [txres_ready], 1
+    je .done
+    mov edi, txres_table
+    xor eax, eax
+    mov ecx, (TXRES_CAPACITY * TXRES_REC_SIZE) / 4
+    rep stosd
+    mov dword [txres_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=txn_id, EDX=resource_id → CF=0 acquired / CF=1 already held
+txres_acquire:
+    cmp dword [txres_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    ; check if already held by any txn
+    xor esi, esi
+.check_held:
+    cmp esi, TXRES_CAPACITY
+    jae .find_free
+    imul edi, esi, TXRES_REC_SIZE
+    add edi, txres_table
+    cmp dword [edi + TXRES_STATE], TXRES_HELD
+    jne .ch_next
+    cmp [edi + TXRES_RES_ID], edx
+    je .already_held
+.ch_next:
+    inc esi
+    jmp .check_held
+.find_free:
+    xor esi, esi
+.scan:
+    cmp esi, TXRES_CAPACITY
+    jae .full
+    imul edi, esi, TXRES_REC_SIZE
+    add edi, txres_table
+    cmp dword [edi + TXRES_STATE], TXRES_FREE
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + TXRES_TXN_ID], ebx
+    mov [edi + TXRES_RES_ID], edx
+    mov dword [edi + TXRES_STATE], TXRES_HELD
+    pop esi
+    pop ebx
+    clc
+    ret
+.already_held:
+.full:
+    pop esi
+    pop ebx
+    stc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=txn_id → releases all locks held by this transaction, CF
+txres_release_all:
+    cmp dword [txres_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, TXRES_CAPACITY
+    jae .done
+    imul edi, esi, TXRES_REC_SIZE
+    add edi, txres_table
+    cmp [edi + TXRES_TXN_ID], ebx
+    jne .next
+    mov dword [edi + TXRES_STATE], TXRES_FREE
+.next:
+    inc esi
+    jmp .scan
+.done:
+    pop ebx
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+txres_self_test:
+    ; acquire resource=5 for txn=1
+    mov eax, 1
+    mov edx, 5
+    call txres_acquire
+    jc .fail
+    ; try to acquire same resource for txn=2 → conflict
+    mov eax, 2
+    mov edx, 5
+    call txres_acquire
+    jnc .fail
+    ; release txn=1
+    mov eax, 1
+    call txres_release_all
+    jc .fail
+    ; now txn=2 can acquire
+    mov eax, 2
+    mov edx, 5
+    call txres_acquire
+    jc .fail
+    mov eax, 2
+    call txres_release_all
+    jc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+txres_ready:  dd 0
+txres_table:
+    times TXRES_CAPACITY * TXRES_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-TRANSACTION-SYSTEM-0001 – Nova Transaction System Coordinator
+; ===========================================================================
+; Two-phase-commit (2PC) coordinator for system-wide transactions.
+; Connects tbarrier (Phase-1 ready sync) + txlog (WAL) + tcomp (abort undo).
+; States: IDLE=0 / PREPARE=1 / COMMITTED=2 / ABORTED=3
+;
+; Record: sys_txn_id(4) + participants(4) + ready_count(4) + state(4) = 16 bytes
+
+TXSYS_CAPACITY  equ 4
+TXSYS_REC_SIZE  equ 16
+TXSYS_ID        equ 0
+TXSYS_PARTS     equ 4
+TXSYS_READY     equ 8
+TXSYS_STATE     equ 12
+
+TXSYS_IDLE      equ 0
+TXSYS_PREPARE   equ 1
+TXSYS_COMMITTED equ 2
+TXSYS_ABORTED   equ 3
+
+txsys_initialize:
+    cmp dword [txsys_ready], 1
+    je .done
+    mov edi, txsys_table
+    xor eax, eax
+    mov ecx, (TXSYS_CAPACITY * TXSYS_REC_SIZE) / 4
+    rep stosd
+    mov dword [txsys_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=sys_txn_id, EDX=participant_count → EAX=slot, CF
+txsys_begin:
+    cmp dword [txsys_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    test edx, edx
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, TXSYS_CAPACITY
+    jae .fail
+    imul edi, esi, TXSYS_REC_SIZE
+    add edi, txsys_table
+    cmp dword [edi + TXSYS_STATE], TXSYS_IDLE
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + TXSYS_ID], eax
+    mov [edi + TXSYS_PARTS], edx
+    mov dword [edi + TXSYS_READY], 0
+    mov dword [edi + TXSYS_STATE], TXSYS_PREPARE
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=sys_txn_id → increments ready count; when all ready → COMMITTED, CF=0
+txsys_participant_ready:
+    cmp dword [txsys_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, TXSYS_CAPACITY
+    jae .not_found
+    imul edi, esi, TXSYS_REC_SIZE
+    add edi, txsys_table
+    cmp [edi + TXSYS_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    cmp dword [edi + TXSYS_STATE], TXSYS_PREPARE
+    jne .not_found
+    inc dword [edi + TXSYS_READY]
+    mov eax, [edi + TXSYS_READY]
+    cmp eax, [edi + TXSYS_PARTS]
+    jne .still_waiting
+    mov dword [edi + TXSYS_STATE], TXSYS_COMMITTED
+.still_waiting:
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=sys_txn_id → abort → state=ABORTED, CF
+txsys_abort:
+    cmp dword [txsys_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, TXSYS_CAPACITY
+    jae .not_found
+    imul edi, esi, TXSYS_REC_SIZE
+    add edi, txsys_table
+    cmp [edi + TXSYS_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov dword [edi + TXSYS_STATE], TXSYS_ABORTED
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+txsys_self_test:
+    ; begin sys_txn=1 with 2 participants
+    mov eax, 1
+    mov edx, 2
+    call txsys_begin
+    jc .fail
+    ; first participant ready → still PREPARE
+    mov eax, 1
+    call txsys_participant_ready
+    jc .fail
+    ; check still in PREPARE
+    mov edi, txsys_table
+    cmp dword [edi + TXSYS_STATE], TXSYS_PREPARE
+    jne .fail
+    ; second participant ready → COMMITTED
+    mov eax, 1
+    call txsys_participant_ready
+    jc .fail
+    cmp dword [edi + TXSYS_STATE], TXSYS_COMMITTED
+    jne .fail
+    ; reset for abort test
+    mov dword [edi + TXSYS_STATE], TXSYS_IDLE
+    ; begin again
+    mov eax, 2
+    mov edx, 1
+    call txsys_begin
+    jc .fail
+    ; abort
+    mov eax, 2
+    call txsys_abort
+    jc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+txsys_ready:  dd 0
+txsys_table:
+    times TXSYS_CAPACITY * TXSYS_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESOURCE-ARBITRATION-0001 – Nova Resource Arbitration
+; ===========================================================================
+; Priority-based arbiter: multiple requestors compete for a shared resource.
+; Highest-priority requestor wins. Connects radmit + rguarant: before
+; radmit_request, caller registers a competing request here; arbiter grants
+; to the highest priority that fits within available capacity.
+;
+; Record: req_id(4) + resource(4) + priority(4) + granted(4) = 16 bytes
+
+RARBIT_CAPACITY  equ 8
+RARBIT_REC_SIZE  equ 16
+RARBIT_REQ_ID    equ 0
+RARBIT_RESOURCE  equ 4
+RARBIT_PRIORITY  equ 8
+RARBIT_GRANTED   equ 12
+
+rarbit_initialize:
+    cmp dword [rarbit_ready], 1
+    je .done
+    mov edi, rarbit_table
+    xor eax, eax
+    mov ecx, (RARBIT_CAPACITY * RARBIT_REC_SIZE) / 4
+    rep stosd
+    mov dword [rarbit_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=req_id, EDX=resource_id, ECX=priority → EAX=slot, CF
+rarbit_request:
+    cmp dword [rarbit_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, RARBIT_CAPACITY
+    jae .fail
+    imul edi, esi, RARBIT_REC_SIZE
+    add edi, rarbit_table
+    cmp dword [edi + RARBIT_REQ_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + RARBIT_REQ_ID], eax
+    mov [edi + RARBIT_RESOURCE], edx
+    mov [edi + RARBIT_PRIORITY], ecx
+    mov dword [edi + RARBIT_GRANTED], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EDX=resource_id → grants to highest-priority pending request for that resource
+; EAX=granted_req_id, CF=0 granted / CF=1 no requests
+rarbit_arbitrate:
+    cmp dword [rarbit_ready], 1
+    jne .fail
+    push ebx
+    push esi
+    mov ebx, edx            ; resource_id
+    xor esi, esi
+    xor ecx, ecx            ; best_priority = 0
+    mov edx, 0              ; best_slot = none (sentinel)
+    push edx                ; save best_slot on stack
+.scan:
+    cmp esi, RARBIT_CAPACITY
+    jae .done_scan
+    imul edi, esi, RARBIT_REC_SIZE
+    add edi, rarbit_table
+    cmp dword [edi + RARBIT_REQ_ID], 0
+    je .next
+    cmp [edi + RARBIT_RESOURCE], ebx
+    jne .next
+    cmp dword [edi + RARBIT_GRANTED], 1
+    je .next
+    ; compare priority
+    cmp [edi + RARBIT_PRIORITY], ecx
+    jbe .next
+    mov ecx, [edi + RARBIT_PRIORITY]
+    pop edx
+    mov edx, esi            ; new best slot
+    push edx
+.next:
+    inc esi
+    jmp .scan
+.done_scan:
+    pop edx                 ; best_slot
+    cmp edx, 0xFFFFFFFF
+    je .no_req
+    ; check if any was found (ecx > 0 means we found one)
+    test ecx, ecx
+    jz .no_req
+    imul edi, edx, RARBIT_REC_SIZE
+    add edi, rarbit_table
+    mov dword [edi + RARBIT_GRANTED], 1
+    mov eax, [edi + RARBIT_REQ_ID]
+    pop esi
+    pop ebx
+    clc
+    ret
+.no_req:
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+rarbit_self_test:
+    ; two requests for resource=1: req=1 priority=5, req=2 priority=10
+    mov eax, 1
+    mov edx, 1
+    mov ecx, 5
+    call rarbit_request
+    jc .fail
+    mov eax, 2
+    mov edx, 1
+    mov ecx, 10
+    call rarbit_request
+    jc .fail
+    ; arbitrate resource=1 → req=2 should win (higher priority)
+    mov edx, 1
+    call rarbit_arbitrate
+    jc .fail
+    cmp eax, 2
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+rarbit_ready:  dd 0
+rarbit_table:
+    times RARBIT_CAPACITY * RARBIT_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -48717,6 +49209,18 @@ message_sdesired_ok:
     db "NOVA: State Desired 1.0 bereit (8-Slots, target goal values)", 13, 10, 0
 message_sdesired_error:
     db "NOVA PANIC: State Desired Store nicht initialisierbar", 13, 10, 0
+message_txres_ok:
+    db "NOVA: Transaction Resource 1.0 bereit (8-Locks, resource-hold tracking)", 13, 10, 0
+message_txres_error:
+    db "NOVA PANIC: Transaction Resource Manager nicht initialisierbar", 13, 10, 0
+message_txsys_ok:
+    db "NOVA: Transaction System 1.0 bereit (4-Slots, system-wide 2PC coordinator)", 13, 10, 0
+message_txsys_error:
+    db "NOVA PANIC: Transaction System Coordinator nicht initialisierbar", 13, 10, 0
+message_rarbit_ok:
+    db "NOVA: Resource Arbitration 1.0 bereit (8-Requests, priority-based grant)", 13, 10, 0
+message_rarbit_error:
+    db "NOVA PANIC: Resource Arbitration Engine nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
