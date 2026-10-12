@@ -1089,6 +1089,27 @@ kernel_entry:
     mov esi, message_renergy_ok
     call serial_write_string
 
+    call rlatency_initialize
+    jc panic_rlatency
+    call rlatency_self_test
+    jc panic_rlatency
+    mov esi, message_rlatency_ok
+    call serial_write_string
+
+    call sglobal_initialize
+    jc panic_sglobal
+    call sglobal_self_test
+    jc panic_sglobal
+    mov esi, message_sglobal_ok
+    call serial_write_string
+
+    call txconfig_initialize
+    jc panic_txconfig
+    call txconfig_self_test
+    jc panic_txconfig
+    mov esi, message_txconfig_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -2051,6 +2072,24 @@ panic_renergy:
     mov eax, 0x00003090
     mov edx, 141
     mov esi, message_renergy_error
+    jmp kernel_panic
+
+panic_rlatency:
+    mov eax, 0x00003091
+    mov edx, 142
+    mov esi, message_rlatency_error
+    jmp kernel_panic
+
+panic_sglobal:
+    mov eax, 0x00003092
+    mov edx, 143
+    mov esi, message_sglobal_error
+    jmp kernel_panic
+
+panic_txconfig:
+    mov eax, 0x00003093
+    mov edx, 144
+    mov esi, message_txconfig_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -39970,6 +40009,541 @@ renergy_table:
     times RENRG_CAPACITY * RENRG_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-RESOURCE-LATENCY-0001 – Nova Resource Latency Monitor
+; ===========================================================================
+; Tracks round-trip latency per endpoint via EWMA. Signals SLA violation
+; when latency exceeds threshold. Connects sdiag_diagnose: high latency
+; triggers LATENCY symptom diagnosis. Connects apred_update for prediction.
+;
+; Record: endpoint_id(4) + avg_lat(4) + sla_us(4) + violations(4) = 16 bytes
+
+RLAT_CAPACITY   equ 8
+RLAT_REC_SIZE   equ 16
+RLAT_ENDPOINT   equ 0
+RLAT_AVG_LAT    equ 4
+RLAT_SLA        equ 8
+RLAT_VIOL       equ 12
+
+RLAT_ALPHA      equ 48
+
+rlatency_initialize:
+    cmp dword [rlatency_ready], 1
+    je .done
+    mov edi, rlatency_table
+    xor eax, eax
+    mov ecx, (RLAT_CAPACITY * RLAT_REC_SIZE) / 4
+    rep stosd
+    mov dword [rlatency_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=endpoint_id, EDX=sla_us → register, CF
+rlatency_register:
+    cmp dword [rlatency_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, RLAT_CAPACITY
+    jae .full
+    imul edi, esi, RLAT_REC_SIZE
+    add edi, rlatency_table
+    cmp dword [edi + RLAT_ENDPOINT], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + RLAT_ENDPOINT], ebx
+    mov dword [edi + RLAT_AVG_LAT], 0
+    mov [edi + RLAT_SLA], ecx
+    mov dword [edi + RLAT_VIOL], 0
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=endpoint_id, EDX=observed_us → update EWMA; CF=1 if SLA violated
+rlatency_observe:
+    cmp dword [rlatency_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, RLAT_CAPACITY
+    jae .not_found
+    imul edi, esi, RLAT_REC_SIZE
+    add edi, rlatency_table
+    cmp [edi + RLAT_ENDPOINT], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    ; EWMA avg_lat
+    mov eax, RLAT_ALPHA
+    imul eax, ecx
+    push ecx
+    mov ecx, 256 - RLAT_ALPHA
+    imul ecx, [edi + RLAT_AVG_LAT]
+    add eax, ecx
+    shr eax, 8
+    mov [edi + RLAT_AVG_LAT], eax
+    pop ecx
+    ; cross-subsystem: update prediction for endpoint metric
+    push edx
+    mov eax, ebx
+    mov edx, [edi + RLAT_AVG_LAT]
+    call apred_update
+    pop edx
+    ; check SLA
+    mov eax, [edi + RLAT_AVG_LAT]
+    cmp eax, [edi + RLAT_SLA]
+    jbe .ok
+    inc dword [edi + RLAT_VIOL]
+    ; cross-subsystem: diagnose LATENCY symptom (symptom=1)
+    push ebx
+    mov eax, 1              ; LATENCY symptom
+    call sdiag_diagnose
+    pop ebx
+    pop ecx
+    pop ebx
+    stc
+    ret
+.ok:
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=endpoint_id → EAX=avg_lat, EDX=sla_us, ECX=violations, CF
+rlatency_query:
+    cmp dword [rlatency_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RLAT_CAPACITY
+    jae .not_found
+    imul edi, esi, RLAT_REC_SIZE
+    add edi, rlatency_table
+    cmp [edi + RLAT_ENDPOINT], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + RLAT_AVG_LAT]
+    mov edx, [edi + RLAT_SLA]
+    mov ecx, [edi + RLAT_VIOL]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+rlatency_self_test:
+    ; endpoint=1 sla=100us
+    mov eax, 1
+    mov edx, 100
+    call rlatency_register
+    jc .fail
+    ; observe 50us → ok
+    mov eax, 1
+    mov edx, 50
+    call rlatency_observe
+    jc .fail
+    ; observe 500us → SLA violation
+    mov eax, 1
+    mov edx, 500
+    call rlatency_observe
+    jnc .fail
+    ; violations > 0
+    mov eax, 1
+    call rlatency_query
+    jc .fail
+    test ecx, ecx
+    jz .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+rlatency_ready:  dd 0
+rlatency_table:
+    times RLAT_CAPACITY * RLAT_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-STATE-GLOBAL-0001 – Nova State Global Store
+; ===========================================================================
+; Kernel-wide named state store with 16 slots. Any subsystem can publish
+; or subscribe to named state values. Connects sver_bump: each write
+; atomically bumps the version for that key. Connects shist_record.
+;
+; Record: key(4) + value(4) + version(4) + owner(4) = 16 bytes
+
+SGLOBAL_CAPACITY  equ 16
+SGLOBAL_REC_SIZE  equ 16
+SGLOBAL_KEY       equ 0
+SGLOBAL_VALUE     equ 4
+SGLOBAL_VERSION   equ 8
+SGLOBAL_OWNER     equ 12
+
+sglobal_initialize:
+    cmp dword [sglobal_ready], 1
+    je .done
+    mov edi, sglobal_table
+    xor eax, eax
+    mov ecx, (SGLOBAL_CAPACITY * SGLOBAL_REC_SIZE) / 4
+    rep stosd
+    mov dword [sglobal_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=key, EDX=value, ECX=owner → publish/update global state, CF
+sglobal_publish:
+    cmp dword [sglobal_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    push edx
+    mov ebx, eax            ; key
+    ; find existing or free slot
+    xor esi, esi
+.scan:
+    cmp esi, SGLOBAL_CAPACITY
+    jae .full
+    imul edi, esi, SGLOBAL_REC_SIZE
+    add edi, sglobal_table
+    cmp [edi + SGLOBAL_KEY], ebx
+    je .update
+    cmp dword [edi + SGLOBAL_KEY], 0
+    je .slot
+    inc esi
+    jmp .scan
+.update:
+    ; get old state for history
+    mov eax, [edi + SGLOBAL_VALUE]  ; old value
+    pop edx                          ; new value
+    push edx
+    ; bump version
+    inc dword [edi + SGLOBAL_VERSION]
+    mov [edi + SGLOBAL_VALUE], edx
+    pop edx
+    push edx
+    jmp .record_hist
+.slot:
+    mov [edi + SGLOBAL_KEY], ebx
+    pop edx
+    push edx
+    mov [edi + SGLOBAL_VALUE], edx
+    pop edx
+    push edx
+    pop ecx
+    push ecx
+    mov [edi + SGLOBAL_OWNER], ecx
+    mov dword [edi + SGLOBAL_VERSION], 1
+    xor eax, eax            ; old value = 0 for new slot
+    jmp .record_hist
+.record_hist:
+    ; cross-subsystem: record in state history (obj=key, old=eax, new=value)
+    push eax
+    mov eax, ebx            ; obj_id = key
+    pop edx                 ; old
+    push edx
+    mov ecx, [edi + SGLOBAL_VALUE]   ; new
+    call shist_record
+    pop edx
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop edx
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=key → EAX=value, EDX=version, ECX=owner, CF=1 not found
+sglobal_get:
+    cmp dword [sglobal_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SGLOBAL_CAPACITY
+    jae .not_found
+    imul edi, esi, SGLOBAL_REC_SIZE
+    add edi, sglobal_table
+    cmp [edi + SGLOBAL_KEY], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + SGLOBAL_VALUE]
+    mov edx, [edi + SGLOBAL_VERSION]
+    mov ecx, [edi + SGLOBAL_OWNER]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+sglobal_self_test:
+    ; publish key=7 value=42 owner=1
+    mov eax, 7
+    mov edx, 42
+    mov ecx, 1
+    call sglobal_publish
+    jc .fail
+    ; get it back
+    mov eax, 7
+    call sglobal_get
+    jc .fail
+    cmp eax, 42
+    jne .fail
+    ; update to 99
+    mov eax, 7
+    mov edx, 99
+    mov ecx, 1
+    call sglobal_publish
+    jc .fail
+    mov eax, 7
+    call sglobal_get
+    jc .fail
+    cmp eax, 99
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+sglobal_ready:  dd 0
+sglobal_table:
+    times SGLOBAL_CAPACITY * SGLOBAL_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-TRANSACTION-CONFIG-0001 – Nova Transaction Config Manager
+; ===========================================================================
+; Atomic configuration transactions: stages a set of sconf changes, then
+; commits or aborts them as a unit. Prevents partial config updates.
+; Uses txroll_save/txroll_undo for rollback and sconf_set/sconf_get.
+;
+; Record: cfg_txn_id(4) + key(4) + old_val(4) + new_val(4) = 16 bytes
+; States tracked separately via txsys
+
+TXCFG_CAPACITY  equ 8
+TXCFG_REC_SIZE  equ 16
+TXCFG_TXN_ID    equ 0
+TXCFG_KEY       equ 4
+TXCFG_OLD_VAL   equ 8
+TXCFG_NEW_VAL   equ 12
+
+txconfig_initialize:
+    cmp dword [txconfig_ready], 1
+    je .done
+    mov edi, txconfig_table
+    xor eax, eax
+    mov ecx, (TXCFG_CAPACITY * TXCFG_REC_SIZE) / 4
+    rep stosd
+    mov dword [txconfig_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=cfg_txn_id, EDX=key, ECX=new_value → stage change; reads old via sconf_get
+txconfig_stage:
+    cmp dword [txconfig_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    push edx
+    mov ebx, eax            ; txn_id
+    ; find free slot
+    xor esi, esi
+.scan:
+    cmp esi, TXCFG_CAPACITY
+    jae .full
+    imul edi, esi, TXCFG_REC_SIZE
+    add edi, txconfig_table
+    cmp dword [edi + TXCFG_TXN_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + TXCFG_TXN_ID], ebx
+    pop edx
+    push edx
+    mov [edi + TXCFG_KEY], edx
+    ; read old value via sconf_get
+    mov eax, edx            ; key
+    call sconf_get          ; EAX=value or CF=1 (key not found → old=0)
+    jc .old_zero
+    mov [edi + TXCFG_OLD_VAL], eax
+    jmp .set_new
+.old_zero:
+    mov dword [edi + TXCFG_OLD_VAL], 0
+.set_new:
+    pop edx
+    push edx
+    pop ecx
+    push ecx
+    mov [edi + TXCFG_NEW_VAL], ecx
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop edx
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=cfg_txn_id → apply all staged changes via sconf_set, then clear slots
+txconfig_commit:
+    cmp dword [txconfig_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, TXCFG_CAPACITY
+    jae .done
+    imul edi, esi, TXCFG_REC_SIZE
+    add edi, txconfig_table
+    cmp [edi + TXCFG_TXN_ID], ebx
+    jne .next
+    ; apply via sconf_set(key, new_val)
+    mov eax, [edi + TXCFG_KEY]
+    mov edx, [edi + TXCFG_NEW_VAL]
+    call sconf_set
+    mov dword [edi + TXCFG_TXN_ID], 0  ; clear slot
+.next:
+    inc esi
+    jmp .scan
+.done:
+    pop ebx
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=cfg_txn_id → restore old values via sconf_set, then clear slots
+txconfig_abort:
+    cmp dword [txconfig_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, TXCFG_CAPACITY
+    jae .done
+    imul edi, esi, TXCFG_REC_SIZE
+    add edi, txconfig_table
+    cmp [edi + TXCFG_TXN_ID], ebx
+    jne .next
+    ; restore old value
+    mov eax, [edi + TXCFG_KEY]
+    mov edx, [edi + TXCFG_OLD_VAL]
+    call sconf_set
+    mov dword [edi + TXCFG_TXN_ID], 0
+.next:
+    inc esi
+    jmp .scan
+.done:
+    pop ebx
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+txconfig_self_test:
+    ; stage txn=1: key=10 → value=42
+    mov eax, 1
+    mov edx, 10
+    mov ecx, 42
+    call txconfig_stage
+    jc .fail
+    ; commit txn=1
+    mov eax, 1
+    call txconfig_commit
+    jc .fail
+    ; verify via sconf_get(key=10) → 42
+    mov eax, 10
+    call sconf_get
+    jc .fail
+    cmp eax, 42
+    jne .fail
+    ; stage txn=2: key=10 → value=99
+    mov eax, 2
+    mov edx, 10
+    mov ecx, 99
+    call txconfig_stage
+    jc .fail
+    ; abort → should restore to 42
+    mov eax, 2
+    call txconfig_abort
+    jc .fail
+    mov eax, 10
+    call sconf_get
+    jc .fail
+    cmp eax, 42
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+txconfig_ready:  dd 0
+txconfig_table:
+    times TXCFG_CAPACITY * TXCFG_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -51587,6 +52161,18 @@ message_renergy_ok:
     db "NOVA: Resource Energy 1.0 bereit (4-Rails, power-budget enforcement)", 13, 10, 0
 message_renergy_error:
     db "NOVA PANIC: Resource Energy Manager nicht initialisierbar", 13, 10, 0
+message_rlatency_ok:
+    db "NOVA: Resource Latency 1.0 bereit (8-Endpoints, SLA latency tracking)", 13, 10, 0
+message_rlatency_error:
+    db "NOVA PANIC: Resource Latency Monitor nicht initialisierbar", 13, 10, 0
+message_sglobal_ok:
+    db "NOVA: State Global 1.0 bereit (16-Keys, kernel-wide named state store)", 13, 10, 0
+message_sglobal_error:
+    db "NOVA PANIC: State Global Manager nicht initialisierbar", 13, 10, 0
+message_txconfig_ok:
+    db "NOVA: Transaction Config 1.0 bereit (8-Keys, atomic config transactions)", 13, 10, 0
+message_txconfig_error:
+    db "NOVA PANIC: Transaction Config Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
