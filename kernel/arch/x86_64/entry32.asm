@@ -1068,6 +1068,27 @@ kernel_entry:
     mov esi, message_uoverride_ok
     call serial_write_string
 
+    call rdeadline_initialize
+    jc panic_rdeadline
+    call rdeadline_self_test
+    jc panic_rdeadline
+    mov esi, message_rdeadline_ok
+    call serial_write_string
+
+    call reconomy_initialize
+    jc panic_reconomy
+    call reconomy_self_test
+    jc panic_reconomy
+    mov esi, message_reconomy_ok
+    call serial_write_string
+
+    call renergy_initialize
+    jc panic_renergy
+    call renergy_self_test
+    jc panic_renergy
+    mov esi, message_renergy_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -2012,6 +2033,24 @@ panic_uoverride:
     mov eax, 0x0000308D
     mov edx, 138
     mov esi, message_uoverride_error
+    jmp kernel_panic
+
+panic_rdeadline:
+    mov eax, 0x0000308E
+    mov edx, 139
+    mov esi, message_rdeadline_error
+    jmp kernel_panic
+
+panic_reconomy:
+    mov eax, 0x0000308F
+    mov edx, 140
+    mov esi, message_reconomy_error
+    jmp kernel_panic
+
+panic_renergy:
+    mov eax, 0x00003090
+    mov edx, 141
+    mov esi, message_renergy_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -39408,6 +39447,529 @@ uoverride_table:
     times UOVER_CAPACITY * UOVER_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-RESOURCE-DEADLINE-0001 – Nova Resource Deadline Manager
+; ===========================================================================
+; Earliest-Deadline-First (EDF) enforcement: tracks task deadlines and
+; signals overdue tasks. Connects aschedsw_feedback: overdue tasks boost
+; the REALTIME scheduler class weight.
+;
+; Record: task_id(4) + deadline_tick(4) + state(4) + missed(4) = 16 bytes
+; States: ACTIVE=1 / DONE=2 / MISSED=3
+
+RDEAD_CAPACITY  equ 8
+RDEAD_REC_SIZE  equ 16
+RDEAD_TASK_ID   equ 0
+RDEAD_DEADLINE  equ 4
+RDEAD_STATE     equ 8
+RDEAD_MISSED    equ 12
+
+RDEAD_ACTIVE    equ 1
+RDEAD_DONE      equ 2
+RDEAD_MISSED_ST equ 3
+
+rdeadline_initialize:
+    cmp dword [rdeadline_ready], 1
+    je .done
+    mov edi, rdeadline_table
+    xor eax, eax
+    mov ecx, (RDEAD_CAPACITY * RDEAD_REC_SIZE) / 4
+    rep stosd
+    mov dword [rdeadline_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=task_id, EDX=deadline_tick → register, CF=1 if full
+rdeadline_register:
+    cmp dword [rdeadline_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, RDEAD_CAPACITY
+    jae .full
+    imul edi, esi, RDEAD_REC_SIZE
+    add edi, rdeadline_table
+    cmp dword [edi + RDEAD_STATE], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + RDEAD_TASK_ID], ebx
+    mov [edi + RDEAD_DEADLINE], ecx
+    mov dword [edi + RDEAD_STATE], RDEAD_ACTIVE
+    mov dword [edi + RDEAD_MISSED], 0
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=task_id → mark done; clears slot, CF=1 if not found
+rdeadline_done:
+    cmp dword [rdeadline_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RDEAD_CAPACITY
+    jae .not_found
+    imul edi, esi, RDEAD_REC_SIZE
+    add edi, rdeadline_table
+    cmp [edi + RDEAD_TASK_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov dword [edi + RDEAD_STATE], RDEAD_DONE
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EDX=current_tick → scan all ACTIVE tasks; overdue → MISSED + aschedsw boost
+rdeadline_check_all:
+    cmp dword [rdeadline_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, edx
+    xor esi, esi
+.scan:
+    cmp esi, RDEAD_CAPACITY
+    jae .done
+    imul edi, esi, RDEAD_REC_SIZE
+    add edi, rdeadline_table
+    cmp dword [edi + RDEAD_STATE], RDEAD_ACTIVE
+    jne .next
+    cmp [edi + RDEAD_DEADLINE], ebx
+    jae .next
+    ; overdue
+    mov dword [edi + RDEAD_STATE], RDEAD_MISSED_ST
+    inc dword [edi + RDEAD_MISSED]
+    ; cross-subsystem: boost realtime scheduler class (class=4) weight
+    mov eax, 4
+    mov edx, 32             ; +32 to realtime class weight
+    call aschedsw_feedback
+.next:
+    inc esi
+    jmp .scan
+.done:
+    pop ebx
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+rdeadline_self_test:
+    ; register task=1 deadline=100
+    mov eax, 1
+    mov edx, 100
+    call rdeadline_register
+    jc .fail
+    ; check at tick=50 → no misses
+    mov edx, 50
+    call rdeadline_check_all
+    jc .fail
+    ; check at tick=200 → task=1 should be MISSED
+    mov edx, 200
+    call rdeadline_check_all
+    jc .fail
+    ; verify
+    mov edi, rdeadline_table
+    cmp dword [edi + RDEAD_STATE], RDEAD_MISSED_ST
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+rdeadline_ready:  dd 0
+rdeadline_table:
+    times RDEAD_CAPACITY * RDEAD_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESOURCE-ECONOMY-0001 – Nova Resource Economy Manager
+; ===========================================================================
+; Credit-based resource economy: each owner gets a budget; operations
+; spend credits. When budget exhausted, raccount_charge signals overuse.
+; Connects raccount_charge: spending calls it to track real usage.
+;
+; Record: owner(4) + budget(4) + spent(4) + refills(4) = 16 bytes
+
+RECON_CAPACITY  equ 8
+RECON_REC_SIZE  equ 16
+RECON_OWNER     equ 0
+RECON_BUDGET    equ 4
+RECON_SPENT     equ 8
+RECON_REFILLS   equ 12
+
+reconomy_initialize:
+    cmp dword [reconomy_ready], 1
+    je .done
+    mov edi, reconomy_table
+    xor eax, eax
+    mov ecx, (RECON_CAPACITY * RECON_REC_SIZE) / 4
+    rep stosd
+    mov dword [reconomy_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=owner, EDX=initial_budget → register, CF
+reconomy_register:
+    cmp dword [reconomy_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, RECON_CAPACITY
+    jae .full
+    imul edi, esi, RECON_REC_SIZE
+    add edi, reconomy_table
+    cmp dword [edi + RECON_OWNER], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + RECON_OWNER], ebx
+    mov [edi + RECON_BUDGET], ecx
+    mov dword [edi + RECON_SPENT], 0
+    mov dword [edi + RECON_REFILLS], 0
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=owner, EDX=cost → spend credits; CF=0 ok, CF=1 budget exhausted
+reconomy_spend:
+    cmp dword [reconomy_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, RECON_CAPACITY
+    jae .not_found
+    imul edi, esi, RECON_REC_SIZE
+    add edi, reconomy_table
+    cmp [edi + RECON_OWNER], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + RECON_BUDGET]
+    cmp eax, ecx
+    jb .exhausted
+    sub [edi + RECON_BUDGET], ecx
+    add [edi + RECON_SPENT], ecx
+    ; cross-subsystem: charge real resource account (cpu_delta=cost, mem_delta=0)
+    mov eax, ebx
+    mov edx, ecx
+    xor ecx, ecx
+    call raccount_charge
+    pop ecx
+    pop ebx
+    clc
+    ret
+.exhausted:
+    pop ecx
+    pop ebx
+    stc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=owner, EDX=refill_amount → refill budget, CF
+reconomy_refill:
+    cmp dword [reconomy_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, RECON_CAPACITY
+    jae .not_found
+    imul edi, esi, RECON_REC_SIZE
+    add edi, reconomy_table
+    cmp [edi + RECON_OWNER], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    add [edi + RECON_BUDGET], ecx
+    inc dword [edi + RECON_REFILLS]
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+reconomy_self_test:
+    ; owner=1 budget=50
+    mov eax, 1
+    mov edx, 50
+    call reconomy_register
+    jc .fail
+    ; spend 30 → ok
+    mov eax, 1
+    mov edx, 30
+    call reconomy_spend
+    jc .fail
+    ; spend 30 more → exhausted
+    mov eax, 1
+    mov edx, 30
+    call reconomy_spend
+    jnc .fail
+    ; refill 100
+    mov eax, 1
+    mov edx, 100
+    call reconomy_refill
+    jc .fail
+    ; spend 30 → ok again
+    mov eax, 1
+    mov edx, 30
+    call reconomy_spend
+    jc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+reconomy_ready:  dd 0
+reconomy_table:
+    times RECON_CAPACITY * RECON_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-RESOURCE-ENERGY-0001 – Nova Resource Energy Manager
+; ===========================================================================
+; Power-rail budget enforcement. Tracks mW consumed per rail and enforces
+; power caps. Connects apower_query: when a rail exceeds budget, the
+; associated power domain is forced to low P-state via apower_update_load.
+;
+; Record: rail_id(4) + power_mw(4) + cap_mw(4) + violations(4) = 16 bytes
+
+RENRG_CAPACITY  equ 4
+RENRG_REC_SIZE  equ 16
+RENRG_RAIL_ID   equ 0
+RENRG_POWER     equ 4
+RENRG_CAP       equ 8
+RENRG_VIOL      equ 12
+
+RENRG_ALPHA     equ 32
+
+renergy_initialize:
+    cmp dword [renergy_ready], 1
+    je .done
+    mov edi, renergy_table
+    xor eax, eax
+    mov ecx, (RENRG_CAPACITY * RENRG_REC_SIZE) / 4
+    rep stosd
+    mov dword [renergy_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=rail_id, EDX=cap_mw → register rail, CF
+renergy_register:
+    cmp dword [renergy_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, RENRG_CAPACITY
+    jae .full
+    imul edi, esi, RENRG_REC_SIZE
+    add edi, renergy_table
+    cmp dword [edi + RENRG_RAIL_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + RENRG_RAIL_ID], ebx
+    mov dword [edi + RENRG_POWER], 0
+    mov [edi + RENRG_CAP], ecx
+    mov dword [edi + RENRG_VIOL], 0
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=rail_id, EDX=sample_mw → update EWMA power; CF=1 if over cap
+renergy_update:
+    cmp dword [renergy_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, RENRG_CAPACITY
+    jae .not_found
+    imul edi, esi, RENRG_REC_SIZE
+    add edi, renergy_table
+    cmp [edi + RENRG_RAIL_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    ; EWMA power
+    mov eax, RENRG_ALPHA
+    imul eax, ecx
+    push ecx
+    mov ecx, 256 - RENRG_ALPHA
+    imul ecx, [edi + RENRG_POWER]
+    add eax, ecx
+    shr eax, 8
+    mov [edi + RENRG_POWER], eax
+    pop ecx
+    ; check cap
+    mov eax, [edi + RENRG_POWER]
+    cmp eax, [edi + RENRG_CAP]
+    jbe .ok
+    inc dword [edi + RENRG_VIOL]
+    ; cross-subsystem: force power domain to low-load via apower (rail_id as domain)
+    mov eax, ebx
+    mov edx, 5              ; low load → P-state will drop
+    call apower_update_load
+    pop ecx
+    pop ebx
+    stc
+    ret
+.ok:
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=rail_id → EAX=power_mw, EDX=cap_mw, ECX=violations, CF
+renergy_query:
+    cmp dword [renergy_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, RENRG_CAPACITY
+    jae .not_found
+    imul edi, esi, RENRG_REC_SIZE
+    add edi, renergy_table
+    cmp [edi + RENRG_RAIL_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + RENRG_POWER]
+    mov edx, [edi + RENRG_CAP]
+    mov ecx, [edi + RENRG_VIOL]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+renergy_self_test:
+    ; rail=1 cap=100mW
+    mov eax, 1
+    mov edx, 100
+    call renergy_register
+    jc .fail
+    ; first register the apower domain too (rail shares domain id=1)
+    mov eax, 1
+    call apower_register
+    ; ignore CF if already registered
+    ; update with 50mW → under cap
+    mov eax, 1
+    mov edx, 50
+    call renergy_update
+    jc .fail
+    ; update with 200mW → over cap → CF=1
+    mov eax, 1
+    mov edx, 200
+    call renergy_update
+    jnc .fail
+    ; violations should be > 0
+    mov eax, 1
+    call renergy_query
+    jc .fail
+    test ecx, ecx
+    jz .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+renergy_ready:  dd 0
+renergy_table:
+    times RENRG_CAPACITY * RENRG_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -51013,6 +51575,18 @@ message_uoverride_ok:
     db "NOVA: User Override 1.0 bereit (8-Keys, persistent user policy overrides)", 13, 10, 0
 message_uoverride_error:
     db "NOVA PANIC: User Override Manager nicht initialisierbar", 13, 10, 0
+message_rdeadline_ok:
+    db "NOVA: Resource Deadline 1.0 bereit (8-Tasks, EDF deadline enforcement)", 13, 10, 0
+message_rdeadline_error:
+    db "NOVA PANIC: Resource Deadline Manager nicht initialisierbar", 13, 10, 0
+message_reconomy_ok:
+    db "NOVA: Resource Economy 1.0 bereit (8-Owners, budget-credit system)", 13, 10, 0
+message_reconomy_error:
+    db "NOVA PANIC: Resource Economy Manager nicht initialisierbar", 13, 10, 0
+message_renergy_ok:
+    db "NOVA: Resource Energy 1.0 bereit (4-Rails, power-budget enforcement)", 13, 10, 0
+message_renergy_error:
+    db "NOVA PANIC: Resource Energy Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
