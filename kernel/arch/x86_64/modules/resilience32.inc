@@ -1134,6 +1134,8 @@ resource_accounting_self_test:
 .rast4b_ok:
 
     ; T5: charge 600 CPU → überschreitet 1000 → CF=1
+    ; read hat EAX mit cpu_used überschrieben → Slot vom Stack nachladen
+    mov eax, [esp]       ; peek: Slot liegt noch oben (push aus T2, pop erst nach T5)
     mov edx, 600
     mov ecx, 0
     call resource_accounting_charge
