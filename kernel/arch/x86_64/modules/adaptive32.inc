@@ -620,10 +620,11 @@ trust_register_anchor:
     inc esi
     jmp .tra_scan
 .tra_slot:
-    mov dword [edi + TRUST_ANC_ID_OFF], esi
     mov [edi + TRUST_ANC_TYPE_OFF], eax
     mov [edi + TRUST_ANC_FPRINT_OFF], ebx
     mov dword [edi + TRUST_ANC_FLAGS_OFF], TRUST_ANC_FLAG_VALID
+    lea eax, [esi + 1]                      ; 1-based ID: slot 0 → 1, never 0
+    mov dword [edi + TRUST_ANC_ID_OFF], eax
     inc dword [trust_count]
     mov eax, esi
     pop ebx
@@ -750,11 +751,12 @@ adapt_register:
     inc esi
     jmp .ar_scan
 .ar_slot:
-    mov dword [edi + ADAPT_ID_OFF], esi
     mov [edi + ADAPT_DIM_OFF], eax
     mov [edi + ADAPT_EXPECTED_OFF], edx
     mov dword [edi + ADAPT_ACTUAL_OFF], 0
     mov dword [edi + ADAPT_MISSES_OFF], 0
+    lea eax, [esi + 1]                ; 1-based ID: slot 0 → ID 1, never 0
+    mov dword [edi + ADAPT_ID_OFF], eax
     mov eax, esi
     pop edi
     pop esi
@@ -955,7 +957,7 @@ radmit_self_test:
     mov ecx, 1
     call radmit_request
     jc .rastf
-    push eax
+    push eax              ; save slot for release
     ; Verify cpu_used=10
     cmp dword [radmit_cpu_used], 10
     jne .rastf_pop
@@ -963,13 +965,14 @@ radmit_self_test:
     call radmit_release
     ; Verify cpu_used=0 after release
     cmp dword [radmit_cpu_used], 0
-    jne .rastf
-    ; Overflow: request cpu=300 (>256)
+    jne .rastf_pop
+    ; Overflow: request cpu=300 (>256) must be rejected
     mov eax, 300
     mov edx, 0
     mov ecx, 0
     call radmit_request
-    jnc .rastf   ; must be rejected
+    jnc .rastf_pop        ; CF=1 expected (rejected)
+    pop eax               ; balance push
     clc
     ret
 .rastf_pop:
@@ -1364,10 +1367,11 @@ selfheal_register:
     inc esi
     jmp .shr_scan
 .shr_slot:
-    mov dword [edi + HEAL_ID_OFF], esi
     mov [edi + HEAL_SYS_OFF], eax
     mov dword [edi + HEAL_STATE_OFF], HEAL_STATE_OK
     mov dword [edi + HEAL_ATTEMPTS_OFF], 0
+    lea eax, [esi + 1]                ; 1-based ID: slot 0 → ID 1, never 0
+    mov dword [edi + HEAL_ID_OFF], eax
     mov eax, esi
     pop edi
     pop esi
@@ -1632,11 +1636,12 @@ retry_register:
     inc esi
     jmp .rtr_scan
 .rtr_slot:
-    mov dword [edi + RETRY_ID_OFF], esi
     mov dword [edi + RETRY_ATTEMPTS_OFF], 0
     mov [edi + RETRY_MAX_OFF], eax
     mov [edi + RETRY_BASEDEL_OFF], edx
     mov [edi + RETRY_BACKOFF_OFF], edx    ; initial backoff = base
+    lea eax, [esi + 1]                    ; 1-based ID: slot 0 → ID 1, never 0
+    mov dword [edi + RETRY_ID_OFF], eax
     mov eax, esi
     pop edi
     pop esi
@@ -1712,22 +1717,27 @@ retry_self_test:
     mov edx, 10
     call retry_register
     jc .rstf
-    push eax
+    push eax              ; save slot (retry_attempt clobbers EAX with backoff)
     ; 3 attempts should succeed
+    mov eax, [esp]
     call retry_attempt
     jc .rstf_pop
+    mov eax, [esp]
     call retry_attempt
     jc .rstf_pop
+    mov eax, [esp]
     call retry_attempt
     jc .rstf_pop
-    ; 4th attempt → CF=1 (exhausted)
+    ; 4th attempt must be exhausted (CF=1)
+    mov eax, [esp]
     call retry_attempt
     jnc .rstf_pop
-    ; backoff should have doubled: 10→20→40
+    ; backoff should have doubled 3×: 10→20→40→80 (≥40)
+    mov eax, [esp]
     call retry_query_backoff
     cmp eax, 40
     jb .rstf_pop
-    pop eax
+    pop eax               ; balance push
     clc
     ret
 .rstf_pop:
@@ -5871,11 +5881,14 @@ autopol_evaluate:
     cmp [edi + AUTOPOL_TRIGGER], ebx
     jne .next
     ; check constraint for this policy (use policy_id as constraint_id)
+    ; aconstraint_enforce clobbers EDI — save/restore around the call
     push eax
     push edx
+    push edi
     mov eax, [edi + AUTOPOL_ID]
     xor edx, edx
     call aconstraint_enforce
+    pop edi
     pop edx
     pop eax
     jc .next           ; constraint denied
@@ -7251,9 +7264,14 @@ apower_update_load:
 .found:
     mov [edi + APOWER_LOAD], ecx
     ; update adaptive prediction for domain (metric = domain id)
+    ; apred_update clobbers ECX and EDI — save/restore around the call
+    push edi
+    push ecx
     mov eax, ebx
     mov edx, ecx
-    call apred_update
+    call apred_update        ; CF ignored: metric may not be registered yet
+    pop ecx
+    pop edi
     ; compute new P-state
     cmp ecx, 75
     jae .high_load

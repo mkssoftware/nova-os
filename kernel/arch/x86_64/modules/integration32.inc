@@ -5264,6 +5264,10 @@ message_abi_error:
     db "NOVA PANIC: Kernel ABI Selbsttest fehlgeschlagen", 13, 10, 0
 message_kog_ok:
     db "NOVA: Kernel Object Graph (§100), 7 Root-Objekte, 12 Schemata bereit", 13, 10, 0
+message_kog_init_error:
+    db "NOVA PANIC: KOG Initialize fehlgeschlagen", 13, 10, 0
+message_kog_test_error:
+    db "NOVA PANIC: KOG Selbsttest fehlgeschlagen", 13, 10, 0
 message_kog_error:
     db "NOVA PANIC: Kernel Object Graph Selbsttest fehlgeschlagen", 13, 10, 0
 message_evbus_ok:

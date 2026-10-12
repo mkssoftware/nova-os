@@ -4746,6 +4746,8 @@ kog_check_cycle:
     ret
 .kcc_check:
     ; Schema-Flags prüfen: ALLOW_CYCLE → keine Prüfung nötig
+    ; EBX wird durch kog_find_schema überschrieben – vorher sichern!
+    push ebx
     push edx
     push eax
     mov eax, edx
@@ -4755,6 +4757,7 @@ kog_check_cycle:
     jnz .kcc_no_schema
     pop eax
     pop edx
+    pop ebx             ; EBX wiederhergestellt (Aufrufer-EBX, Schema-Ptr verworfen)
 
     ; DFS: von DST aus, prüfen ob SRC erreichbar
     ; Einfacher iterativer Check mit kog_cycle_stack (8 Einträge)
@@ -4813,6 +4816,7 @@ kog_check_cycle:
 .kcc_no_schema:
     pop eax
     pop edx
+    pop ebx             ; EBX wiederherstellen (von push ebx in .kcc_check)
     clc
     ret
 .kcc_no_cycle:
@@ -4849,7 +4853,8 @@ kog_link:
     mov ebp, ebx                    ; EBP = src_ptr
 
     ; Zielobjekt prüfen
-    mov eax, [esp + 4]              ; ECX-Wert (dst_id) aus gesichertem Stack
+    ; Stack-Layout nach push ecx/edx/esi: [strength(+0) | rel_type(+4) | dst_id(+8) | ...]
+    mov eax, [esp + 8]              ; ECX-Wert (dst_id) aus gesichertem Stack
     call kog_find_object            ; EAX=dst_id → EBX=dst_ptr
     jc .kl_not_found
     cmp dword [ebx + KOG_OBJ_OFF_STATE], NP_GRAPH_OBJ_DESTROYED
@@ -4862,10 +4867,11 @@ kog_link:
     jc .kl_schema_fail
 
     ; Zyklus prüfen: EAX=src_id, ECX=dst_id, EDX=rel_type
+    ; Nach pop ebx: Stack [strength(+0) | rel_type(+4) | dst_id(+8) | ...]
     pop ebx                         ; dst_ptr
     mov eax, [ebp + KOG_OBJ_OFF_ID] ; src_id
     mov ecx, [ebx + KOG_OBJ_OFF_ID] ; dst_id
-    mov edx, [esp + 8]              ; rel_type
+    mov edx, [esp + 4]              ; rel_type
     call kog_check_cycle
     jc .kl_cycle
 
@@ -4897,7 +4903,8 @@ kog_link:
     mov [edi + KOG_REL_OFF_SRC_ID], ecx
     mov ecx, [ebx + KOG_OBJ_OFF_ID]     ; dst_id
     mov [edi + KOG_REL_OFF_DST_ID], ecx
-    mov cl, [esp + 8 + 4]               ; rel_type byte from stack
+    ; Nach push edi: Stack [EDI(+0) | strength(+4) | rel_type(+8) | dst_id(+12) | ...]
+    mov cl, [esp + 8]                   ; rel_type byte from stack
     mov [edi + KOG_REL_OFF_TYPE], cl
     mov cl, [esp + 4]                   ; strength byte (ESI low byte) from saved ESI
     mov [edi + KOG_REL_OFF_STRENGTH], cl
@@ -4955,12 +4962,11 @@ kog_unlink:
     push eax
     mov eax, [ebx + KOG_REL_OFF_DST_ID]
     push ebx
-    call kog_find_object
-    pop ebx
+    call kog_find_object              ; EAX=dst_id → EBX=dst_ptr
+    mov edx, ebx                      ; dst_ptr in EDX sichern (pop ebx überschreibt EBX)
+    pop ebx                           ; rel_ptr wiederherstellen
     jc .ku_ref_skip
-    lock dec dword [eax + KOG_OBJ_OFF_REFCOUNT]
-    ; eax hier noch EBX vom find? Nein: kog_find_object gibt EBX zurück
-    ; Aber ich habe EBX überlagert. Seien wir präziser:
+    lock dec dword [edx + KOG_OBJ_OFF_REFCOUNT] ; EDX=dst_ptr (nicht EAX=dst_id)
 .ku_ref_skip:
     pop eax
 .ku_no_ref:
@@ -5029,7 +5035,6 @@ kog_initialize:
     call kog_alloc_object
     jc .kinit_fail
     mov [%2], ecx                   ; gespeicherte Root-ID
-    call kog_activate_object        ; ECX = id → EAX = id für activate
     ; kog_activate_object erwartet EAX=id
     push ecx
     mov eax, ecx
@@ -5104,11 +5109,8 @@ kog_self_test:
     push ebx                        ; rel_id
 
     ; Test 3 – DESTROYED-Objekt darf keine neue Kante erhalten
-    ; (kein echtes Destroyed-Objekt in bootstrap, prüfe stattdessen:)
-    ; Erzeuge und sofort zerstöre ein Objekt, prüfe link-Ablehnung
-    ; (vereinfacht: nicht-vorhandenes Objekt → NOT_FOUND)
     mov eax, 0xDEADBEEF             ; ungültige ID
-    mov ecx, [esp + 4]              ; obj_a_id
+    mov ecx, [esp + 4]              ; obj_b_id (nicht obj_a_id – Kommentar war falsch)
     mov edx, NP_RELATION_OWNS
     mov esi, NP_RELSTR_OWNERSHIP
     call kog_link
@@ -5170,15 +5172,14 @@ kog_self_test:
     cmp dword [ebx + KOG_OBJ_OFF_REFCOUNT], 1
     jne .kst_pop3_fail
 
-    ; Test 13 – verbotener OWNS-Zyklus erkannt (a→b existiert nicht mehr,
-    ; aber b→a→b wäre Zyklus; simuliere: a→a)
-    mov eax, [esp + 4]              ; obj_a_id
+    ; Test 13 – verbotener OWNS-Zyklus erkannt (simuliere: b→b)
+    mov eax, [esp + 4]              ; obj_b_id (selbe für src und dst)
     mov ecx, [esp + 4]              ; dst = same id → Zyklus
     mov edx, NP_RELATION_OWNS
     call kog_check_cycle
     jnc .kst_pop3_fail              ; muss CF=1 (Zyklus)
 
-    ; Test 14 – erlaubter schwacher Zyklus (OBSERVES): a→b, b→a kein Fehler
+    ; Test 14 – erlaubter schwacher Zyklus (OBSERVES): ALLOW_CYCLE Flag gesetzt
     mov eax, NP_RELATION_OBSERVES
     call kog_find_schema
     jc .kst_pop3_fail
@@ -6071,7 +6072,6 @@ uobj_create:
     mov [uobj_tmp_type], eax
     mov [uobj_tmp_caps], ecx
 
-    push ebx
     push esi
     push edi
 
@@ -6128,12 +6128,12 @@ uobj_create:
     xor edi, edi
     call evbus_publish          ; CF ignoriert (Bootstrap-Event)
     pop ecx
-    pop ebx
+    pop ebx                     ; EBX = handle_id (aus evbus-push/pop)
 
     lock inc dword [uobj_stat_created]
     pop edi
     pop esi
-    pop ebx
+    ; EBX = handle_id (kein frame-pop, da push ebx am Anfang entfernt)
     clc
     ret
 
@@ -6144,7 +6144,6 @@ uobj_create:
     lock inc dword [uobj_stat_failed]
     pop edi
     pop esi
-    pop ebx
     stc
     ret
 

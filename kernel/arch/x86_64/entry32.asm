@@ -600,9 +600,9 @@ kernel_entry:
     call serial_write_string
 
     call kog_initialize
-    jc panic_kog
+    jc panic_kog_init
     call kog_self_test
-    jc panic_kog
+    jc panic_kog_test
     mov esi, message_kog_ok
     call serial_write_string
 
@@ -1689,10 +1689,16 @@ panic_abi:
     mov esi, message_abi_error
     jmp kernel_panic
 
-panic_kog:
+panic_kog_init:
     mov eax, 0x00000014
     mov edx, 0x4B4F4700             ; "KOG\0"
-    mov esi, message_kog_error
+    mov esi, message_kog_init_error
+    jmp kernel_panic
+
+panic_kog_test:
+    mov eax, 0x00000019
+    mov edx, 0x4B4F4700             ; "KOG\0"
+    mov esi, message_kog_test_error
     jmp kernel_panic
 
 panic_evbus:
