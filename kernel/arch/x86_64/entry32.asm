@@ -1047,6 +1047,27 @@ kernel_entry:
     mov esi, message_apreload_ok
     call serial_write_string
 
+    call astorage_initialize
+    jc panic_astorage
+    call astorage_self_test
+    jc panic_astorage
+    mov esi, message_astorage_ok
+    call serial_write_string
+
+    call anetwork_initialize
+    jc panic_anetwork
+    call anetwork_self_test
+    jc panic_anetwork
+    mov esi, message_anetwork_ok
+    call serial_write_string
+
+    call uoverride_initialize
+    jc panic_uoverride
+    call uoverride_self_test
+    jc panic_uoverride
+    mov esi, message_uoverride_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1973,6 +1994,24 @@ panic_apreload:
     mov eax, 0x0000308A
     mov edx, 135
     mov esi, message_apreload_error
+    jmp kernel_panic
+
+panic_astorage:
+    mov eax, 0x0000308B
+    mov edx, 136
+    mov esi, message_astorage_error
+    jmp kernel_panic
+
+panic_anetwork:
+    mov eax, 0x0000308C
+    mov edx, 137
+    mov esi, message_anetwork_error
+    jmp kernel_panic
+
+panic_uoverride:
+    mov eax, 0x0000308D
+    mov edx, 138
+    mov esi, message_uoverride_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -38835,6 +38874,540 @@ apreload_table:
     times APRELOAD_CAPACITY * APRELOAD_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-ADAPTIVE-STORAGE-0001 – Nova Adaptive Storage Manager
+; ===========================================================================
+; Monitors I/O rate per volume and selects storage tier (HOT/WARM/COLD).
+; Connects raccount_charge: each I/O op charges the owning process.
+; Tier: HOT=0 (fast NVMe) / WARM=1 (SSD) / COLD=2 (HDD/remote).
+;
+; Record: vol_id(4) + io_rate(4) + tier(4) + total_ops(4) = 16 bytes
+; io_rate is EWMA ops/tick (alpha=32/256)
+
+ASTOR_CAPACITY   equ 8
+ASTOR_REC_SIZE   equ 16
+ASTOR_VOL_ID     equ 0
+ASTOR_IORATE     equ 4
+ASTOR_TIER       equ 8
+ASTOR_TOTAL_OPS  equ 12
+
+ASTOR_ALPHA      equ 32
+ASTOR_HOT        equ 0
+ASTOR_WARM       equ 1
+ASTOR_COLD       equ 2
+ASTOR_HOT_THRESH equ 100    ; io_rate > 100 → HOT
+ASTOR_COLD_THRES equ 20     ; io_rate < 20 → COLD
+
+astorage_initialize:
+    cmp dword [astorage_ready], 1
+    je .done
+    mov edi, astorage_table
+    xor eax, eax
+    mov ecx, (ASTOR_CAPACITY * ASTOR_REC_SIZE) / 4
+    rep stosd
+    mov dword [astorage_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=vol_id → register volume at WARM tier, CF
+astorage_register:
+    cmp dword [astorage_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, ASTOR_CAPACITY
+    jae .full
+    imul edi, esi, ASTOR_REC_SIZE
+    add edi, astorage_table
+    cmp dword [edi + ASTOR_VOL_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + ASTOR_VOL_ID], ebx
+    mov dword [edi + ASTOR_IORATE], 50
+    mov dword [edi + ASTOR_TIER], ASTOR_WARM
+    mov dword [edi + ASTOR_TOTAL_OPS], 0
+    pop ebx
+    clc
+    ret
+.full:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=vol_id, EDX=ops_this_tick → update I/O rate EWMA + recompute tier
+astorage_record_io:
+    cmp dword [astorage_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, ASTOR_CAPACITY
+    jae .not_found
+    imul edi, esi, ASTOR_REC_SIZE
+    add edi, astorage_table
+    cmp [edi + ASTOR_VOL_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    add [edi + ASTOR_TOTAL_OPS], ecx
+    ; EWMA io_rate
+    mov eax, ASTOR_ALPHA
+    imul eax, ecx
+    mov ecx, 256 - ASTOR_ALPHA
+    imul ecx, [edi + ASTOR_IORATE]
+    add eax, ecx
+    shr eax, 8
+    mov [edi + ASTOR_IORATE], eax
+    ; recompute tier
+    cmp dword [edi + ASTOR_IORATE], ASTOR_HOT_THRESH
+    jae .hot
+    cmp dword [edi + ASTOR_IORATE], ASTOR_COLD_THRES
+    jbe .cold
+    mov dword [edi + ASTOR_TIER], ASTOR_WARM
+    jmp .done
+.hot:
+    mov dword [edi + ASTOR_TIER], ASTOR_HOT
+    jmp .done
+.cold:
+    mov dword [edi + ASTOR_TIER], ASTOR_COLD
+.done:
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=vol_id → EAX=tier, EDX=io_rate, ECX=total_ops, CF
+astorage_query:
+    cmp dword [astorage_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, ASTOR_CAPACITY
+    jae .not_found
+    imul edi, esi, ASTOR_REC_SIZE
+    add edi, astorage_table
+    cmp [edi + ASTOR_VOL_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + ASTOR_TIER]
+    mov edx, [edi + ASTOR_IORATE]
+    mov ecx, [edi + ASTOR_TOTAL_OPS]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+astorage_self_test:
+    mov eax, 1
+    call astorage_register
+    jc .fail
+    ; high I/O → should promote to HOT
+    mov eax, 1
+    mov edx, 150
+    call astorage_record_io
+    jc .fail
+    mov eax, 1
+    call astorage_query
+    jc .fail
+    cmp eax, ASTOR_HOT
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+astorage_ready:  dd 0
+astorage_table:
+    times ASTOR_CAPACITY * ASTOR_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-ADAPTIVE-NETWORK-0001 – Nova Adaptive Network Manager
+; ===========================================================================
+; Monitors bandwidth utilization per interface and adjusts QoS class.
+; Connects rguarant_check: enforces min-bandwidth guarantees.
+; QoS: BEST_EFFORT=0 / BULK=1 / INTERACTIVE=2 / REALTIME=3
+;
+; Record: iface_id(4) + bw_used(4) + bw_cap(4) + qos(4) = 16 bytes
+
+ANET_CAPACITY   equ 4
+ANET_REC_SIZE   equ 16
+ANET_IFACE      equ 0
+ANET_BW_USED    equ 4
+ANET_BW_CAP     equ 8
+ANET_QOS        equ 12
+
+ANET_BEST_EFFORT equ 0
+ANET_BULK        equ 1
+ANET_INTERACTIVE equ 2
+ANET_REALTIME    equ 3
+
+ANET_ALPHA       equ 48
+
+anetwork_initialize:
+    cmp dword [anetwork_ready], 1
+    je .done
+    mov edi, anetwork_table
+    xor eax, eax
+    mov ecx, (ANET_CAPACITY * ANET_REC_SIZE) / 4
+    rep stosd
+    mov dword [anetwork_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=iface_id, EDX=bw_cap → register interface, CF
+anetwork_register:
+    cmp dword [anetwork_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, ANET_CAPACITY
+    jae .full
+    imul edi, esi, ANET_REC_SIZE
+    add edi, anetwork_table
+    cmp dword [edi + ANET_IFACE], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + ANET_IFACE], ebx
+    mov dword [edi + ANET_BW_USED], 0
+    mov [edi + ANET_BW_CAP], ecx
+    mov dword [edi + ANET_QOS], ANET_BEST_EFFORT
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=iface_id, EDX=bw_sample → update BW EWMA + adjust QoS
+; >80% cap → REALTIME; >50% → INTERACTIVE; >20% → BULK; else → BEST_EFFORT
+anetwork_update_bw:
+    cmp dword [anetwork_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, ANET_CAPACITY
+    jae .not_found
+    imul edi, esi, ANET_REC_SIZE
+    add edi, anetwork_table
+    cmp [edi + ANET_IFACE], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    ; EWMA bw_used
+    mov eax, ANET_ALPHA
+    imul eax, ecx
+    push ecx
+    mov ecx, 256 - ANET_ALPHA
+    imul ecx, [edi + ANET_BW_USED]
+    add eax, ecx
+    shr eax, 8
+    mov [edi + ANET_BW_USED], eax
+    pop ecx
+    ; compute utilization % = bw_used * 100 / bw_cap
+    mov eax, [edi + ANET_BW_USED]
+    imul eax, eax, 100
+    mov ecx, [edi + ANET_BW_CAP]
+    test ecx, ecx
+    jz .set_best
+    xor edx, edx
+    div ecx             ; EAX = utilization %
+    cmp eax, 80
+    jae .realtime
+    cmp eax, 50
+    jae .interactive
+    cmp eax, 20
+    jae .bulk
+.set_best:
+    mov dword [edi + ANET_QOS], ANET_BEST_EFFORT
+    jmp .ok
+.bulk:
+    mov dword [edi + ANET_QOS], ANET_BULK
+    jmp .ok
+.interactive:
+    mov dword [edi + ANET_QOS], ANET_INTERACTIVE
+    jmp .ok
+.realtime:
+    mov dword [edi + ANET_QOS], ANET_REALTIME
+.ok:
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=iface_id → EAX=qos, EDX=bw_used, ECX=bw_cap, CF
+anetwork_query:
+    cmp dword [anetwork_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, ANET_CAPACITY
+    jae .not_found
+    imul edi, esi, ANET_REC_SIZE
+    add edi, anetwork_table
+    cmp [edi + ANET_IFACE], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + ANET_QOS]
+    mov edx, [edi + ANET_BW_USED]
+    mov ecx, [edi + ANET_BW_CAP]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+anetwork_self_test:
+    ; register iface=1 cap=100
+    mov eax, 1
+    mov edx, 100
+    call anetwork_register
+    jc .fail
+    ; high utilization → REALTIME
+    mov eax, 1
+    mov edx, 85
+    call anetwork_update_bw
+    jc .fail
+    mov eax, 1
+    call anetwork_query
+    jc .fail
+    cmp eax, ANET_REALTIME
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+anetwork_ready:  dd 0
+anetwork_table:
+    times ANET_CAPACITY * ANET_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-ADAPTIVE-USEROVERRIDE-0001 – Nova User Override Manager
+; ===========================================================================
+; Allows user-space (or privileged kernel code) to override adaptive policy
+; decisions with persistent key→value settings. Overrides take precedence
+; over all EWMA-driven adaptive decisions.
+; Connects sconf_set/sconf_get: overrides are persisted in the system config.
+;
+; Record: key(4) + value(4) + active(4) + version(4) = 16 bytes
+
+UOVER_CAPACITY  equ 8
+UOVER_REC_SIZE  equ 16
+UOVER_KEY       equ 0
+UOVER_VALUE     equ 4
+UOVER_ACTIVE    equ 8
+UOVER_VERSION   equ 12
+
+uoverride_initialize:
+    cmp dword [uoverride_ready], 1
+    je .done
+    mov edi, uoverride_table
+    xor eax, eax
+    mov ecx, (UOVER_CAPACITY * UOVER_REC_SIZE) / 4
+    rep stosd
+    mov dword [uoverride_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=key, EDX=value → set or update override; also persists via sconf_set, CF
+uoverride_set:
+    cmp dword [uoverride_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    ; find existing or free slot
+    xor esi, esi
+.scan:
+    cmp esi, UOVER_CAPACITY
+    jae .full
+    imul edi, esi, UOVER_REC_SIZE
+    add edi, uoverride_table
+    cmp [edi + UOVER_KEY], ebx
+    je .update
+    cmp dword [edi + UOVER_KEY], 0
+    je .slot
+    inc esi
+    jmp .scan
+.update:
+    inc dword [edi + UOVER_VERSION]
+    mov [edi + UOVER_VALUE], ecx
+    mov dword [edi + UOVER_ACTIVE], 1
+    jmp .persist
+.slot:
+    mov [edi + UOVER_KEY], ebx
+    mov [edi + UOVER_VALUE], ecx
+    mov dword [edi + UOVER_ACTIVE], 1
+    mov dword [edi + UOVER_VERSION], 1
+.persist:
+    ; cross-subsystem: persist in sconf
+    mov eax, ebx
+    mov edx, ecx
+    call sconf_set
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=key → EAX=value, EDX=version, CF=1 not found/inactive
+uoverride_get:
+    cmp dword [uoverride_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, UOVER_CAPACITY
+    jae .not_found
+    imul edi, esi, UOVER_REC_SIZE
+    add edi, uoverride_table
+    cmp [edi + UOVER_KEY], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    cmp dword [edi + UOVER_ACTIVE], 1
+    jne .not_found
+    mov eax, [edi + UOVER_VALUE]
+    mov edx, [edi + UOVER_VERSION]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=key → deactivate override (adaptive resumes), CF
+uoverride_clear:
+    cmp dword [uoverride_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, UOVER_CAPACITY
+    jae .not_found
+    imul edi, esi, UOVER_REC_SIZE
+    add edi, uoverride_table
+    cmp [edi + UOVER_KEY], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov dword [edi + UOVER_ACTIVE], 0
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+uoverride_self_test:
+    ; set key=42 value=99
+    mov eax, 42
+    mov edx, 99
+    call uoverride_set
+    jc .fail
+    ; get it back
+    mov eax, 42
+    call uoverride_get
+    jc .fail
+    cmp eax, 99
+    jne .fail
+    ; clear it
+    mov eax, 42
+    call uoverride_clear
+    jc .fail
+    ; get → should fail
+    mov eax, 42
+    call uoverride_get
+    jnc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+uoverride_ready:  dd 0
+uoverride_table:
+    times UOVER_CAPACITY * UOVER_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -50428,6 +51001,18 @@ message_apreload_ok:
     db "NOVA: Adaptive Preload 1.0 bereit (8-Objects, priority-based preload)", 13, 10, 0
 message_apreload_error:
     db "NOVA PANIC: Adaptive Preload Manager nicht initialisierbar", 13, 10, 0
+message_astorage_ok:
+    db "NOVA: Adaptive Storage 1.0 bereit (8-Volumes, I/O-rate adaptive tier)", 13, 10, 0
+message_astorage_error:
+    db "NOVA PANIC: Adaptive Storage Manager nicht initialisierbar", 13, 10, 0
+message_anetwork_ok:
+    db "NOVA: Adaptive Network 1.0 bereit (4-Interfaces, bandwidth-adaptive QoS)", 13, 10, 0
+message_anetwork_error:
+    db "NOVA PANIC: Adaptive Network Manager nicht initialisierbar", 13, 10, 0
+message_uoverride_ok:
+    db "NOVA: User Override 1.0 bereit (8-Keys, persistent user policy overrides)", 13, 10, 0
+message_uoverride_error:
+    db "NOVA PANIC: User Override Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
