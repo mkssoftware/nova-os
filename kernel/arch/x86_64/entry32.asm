@@ -942,6 +942,27 @@ kernel_entry:
     mov esi, message_rresv_ok
     call serial_write_string
 
+    call aconstraint_initialize
+    jc panic_aconstraint
+    call aconstraint_self_test
+    jc panic_aconstraint
+    mov esi, message_aconstraint_ok
+    call serial_write_string
+
+    call autopol_initialize
+    jc panic_autopol
+    call autopol_self_test
+    jc panic_autopol
+    mov esi, message_autopol_ok
+    call serial_write_string
+
+    call aschedsw_initialize
+    jc panic_aschedsw
+    call aschedsw_self_test
+    jc panic_aschedsw
+    mov esi, message_aschedsw_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1778,6 +1799,24 @@ panic_rresv:
     mov eax, 0x0000307B
     mov edx, 120
     mov esi, message_rresv_error
+    jmp kernel_panic
+
+panic_aconstraint:
+    mov eax, 0x0000307C
+    mov edx, 121
+    mov esi, message_aconstraint_error
+    jmp kernel_panic
+
+panic_autopol:
+    mov eax, 0x0000307D
+    mov edx, 122
+    mov esi, message_autopol_error
+    jmp kernel_panic
+
+panic_aschedsw:
+    mov eax, 0x0000307E
+    mov edx, 123
+    mov esi, message_aschedsw_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -36185,6 +36224,507 @@ rresv_table:
     times RRESV_CAPACITY * RRESV_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-AUTONOMY-CONSTRAINT-0001 – Nova Autonomy Constraint Engine
+; ===========================================================================
+; Hard constraints that gate autonomous actions. Before any autonomy subsystem
+; (selfheal, selfopt, autopol) executes an action, it must pass through the
+; constraint engine. Constraints are registered with a domain, a limit type,
+; and a threshold. Enforcement: if observed value exceeds threshold → deny.
+;
+; Limit types: MAX=1 / MIN=2 / RANGE=3
+; Domains: CPU=1 / MEM=2 / RATE=3 / STATE=4
+;
+; Record: constraint_id(4) + domain(4) + limit_type(4) + threshold(4) + violations(4) + pad(4) = 24 bytes
+
+ACONSRT_CAPACITY  equ 8
+ACONSRT_REC_SIZE  equ 24
+ACONSRT_ID        equ 0
+ACONSRT_DOMAIN    equ 4
+ACONSRT_LTYPE     equ 8
+ACONSRT_THRESH    equ 12
+ACONSRT_VIOL      equ 16
+ACONSRT_PAD       equ 20
+
+ACONSRT_MAX       equ 1
+ACONSRT_MIN       equ 2
+ACONSRT_RANGE     equ 3
+
+ACONSRT_DOM_CPU   equ 1
+ACONSRT_DOM_MEM   equ 2
+ACONSRT_DOM_RATE  equ 3
+ACONSRT_DOM_STATE equ 4
+
+aconstraint_initialize:
+    cmp dword [aconsrt_ready], 1
+    je .done
+    mov edi, aconsrt_table
+    xor eax, eax
+    mov ecx, (ACONSRT_CAPACITY * ACONSRT_REC_SIZE) / 4
+    rep stosd
+    mov dword [aconsrt_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=constraint_id, EDX=domain, ECX=limit_type, EBX=threshold → EAX=slot, CF
+aconstraint_register:
+    cmp dword [aconsrt_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, ACONSRT_CAPACITY
+    jae .fail
+    imul edi, esi, ACONSRT_REC_SIZE
+    add edi, aconsrt_table
+    cmp dword [edi + ACONSRT_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + ACONSRT_ID], eax
+    mov [edi + ACONSRT_DOMAIN], edx
+    mov [edi + ACONSRT_LTYPE], ecx
+    mov [edi + ACONSRT_THRESH], ebx
+    mov dword [edi + ACONSRT_VIOL], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=constraint_id, EDX=observed_value → CF=0 allowed / CF=1 denied
+aconstraint_enforce:
+    cmp dword [aconsrt_ready], 1
+    jne .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, ACONSRT_CAPACITY
+    jae .not_found
+    imul edi, esi, ACONSRT_REC_SIZE
+    add edi, aconsrt_table
+    cmp [edi + ACONSRT_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov ecx, [edi + ACONSRT_LTYPE]
+    cmp ecx, ACONSRT_MAX
+    je .check_max
+    cmp ecx, ACONSRT_MIN
+    je .check_min
+    ; RANGE: both bounds stored in thresh (lo=thresh, hi=thresh+unused — simplified: deny if > thresh)
+.check_max:
+    cmp edx, [edi + ACONSRT_THRESH]
+    jbe .allowed
+    jmp .deny
+.check_min:
+    cmp edx, [edi + ACONSRT_THRESH]
+    jae .allowed
+.deny:
+    inc dword [edi + ACONSRT_VIOL]
+    pop esi
+    pop ebx
+    stc
+    ret
+.allowed:
+    pop esi
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+aconstraint_self_test:
+    ; register: id=1, domain=CPU, MAX, threshold=200
+    mov eax, 1
+    mov edx, ACONSRT_DOM_CPU
+    mov ecx, ACONSRT_MAX
+    mov ebx, 200
+    call aconstraint_register
+    jc .fail
+    ; enforce with observed=100 → allowed
+    mov eax, 1
+    mov edx, 100
+    call aconstraint_enforce
+    jc .fail
+    ; enforce with observed=201 → denied
+    mov eax, 1
+    mov edx, 201
+    call aconstraint_enforce
+    jnc .fail
+    ; violations=1
+    mov edi, aconsrt_table
+    cmp dword [edi + ACONSRT_VIOL], 1
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+aconsrt_ready:  dd 0
+aconsrt_table:
+    times ACONSRT_CAPACITY * ACONSRT_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-AUTONOMY-POLICY-0001 – Nova Autonomy Policy Manager
+; ===========================================================================
+; Event-driven autonomous policy: each policy has a trigger condition and
+; an action type. When autopol_evaluate(event) is called, matching policies
+; that pass aconstraint_enforce are dispatched.
+;
+; Trigger types: FAULT=1 / OVERLOAD=2 / UNDERLOAD=3 / TIMEOUT=4 / MANUAL=5
+; Actions: NOP=0 / SCALE_UP=1 / SCALE_DOWN=2 / RESTART=3 / ALERT=4
+;
+; Record: policy_id(4) + trigger(4) + action(4) + fires(4) = 16 bytes
+
+AUTOPOL_CAPACITY  equ 8
+AUTOPOL_REC_SIZE  equ 16
+AUTOPOL_ID        equ 0
+AUTOPOL_TRIGGER   equ 4
+AUTOPOL_ACTION    equ 8
+AUTOPOL_FIRES     equ 12
+
+AUTOPOL_TRIG_FAULT     equ 1
+AUTOPOL_TRIG_OVERLOAD  equ 2
+AUTOPOL_TRIG_UNDERLOAD equ 3
+AUTOPOL_TRIG_TIMEOUT   equ 4
+AUTOPOL_TRIG_MANUAL    equ 5
+
+AUTOPOL_ACT_NOP        equ 0
+AUTOPOL_ACT_SCALE_UP   equ 1
+AUTOPOL_ACT_SCALE_DOWN equ 2
+AUTOPOL_ACT_RESTART    equ 3
+AUTOPOL_ACT_ALERT      equ 4
+
+autopol_initialize:
+    cmp dword [autopol_ready], 1
+    je .done
+    mov edi, autopol_table
+    xor eax, eax
+    mov ecx, (AUTOPOL_CAPACITY * AUTOPOL_REC_SIZE) / 4
+    rep stosd
+    mov dword [autopol_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=policy_id, EDX=trigger_type, ECX=action → EAX=slot, CF
+autopol_register:
+    cmp dword [autopol_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, AUTOPOL_CAPACITY
+    jae .fail
+    imul edi, esi, AUTOPOL_REC_SIZE
+    add edi, autopol_table
+    cmp dword [edi + AUTOPOL_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + AUTOPOL_ID], eax
+    mov [edi + AUTOPOL_TRIGGER], edx
+    mov [edi + AUTOPOL_ACTION], ecx
+    mov dword [edi + AUTOPOL_FIRES], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=trigger_event → EAX=action dispatched (last match), EDX=fires, CF=0 fired/CF=1 none
+autopol_evaluate:
+    cmp dword [autopol_ready], 1
+    jne .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    xor esi, esi
+    xor edi, edi        ; last_action = 0
+    xor ecx, ecx        ; matched = 0
+.scan:
+    cmp esi, AUTOPOL_CAPACITY
+    jae .done
+    push edi
+    imul edi, esi, AUTOPOL_REC_SIZE
+    add edi, autopol_table
+    cmp dword [edi + AUTOPOL_ID], 0
+    je .next
+    cmp [edi + AUTOPOL_TRIGGER], ebx
+    jne .next
+    ; check constraint for this policy (use policy_id as constraint_id)
+    push eax
+    push edx
+    mov eax, [edi + AUTOPOL_ID]
+    xor edx, edx
+    call aconstraint_enforce
+    pop edx
+    pop eax
+    jc .next           ; constraint denied
+    inc dword [edi + AUTOPOL_FIRES]
+    mov edx, [edi + AUTOPOL_ACTION]
+    pop edi
+    mov edi, edx       ; last_action
+    push edi
+    inc ecx
+.next:
+    pop edi
+    inc esi
+    jmp .scan
+.done:
+    test ecx, ecx
+    jz .no_match
+    mov eax, edi
+    mov edx, ecx
+    pop esi
+    pop ebx
+    clc
+    ret
+.no_match:
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+autopol_self_test:
+    ; register policy 1: FAULT → RESTART
+    mov eax, 1
+    mov edx, AUTOPOL_TRIG_FAULT
+    mov ecx, AUTOPOL_ACT_RESTART
+    call autopol_register
+    jc .fail
+    ; evaluate FAULT → should fire RESTART
+    mov eax, AUTOPOL_TRIG_FAULT
+    call autopol_evaluate
+    jc .fail
+    cmp eax, AUTOPOL_ACT_RESTART
+    jne .fail
+    ; evaluate OVERLOAD (no policy) → CF=1
+    mov eax, AUTOPOL_TRIG_OVERLOAD
+    call autopol_evaluate
+    jnc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+autopol_ready:  dd 0
+autopol_table:
+    times AUTOPOL_CAPACITY * AUTOPOL_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-ADAPTIVE-SCHEDULER-0001 – Nova Adaptive Scheduler
+; ===========================================================================
+; Adjusts scheduler class weights based on QoS feedback from qos_get_class.
+; Each tracked class has a current weight and a direction the feedback pushes it.
+; Connects: adapt_observe (QoS deviation) → aschedsw_feedback → weight adjustment.
+;
+; Record: class_id(4) + weight(4) + min_weight(4) + max_weight(4) + adjustments(4) + pad(4) = 24 bytes
+
+ASCHEDSW_CAPACITY  equ 8
+ASCHEDSW_REC_SIZE  equ 24
+ASCHEDSW_CLASS     equ 0
+ASCHEDSW_WEIGHT    equ 4
+ASCHEDSW_MIN_W     equ 8
+ASCHEDSW_MAX_W     equ 12
+ASCHEDSW_ADJ       equ 16
+ASCHEDSW_PAD       equ 20
+
+aschedsw_initialize:
+    cmp dword [aschedsw_ready], 1
+    je .done
+    mov edi, aschedsw_table
+    xor eax, eax
+    mov ecx, (ASCHEDSW_CAPACITY * ASCHEDSW_REC_SIZE) / 4
+    rep stosd
+    mov dword [aschedsw_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=class_id, EDX=initial_weight, ECX=min_weight, EBX=max_weight → EAX=slot, CF
+aschedsw_register:
+    cmp dword [aschedsw_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, ASCHEDSW_CAPACITY
+    jae .fail
+    imul edi, esi, ASCHEDSW_REC_SIZE
+    add edi, aschedsw_table
+    cmp dword [edi + ASCHEDSW_CLASS], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + ASCHEDSW_CLASS], eax
+    mov [edi + ASCHEDSW_WEIGHT], edx
+    mov [edi + ASCHEDSW_MIN_W], ecx
+    mov [edi + ASCHEDSW_MAX_W], ebx
+    mov dword [edi + ASCHEDSW_ADJ], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=class_id, EDX=delta(signed: positive=increase, use 0x80000000 sign bit)
+; Increases or decreases weight by |delta|, clamped to [min,max]. CF=0 ok.
+aschedsw_feedback:
+    cmp dword [aschedsw_ready], 1
+    jne .fail
+    push ebx
+    push esi
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, ASCHEDSW_CAPACITY
+    jae .not_found
+    imul edi, esi, ASCHEDSW_REC_SIZE
+    add edi, aschedsw_table
+    cmp [edi + ASCHEDSW_CLASS], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    test edx, edx
+    js .decrease
+    ; increase
+    mov eax, [edi + ASCHEDSW_WEIGHT]
+    add eax, edx
+    mov ecx, [edi + ASCHEDSW_MAX_W]
+    cmp eax, ecx
+    jbe .store
+    mov eax, ecx
+    jmp .store
+.decrease:
+    neg edx
+    mov eax, [edi + ASCHEDSW_WEIGHT]
+    cmp eax, edx
+    jb .clamp_min
+    sub eax, edx
+    mov ecx, [edi + ASCHEDSW_MIN_W]
+    cmp eax, ecx
+    jae .store
+.clamp_min:
+    mov eax, [edi + ASCHEDSW_MIN_W]
+.store:
+    mov [edi + ASCHEDSW_WEIGHT], eax
+    inc dword [edi + ASCHEDSW_ADJ]
+    pop esi
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop esi
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=class_id → EAX=weight, EDX=adjustments, CF
+aschedsw_query:
+    cmp dword [aschedsw_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, ASCHEDSW_CAPACITY
+    jae .not_found
+    imul edi, esi, ASCHEDSW_REC_SIZE
+    add edi, aschedsw_table
+    cmp [edi + ASCHEDSW_CLASS], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + ASCHEDSW_WEIGHT]
+    mov edx, [edi + ASCHEDSW_ADJ]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+aschedsw_self_test:
+    ; register class=1: weight=100, min=10, max=200
+    mov eax, 1
+    mov edx, 100
+    mov ecx, 10
+    mov ebx, 200
+    call aschedsw_register
+    jc .fail
+    ; feedback +30 → weight=130
+    mov eax, 1
+    mov edx, 30
+    call aschedsw_feedback
+    jc .fail
+    mov eax, 1
+    call aschedsw_query
+    jc .fail
+    cmp eax, 130
+    jne .fail
+    ; feedback -50 → weight=80
+    mov eax, 1
+    mov edx, 0x80000032   ; -50 as signed (0x80000000 | 50)
+    ; Actually: neg of 50 = use negative delta directly as 2's complement
+    ; -50 = 0xFFFFFFCE
+    mov edx, 0xFFFFFFCE
+    call aschedsw_feedback
+    jc .fail
+    mov eax, 1
+    call aschedsw_query
+    jc .fail
+    cmp eax, 80
+    jne .fail
+    ; feedback -200 → clamped at min=10
+    mov edx, 0xFFFFFF38   ; -200
+    mov eax, 1
+    call aschedsw_feedback
+    jc .fail
+    mov eax, 1
+    call aschedsw_query
+    jc .fail
+    cmp eax, 10
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+aschedsw_ready:  dd 0
+aschedsw_table:
+    times ASCHEDSW_CAPACITY * ASCHEDSW_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -47718,6 +48258,18 @@ message_rresv_ok:
     db "NOVA: Resource Reservation 1.0 bereit (8-Slots, pre-admit CPU+mem hold)", 13, 10, 0
 message_rresv_error:
     db "NOVA PANIC: Resource Reservation Manager nicht initialisierbar", 13, 10, 0
+message_aconstraint_ok:
+    db "NOVA: Autonomy Constraint 1.0 bereit (8-Regeln, Enforcement-Gate)", 13, 10, 0
+message_aconstraint_error:
+    db "NOVA PANIC: Autonomy Constraint Engine nicht initialisierbar", 13, 10, 0
+message_autopol_ok:
+    db "NOVA: Autonomy Policy 1.0 bereit (8-Policies, trigger+action dispatch)", 13, 10, 0
+message_autopol_error:
+    db "NOVA PANIC: Autonomy Policy Manager nicht initialisierbar", 13, 10, 0
+message_aschedsw_ok:
+    db "NOVA: Adaptive Scheduler 1.0 bereit (8-Classes, QoS-Feedback-Tuning)", 13, 10, 0
+message_aschedsw_error:
+    db "NOVA PANIC: Adaptive Scheduler nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
