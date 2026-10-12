@@ -963,6 +963,27 @@ kernel_entry:
     mov esi, message_aschedsw_ok
     call serial_write_string
 
+    call sver_initialize
+    jc panic_sver
+    call sver_self_test
+    jc panic_sver
+    mov esi, message_sver_ok
+    call serial_write_string
+
+    call sactual_initialize
+    jc panic_sactual
+    call sactual_self_test
+    jc panic_sactual
+    mov esi, message_sactual_ok
+    call serial_write_string
+
+    call sdesired_initialize
+    jc panic_sdesired
+    call sdesired_self_test
+    jc panic_sdesired
+    mov esi, message_sdesired_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1817,6 +1838,24 @@ panic_aschedsw:
     mov eax, 0x0000307E
     mov edx, 123
     mov esi, message_aschedsw_error
+    jmp kernel_panic
+
+panic_sver:
+    mov eax, 0x0000307F
+    mov edx, 124
+    mov esi, message_sver_error
+    jmp kernel_panic
+
+panic_sactual:
+    mov eax, 0x00003080
+    mov edx, 125
+    mov esi, message_sactual_error
+    jmp kernel_panic
+
+panic_sdesired:
+    mov eax, 0x00003081
+    mov edx, 126
+    mov esi, message_sdesired_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -36725,6 +36764,402 @@ aschedsw_table:
     times ASCHEDSW_CAPACITY * ASCHEDSW_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-STATE-VERSIONING-0001 – Nova State Versioning
+; ===========================================================================
+; Tracks monotonically increasing version numbers and generation lineage
+; per state object. Connects state_transition (state32.inc) with a richer
+; version graph: each bump records parent version for lineage tracing.
+;
+; Record: obj_id(4) + version(4) + generation(4) + parent_ver(4) = 16 bytes
+
+SVER_CAPACITY  equ 8
+SVER_REC_SIZE  equ 16
+SVER_OBJ_ID    equ 0
+SVER_VERSION   equ 4
+SVER_GEN       equ 8
+SVER_PARENT    equ 12
+
+sver_initialize:
+    cmp dword [sver_ready], 1
+    je .done
+    mov edi, sver_table
+    xor eax, eax
+    mov ecx, (SVER_CAPACITY * SVER_REC_SIZE) / 4
+    rep stosd
+    mov dword [sver_gen_counter], 1
+    mov dword [sver_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=obj_id → EAX=slot, CF (creates entry at version=1)
+sver_create:
+    cmp dword [sver_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, SVER_CAPACITY
+    jae .fail
+    imul edi, esi, SVER_REC_SIZE
+    add edi, sver_table
+    cmp dword [edi + SVER_OBJ_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + SVER_OBJ_ID], eax
+    mov dword [edi + SVER_VERSION], 1
+    mov ecx, [sver_gen_counter]
+    mov [edi + SVER_GEN], ecx
+    inc dword [sver_gen_counter]
+    mov dword [edi + SVER_PARENT], 0
+    mov eax, esi
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; EAX=obj_id → bumps version, records parent, EAX=new_version, CF
+sver_bump:
+    cmp dword [sver_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SVER_CAPACITY
+    jae .not_found
+    imul edi, esi, SVER_REC_SIZE
+    add edi, sver_table
+    cmp [edi + SVER_OBJ_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + SVER_VERSION]
+    mov [edi + SVER_PARENT], eax
+    inc dword [edi + SVER_VERSION]
+    mov ecx, [sver_gen_counter]
+    mov [edi + SVER_GEN], ecx
+    inc dword [sver_gen_counter]
+    mov eax, [edi + SVER_VERSION]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=obj_id → EAX=version, EDX=parent_ver, ECX=generation, CF
+sver_query:
+    cmp dword [sver_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SVER_CAPACITY
+    jae .not_found
+    imul edi, esi, SVER_REC_SIZE
+    add edi, sver_table
+    cmp [edi + SVER_OBJ_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + SVER_VERSION]
+    mov edx, [edi + SVER_PARENT]
+    mov ecx, [edi + SVER_GEN]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+sver_self_test:
+    ; create obj=1 → version=1, parent=0
+    mov eax, 1
+    call sver_create
+    jc .fail
+    ; bump → version=2, parent=1
+    mov eax, 1
+    call sver_bump
+    jc .fail
+    cmp eax, 2
+    jne .fail
+    ; query → version=2, parent=1
+    mov eax, 1
+    call sver_query
+    jc .fail
+    cmp eax, 2
+    jne .fail
+    cmp edx, 1
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+sver_ready:        dd 0
+sver_gen_counter:  dd 1
+sver_table:
+    times SVER_CAPACITY * SVER_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-STATE-ACTUAL-0001 – Nova State Actual Store
+; ===========================================================================
+; Stores the observed/measured current value for each tracked state object.
+; Feeds srec_reconcile: sactual_write → srec_reconcile(id, actual).
+;
+; Record: obj_id(4) + actual_value(4) + timestamp(4) + writes(4) = 16 bytes
+
+SACTUAL_CAPACITY  equ 8
+SACTUAL_REC_SIZE  equ 16
+SACTUAL_OBJ_ID    equ 0
+SACTUAL_VALUE     equ 4
+SACTUAL_TICK      equ 8
+SACTUAL_WRITES    equ 12
+
+sactual_initialize:
+    cmp dword [sactual_ready], 1
+    je .done
+    mov edi, sactual_table
+    xor eax, eax
+    mov ecx, (SACTUAL_CAPACITY * SACTUAL_REC_SIZE) / 4
+    rep stosd
+    mov dword [sactual_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=obj_id, EDX=actual_value → CF (creates or updates)
+sactual_write:
+    cmp dword [sactual_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, SACTUAL_CAPACITY
+    jae .full
+    imul edi, esi, SACTUAL_REC_SIZE
+    add edi, sactual_table
+    cmp dword [edi + SACTUAL_OBJ_ID], 0
+    je .slot
+    cmp [edi + SACTUAL_OBJ_ID], eax
+    je .update
+    inc esi
+    jmp .scan
+.update:
+.slot:
+    mov [edi + SACTUAL_OBJ_ID], eax
+    mov [edi + SACTUAL_VALUE], edx
+    mov ecx, [wd_global_tick]
+    mov [edi + SACTUAL_TICK], ecx
+    inc dword [edi + SACTUAL_WRITES]
+    clc
+    ret
+.full:
+.fail:
+    stc
+    ret
+
+; EAX=obj_id → EAX=actual_value, EDX=tick, CF
+sactual_read:
+    cmp dword [sactual_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SACTUAL_CAPACITY
+    jae .not_found
+    imul edi, esi, SACTUAL_REC_SIZE
+    add edi, sactual_table
+    cmp [edi + SACTUAL_OBJ_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + SACTUAL_VALUE]
+    mov edx, [edi + SACTUAL_TICK]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+sactual_self_test:
+    ; write obj=1, value=42
+    mov eax, 1
+    mov edx, 42
+    call sactual_write
+    jc .fail
+    ; read back → 42
+    mov eax, 1
+    call sactual_read
+    jc .fail
+    cmp eax, 42
+    jne .fail
+    ; update to 99
+    mov eax, 1
+    mov edx, 99
+    call sactual_write
+    jc .fail
+    mov eax, 1
+    call sactual_read
+    jc .fail
+    cmp eax, 99
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+sactual_ready:  dd 0
+sactual_table:
+    times SACTUAL_CAPACITY * SACTUAL_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-STATE-DESIRED-0001 – Nova State Desired Store
+; ===========================================================================
+; Stores the intended/target value for each tracked state object.
+; Feeds srec_reconcile: sdesired_write → srec_reconcile(id, actual) checks
+; actual vs desired. Mirrors sactual_* API with "desired" semantics.
+;
+; Record: obj_id(4) + desired_value(4) + priority(4) + writes(4) = 16 bytes
+
+SDESIRED_CAPACITY  equ 8
+SDESIRED_REC_SIZE  equ 16
+SDESIRED_OBJ_ID    equ 0
+SDESIRED_VALUE     equ 4
+SDESIRED_PRIORITY  equ 8
+SDESIRED_WRITES    equ 12
+
+sdesired_initialize:
+    cmp dword [sdesired_ready], 1
+    je .done
+    mov edi, sdesired_table
+    xor eax, eax
+    mov ecx, (SDESIRED_CAPACITY * SDESIRED_REC_SIZE) / 4
+    rep stosd
+    mov dword [sdesired_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=obj_id, EDX=desired_value, ECX=priority → CF (creates or updates)
+sdesired_write:
+    cmp dword [sdesired_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    xor esi, esi
+.scan:
+    cmp esi, SDESIRED_CAPACITY
+    jae .full
+    imul edi, esi, SDESIRED_REC_SIZE
+    add edi, sdesired_table
+    cmp dword [edi + SDESIRED_OBJ_ID], 0
+    je .slot
+    cmp [edi + SDESIRED_OBJ_ID], eax
+    je .update
+    inc esi
+    jmp .scan
+.update:
+.slot:
+    mov [edi + SDESIRED_OBJ_ID], eax
+    mov [edi + SDESIRED_VALUE], edx
+    mov [edi + SDESIRED_PRIORITY], ecx
+    inc dword [edi + SDESIRED_WRITES]
+    clc
+    ret
+.full:
+.fail:
+    stc
+    ret
+
+; EAX=obj_id → EAX=desired_value, EDX=priority, CF
+sdesired_read:
+    cmp dword [sdesired_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, SDESIRED_CAPACITY
+    jae .not_found
+    imul edi, esi, SDESIRED_REC_SIZE
+    add edi, sdesired_table
+    cmp [edi + SDESIRED_OBJ_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + SDESIRED_VALUE]
+    mov edx, [edi + SDESIRED_PRIORITY]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+sdesired_self_test:
+    ; write obj=1, desired=10, priority=1
+    mov eax, 1
+    mov edx, 10
+    mov ecx, 1
+    call sdesired_write
+    jc .fail
+    ; read back
+    mov eax, 1
+    call sdesired_read
+    jc .fail
+    cmp eax, 10
+    jne .fail
+    cmp edx, 1
+    jne .fail
+    ; update priority
+    mov eax, 1
+    mov edx, 10
+    mov ecx, 5
+    call sdesired_write
+    jc .fail
+    mov eax, 1
+    call sdesired_read
+    jc .fail
+    cmp edx, 5
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+sdesired_ready:  dd 0
+sdesired_table:
+    times SDESIRED_CAPACITY * SDESIRED_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -48270,6 +48705,18 @@ message_aschedsw_ok:
     db "NOVA: Adaptive Scheduler 1.0 bereit (8-Classes, QoS-Feedback-Tuning)", 13, 10, 0
 message_aschedsw_error:
     db "NOVA PANIC: Adaptive Scheduler nicht initialisierbar", 13, 10, 0
+message_sver_ok:
+    db "NOVA: State Versioning 1.0 bereit (8-Objects, generation+lineage)", 13, 10, 0
+message_sver_error:
+    db "NOVA PANIC: State Versioning Manager nicht initialisierbar", 13, 10, 0
+message_sactual_ok:
+    db "NOVA: State Actual 1.0 bereit (8-Slots, observed current values)", 13, 10, 0
+message_sactual_error:
+    db "NOVA PANIC: State Actual Store nicht initialisierbar", 13, 10, 0
+message_sdesired_ok:
+    db "NOVA: State Desired 1.0 bereit (8-Slots, target goal values)", 13, 10, 0
+message_sdesired_error:
+    db "NOVA PANIC: State Desired Store nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
