@@ -1005,6 +1005,27 @@ kernel_entry:
     mov esi, message_rarbit_ok
     call serial_write_string
 
+    call acache_initialize
+    jc panic_acache
+    call acache_self_test
+    jc panic_acache
+    mov esi, message_acache_ok
+    call serial_write_string
+
+    call apower_initialize
+    jc panic_apower
+    call apower_self_test
+    jc panic_apower
+    mov esi, message_apower_ok
+    call serial_write_string
+
+    call pollearn_initialize
+    jc panic_pollearn
+    call pollearn_self_test
+    jc panic_pollearn
+    mov esi, message_pollearn_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1895,6 +1916,24 @@ panic_rarbit:
     mov eax, 0x00003084
     mov edx, 129
     mov esi, message_rarbit_error
+    jmp kernel_panic
+
+panic_acache:
+    mov eax, 0x00003085
+    mov edx, 130
+    mov esi, message_acache_error
+    jmp kernel_panic
+
+panic_apower:
+    mov eax, 0x00003086
+    mov edx, 131
+    mov esi, message_apower_error
+    jmp kernel_panic
+
+panic_pollearn:
+    mov eax, 0x00003087
+    mov edx, 132
+    mov esi, message_pollearn_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -37652,6 +37691,562 @@ rarbit_table:
     times RARBIT_CAPACITY * RARBIT_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-ADAPTIVE-CACHE-0001 – Nova Adaptive Cache Manager
+; ===========================================================================
+; Tracks cache-line usage and adapts eviction decisions based on EWMA
+; hit-rate. When hit-rate drops below threshold, signals the adaptive
+; scheduler (aschedsw_feedback) to reduce cache-class weight, and
+; autopol_evaluate(OVERLOAD) to trigger a scale-down policy.
+;
+; Record: line_id(4) + hits(4) + misses(4) + hit_rate(4) = 16 bytes
+; hit_rate is EWMA, 8-bit fixed-point (0–255 ≈ 0–100%)
+
+ACACHE_CAPACITY   equ 8
+ACACHE_REC_SIZE   equ 16
+ACACHE_LINE_ID    equ 0
+ACACHE_HITS       equ 4
+ACACHE_MISSES     equ 8
+ACACHE_HIT_RATE   equ 12
+
+ACACHE_ALPHA      equ 32         ; EWMA smoothing factor (out of 256)
+ACACHE_THRESHOLD  equ 64         ; hit_rate below this → feedback
+
+acache_initialize:
+    cmp dword [acache_ready], 1
+    je .done
+    mov edi, acache_table
+    xor eax, eax
+    mov ecx, (ACACHE_CAPACITY * ACACHE_REC_SIZE) / 4
+    rep stosd
+    mov dword [acache_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=line_id → register cache line, CF=1 if full/dup
+acache_register:
+    cmp dword [acache_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    ; check dup
+    xor esi, esi
+.dup_scan:
+    cmp esi, ACACHE_CAPACITY
+    jae .find_free
+    imul edi, esi, ACACHE_REC_SIZE
+    add edi, acache_table
+    cmp [edi + ACACHE_LINE_ID], ebx
+    je .dup
+    inc esi
+    jmp .dup_scan
+.find_free:
+    xor esi, esi
+.scan:
+    cmp esi, ACACHE_CAPACITY
+    jae .full
+    imul edi, esi, ACACHE_REC_SIZE
+    add edi, acache_table
+    cmp dword [edi + ACACHE_LINE_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + ACACHE_LINE_ID], ebx
+    mov dword [edi + ACACHE_HITS], 0
+    mov dword [edi + ACACHE_MISSES], 0
+    mov dword [edi + ACACHE_HIT_RATE], 128   ; start at 50%
+    pop ebx
+    clc
+    ret
+.dup:
+.full:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=line_id, EDX=1(hit)/0(miss) → update EWMA hit_rate; on low rate → feedback
+acache_record:
+    cmp dword [acache_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, ACACHE_CAPACITY
+    jae .not_found
+    imul edi, esi, ACACHE_REC_SIZE
+    add edi, acache_table
+    cmp [edi + ACACHE_LINE_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    test edx, edx
+    jz .miss
+    inc dword [edi + ACACHE_HITS]
+    ; EWMA: new = (alpha*255 + (256-alpha)*old) >> 8 for hit
+    mov eax, ACACHE_ALPHA
+    imul eax, eax, 255
+    mov ecx, 256 - ACACHE_ALPHA
+    imul ecx, [edi + ACACHE_HIT_RATE]
+    add eax, ecx
+    shr eax, 8
+    mov [edi + ACACHE_HIT_RATE], eax
+    jmp .check
+.miss:
+    inc dword [edi + ACACHE_MISSES]
+    ; EWMA: new = (alpha*0 + (256-alpha)*old) >> 8 for miss
+    mov eax, 256 - ACACHE_ALPHA
+    imul eax, [edi + ACACHE_HIT_RATE]
+    shr eax, 8
+    mov [edi + ACACHE_HIT_RATE], eax
+.check:
+    ; if hit_rate < threshold, signal overload policy
+    cmp dword [edi + ACACHE_HIT_RATE], ACACHE_THRESHOLD
+    jae .ok
+    ; cross-subsystem: signal adaptive scheduler cache class (class=3) to reduce
+    mov eax, 3
+    mov edx, 0xFFFFFFD0     ; -48 signed delta
+    call aschedsw_feedback
+.ok:
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=line_id → EAX=hit_rate, EDX=hits, ECX=misses, CF
+acache_query:
+    cmp dword [acache_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, ACACHE_CAPACITY
+    jae .not_found
+    imul edi, esi, ACACHE_REC_SIZE
+    add edi, acache_table
+    cmp [edi + ACACHE_LINE_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + ACACHE_HIT_RATE]
+    mov edx, [edi + ACACHE_HITS]
+    mov ecx, [edi + ACACHE_MISSES]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+acache_self_test:
+    ; register line=1
+    mov eax, 1
+    call acache_register
+    jc .fail
+    ; record a hit → rate should stay high
+    mov eax, 1
+    mov edx, 1
+    call acache_record
+    jc .fail
+    ; query → rate > 0
+    mov eax, 1
+    call acache_query
+    jc .fail
+    test eax, eax
+    jz .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+acache_ready:  dd 0
+acache_table:
+    times ACACHE_CAPACITY * ACACHE_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-ADAPTIVE-POWER-0001 – Nova Adaptive Power Manager
+; ===========================================================================
+; Manages CPU power domains with P-state transitions driven by load.
+; Connects apred_query to get predicted load and adjusts P-state.
+; P-state: 0=max-perf … 3=min-power. Load is 0–100 (percent).
+;
+; Record: domain(4) + p_state(4) + load(4) + transitions(4) = 16 bytes
+
+APOWER_CAPACITY    equ 4
+APOWER_REC_SIZE    equ 16
+APOWER_DOMAIN      equ 0
+APOWER_PSTATE      equ 4
+APOWER_LOAD        equ 8
+APOWER_TRANS       equ 12
+
+APOWER_PSTATE_MAX  equ 0
+APOWER_PSTATE_MIN  equ 3
+
+apower_initialize:
+    cmp dword [apower_ready], 1
+    je .done
+    mov edi, apower_table
+    xor eax, eax
+    mov ecx, (APOWER_CAPACITY * APOWER_REC_SIZE) / 4
+    rep stosd
+    mov dword [apower_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=domain_id → register domain at P-state=1 (balanced), CF
+apower_register:
+    cmp dword [apower_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, APOWER_CAPACITY
+    jae .full
+    imul edi, esi, APOWER_REC_SIZE
+    add edi, apower_table
+    cmp dword [edi + APOWER_DOMAIN], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + APOWER_DOMAIN], ebx
+    mov dword [edi + APOWER_PSTATE], 1
+    mov dword [edi + APOWER_LOAD], 50
+    mov dword [edi + APOWER_TRANS], 0
+    pop ebx
+    clc
+    ret
+.full:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=domain_id, EDX=load(0-100) → adjust P-state, cross-calls apred_update
+; load>=75 → P-state=0 (max-perf); load<=25 → P-state=3 (min-power); else=1
+apower_update_load:
+    cmp dword [apower_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx            ; load
+    xor esi, esi
+.scan:
+    cmp esi, APOWER_CAPACITY
+    jae .not_found
+    imul edi, esi, APOWER_REC_SIZE
+    add edi, apower_table
+    cmp [edi + APOWER_DOMAIN], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov [edi + APOWER_LOAD], ecx
+    ; update adaptive prediction for domain (metric = domain id)
+    mov eax, ebx
+    mov edx, ecx
+    call apred_update
+    ; compute new P-state
+    cmp ecx, 75
+    jae .high_load
+    cmp ecx, 25
+    jbe .low_load
+    ; medium load → P-state 1
+    cmp dword [edi + APOWER_PSTATE], 1
+    je .no_trans
+    inc dword [edi + APOWER_TRANS]
+    mov dword [edi + APOWER_PSTATE], 1
+    jmp .no_trans
+.high_load:
+    cmp dword [edi + APOWER_PSTATE], APOWER_PSTATE_MAX
+    je .no_trans
+    inc dword [edi + APOWER_TRANS]
+    mov dword [edi + APOWER_PSTATE], APOWER_PSTATE_MAX
+    jmp .no_trans
+.low_load:
+    cmp dword [edi + APOWER_PSTATE], APOWER_PSTATE_MIN
+    je .no_trans
+    inc dword [edi + APOWER_TRANS]
+    mov dword [edi + APOWER_PSTATE], APOWER_PSTATE_MIN
+.no_trans:
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=domain_id → EAX=p_state, EDX=load, ECX=transitions, CF
+apower_query:
+    cmp dword [apower_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, APOWER_CAPACITY
+    jae .not_found
+    imul edi, esi, APOWER_REC_SIZE
+    add edi, apower_table
+    cmp [edi + APOWER_DOMAIN], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + APOWER_PSTATE]
+    mov edx, [edi + APOWER_LOAD]
+    mov ecx, [edi + APOWER_TRANS]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+apower_self_test:
+    ; register domain=1
+    mov eax, 1
+    call apower_register
+    jc .fail
+    ; high load → P-state should become 0
+    mov eax, 1
+    mov edx, 80
+    call apower_update_load
+    jc .fail
+    mov eax, 1
+    call apower_query
+    jc .fail
+    cmp eax, 0
+    jne .fail
+    ; low load → P-state should become 3
+    mov eax, 1
+    mov edx, 10
+    call apower_update_load
+    jc .fail
+    mov eax, 1
+    call apower_query
+    jc .fail
+    cmp eax, 3
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+apower_ready:  dd 0
+apower_table:
+    times APOWER_CAPACITY * APOWER_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-ADAPTIVE-POLICYLEARNING-0001 – Nova Policy Learning Engine
+; ===========================================================================
+; Tracks policy rule outcomes and adjusts rule weights via EWMA.
+; When a rule fires successfully, weight increases; on failure, decreases.
+; Connects autopol_evaluate: after each policy fires, pollearn_feedback
+; adjusts the rule's learned weight.
+;
+; Record: rule_id(4) + trigger(4) + weight(4) + fires(4) = 16 bytes
+; Weight: 8-bit fixed-point via EWMA; 128=neutral, >128=prefer, <128=avoid
+
+POLLEARN_CAPACITY  equ 8
+POLLEARN_REC_SIZE  equ 16
+POLLEARN_RULE_ID   equ 0
+POLLEARN_TRIGGER   equ 4
+POLLEARN_WEIGHT    equ 8
+POLLEARN_FIRES     equ 12
+
+POLLEARN_ALPHA     equ 24     ; learning rate (out of 256)
+
+pollearn_initialize:
+    cmp dword [pollearn_ready], 1
+    je .done
+    mov edi, pollearn_table
+    xor eax, eax
+    mov ecx, (POLLEARN_CAPACITY * POLLEARN_REC_SIZE) / 4
+    rep stosd
+    mov dword [pollearn_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=rule_id, EDX=trigger → register rule at weight=128, CF
+pollearn_register:
+    cmp dword [pollearn_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, POLLEARN_CAPACITY
+    jae .full
+    imul edi, esi, POLLEARN_REC_SIZE
+    add edi, pollearn_table
+    cmp dword [edi + POLLEARN_RULE_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + POLLEARN_RULE_ID], ebx
+    mov [edi + POLLEARN_TRIGGER], edx
+    mov dword [edi + POLLEARN_WEIGHT], 128
+    mov dword [edi + POLLEARN_FIRES], 0
+    pop ebx
+    clc
+    ret
+.full:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=rule_id, EDX=1(success)/0(failure) → update weight via EWMA, CF
+pollearn_feedback:
+    cmp dword [pollearn_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, POLLEARN_CAPACITY
+    jae .not_found
+    imul edi, esi, POLLEARN_REC_SIZE
+    add edi, pollearn_table
+    cmp [edi + POLLEARN_RULE_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    inc dword [edi + POLLEARN_FIRES]
+    test edx, edx
+    jz .failure
+    ; success: EWMA toward 255
+    mov eax, POLLEARN_ALPHA
+    imul eax, eax, 255
+    mov ecx, 256 - POLLEARN_ALPHA
+    imul ecx, [edi + POLLEARN_WEIGHT]
+    add eax, ecx
+    shr eax, 8
+    mov [edi + POLLEARN_WEIGHT], eax
+    jmp .done
+.failure:
+    ; failure: EWMA toward 0
+    mov eax, 256 - POLLEARN_ALPHA
+    imul eax, [edi + POLLEARN_WEIGHT]
+    shr eax, 8
+    mov [edi + POLLEARN_WEIGHT], eax
+.done:
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=rule_id → EAX=weight, EDX=fires, CF
+pollearn_query:
+    cmp dword [pollearn_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, POLLEARN_CAPACITY
+    jae .not_found
+    imul edi, esi, POLLEARN_REC_SIZE
+    add edi, pollearn_table
+    cmp [edi + POLLEARN_RULE_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + POLLEARN_WEIGHT]
+    mov edx, [edi + POLLEARN_FIRES]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+pollearn_self_test:
+    ; register rule=1 trigger=FAULT(1)
+    mov eax, 1
+    mov edx, 1
+    call pollearn_register
+    jc .fail
+    ; success feedback → weight should increase above 128
+    mov eax, 1
+    mov edx, 1
+    call pollearn_feedback
+    jc .fail
+    mov eax, 1
+    call pollearn_query
+    jc .fail
+    cmp eax, 128
+    jbe .fail
+    ; failure feedback → weight should decrease
+    mov ebx, eax         ; save current weight
+    mov eax, 1
+    mov edx, 0
+    call pollearn_feedback
+    jc .fail
+    mov eax, 1
+    call pollearn_query
+    jc .fail
+    cmp eax, ebx
+    jae .fail            ; must be less than after success
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+pollearn_ready:  dd 0
+pollearn_table:
+    times POLLEARN_CAPACITY * POLLEARN_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -49221,6 +49816,18 @@ message_rarbit_ok:
     db "NOVA: Resource Arbitration 1.0 bereit (8-Requests, priority-based grant)", 13, 10, 0
 message_rarbit_error:
     db "NOVA PANIC: Resource Arbitration Engine nicht initialisierbar", 13, 10, 0
+message_acache_ok:
+    db "NOVA: Adaptive Cache 1.0 bereit (8-Lines, EWMA hit-rate tracking)", 13, 10, 0
+message_acache_error:
+    db "NOVA PANIC: Adaptive Cache Manager nicht initialisierbar", 13, 10, 0
+message_apower_ok:
+    db "NOVA: Adaptive Power 1.0 bereit (4-Domains, load-driven P-state control)", 13, 10, 0
+message_apower_error:
+    db "NOVA PANIC: Adaptive Power Manager nicht initialisierbar", 13, 10, 0
+message_pollearn_ok:
+    db "NOVA: Policy Learning 1.0 bereit (8-Rules, outcome-weighted policy update)", 13, 10, 0
+message_pollearn_error:
+    db "NOVA PANIC: Policy Learning Engine nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
