@@ -3943,10 +3943,11 @@ aslr_randomize_region:
 
 aslr_self_test:
     push esi
-    xor esi, esi
+    push ebx
+    xor ebx, ebx
     cmp dword [aslr_ready], 1
     je .ast1
-    inc esi
+    inc ebx
 .ast1:
     ; Zwei verschiedene Offsets erzeugen
     mov eax, ASLR_TYPE_STACK
@@ -3961,24 +3962,26 @@ aslr_self_test:
     ; Beide 4KB-aligned
     test esi, 0xFFF
     jz .ast2
-    inc esi
+    inc ebx
 .ast2:
     test eax, 0xFFF
     jz .ast3
-    inc esi
+    inc ebx
 .ast3:
     ; aslr_count=2
     cmp dword [aslr_count], 2
     je .ast4
-    inc esi
+    inc ebx
 .ast4:
-    test esi, esi
+    test ebx, ebx
     jnz .astf
     clc
+    pop ebx
     pop esi
     ret
 .astf:
     stc
+    pop ebx
     pop esi
     ret
 
@@ -6097,6 +6100,8 @@ ipc_initialize:
 
 ; §015 §38: Self-Test – 7 Tests (FIFO-Invarianten, Send/Receive, Grenzen)
 ipc_self_test:
+    pushfd
+    cli
     push ebx
     push esi
     push edi
@@ -6164,6 +6169,7 @@ ipc_self_test:
     pop edi
     pop esi
     pop ebx
+    popfd
     clc
     ret
 .selftest_fail:
@@ -6171,6 +6177,7 @@ ipc_self_test:
     pop edi
     pop esi
     pop ebx
+    popfd
     stc
     ret
 
@@ -40123,14 +40130,23 @@ time_monotonic_self_test:
     inc ebx
 .tmst2_ok:
 
-    ; T3: get_ms = ticks * 10
+    ; T3: get_ms = ticks * 10.
+    ; IRQ0 darf zwischen den Reads eintreffen; deshalb wird gegen ein
+    ; Before/After-Fenster geprüft, nicht gegen exakt einen alten Tickwert.
     call time_monotonic_get_ticks
-    push eax
+    push eax                         ; before_ticks
     call time_monotonic_get_ms
-    pop ecx
+    mov edx, eax                     ; observed_ms
+    call time_monotonic_get_ticks
+    mov ecx, eax                     ; after_ticks
+    pop eax                          ; before_ticks
+    imul eax, eax, TIME_MS_PER_TICK
     imul ecx, ecx, TIME_MS_PER_TICK
-    cmp eax, ecx
-    je .tmst3_ok
+    cmp edx, eax
+    jb .tmst3_fail
+    cmp edx, ecx
+    jbe .tmst3_ok
+.tmst3_fail:
     inc ebx
 .tmst3_ok:
 
@@ -40554,9 +40570,11 @@ hrt_initialize:
     ret
 
 ; → EAX = geschätzte Nanosekunden seit Kernel-Start (vereinfacht)
-; Nutzt wd_global_tick (100Hz) → 10 ms pro Tick → 10 000 000 ns/Tick
+; Nutzt timer_ticks (100Hz) → 10 ms pro Tick → 10 000 000 ns/Tick.
+; wd_global_tick gehört zum späteren Watchdog-Pfad und läuft in der frühen
+; Interruptphase noch nicht zwingend mit.
 hrt_get_ns:
-    mov eax, [wd_global_tick]
+    mov eax, [timer_ticks]
     mov edx, 10000000     ; 10 ms in ns
     mul edx               ; EAX:EDX = ns (EDX verworfen; reicht für ~42 s)
     ret
@@ -40676,9 +40694,10 @@ hrt_self_test:
     jnc .hrst5_ok
     inc esi
 .hrst5_ok:
+    mov ebx, eax         ; slot
     call hrt_check_alarms
     push ecx
-    imul ecx, eax, HRT_ALARM_SIZE
+    imul ecx, ebx, HRT_ALARM_SIZE
     add ecx, hrt_alarms
     cmp dword [ecx + HRT_ALM_STATE], HRT_ALARM_ARMED
     je .hrst5_state
