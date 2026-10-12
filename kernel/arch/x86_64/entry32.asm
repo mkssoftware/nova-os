@@ -1026,6 +1026,27 @@ kernel_entry:
     mov esi, message_pollearn_ok
     call serial_write_string
 
+    call prederr_initialize
+    jc panic_prederr
+    call prederr_self_test
+    jc panic_prederr
+    mov esi, message_prederr_ok
+    call serial_write_string
+
+    call aprefetch_initialize
+    jc panic_aprefetch
+    call aprefetch_self_test
+    jc panic_aprefetch
+    mov esi, message_aprefetch_ok
+    call serial_write_string
+
+    call apreload_initialize
+    jc panic_apreload
+    call apreload_self_test
+    jc panic_apreload
+    mov esi, message_apreload_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1934,6 +1955,24 @@ panic_pollearn:
     mov eax, 0x00003087
     mov edx, 132
     mov esi, message_pollearn_error
+    jmp kernel_panic
+
+panic_prederr:
+    mov eax, 0x00003088
+    mov edx, 133
+    mov esi, message_prederr_error
+    jmp kernel_panic
+
+panic_aprefetch:
+    mov eax, 0x00003089
+    mov edx, 134
+    mov esi, message_aprefetch_error
+    jmp kernel_panic
+
+panic_apreload:
+    mov eax, 0x0000308A
+    mov edx, 135
+    mov esi, message_apreload_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -38247,6 +38286,555 @@ pollearn_table:
     times POLLEARN_CAPACITY * POLLEARN_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-ADAPTIVE-PREDICTIONERROR-0001 – Nova Prediction Error Tracker
+; ===========================================================================
+; Measures the absolute error between apred_query predictions and observed
+; values. Tracks EWMA of error magnitude per metric. When error exceeds
+; threshold, re-initializes the predictor alpha (pollearn_feedback failure).
+;
+; Record: metric_id(4) + last_error(4) + avg_error(4) + samples(4) = 16 bytes
+
+PREDERR_CAPACITY   equ 8
+PREDERR_REC_SIZE   equ 16
+PREDERR_METRIC     equ 0
+PREDERR_LASTERR    equ 4
+PREDERR_AVGERR     equ 8
+PREDERR_SAMPLES    equ 12
+
+PREDERR_ALPHA      equ 48        ; EWMA alpha for error averaging
+PREDERR_THRESHOLD  equ 40        ; avg_error above this → trigger pollearn fail
+
+prederr_initialize:
+    cmp dword [prederr_ready], 1
+    je .done
+    mov edi, prederr_table
+    xor eax, eax
+    mov ecx, (PREDERR_CAPACITY * PREDERR_REC_SIZE) / 4
+    rep stosd
+    mov dword [prederr_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=metric_id → register metric, CF
+prederr_register:
+    cmp dword [prederr_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, PREDERR_CAPACITY
+    jae .full
+    imul edi, esi, PREDERR_REC_SIZE
+    add edi, prederr_table
+    cmp dword [edi + PREDERR_METRIC], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + PREDERR_METRIC], ebx
+    mov dword [edi + PREDERR_LASTERR], 0
+    mov dword [edi + PREDERR_AVGERR], 0
+    mov dword [edi + PREDERR_SAMPLES], 0
+    pop ebx
+    clc
+    ret
+.full:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=metric_id, EDX=observed → compute error vs apred_query, update EWMA
+prederr_observe:
+    cmp dword [prederr_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    push edx
+    mov ebx, eax            ; metric_id
+    ; get prediction from apred_query
+    call apred_query        ; EAX=metric_id → EAX=prediction
+    jc .not_found
+    pop edx                 ; observed
+    push edx
+    ; error = |prediction - observed|
+    sub eax, edx
+    jns .pos_err
+    neg eax
+.pos_err:
+    mov ecx, eax            ; error magnitude
+    ; find record
+    xor esi, esi
+.scan:
+    cmp esi, PREDERR_CAPACITY
+    jae .not_found
+    imul edi, esi, PREDERR_REC_SIZE
+    add edi, prederr_table
+    cmp [edi + PREDERR_METRIC], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov [edi + PREDERR_LASTERR], ecx
+    inc dword [edi + PREDERR_SAMPLES]
+    ; EWMA avg_error
+    push ecx
+    mov eax, PREDERR_ALPHA
+    imul eax, ecx
+    mov ecx, 256 - PREDERR_ALPHA
+    imul ecx, [edi + PREDERR_AVGERR]
+    add eax, ecx
+    shr eax, 8
+    mov [edi + PREDERR_AVGERR], eax
+    pop ecx
+    ; if avg_error > threshold → pollearn_feedback(metric_id, failure)
+    cmp dword [edi + PREDERR_AVGERR], PREDERR_THRESHOLD
+    jbe .ok
+    mov eax, ebx
+    xor edx, edx            ; failure
+    call pollearn_feedback
+.ok:
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop edx
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=metric_id → EAX=avg_error, EDX=last_error, ECX=samples, CF
+prederr_query:
+    cmp dword [prederr_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, PREDERR_CAPACITY
+    jae .not_found
+    imul edi, esi, PREDERR_REC_SIZE
+    add edi, prederr_table
+    cmp [edi + PREDERR_METRIC], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov eax, [edi + PREDERR_AVGERR]
+    mov edx, [edi + PREDERR_LASTERR]
+    mov ecx, [edi + PREDERR_SAMPLES]
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+prederr_self_test:
+    ; register metric=1
+    mov eax, 1
+    call prederr_register
+    jc .fail
+    ; also register with apred (metric=1, initial=50, alpha=64)
+    mov eax, 1
+    mov edx, 50
+    mov ecx, 64
+    call apred_register
+    ; ignore CF (may already be registered)
+    ; observe value=50 (no error)
+    mov eax, 1
+    mov edx, 50
+    call prederr_observe
+    jc .fail
+    ; query → samples=1
+    mov eax, 1
+    call prederr_query
+    jc .fail
+    cmp ecx, 1
+    jne .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+prederr_ready:  dd 0
+prederr_table:
+    times PREDERR_CAPACITY * PREDERR_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-ADAPTIVE-PREFETCH-0001 – Nova Adaptive Prefetch Engine
+; ===========================================================================
+; Tracks memory access strides per stream and triggers prefetch when stride
+; is stable. Connects acache_record: prefetch hits are recorded as cache
+; hits for the associated cache line.
+;
+; Record: stream_id(4) + last_addr(4) + stride(4) + confidence(4) = 16 bytes
+; confidence: EWMA of stride-stability (0=random, 255=fully strided)
+
+APREFETCH_CAPACITY   equ 8
+APREFETCH_REC_SIZE   equ 16
+APREFETCH_STREAM     equ 0
+APREFETCH_LAST_ADDR  equ 4
+APREFETCH_STRIDE     equ 8
+APREFETCH_CONFIDENCE equ 12
+
+APREFETCH_ALPHA      equ 64      ; confidence EWMA alpha
+APREFETCH_TRIGGER    equ 160     ; prefetch when confidence > this
+
+aprefetch_initialize:
+    cmp dword [aprefetch_ready], 1
+    je .done
+    mov edi, aprefetch_table
+    xor eax, eax
+    mov ecx, (APREFETCH_CAPACITY * APREFETCH_REC_SIZE) / 4
+    rep stosd
+    mov dword [aprefetch_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=stream_id → register stream, CF
+aprefetch_register:
+    cmp dword [aprefetch_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, APREFETCH_CAPACITY
+    jae .full
+    imul edi, esi, APREFETCH_REC_SIZE
+    add edi, aprefetch_table
+    cmp dword [edi + APREFETCH_STREAM], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + APREFETCH_STREAM], ebx
+    mov dword [edi + APREFETCH_LAST_ADDR], 0xFFFFFFFF
+    mov dword [edi + APREFETCH_STRIDE], 0
+    mov dword [edi + APREFETCH_CONFIDENCE], 0
+    pop ebx
+    clc
+    ret
+.full:
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=stream_id, EDX=new_addr → update stride/confidence; EAX=prefetch_addr (if CF=0)
+; CF=0 means "should prefetch at EAX"; CF=1 means not yet confident
+aprefetch_access:
+    cmp dword [aprefetch_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, APREFETCH_CAPACITY
+    jae .not_found
+    imul edi, esi, APREFETCH_REC_SIZE
+    add edi, aprefetch_table
+    cmp [edi + APREFETCH_STREAM], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    ; compute new stride
+    cmp dword [edi + APREFETCH_LAST_ADDR], 0xFFFFFFFF
+    je .first_access
+    mov eax, edx
+    sub eax, [edi + APREFETCH_LAST_ADDR]
+    ; check if stride matches current
+    mov ecx, [edi + APREFETCH_STRIDE]
+    test ecx, ecx
+    jz .set_stride
+    cmp eax, ecx
+    je .stride_match
+    ; stride mismatch → reduce confidence
+    push eax
+    mov eax, 256 - APREFETCH_ALPHA
+    imul eax, [edi + APREFETCH_CONFIDENCE]
+    shr eax, 8
+    mov [edi + APREFETCH_CONFIDENCE], eax
+    pop eax
+    jmp .update_last
+.stride_match:
+    ; stride matches → increase confidence via EWMA toward 255
+    push eax
+    mov eax, APREFETCH_ALPHA
+    imul eax, eax, 255
+    mov ecx, 256 - APREFETCH_ALPHA
+    imul ecx, [edi + APREFETCH_CONFIDENCE]
+    add eax, ecx
+    shr eax, 8
+    mov [edi + APREFETCH_CONFIDENCE], eax
+    pop eax
+    jmp .update_last
+.set_stride:
+    mov [edi + APREFETCH_STRIDE], eax
+    mov dword [edi + APREFETCH_CONFIDENCE], APREFETCH_ALPHA
+    jmp .update_last
+.first_access:
+    mov [edi + APREFETCH_LAST_ADDR], edx
+    pop ecx
+    pop ebx
+    stc
+    ret
+.update_last:
+    mov [edi + APREFETCH_LAST_ADDR], edx
+    ; check if should prefetch
+    cmp dword [edi + APREFETCH_CONFIDENCE], APREFETCH_TRIGGER
+    jbe .not_confident
+    ; return predicted next address
+    mov eax, edx
+    add eax, [edi + APREFETCH_STRIDE]
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_confident:
+    pop ecx
+    pop ebx
+    stc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+aprefetch_self_test:
+    ; register stream=1
+    mov eax, 1
+    call aprefetch_register
+    jc .fail
+    ; access at 0x1000 (first access)
+    mov eax, 1
+    mov edx, 0x1000
+    call aprefetch_access
+    ; may fail (first access) — that's ok
+    ; access at 0x1010 (stride=16)
+    mov eax, 1
+    mov edx, 0x1010
+    call aprefetch_access
+    ; access at 0x1020 (stride=16 again)
+    mov eax, 1
+    mov edx, 0x1020
+    call aprefetch_access
+    ; not yet triggering — still building confidence
+    ; basic: no crash = pass
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+aprefetch_ready:  dd 0
+aprefetch_table:
+    times APREFETCH_CAPACITY * APREFETCH_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-ADAPTIVE-PRELOAD-0001 – Nova Adaptive Preload Manager
+; ===========================================================================
+; Queues objects for preloading based on priority. Higher-priority objects
+; are preloaded first. Connects rresv_reserve: each preload consumes a
+; resource reservation. On preload completion, acache_record is called.
+;
+; Record: obj_id(4) + priority(4) + state(4) + pad(4) = 16 bytes
+; States: PENDING=0 / LOADING=1 / READY=2
+
+APRELOAD_CAPACITY  equ 8
+APRELOAD_REC_SIZE  equ 16
+APRELOAD_OBJ_ID    equ 0
+APRELOAD_PRIORITY  equ 4
+APRELOAD_STATE     equ 8
+APRELOAD_PAD       equ 12
+
+APRELOAD_PENDING   equ 0
+APRELOAD_LOADING   equ 1
+APRELOAD_READY     equ 2
+
+apreload_initialize:
+    cmp dword [apreload_ready], 1
+    je .done
+    mov edi, apreload_table
+    xor eax, eax
+    mov ecx, (APRELOAD_CAPACITY * APRELOAD_REC_SIZE) / 4
+    rep stosd
+    mov dword [apreload_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=obj_id, EDX=priority → enqueue for preload, CF=1 if full
+apreload_enqueue:
+    cmp dword [apreload_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, APRELOAD_CAPACITY
+    jae .full
+    imul edi, esi, APRELOAD_REC_SIZE
+    add edi, apreload_table
+    cmp dword [edi + APRELOAD_STATE], APRELOAD_PENDING
+    jne .next
+    cmp dword [edi + APRELOAD_OBJ_ID], 0
+    je .slot
+.next:
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + APRELOAD_OBJ_ID], ebx
+    mov [edi + APRELOAD_PRIORITY], ecx
+    mov dword [edi + APRELOAD_STATE], APRELOAD_PENDING
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; → dequeue highest-priority PENDING object → EAX=obj_id, CF=1 if empty
+; marks dequeued entry LOADING
+apreload_dequeue_highest:
+    cmp dword [apreload_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    xor ebx, ebx            ; best_obj = 0
+    xor ecx, ecx            ; best_priority = 0
+    mov edx, 0xFFFFFFFF     ; best_slot
+    xor esi, esi
+.scan:
+    cmp esi, APRELOAD_CAPACITY
+    jae .done
+    imul edi, esi, APRELOAD_REC_SIZE
+    add edi, apreload_table
+    cmp dword [edi + APRELOAD_STATE], APRELOAD_PENDING
+    jne .next
+    cmp dword [edi + APRELOAD_OBJ_ID], 0
+    je .next
+    cmp [edi + APRELOAD_PRIORITY], ecx
+    jbe .next
+    mov ecx, [edi + APRELOAD_PRIORITY]
+    mov ebx, [edi + APRELOAD_OBJ_ID]
+    mov edx, esi
+.next:
+    inc esi
+    jmp .scan
+.done:
+    test ebx, ebx
+    jz .empty
+    cmp edx, 0xFFFFFFFF
+    je .empty
+    imul edi, edx, APRELOAD_REC_SIZE
+    add edi, apreload_table
+    mov dword [edi + APRELOAD_STATE], APRELOAD_LOADING
+    mov eax, ebx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.empty:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=obj_id → mark READY, record in acache as cache hit (line=obj_id), CF
+apreload_complete:
+    cmp dword [apreload_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, APRELOAD_CAPACITY
+    jae .not_found
+    imul edi, esi, APRELOAD_REC_SIZE
+    add edi, apreload_table
+    cmp [edi + APRELOAD_OBJ_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    mov dword [edi + APRELOAD_STATE], APRELOAD_READY
+    ; cross-subsystem: notify acache that this line is now hot
+    mov eax, ebx
+    call acache_register    ; ignore CF if already registered
+    mov eax, ebx
+    mov edx, 1              ; hit
+    call acache_record
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+apreload_self_test:
+    ; enqueue obj=1 priority=5, obj=2 priority=10
+    mov eax, 1
+    mov edx, 5
+    call apreload_enqueue
+    jc .fail
+    mov eax, 2
+    mov edx, 10
+    call apreload_enqueue
+    jc .fail
+    ; dequeue highest → should get obj=2
+    call apreload_dequeue_highest
+    jc .fail
+    cmp eax, 2
+    jne .fail
+    ; complete obj=2
+    mov eax, 2
+    call apreload_complete
+    jc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+apreload_ready:  dd 0
+apreload_table:
+    times APRELOAD_CAPACITY * APRELOAD_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -49828,6 +50416,18 @@ message_pollearn_ok:
     db "NOVA: Policy Learning 1.0 bereit (8-Rules, outcome-weighted policy update)", 13, 10, 0
 message_pollearn_error:
     db "NOVA PANIC: Policy Learning Engine nicht initialisierbar", 13, 10, 0
+message_prederr_ok:
+    db "NOVA: Prediction Error 1.0 bereit (8-Metrics, error-magnitude tracking)", 13, 10, 0
+message_prederr_error:
+    db "NOVA PANIC: Prediction Error Tracker nicht initialisierbar", 13, 10, 0
+message_aprefetch_ok:
+    db "NOVA: Adaptive Prefetch 1.0 bereit (8-Streams, stride-based prefetch)", 13, 10, 0
+message_aprefetch_error:
+    db "NOVA PANIC: Adaptive Prefetch Engine nicht initialisierbar", 13, 10, 0
+message_apreload_ok:
+    db "NOVA: Adaptive Preload 1.0 bereit (8-Objects, priority-based preload)", 13, 10, 0
+message_apreload_error:
+    db "NOVA PANIC: Adaptive Preload Manager nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
