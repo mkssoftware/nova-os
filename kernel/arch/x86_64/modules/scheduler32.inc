@@ -143,6 +143,10 @@ scheduler_on_tick:
     cmp dword [thread_running_on + edx * 4], -1
     jne .try_slot                   ; belegt → nächster Slot
 
+    ; Slot muss einen gültigen Kontext-Frame haben
+    cmp dword [scheduler_contexts + edx * 4], 0
+    je .try_slot                    ; kein Frame → Slot leer, überspringen
+
 .slot_ok:
     ; Slot passt – übernehmen
     mov [scheduler_current], edx

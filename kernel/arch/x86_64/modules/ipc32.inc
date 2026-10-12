@@ -401,6 +401,7 @@ driver_find:
 
 ; EAX=id_lo, EDX=id_hi, EBX=type, ECX=abi_version, ESI=flags
 driver_register:
+    push edi
     test eax, eax
     jnz .id_ok
     test edx, edx
@@ -443,9 +444,11 @@ driver_register:
     mov eax, [drv_tmp_flags]
     mov [edi + DRV_FLAGS_OFF], eax
     inc dword [drv_count]
+    pop edi
     clc
     ret
 .invalid:
+    pop edi
     stc
     ret
 
