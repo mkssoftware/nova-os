@@ -1126,7 +1126,9 @@ semantic_self_test:
     call semantic_compatibility
     cmp eax, SEMANTIC_COMPAT_UNKNOWN
     jne .bad
-    mov eax, 3
+    ; Handle 3 ist seit §121 der registrierte Trait nova.kernel.trait.readable.
+    ; Der Negativtest muss daher ein wirklich unbekanntes Handle verwenden.
+    mov eax, 4
     mov ecx, SEMANTIC_TYPE_VERSION_1
     mov edx, SEMANTIC_REPR_BYTES8
     call semantic_check_claim

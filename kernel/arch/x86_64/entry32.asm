@@ -238,6 +238,8 @@ kernel_entry:
     jc panic_ipc
     call ipc_self_test
     jc panic_ipc
+    mov esi, message_ipc_ok
+    call serial_write_string
     call semantic_initialize
     jc panic_ipc
     call semantic_self_test
@@ -304,9 +306,6 @@ kernel_entry:
     jc panic_transaction_manager
     mov esi, message_transaction_manager_ok
     call serial_write_string
-    mov esi, message_ipc_ok
-    call serial_write_string
-
     call service_manager_initialize
     jc panic_service_manager
     call service_manager_self_test
