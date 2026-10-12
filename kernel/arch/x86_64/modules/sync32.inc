@@ -167,40 +167,48 @@ np_semaphore_init:
     ret
 
 ; np_semaphore_try_wait: EAX=sema_ptr → CF=0 erworben / CF=1 leer
-; CAS-Schleife: dekrementiert Count wenn > 0
+; EBX = sema_ptr (für EAX-Restore); EAX als CMPXCHG-Comparand
 np_semaphore_try_wait:
-    mov [sync_tmp_ptr], eax
+    push ebx
+    mov ebx, eax                ; EBX = sema_ptr
 .sw_retry:
-    mov eax, [sync_tmp_ptr]
-    mov ecx, [eax + SYNC_SEMA_OFF_COUNT]
-    test ecx, ecx
+    mov eax, [ebx + SYNC_SEMA_OFF_COUNT]  ; EAX = alter Count (CMPXCHG-Comparand)
+    test eax, eax
     jz .sw_fail
-    mov edx, ecx
-    dec edx
-    lock cmpxchg [eax + SYNC_SEMA_OFF_COUNT], edx
-    jnz .sw_retry           ; CAS fehlgeschlagen, nochmal
+    lea edx, [eax - 1]          ; EDX = neuer Count
+    lock cmpxchg [ebx + SYNC_SEMA_OFF_COUNT], edx
+    jnz .sw_retry
+    mov eax, ebx                ; EAX = sema_ptr wiederherstellen
+    pop ebx
     clc
     ret
 .sw_fail:
+    mov eax, ebx
+    pop ebx
     stc
     ret
 
 ; np_semaphore_release: EAX=sema_ptr, ECX=release_count → CF=0 / CF=1 Überlauf
+; EBX = sema_ptr (für EAX-Restore); EAX als CMPXCHG-Comparand
 np_semaphore_release:
-    mov [sync_tmp_ptr], eax
+    push ebx
     mov [sync_tmp_cnt], ecx
+    mov ebx, eax                ; EBX = sema_ptr
 .sr_retry:
-    mov eax, [sync_tmp_ptr]
-    mov ecx, [eax + SYNC_SEMA_OFF_COUNT]
-    mov edx, ecx
-    add edx, [sync_tmp_cnt]
-    cmp edx, [eax + SYNC_SEMA_OFF_MAX]
+    mov eax, [ebx + SYNC_SEMA_OFF_COUNT]  ; EAX = alter Count (CMPXCHG-Comparand)
+    mov edx, eax
+    add edx, [sync_tmp_cnt]     ; EDX = neuer Count
+    cmp edx, [ebx + SYNC_SEMA_OFF_MAX]
     ja .sr_overflow
-    lock cmpxchg [eax + SYNC_SEMA_OFF_COUNT], edx
+    lock cmpxchg [ebx + SYNC_SEMA_OFF_COUNT], edx
     jnz .sr_retry
+    mov eax, ebx
+    pop ebx
     clc
     ret
 .sr_overflow:
+    mov eax, ebx
+    pop ebx
     stc
     ret
 
@@ -278,20 +286,24 @@ np_seqlock_write_unlock:
 ; ---------------------------------------------------------------------------
 
 ; np_refcount_retain: EAX=refcount_ptr (dd) → CF=0 / CF=1 Objekt bereits tot (count=0)
+; EBX = refcount_ptr (für EAX-Restore); EAX als CMPXCHG-Comparand
 np_refcount_retain:
-    mov [sync_tmp_ptr], eax
+    push ebx
+    mov ebx, eax                ; EBX = refcount_ptr
 .rrn_retry:
-    mov eax, [sync_tmp_ptr]
-    mov ecx, [eax]
-    test ecx, ecx
-    jz .rrn_dead            ; Objekt ist tot, darf nicht reviviert werden
-    mov edx, ecx
-    inc edx
-    lock cmpxchg [eax], edx
+    mov eax, [ebx]              ; EAX = alter Refcount (CMPXCHG-Comparand)
+    test eax, eax
+    jz .rrn_dead                ; Objekt ist tot, darf nicht reviviert werden
+    lea edx, [eax + 1]          ; EDX = neuer Refcount
+    lock cmpxchg [ebx], edx     ; wenn [ebx]==EAX: schreibe EDX
     jnz .rrn_retry
+    mov eax, ebx                ; EAX = refcount_ptr wiederherstellen
+    pop ebx
     clc
     ret
 .rrn_dead:
+    mov eax, ebx
+    pop ebx
     stc
     ret
 
@@ -1878,22 +1890,38 @@ irq_manager_self_test:
     push edi
 
     ; === Test 1: IDT geladen – sidt → base == idt_table ===
+    push eax
+    mov al, 0x11
+    out 0xe9, al
+    pop eax
     sidt [irq_st_idtr_buf]
     mov eax, [irq_st_idtr_buf + 2]  ; Basisadresse
     cmp eax, idt_table
     jne .imst_fail
 
     ; === Test 2: IDT-Limit = (IDT_ENTRY_COUNT * 8) - 1 ===
+    push eax
+    mov al, 0x12
+    out 0xe9, al
+    pop eax
     movzx eax, word [irq_st_idtr_buf]
     cmp eax, (IDT_ENTRY_COUNT * 8) - 1
     jne .imst_fail
 
     ; === Test 3: PIC-Mastermaske (0x21) lesbar, nicht komplett maskiert ===
+    push eax
+    mov al, 0x13
+    out 0xe9, al
+    pop eax
     in al, 0x21
     cmp al, 0xFF
     je .imst_fail                   ; alle IRQs maskiert → Fehler
 
     ; === Test 4: irq_register_handler → Handler in Slot ===
+    push eax
+    mov al, 0x14
+    out 0xe9, al
+    pop eax
     mov eax, 5                      ; Test-IRQ 5
     mov ebx, irq_st_test_handler
     xor ecx, ecx
@@ -1906,6 +1934,10 @@ irq_manager_self_test:
     jne .imst_fail
 
     ; === Test 5: Doppel-Registrierung ohne SHARED → NP_ERR_IRQ_ALREADY_BOUND ===
+    push eax
+    mov al, 0x15
+    out 0xe9, al
+    pop eax
     mov eax, 5
     mov ebx, irq_st_test_handler
     xor ecx, ecx
@@ -1916,6 +1948,10 @@ irq_manager_self_test:
     jne .imst_fail
 
     ; === Test 6: irq_dispatch_hw → Handler aufgerufen ===
+    push eax
+    mov al, 0x16
+    out 0xe9, al
+    pop eax
     mov dword [irq_st_cb_called], 0
     mov eax, 5
     call irq_dispatch_hw
@@ -1925,12 +1961,20 @@ irq_manager_self_test:
     jne .imst_fail
 
     ; === Test 7: irq_stat_total und irq_counts[5] inkrementiert ===
+    push eax
+    mov al, 0x17
+    out 0xe9, al
+    pop eax
     cmp dword [irq_stat_total], 1
     jne .imst_fail
     cmp dword [irq_counts + 5 * 4], 1
     jne .imst_fail
 
     ; === Test 8: irq_unregister_handler → Slot geleert ===
+    push eax
+    mov al, 0x18
+    out 0xe9, al
+    pop eax
     mov eax, 5
     call irq_unregister_handler
     jc .imst_fail
@@ -1938,6 +1982,10 @@ irq_manager_self_test:
     jne .imst_fail
 
     ; === Test 9: np_interrupt_vector_allocate(1) → Vektor ≥ 48 ===
+    push eax
+    mov al, 0x19
+    out 0xe9, al
+    pop eax
     mov eax, 1
     call np_interrupt_vector_allocate
     jc .imst_fail
@@ -1946,6 +1994,10 @@ irq_manager_self_test:
     mov [irq_st_alloc_vec], eax
 
     ; === Test 10: np_interrupt_vector_free → anschließend wieder allokierbar ===
+    push eax
+    mov al, 0x1A
+    out 0xe9, al
+    pop eax
     mov ecx, 1
     call np_interrupt_vector_free
     jc .imst_fail

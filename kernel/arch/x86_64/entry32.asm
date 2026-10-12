@@ -1145,6 +1145,13 @@ kernel_entry:
     mov esi, message_vmemsafe_ok
     call serial_write_string
 
+    call vfs_initialize
+    jc panic_vfs
+    call vfs_self_test
+    jc panic_vfs
+    mov esi, message_vfs_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -1330,12 +1337,7 @@ kernel_entry:
     mov dword [boot_phase_last_success], BOOT_PHASE_DEVICE_DISCOVERY
     mov dword [boot_phase_current], BOOT_PHASE_ROOT_FILESYSTEM
     call boot_phase_log
-    call vfs_initialize
-    jc panic_vfs
-    call vfs_self_test
-    jc panic_vfs
-    mov esi, message_vfs_ok
-    call serial_write_string
+    ; VFS already initialized early (before cap_integration_self_test)
     ; Persistentes NovaFS-Systemvolume als Root; ohne Volume bleibt das
     ; Bootstrap-RAMFS bestehen (NPSPEC-NOVAFS-ONDISK-0001).
     call novafs_initialize

@@ -8251,9 +8251,9 @@ astorage_self_test:
     mov eax, 1
     call astorage_register
     jc .fail
-    ; high I/O → should promote to HOT
+    ; high I/O (512 ops): EWMA = (32*512 + 224*50)/256 = 107 → HOT tier
     mov eax, 1
-    mov edx, 150
+    mov edx, 512
     call astorage_record_io
     jc .fail
     mov eax, 1
@@ -8445,9 +8445,9 @@ anetwork_self_test:
     mov edx, 100
     call anetwork_register
     jc .fail
-    ; high utilization → REALTIME
+    ; high utilization: EWMA(48/256) from 0 with sample=512 → bw_used=96 → 96%cap → REALTIME
     mov eax, 1
-    mov edx, 85
+    mov edx, 512
     call anetwork_update_bw
     jc .fail
     mov eax, 1
@@ -9133,9 +9133,9 @@ renergy_self_test:
     mov edx, 50
     call renergy_update
     jc .fail
-    ; update with 200mW → over cap → CF=1
+    ; update with 800mW: EWMA(32/256) gives ~130mW > 100mW cap → CF=1
     mov eax, 1
-    mov edx, 200
+    mov edx, 800
     call renergy_update
     jnc .fail
     ; violations should be > 0
@@ -9251,10 +9251,13 @@ rlatency_observe:
     mov [edi + RLAT_AVG_LAT], eax
     pop ecx
     ; cross-subsystem: update prediction for endpoint metric
+    ; apred_update clobbers EDI — save/restore around the call
     push edx
+    push edi
     mov eax, ebx
     mov edx, [edi + RLAT_AVG_LAT]
     call apred_update
+    pop edi
     pop edx
     ; check SLA
     mov eax, [edi + RLAT_AVG_LAT]
@@ -9556,27 +9559,24 @@ txconfig_stage:
     inc esi
     jmp .scan
 .slot:
+    ; stack: [edx(key), ecx(new_val), ebx_orig, ret_addr]
     mov [edi + TXCFG_TXN_ID], ebx
-    pop edx
-    push edx
     mov [edi + TXCFG_KEY], edx
-    ; read old value via sconf_get
-    mov eax, edx            ; key
+    ; read old value: sconf_get clobbers EDI — save/restore around the call
+    push edi
+    mov eax, edx
     call sconf_get          ; EAX=value or CF=1 (key not found → old=0)
+    pop edi
     jc .old_zero
     mov [edi + TXCFG_OLD_VAL], eax
     jmp .set_new
 .old_zero:
     mov dword [edi + TXCFG_OLD_VAL], 0
 .set_new:
-    pop edx
-    push edx
-    pop ecx
-    push ecx
-    mov [edi + TXCFG_NEW_VAL], ecx
-    pop edx
-    pop ecx
+    pop edx                  ; discard saved key (already stored above)
+    pop ecx                  ; ECX = new_val = original ECX arg
     pop ebx
+    mov [edi + TXCFG_NEW_VAL], ecx
     clc
     ret
 .full:
@@ -9601,10 +9601,12 @@ txconfig_commit:
     add edi, txconfig_table
     cmp [edi + TXCFG_TXN_ID], ebx
     jne .next
-    ; apply via sconf_set(key, new_val)
+    ; apply via sconf_set(key, new_val) — sconf_set clobbers EDI, save/restore
     mov eax, [edi + TXCFG_KEY]
     mov edx, [edi + TXCFG_NEW_VAL]
+    push edi
     call sconf_set
+    pop edi
     mov dword [edi + TXCFG_TXN_ID], 0  ; clear slot
 .next:
     inc esi
@@ -9631,10 +9633,12 @@ txconfig_abort:
     add edi, txconfig_table
     cmp [edi + TXCFG_TXN_ID], ebx
     jne .next
-    ; restore old value
+    ; restore old value — sconf_set clobbers EDI, save/restore
     mov eax, [edi + TXCFG_KEY]
     mov edx, [edi + TXCFG_OLD_VAL]
+    push edi
     call sconf_set
+    pop edi
     mov dword [edi + TXCFG_TXN_ID], 0
 .next:
     inc esi
