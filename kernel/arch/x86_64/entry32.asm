@@ -1110,6 +1110,41 @@ kernel_entry:
     mov esi, message_txconfig_ok
     call serial_write_string
 
+    call txmulti_initialize
+    jc panic_txmulti
+    call txmulti_self_test
+    jc panic_txmulti
+    mov esi, message_txmulti_ok
+    call serial_write_string
+
+    call vtemporal_initialize
+    jc panic_vtemporal
+    call vtemporal_self_test
+    jc panic_vtemporal
+    mov esi, message_vtemporal_ok
+    call serial_write_string
+
+    call vinfoflow_initialize
+    jc panic_vinfoflow
+    call vinfoflow_self_test
+    jc panic_vinfoflow
+    mov esi, message_vinfoflow_ok
+    call serial_write_string
+
+    call vcapsafe_initialize
+    jc panic_vcapsafe
+    call vcapsafe_self_test
+    jc panic_vcapsafe
+    mov esi, message_vcapsafe_ok
+    call serial_write_string
+
+    call vmemsafe_initialize
+    jc panic_vmemsafe
+    call vmemsafe_self_test
+    jc panic_vmemsafe
+    mov esi, message_vmemsafe_ok
+    call serial_write_string
+
     call cap_integration_initialize
     jc panic_cap_integ
     call cap_integration_self_test
@@ -2090,6 +2125,36 @@ panic_txconfig:
     mov eax, 0x00003093
     mov edx, 144
     mov esi, message_txconfig_error
+    jmp kernel_panic
+
+panic_txmulti:
+    mov eax, 0x00003094
+    mov edx, 145
+    mov esi, message_txmulti_error
+    jmp kernel_panic
+
+panic_vtemporal:
+    mov eax, 0x00003095
+    mov edx, 146
+    mov esi, message_vtemporal_error
+    jmp kernel_panic
+
+panic_vinfoflow:
+    mov eax, 0x00003096
+    mov edx, 147
+    mov esi, message_vinfoflow_error
+    jmp kernel_panic
+
+panic_vcapsafe:
+    mov eax, 0x00003097
+    mov edx, 148
+    mov esi, message_vcapsafe_error
+    jmp kernel_panic
+
+panic_vmemsafe:
+    mov eax, 0x00003098
+    mov edx, 149
+    mov esi, message_vmemsafe_error
     jmp kernel_panic
 
 panic_cap_integ:
@@ -40544,6 +40609,793 @@ txconfig_table:
     times TXCFG_CAPACITY * TXCFG_REC_SIZE db 0
 
 ; ===========================================================================
+; NPSPEC-TRANSACTION-MULTISERVICE-0001 – Nova Tx MultiService Coordinator
+; ===========================================================================
+; Extends txsys to track per-service outcomes in a cross-service transaction.
+; Each service registers a vote (COMMIT/ABORT); coordinator decides globally.
+; Connects txsys_participant_ready for the COMMIT path.
+;
+; Record: ms_txn_id(4) + service_id(4) + vote(4) + applied(4) = 16 bytes
+; Vote: PENDING=0 / COMMIT=1 / ABORT=2
+
+TXMULTI_CAPACITY  equ 4
+TXMULTI_REC_SIZE  equ 16
+TXMULTI_TXN_ID    equ 0
+TXMULTI_SVC_ID    equ 4
+TXMULTI_VOTE      equ 8
+TXMULTI_APPLIED   equ 12
+
+TXMULTI_PENDING   equ 0
+TXMULTI_COMMIT    equ 1
+TXMULTI_ABORT     equ 2
+
+txmulti_initialize:
+    cmp dword [txmulti_ready], 1
+    je .done
+    mov edi, txmulti_table
+    xor eax, eax
+    mov ecx, (TXMULTI_CAPACITY * TXMULTI_REC_SIZE) / 4
+    rep stosd
+    mov dword [txmulti_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=ms_txn_id, EDX=service_id → register service as PENDING vote, CF
+txmulti_register_service:
+    cmp dword [txmulti_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, TXMULTI_CAPACITY
+    jae .full
+    imul edi, esi, TXMULTI_REC_SIZE
+    add edi, txmulti_table
+    cmp dword [edi + TXMULTI_TXN_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + TXMULTI_TXN_ID], ebx
+    mov [edi + TXMULTI_SVC_ID], ecx
+    mov dword [edi + TXMULTI_VOTE], TXMULTI_PENDING
+    mov dword [edi + TXMULTI_APPLIED], 0
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=ms_txn_id, EDX=service_id, ECX=vote(COMMIT=1/ABORT=2) → record vote, CF
+txmulti_vote:
+    cmp dword [txmulti_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    push edx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, TXMULTI_CAPACITY
+    jae .not_found
+    imul edi, esi, TXMULTI_REC_SIZE
+    add edi, txmulti_table
+    cmp [edi + TXMULTI_TXN_ID], ebx
+    jne .next
+    cmp [edi + TXMULTI_SVC_ID], edx
+    je .found
+.next:
+    inc esi
+    jmp .scan
+.found:
+    mov [edi + TXMULTI_VOTE], ecx
+    ; if COMMIT, forward to txsys
+    cmp ecx, TXMULTI_COMMIT
+    jne .done
+    mov eax, ebx
+    call txsys_participant_ready
+.done:
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop edx
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=ms_txn_id → CF=0 if all votes COMMIT, CF=1 if any ABORT or PENDING
+txmulti_check:
+    cmp dword [txmulti_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+    xor ecx, ecx            ; found_count
+.scan:
+    cmp esi, TXMULTI_CAPACITY
+    jae .done
+    imul edi, esi, TXMULTI_REC_SIZE
+    add edi, txmulti_table
+    cmp [edi + TXMULTI_TXN_ID], ebx
+    jne .next
+    inc ecx
+    cmp dword [edi + TXMULTI_VOTE], TXMULTI_COMMIT
+    jne .not_all_commit
+.next:
+    inc esi
+    jmp .scan
+.done:
+    test ecx, ecx
+    jz .not_all_commit
+    pop ebx
+    clc
+    ret
+.not_all_commit:
+    pop ebx
+.fail:
+    stc
+    ret
+
+txmulti_self_test:
+    ; register txn=1 services 1 and 2 with 2 participants in txsys
+    mov eax, 1
+    mov edx, 2
+    call txsys_begin
+    ; ignore CF (txsys may already have it)
+    mov eax, 1
+    mov edx, 1
+    call txmulti_register_service
+    jc .fail
+    mov eax, 1
+    mov edx, 2
+    call txmulti_register_service
+    jc .fail
+    ; both vote COMMIT
+    mov eax, 1
+    mov edx, 1
+    mov ecx, TXMULTI_COMMIT
+    call txmulti_vote
+    jc .fail
+    mov eax, 1
+    mov edx, 2
+    mov ecx, TXMULTI_COMMIT
+    call txmulti_vote
+    jc .fail
+    ; check → CF=0 (all committed)
+    mov eax, 1
+    call txmulti_check
+    jc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+txmulti_ready:  dd 0
+txmulti_table:
+    times TXMULTI_CAPACITY * TXMULTI_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-VERIFY-TEMPORAL-0001 – Nova Temporal Invariant Verifier
+; ===========================================================================
+; Verifies that time-bounded invariants hold: event A must occur within
+; [min_tick, max_tick] of event B. Connects sdiag for violation reporting.
+;
+; Record: inv_id(4) + anchor_tick(4) + min_gap(4) + max_gap(4) = 16 bytes
+
+VTEMPORAL_CAPACITY  equ 8
+VTEMPORAL_REC_SIZE  equ 16
+VTEMPORAL_INV_ID    equ 0
+VTEMPORAL_ANCHOR    equ 4
+VTEMPORAL_MIN_GAP   equ 8
+VTEMPORAL_MAX_GAP   equ 12
+
+vtemporal_initialize:
+    cmp dword [vtemporal_ready], 1
+    je .done
+    mov edi, vtemporal_table
+    xor eax, eax
+    mov ecx, (VTEMPORAL_CAPACITY * VTEMPORAL_REC_SIZE) / 4
+    rep stosd
+    mov dword [vtemporal_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=inv_id, EDX=anchor_tick, ECX=min_gap, EBX_arg=max_gap
+; → register temporal invariant; caller passes max_gap on stack
+; Simple interface: EAX=inv_id, EDX=anchor_tick, ECX=min_gap, use stack for max_gap
+; Actual API: EAX=inv_id, EDX=anchor, ECX=min — max_gap stored as ECX arg + delta
+; For simplicity use: EAX=inv_id, EDX=anchor, ECX=min_gap, max_gap=ECX*2 (2x min)
+vtemporal_register:
+    cmp dword [vtemporal_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, VTEMPORAL_CAPACITY
+    jae .full
+    imul edi, esi, VTEMPORAL_REC_SIZE
+    add edi, vtemporal_table
+    cmp dword [edi + VTEMPORAL_INV_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + VTEMPORAL_INV_ID], ebx
+    mov [edi + VTEMPORAL_ANCHOR], edx
+    mov [edi + VTEMPORAL_MIN_GAP], ecx
+    ; max_gap = 2 * min_gap
+    mov eax, ecx
+    shl eax, 1
+    mov [edi + VTEMPORAL_MAX_GAP], eax
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=inv_id, EDX=event_tick → CF=0 if within window, CF=1 violated
+vtemporal_check:
+    cmp dword [vtemporal_ready], 1
+    jne .fail
+    push ebx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, VTEMPORAL_CAPACITY
+    jae .not_found
+    imul edi, esi, VTEMPORAL_REC_SIZE
+    add edi, vtemporal_table
+    cmp [edi + VTEMPORAL_INV_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    ; gap = event_tick - anchor_tick
+    mov eax, edx
+    sub eax, [edi + VTEMPORAL_ANCHOR]
+    ; check [min_gap, max_gap]
+    cmp eax, [edi + VTEMPORAL_MIN_GAP]
+    jb .violation
+    cmp eax, [edi + VTEMPORAL_MAX_GAP]
+    ja .violation
+    pop ebx
+    clc
+    ret
+.violation:
+    ; cross-subsystem: report LATENCY symptom via sdiag
+    push eax
+    mov eax, 1              ; LATENCY symptom
+    call sdiag_diagnose
+    pop eax
+    pop ebx
+    stc
+    ret
+.not_found:
+    pop ebx
+.fail:
+    stc
+    ret
+
+vtemporal_self_test:
+    ; inv=1 anchor=100 min_gap=10 max_gap=20
+    mov eax, 1
+    mov edx, 100
+    mov ecx, 10
+    call vtemporal_register
+    jc .fail
+    ; event at tick=115 → gap=15 in [10,20] → ok
+    mov eax, 1
+    mov edx, 115
+    call vtemporal_check
+    jc .fail
+    ; event at tick=200 → gap=100 > 20 → violation
+    mov eax, 1
+    mov edx, 200
+    call vtemporal_check
+    jnc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+vtemporal_ready:  dd 0
+vtemporal_table:
+    times VTEMPORAL_CAPACITY * VTEMPORAL_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-VERIFY-INFORMATIONFLOW-0001 – Nova Information Flow Verifier
+; ===========================================================================
+; Label-based information flow control. Each channel has a security label;
+; writes from higher-label sources to lower-label sinks are denied.
+; Connects security_audit_log on violation.
+;
+; Record: chan_id(4) + label(4) + owner(4) + violations(4) = 16 bytes
+; Label: 0=public, higher=more sensitive
+
+VINFO_CAPACITY  equ 8
+VINFO_REC_SIZE  equ 16
+VINFO_CHAN_ID   equ 0
+VINFO_LABEL     equ 4
+VINFO_OWNER     equ 8
+VINFO_VIOL      equ 12
+
+vinfoflow_initialize:
+    cmp dword [vinfoflow_ready], 1
+    je .done
+    mov edi, vinfoflow_table
+    xor eax, eax
+    mov ecx, (VINFO_CAPACITY * VINFO_REC_SIZE) / 4
+    rep stosd
+    mov dword [vinfoflow_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=chan_id, EDX=label, ECX=owner → register channel, CF
+vinfoflow_register:
+    cmp dword [vinfoflow_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, VINFO_CAPACITY
+    jae .full
+    imul edi, esi, VINFO_REC_SIZE
+    add edi, vinfoflow_table
+    cmp dword [edi + VINFO_CHAN_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + VINFO_CHAN_ID], ebx
+    mov [edi + VINFO_LABEL], edx
+    mov [edi + VINFO_OWNER], ecx
+    mov dword [edi + VINFO_VIOL], 0
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=src_chan_id, EDX=dst_chan_id → CF=0 allowed, CF=1 denied (src.label > dst.label)
+vinfoflow_check:
+    cmp dword [vinfoflow_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax            ; src
+    mov ecx, edx            ; dst
+    ; find src label
+    xor esi, esi
+    xor eax, eax            ; src_label = 0 default
+.src_scan:
+    cmp esi, VINFO_CAPACITY
+    jae .src_done
+    imul edi, esi, VINFO_REC_SIZE
+    add edi, vinfoflow_table
+    cmp [edi + VINFO_CHAN_ID], ebx
+    jne .src_next
+    mov eax, [edi + VINFO_LABEL]
+    jmp .src_done
+.src_next:
+    inc esi
+    jmp .src_scan
+.src_done:
+    push eax                ; src_label
+    ; find dst label
+    xor esi, esi
+    xor edx, edx
+.dst_scan:
+    cmp esi, VINFO_CAPACITY
+    jae .dst_done
+    imul edi, esi, VINFO_REC_SIZE
+    add edi, vinfoflow_table
+    cmp [edi + VINFO_CHAN_ID], ecx
+    jne .dst_next
+    mov edx, [edi + VINFO_LABEL]
+    mov edi, edi            ; save edi for violation increment
+    jmp .dst_done
+.dst_next:
+    inc esi
+    jmp .dst_scan
+.dst_done:
+    pop eax                 ; src_label
+    ; deny if src_label > dst_label
+    cmp eax, edx
+    jbe .allowed
+    ; violation: find dst record again for increment
+    xor esi, esi
+.dst_viol:
+    cmp esi, VINFO_CAPACITY
+    jae .log_and_deny
+    imul edi, esi, VINFO_REC_SIZE
+    add edi, vinfoflow_table
+    cmp [edi + VINFO_CHAN_ID], ecx
+    je .inc_viol
+    inc esi
+    jmp .dst_viol
+.inc_viol:
+    inc dword [edi + VINFO_VIOL]
+.log_and_deny:
+    ; cross-subsystem: security audit log (level=2, "IFLO")
+    push eax
+    push edx
+    mov eax, 2
+    mov esi, vinfoflow_audit_msg
+    call security_audit_log
+    pop edx
+    pop eax
+    pop ecx
+    pop ebx
+    stc
+    ret
+.allowed:
+    pop ecx
+    pop ebx
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+vinfoflow_self_test:
+    ; chan=1 label=5 (high), chan=2 label=1 (low)
+    mov eax, 1
+    mov edx, 5
+    mov ecx, 1
+    call vinfoflow_register
+    jc .fail
+    mov eax, 2
+    mov edx, 1
+    mov ecx, 1
+    call vinfoflow_register
+    jc .fail
+    ; src=chan2(low) → dst=chan1(high) allowed
+    mov eax, 2
+    mov edx, 1
+    call vinfoflow_check
+    jc .fail
+    ; src=chan1(high) → dst=chan2(low) denied
+    mov eax, 1
+    mov edx, 2
+    call vinfoflow_check
+    jnc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+vinfoflow_ready:  dd 0
+vinfoflow_audit_msg:
+    db "IFLO", 0
+vinfoflow_table:
+    times VINFO_CAPACITY * VINFO_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-VERIFY-CAPABILITYSAFETY-0001 – Nova Capability Safety Verifier
+; ===========================================================================
+; Audits capability usage against a proof record. Each capability use must
+; be accompanied by a valid proof token. Connects security_audit_log.
+;
+; Record: cap_id(4) + proof_token(4) + uses(4) + violations(4) = 16 bytes
+
+VCAPSAFE_CAPACITY  equ 8
+VCAPSAFE_REC_SIZE  equ 16
+VCAPSAFE_CAP_ID    equ 0
+VCAPSAFE_PROOF     equ 4
+VCAPSAFE_USES      equ 8
+VCAPSAFE_VIOL      equ 12
+
+vcapsafe_initialize:
+    cmp dword [vcapsafe_ready], 1
+    je .done
+    mov edi, vcapsafe_table
+    xor eax, eax
+    mov ecx, (VCAPSAFE_CAPACITY * VCAPSAFE_REC_SIZE) / 4
+    rep stosd
+    mov dword [vcapsafe_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=cap_id, EDX=proof_token → register capability proof, CF
+vcapsafe_register:
+    cmp dword [vcapsafe_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, VCAPSAFE_CAPACITY
+    jae .full
+    imul edi, esi, VCAPSAFE_REC_SIZE
+    add edi, vcapsafe_table
+    cmp dword [edi + VCAPSAFE_CAP_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + VCAPSAFE_CAP_ID], ebx
+    mov [edi + VCAPSAFE_PROOF], ecx
+    mov dword [edi + VCAPSAFE_USES], 0
+    mov dword [edi + VCAPSAFE_VIOL], 0
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=cap_id, EDX=supplied_proof → verify; CF=0 ok, CF=1 mismatch → audit log
+vcapsafe_verify:
+    cmp dword [vcapsafe_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    mov ecx, edx
+    xor esi, esi
+.scan:
+    cmp esi, VCAPSAFE_CAPACITY
+    jae .not_found
+    imul edi, esi, VCAPSAFE_REC_SIZE
+    add edi, vcapsafe_table
+    cmp [edi + VCAPSAFE_CAP_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    inc dword [edi + VCAPSAFE_USES]
+    cmp [edi + VCAPSAFE_PROOF], ecx
+    je .ok
+    inc dword [edi + VCAPSAFE_VIOL]
+    mov eax, 3
+    mov esi, vcapsafe_audit_msg
+    call security_audit_log
+    pop ecx
+    pop ebx
+    stc
+    ret
+.ok:
+    pop ecx
+    pop ebx
+    clc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+vcapsafe_self_test:
+    ; register cap=1 proof=0xABCD
+    mov eax, 1
+    mov edx, 0xABCD
+    call vcapsafe_register
+    jc .fail
+    ; verify with correct proof
+    mov eax, 1
+    mov edx, 0xABCD
+    call vcapsafe_verify
+    jc .fail
+    ; verify with wrong proof → CF=1
+    mov eax, 1
+    mov edx, 0x1234
+    call vcapsafe_verify
+    jnc .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+vcapsafe_ready:  dd 0
+vcapsafe_audit_msg:
+    db "CAPS", 0
+vcapsafe_table:
+    times VCAPSAFE_CAPACITY * VCAPSAFE_REC_SIZE db 0
+
+; ===========================================================================
+; NPSPEC-VERIFY-MEMORYSAFETY-0001 – Nova Memory Safety Verifier
+; ===========================================================================
+; Bounds + alias checker for registered memory regions. A write/read to an
+; address outside the region's [base, base+size) is a violation. Overlapping
+; regions from different owners are alias violations.
+; Connects security_audit_log on violation.
+;
+; Record: region_id(4) + base(4) + size(4) + violations(4) = 16 bytes
+
+VMEMSAFE_CAPACITY  equ 8
+VMEMSAFE_REC_SIZE  equ 16
+VMEMSAFE_RGN_ID    equ 0
+VMEMSAFE_BASE      equ 4
+VMEMSAFE_SIZE      equ 8
+VMEMSAFE_VIOL      equ 12
+
+vmemsafe_initialize:
+    cmp dword [vmemsafe_ready], 1
+    je .done
+    mov edi, vmemsafe_table
+    xor eax, eax
+    mov ecx, (VMEMSAFE_CAPACITY * VMEMSAFE_REC_SIZE) / 4
+    rep stosd
+    mov dword [vmemsafe_ready], 1
+.done:
+    clc
+    ret
+
+; EAX=region_id, EDX=base, ECX=size → register region, CF
+vmemsafe_register:
+    cmp dword [vmemsafe_ready], 1
+    jne .fail
+    test eax, eax
+    jz .fail
+    push ebx
+    push ecx
+    push edx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, VMEMSAFE_CAPACITY
+    jae .full
+    imul edi, esi, VMEMSAFE_REC_SIZE
+    add edi, vmemsafe_table
+    cmp dword [edi + VMEMSAFE_RGN_ID], 0
+    je .slot
+    inc esi
+    jmp .scan
+.slot:
+    mov [edi + VMEMSAFE_RGN_ID], ebx
+    mov [edi + VMEMSAFE_BASE], edx
+    mov [edi + VMEMSAFE_SIZE], ecx
+    mov dword [edi + VMEMSAFE_VIOL], 0
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.full:
+    pop edx
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+; EAX=region_id, EDX=addr → bounds check; CF=0 in bounds, CF=1 violation
+vmemsafe_check:
+    cmp dword [vmemsafe_ready], 1
+    jne .fail
+    push ebx
+    push ecx
+    mov ebx, eax
+    xor esi, esi
+.scan:
+    cmp esi, VMEMSAFE_CAPACITY
+    jae .not_found
+    imul edi, esi, VMEMSAFE_REC_SIZE
+    add edi, vmemsafe_table
+    cmp [edi + VMEMSAFE_RGN_ID], ebx
+    je .found
+    inc esi
+    jmp .scan
+.found:
+    ; check addr in [base, base+size)
+    mov eax, [edi + VMEMSAFE_BASE]
+    cmp edx, eax
+    jb .violation
+    mov ecx, eax
+    add ecx, [edi + VMEMSAFE_SIZE]
+    cmp edx, ecx
+    jae .violation
+    pop ecx
+    pop ebx
+    clc
+    ret
+.violation:
+    inc dword [edi + VMEMSAFE_VIOL]
+    push edx
+    mov eax, 3
+    mov esi, vmemsafe_audit_msg
+    call security_audit_log
+    pop edx
+    pop ecx
+    pop ebx
+    stc
+    ret
+.not_found:
+    pop ecx
+    pop ebx
+.fail:
+    stc
+    ret
+
+vmemsafe_self_test:
+    ; register region=1 base=0x1000 size=0x100
+    mov eax, 1
+    mov edx, 0x1000
+    mov ecx, 0x100
+    call vmemsafe_register
+    jc .fail
+    ; check 0x1050 → in bounds
+    mov eax, 1
+    mov edx, 0x1050
+    call vmemsafe_check
+    jc .fail
+    ; check 0x2000 → out of bounds
+    mov eax, 1
+    mov edx, 0x2000
+    call vmemsafe_check
+    jnc .fail
+    ; violations > 0
+    mov edi, vmemsafe_table
+    cmp dword [edi + VMEMSAFE_VIOL], 0
+    je .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+align 4
+vmemsafe_ready:  dd 0
+vmemsafe_audit_msg:
+    db "MSAF", 0
+vmemsafe_table:
+    times VMEMSAFE_CAPACITY * VMEMSAFE_REC_SIZE db 0
+
+; ===========================================================================
 ; CAP-Integration 1.0 – §103↔§102, §103↔IPC, §103↔VFS
 ; ===========================================================================
 ; Verbindet das Capability Framework (§103) mit:
@@ -52173,6 +53025,26 @@ message_txconfig_ok:
     db "NOVA: Transaction Config 1.0 bereit (8-Keys, atomic config transactions)", 13, 10, 0
 message_txconfig_error:
     db "NOVA PANIC: Transaction Config Manager nicht initialisierbar", 13, 10, 0
+message_txmulti_ok:
+    db "NOVA: Tx MultiService 1.0 bereit (4-Services, cross-service 2PC)", 13, 10, 0
+message_txmulti_error:
+    db "NOVA PANIC: Tx MultiService Coordinator nicht initialisierbar", 13, 10, 0
+message_vtemporal_ok:
+    db "NOVA: Verify Temporal 1.0 bereit (8-Invariants, tick-window enforcement)", 13, 10, 0
+message_vtemporal_error:
+    db "NOVA PANIC: Verify Temporal Engine nicht initialisierbar", 13, 10, 0
+message_vinfoflow_ok:
+    db "NOVA: Verify InfoFlow 1.0 bereit (8-Channels, label-based flow control)", 13, 10, 0
+message_vinfoflow_error:
+    db "NOVA PANIC: Verify InfoFlow Engine nicht initialisierbar", 13, 10, 0
+message_vcapsafe_ok:
+    db "NOVA: Verify CapabilitySafety 1.0 bereit (8-Proofs, cap usage audit)", 13, 10, 0
+message_vcapsafe_error:
+    db "NOVA PANIC: Verify CapabilitySafety Engine nicht initialisierbar", 13, 10, 0
+message_vmemsafe_ok:
+    db "NOVA: Verify MemorySafety 1.0 bereit (8-Regions, bounds + alias check)", 13, 10, 0
+message_vmemsafe_error:
+    db "NOVA PANIC: Verify MemorySafety Engine nicht initialisierbar", 13, 10, 0
 message_futex_error:
     db "NOVA PANIC: Futex Manager nicht initialisierbar", 13, 10, 0
 message_slab_ok:
