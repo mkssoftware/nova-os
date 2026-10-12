@@ -2238,3 +2238,96 @@ erreichbar, wenn der UEFI-Loader den Kernel höher im Speicher platziert.
 und EOI aus. Deadline-, I/O- und Scheduling-Pfade laufen erst nach
 Scheduler-Initialisierung, damit frühe Manager-Selbsttests nicht durch noch
 nicht aufgebaute Runtime-Zustände gestört werden.
+
+## §137–§153 NPSPEC-Vollimplementierung: Transaktionen, Adaptive, Ressourcen, Verifikation (2026-10-12)
+
+**Ziel:** Alle noch fehlenden NPSPEC-Spezifikationen vollständig im Kernel
+implementieren, die Subsysteme untereinander vernetzen und jeden Baustein mit
+einem reproduzierbaren `_self_test` absichern.
+
+**Umgesetzt (17 Commits, Panikcode-Slots 127–149):**
+
+### Transaktionsverwaltung
+
+| Spec | Symbol-Prefix | Beschreibung |
+|---|---|---|
+| NPSPEC-TRANSACTION-RESOURCE-0001 | `txres_*` | 8-Slot Ressourcensperrverwalter; exklusive Sperren pro Transaktion |
+| NPSPEC-TRANSACTION-SYSTEM-0001 | `txsys_*` | 4-Slot Two-Phase-Commit-Koordinator; PREPARE→COMMITTED/ABORTED |
+| NPSPEC-TRANSACTION-CONFIG-0001 | `txconfig_*` | 8-Slot atomare Konfigurationstransaktionen; Stage/Commit/Abort |
+| NPSPEC-TRANSACTION-MULTISERVICE-0001 | `txmulti_*` | 4-Slot dienstübergreifende Abstimmung; Weiterleitung an `txsys` |
+
+### Adaptive Steuerung
+
+| Spec | Symbol-Prefix | Beschreibung |
+|---|---|---|
+| NPSPEC-ADAPTIVE-CACHE-0001 | `acache_*` | 8-Slot EWMA-Trefferrate; bei Einbruch → `aschedsw_feedback` |
+| NPSPEC-ADAPTIVE-POWER-0001 | `apower_*` | 4-Domain P-State-Regler; load-basiert; → `apred_update` |
+| NPSPEC-ADAPTIVE-POLICYLEARNING-0001 | `pollearn_*` | 8-Regel EWMA-Gewichtslernmaschine |
+| NPSPEC-ADAPTIVE-PREDICTIONERROR-0001 | `prederr_*` | 8-Metrik Fehlermessung vs. `apred_query`; → `pollearn_feedback` |
+| NPSPEC-ADAPTIVE-PREFETCH-0001 | `aprefetch_*` | 8-Stream stride-basierter Prefetcher; EWMA-Konfidenz |
+| NPSPEC-ADAPTIVE-PRELOAD-0001 | `apreload_*` | 8-Slot prioritätsbasierte Vorlade-Queue; → `acache_record` |
+| NPSPEC-ADAPTIVE-STORAGE-0001 | `astorage_*` | 8-Volume EWMA-I/O-Rate; Tier HOT/WARM/COLD |
+| NPSPEC-ADAPTIVE-NETWORK-0001 | `anetwork_*` | 4-Interface EWMA-Bandbreite; QoS BEST_EFFORT/BULK/INTERACTIVE/REALTIME |
+| NPSPEC-ADAPTIVE-USEROVERRIDE-0001 | `uoverride_*` | 8-Key persistente Nutzerüberschreibungen; → `sconf_set` |
+
+### Ressourcenverwaltung
+
+| Spec | Symbol-Prefix | Beschreibung |
+|---|---|---|
+| NPSPEC-RESOURCE-DEADLINE-0001 | `rdeadline_*` | 8-Task EDF-Überwachung; Fristüberschreitung → `aschedsw_feedback` |
+| NPSPEC-RESOURCE-ECONOMY-0001 | `reconomy_*` | 8-Owner Kreditbudget; Ausgaben → `raccount_charge` |
+| NPSPEC-RESOURCE-ENERGY-0001 | `renergy_*` | 4-Rail Leistungsbudget; Überschreitung → `apower_update_load` |
+| NPSPEC-RESOURCE-LATENCY-0001 | `rlatency_*` | 8-Endpoint EWMA-Latenz; SLA-Verletzung → `sdiag_diagnose` + `apred_update` |
+| NPSPEC-RESOURCE-ARBITRATION-0001 | `rarbit_*` | 8-Slot prioritätsbasierter Ressourcen-Schiedsrichter |
+
+### Zustandsverwaltung
+
+| Spec | Symbol-Prefix | Beschreibung |
+|---|---|---|
+| NPSPEC-STATE-GLOBAL-0001 | `sglobal_*` | 16-Slot kernel-weiter benannter Zustandsspeicher; → `shist_record` |
+
+### Verifikation
+
+| Spec | Symbol-Prefix | Beschreibung |
+|---|---|---|
+| NPSPEC-VERIFY-TEMPORAL-0001 | `vtemporal_*` | 8-Invariante Tick-Fenster; Verletzung → `sdiag_diagnose` |
+| NPSPEC-VERIFY-INFORMATIONFLOW-0001 | `vinfoflow_*` | 8-Kanal Label-basierte Flussteuerung; → `security_audit_log` |
+| NPSPEC-VERIFY-CAPABILITYSAFETY-0001 | `vcapsafe_*` | 8-Capability Proof-Token-Prüfer; → `security_audit_log` |
+| NPSPEC-VERIFY-MEMORYSAFETY-0001 | `vmemsafe_*` | 8-Region Bereichsprüfer; → `security_audit_log` |
+
+**Querverbindungen (Cross-Subsystem-Wiring):**
+
+Alle neuen Subsysteme sind mit bestehenden Kernel-Subsystemen vernetzt:
+
+- `acache_record` (Trefferrate niedrig) → `aschedsw_feedback` (Scheduler-Klasse reduzieren)
+- `apower_update_load` → `apred_update` (Lastvorhersage aktualisieren)
+- `prederr_observe` → `apred_query` + `pollearn_feedback` (Fehler-Feedback)
+- `apreload_complete` → `acache_register` + `acache_record` (Zeile als heiß markieren)
+- `uoverride_set` → `sconf_set` (Persistenz)
+- `rdeadline_check_all` (Überfällig) → `aschedsw_feedback` (Realtime-Klasse boosten)
+- `reconomy_spend` → `raccount_charge` (echte Ressourcenabrechnung)
+- `renergy_update` (Überschreitung) → `apower_update_load` (P-State erzwingen)
+- `rlatency_observe` → `apred_update` + `sdiag_diagnose` (SLA-Verletzung)
+- `sglobal_publish` → `shist_record` (Zustandshistorie)
+- `txconfig_stage/commit/abort` → `sconf_get/sconf_set`
+- `txmulti_vote` (COMMIT) → `txsys_participant_ready`
+- `vtemporal_check` (Verletzung) → `sdiag_diagnose`
+- `vinfoflow_check` (Verletzung) → `security_audit_log`
+- `vcapsafe_verify` (Fehler) → `security_audit_log`
+- `vmemsafe_check` (Außerhalb) → `security_audit_log`
+
+**Panik-Codes:** 0x3082–0x3098 (Slots 127–149)
+
+**Build:** Alle Commits bauen sauber durch (`make kernel`, ≤ 1 MiB)
+
+**Git-Commits dieser Runde:**
+
+| Commit | Inhalt |
+|---|---|
+| 43e0ea0 | TxResource + TxSystem + ResourceArbitration |
+| 3e3031c | AdaptiveCache + AdaptivePower + PolicyLearning |
+| 92570f3 | PredictionError + AdaptivePrefetch + AdaptivePreload |
+| cd962b4 | AdaptiveStorage + AdaptiveNetwork + UserOverride |
+| d82d862 | ResourceDeadline + ResourceEconomy + ResourceEnergy |
+| f922bd7 | ResourceLatency + StateGlobal + TxConfig |
+| e6be777 | TxMultiService + VerifyTemporal + VerifyInfoFlow + VerifyCapSafety + VerifyMemSafety |

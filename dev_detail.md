@@ -5001,3 +5001,550 @@ ohne noch nicht initialisierte Managerzustände zu berühren.
 `scripts/test-uefi-numa.ps1` prüft jetzt zusätzlich zu SRAT, PMM-NUMA,
 HAL-Topologieimport und `NOVA_KERNEL_READY` auch diese beiden Marker. Wenn einer
 fehlt, bleibt das Testartefakt zur Diagnose im Build-Ordner erhalten.
+
+---
+
+## §137–§153 NPSPEC-Vollimplementierung (2026-10-12)
+
+Alle verbleibenden NPSPEC-Spezifikationen wurden implementiert, mit
+bestehenden Subsystemen vernetzt und mit `_self_test`-Routinen abgesichert.
+Der Kernel wächst dabei innerhalb des 1-MiB-Budgets (Bin-Datei).
+
+**Technisches Muster für alle Subsysteme:**
+
+- Feste Kapazität als `equ`-Konstante; Record-Layout als Byte-Offsets
+- `_initialize` → nullt Tabelle, setzt `ready`-Flag; idempotent
+- `_self_test` → prüft Positivfall + mindestens einen Negativfall; CF-Protokoll
+- Querverbindungen am Ende der Funktion; CF-Verlust bei fehlschlagendem Cross-Call
+  wird ignoriert (best-effort)
+- Temp-Variablen (`dd 0`) für Funktionen, bei denen `push/pop`-Reihenfolge
+  Register-Kollisionen erzeugen würde
+
+---
+
+### NPSPEC-TRANSACTION-RESOURCE-0001 (`txres_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Slot Ressourcensperrverwalter. Vor jeder Modifikation einer geteilten
+Ressource erwirbt eine Transaktion eine exklusive Sperre.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `txres_acquire` | EAX=txn_id, EDX=res_id → CF | CF=1 wenn Ressource bereits von anderer Transaktion gehalten |
+| `txres_release_all` | EAX=txn_id → CF | Gibt alle Sperren dieser Transaktion frei |
+
+**Daten:** `txres_table` (8 × 16 Byte): txn_id / resource_id / state(FREE=0, HELD=1) / pad
+
+**Selbsttest:** Sperre erwerben, Konflikt prüfen (CF=1), freigeben, erneut erwerben.
+
+**Panikcode:** 0x3082 (Slot 127)
+
+---
+
+### NPSPEC-TRANSACTION-SYSTEM-0001 (`txsys_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+4-Slot Two-Phase-Commit-Koordinator für systemweite Transaktionen.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `txsys_begin` | EAX=txn_id, EDX=participant_count → EAX=slot, CF | Öffnet PREPARE-Phase |
+| `txsys_participant_ready` | EAX=txn_id → CF | Erhöht Bereit-Zähler; → COMMITTED wenn alle bereit |
+| `txsys_abort` | EAX=txn_id → CF | Setzt Zustand auf ABORTED |
+
+**Zustände:** IDLE=0 / PREPARE=1 / COMMITTED=2 / ABORTED=3
+
+**Selbsttest:** 2-Teilnehmer-Transaktion, beide bereit → COMMITTED; separater Abort-Pfad.
+
+**Panikcode:** 0x3083 (Slot 128)
+
+---
+
+### NPSPEC-RESOURCE-ARBITRATION-0001 (`rarbit_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Slot prioritätsbasierter Schiedsrichter. Mehrere Anforderer konkurrieren
+um eine Ressource; der mit der höchsten Priorität gewinnt.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `rarbit_request` | EAX=req_id, EDX=res_id, ECX=priority → EAX=slot, CF | Anfrage registrieren |
+| `rarbit_arbitrate` | EDX=res_id → EAX=gewonnener_req_id, CF | Erteilt Höchstpriorität; CF=1 wenn keine Anfrage |
+
+**Selbsttest:** Zwei Anfragen für dieselbe Ressource (Priorität 5 und 10); Schiedsrichter erteilt req_id=2.
+
+**Panikcode:** 0x3084 (Slot 129)
+
+---
+
+### NPSPEC-ADAPTIVE-CACHE-0001 (`acache_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Slot EWMA-Cache-Trefferraten-Tracker (alpha=32/256 ≈ 12,5 %).
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `acache_register` | EAX=line_id → CF | Cache-Zeile registrieren; Startrate=128 (50 %) |
+| `acache_record` | EAX=line_id, EDX=1(Treffer)/0(Verfehlung) → CF | EWMA aktualisieren |
+| `acache_query` | EAX=line_id → EAX=rate, EDX=hits, ECX=misses, CF | |
+
+**Querverbindung:** Rate < 64 (25 %) → `aschedsw_feedback(class=3, delta=-48)`
+
+**Selbsttest:** Registrieren, Treffer aufzeichnen, Rate > 0 prüfen.
+
+**Panikcode:** 0x3085 (Slot 130)
+
+---
+
+### NPSPEC-ADAPTIVE-POWER-0001 (`apower_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+4-Domain P-State-Regler. P-State 0 = maximale Leistung, P-State 3 = minimaler Verbrauch.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `apower_register` | EAX=domain_id → CF | Domain bei P-State=1 (ausgeglichen) registrieren |
+| `apower_update_load` | EAX=domain_id, EDX=load% → CF | P-State anpassen; → `apred_update` |
+| `apower_query` | EAX=domain_id → EAX=p_state, EDX=load, ECX=transitions, CF | |
+
+**Logik:** load ≥ 75 → P0; load ≤ 25 → P3; sonst P1
+
+**Querverbindung:** `apower_update_load` → `apred_update(domain, avg_load)`
+
+**Selbsttest:** load=80 → P-State=0; load=10 → P-State=3.
+
+**Panikcode:** 0x3086 (Slot 131)
+
+---
+
+### NPSPEC-ADAPTIVE-POLICYLEARNING-0001 (`pollearn_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Regel EWMA-Gewichtslernmaschine (alpha=24/256 ≈ 9,4 %). Jede Regel startet
+bei Gewicht 128 (neutral). Erfolg→ Richtung 255; Fehler → Richtung 0.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `pollearn_register` | EAX=rule_id, EDX=trigger → CF | Regel registrieren |
+| `pollearn_feedback` | EAX=rule_id, EDX=1(Erfolg)/0(Fehler) → CF | Gewicht anpassen |
+| `pollearn_query` | EAX=rule_id → EAX=weight, EDX=fires, CF | |
+
+**Selbsttest:** Erfolg-Feedback hebt Gewicht über 128; Fehler-Feedback senkt es wieder.
+
+**Panikcode:** 0x3087 (Slot 132)
+
+---
+
+### NPSPEC-ADAPTIVE-PREDICTIONERROR-0001 (`prederr_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Metrik EWMA-Fehlertracker. Berechnet |Vorhersage − Beobachtung| und verfolgt
+die durchschnittliche Fehlergröße (alpha=48/256 ≈ 18,75 %).
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `prederr_register` | EAX=metric_id → CF | Metrik registrieren |
+| `prederr_observe` | EAX=metric_id, EDX=observed → CF | Fehler berechnen und EWMA aktualisieren |
+| `prederr_query` | EAX=metric_id → EAX=avg_error, EDX=last_error, ECX=samples, CF | |
+
+**Querverbindungen:**
+- `prederr_observe` → `apred_query(metric_id)` um die aktuelle Vorhersage zu holen
+- avg_error > 40 → `pollearn_feedback(metric_id, failure)`
+
+**Selbsttest:** Metrik registrieren, gleichen Wert beobachten → samples=1.
+
+**Panikcode:** 0x3088 (Slot 133)
+
+---
+
+### NPSPEC-ADAPTIVE-PREFETCH-0001 (`aprefetch_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Stream stride-basierter Prefetcher. Erkennt stabile Zugriffsmuster (Schritt)
+und gibt die vorhergesagte nächste Adresse zurück, sobald die EWMA-Konfidenz
+über dem Schwellwert liegt (alpha=64/256 ≈ 25 %; Auslöser=160/255).
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `aprefetch_register` | EAX=stream_id → CF | Stream registrieren |
+| `aprefetch_access` | EAX=stream_id, EDX=addr → EAX=prefetch_addr, CF | CF=0 wenn Prefetch ausgelöst |
+
+**Selbsttest:** Stride-Sequenz (0x1000, 0x1010, 0x1020) ohne Absturz.
+
+**Panikcode:** 0x3089 (Slot 134)
+
+---
+
+### NPSPEC-ADAPTIVE-PRELOAD-0001 (`apreload_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Slot prioritätsbasierte Vorlade-Queue. Zustände: PENDING=0, LOADING=1, READY=2.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `apreload_enqueue` | EAX=obj_id, EDX=priority → CF | Objekt einreihen |
+| `apreload_dequeue_highest` | → EAX=obj_id, CF | Höchste Priorität → LOADING |
+| `apreload_complete` | EAX=obj_id → CF | → READY; → `acache_register` + `acache_record(hit)` |
+
+**Querverbindung:** Abschluss → `acache_register(obj_id)` + `acache_record(obj_id, 1)` (Zeile als heiß markieren)
+
+**Selbsttest:** Zwei Objekte (Priorität 5 und 10); höchste Priorität wird zuerst herausgenommen.
+
+**Panikcode:** 0x308A (Slot 135)
+
+---
+
+### NPSPEC-ADAPTIVE-STORAGE-0001 (`astorage_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Volume EWMA-I/O-Raten-Tier-Selector (alpha=32/256 ≈ 12,5 %).
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `astorage_register` | EAX=vol_id → CF | Volume auf WARM-Tier registrieren |
+| `astorage_record_io` | EAX=vol_id, EDX=ops/Tick → CF | EWMA aktualisieren und Tier neu berechnen |
+| `astorage_query` | EAX=vol_id → EAX=tier, EDX=io_rate, ECX=total_ops, CF | |
+
+**Tier-Logik:** io_rate > 100 → HOT; io_rate < 20 → COLD; sonst WARM
+
+**Selbsttest:** 150 ops/Tick → HOT-Tier.
+
+**Panikcode:** 0x308B (Slot 136)
+
+---
+
+### NPSPEC-ADAPTIVE-NETWORK-0001 (`anetwork_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+4-Interface EWMA-Bandbreite-QoS-Wähler (alpha=48/256 ≈ 18,75 %).
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `anetwork_register` | EAX=iface_id, EDX=bw_cap → CF | Interface registrieren |
+| `anetwork_update_bw` | EAX=iface_id, EDX=sample → CF | EWMA + QoS-Neuberechnung |
+| `anetwork_query` | EAX=iface_id → EAX=qos, EDX=bw_used, ECX=bw_cap, CF | |
+
+**QoS-Logik:** Auslastung > 80 % → REALTIME; > 50 % → INTERACTIVE; > 20 % → BULK; sonst BEST_EFFORT
+
+**Selbsttest:** 85 % Auslastung → REALTIME.
+
+**Panikcode:** 0x308C (Slot 137)
+
+---
+
+### NPSPEC-ADAPTIVE-USEROVERRIDE-0001 (`uoverride_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Key persistente Nutzerüberschreibungen. ACTIVE=1 / INACTIVE=0.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `uoverride_set` | EAX=key, EDX=value → CF | Eintrag setzen und via `sconf_set` persistieren |
+| `uoverride_get` | EAX=key → EAX=value, EDX=version, CF=1 wenn nicht aktiv | |
+| `uoverride_clear` | EAX=key → CF | Eintrag auf INACTIVE setzen; adaptiv-automatisch greift wieder |
+
+**Querverbindung:** `uoverride_set` → `sconf_set(key, value)` zur Persistenz
+
+**Selbsttest:** set(42, 99) → get=99 → clear → get schlägt fehl.
+
+**Panikcode:** 0x308D (Slot 138)
+
+---
+
+### NPSPEC-RESOURCE-DEADLINE-0001 (`rdeadline_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Task Earliest-Deadline-First-Überwachung. Zustände: ACTIVE=1, DONE=2, MISSED=3.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `rdeadline_register` | EAX=task_id, EDX=deadline_tick → CF | Task registrieren |
+| `rdeadline_done` | EAX=task_id → CF | Task als erledigt markieren |
+| `rdeadline_check_all` | EDX=current_tick → CF | Überfällige Tasks → MISSED |
+
+**Querverbindung:** Fristüberschreitung → `aschedsw_feedback(class=4, +32)` (Realtime-Klasse boosten)
+
+**Selbsttest:** Frist=100, Prüfung bei Tick=200 → MISSED-Zustand.
+
+**Panikcode:** 0x308E (Slot 139)
+
+---
+
+### NPSPEC-RESOURCE-ECONOMY-0001 (`reconomy_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Owner Kreditbudget-System.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `reconomy_register` | EAX=owner, EDX=budget → CF | Owner mit Budget registrieren |
+| `reconomy_spend` | EAX=owner, EDX=cost → CF=1 wenn erschöpft | Kredit verbrauchen |
+| `reconomy_refill` | EAX=owner, EDX=amount → CF | Budget auffüllen |
+
+**Querverbindung:** `reconomy_spend` → `raccount_charge(owner, cost, 0)` (echte Ressourcenabrechnung)
+
+**Selbsttest:** 50 Budget; 30 ausgeben (ok); 30 erneut (erschöpft); auffüllen; 30 erneut (ok).
+
+**Panikcode:** 0x308F (Slot 140)
+
+---
+
+### NPSPEC-RESOURCE-ENERGY-0001 (`renergy_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+4-Rail Leistungsbudget-Durchsetzer (alpha=32/256). Verfolgt mW via EWMA,
+erzwingt P-State-Wechsel bei Überschreitung.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `renergy_register` | EAX=rail_id, EDX=cap_mw → CF | Rail registrieren |
+| `renergy_update` | EAX=rail_id, EDX=sample_mw → CF=1 bei Überschreitung | EWMA + Verletzungszähler |
+| `renergy_query` | EAX=rail_id → EAX=power_mw, EDX=cap_mw, ECX=violations, CF | |
+
+**Querverbindung:** Überschreitung → `apower_update_load(rail_id, 5)` (erzwingt P-State-Reduktion)
+
+**Selbsttest:** 50 mW ok; 200 mW → CF=1, Verletzungen > 0.
+
+**Panikcode:** 0x3090 (Slot 141)
+
+---
+
+### NPSPEC-RESOURCE-LATENCY-0001 (`rlatency_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Endpoint EWMA-Latenzmonitor mit SLA-Durchsetzung (alpha=48/256).
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `rlatency_register` | EAX=endpoint_id, EDX=sla_us → CF | Endpoint mit SLA registrieren |
+| `rlatency_observe` | EAX=endpoint_id, EDX=observed_us → CF=1 bei SLA-Verletzung | EWMA aktualisieren |
+| `rlatency_query` | EAX=endpoint_id → EAX=avg_lat, EDX=sla_us, ECX=violations, CF | |
+
+**Querverbindungen:**
+- `rlatency_observe` → `apred_update(endpoint, avg_lat)` (Latenzvorhersage)
+- SLA-Verletzung → `sdiag_diagnose(LATENCY=1)` (Symptomdiagnose)
+
+**Selbsttest:** SLA=100 µs; 50 µs ok; 500 µs → CF=1, Verletzungen > 0.
+
+**Panikcode:** 0x3091 (Slot 142)
+
+---
+
+### NPSPEC-STATE-GLOBAL-0001 (`sglobal_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+16-Slot kernel-weiter benannter Zustandsspeicher.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `sglobal_publish` | EAX=key, EDX=value, ECX=owner → CF | Erstellen oder versioniert aktualisieren |
+| `sglobal_get` | EAX=key → EAX=value, EDX=version, ECX=owner, CF=1 wenn unbekannt | |
+
+**Querverbindung:** `sglobal_publish` → `shist_record(key, old_value, new_value)` (Zustandshistorie)
+
+**Selbsttest:** publish key=7→42; get=42; update→99; get=99.
+
+**Panikcode:** 0x3092 (Slot 143)
+
+---
+
+### NPSPEC-TRANSACTION-CONFIG-0001 (`txconfig_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Slot atomare Konfigurationstransaktionen: Stage → Commit/Abort.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `txconfig_stage` | EAX=txn_id, EDX=key, ECX=new_val → CF | Änderung vormerken; liest alten Wert via `sconf_get` |
+| `txconfig_commit` | EAX=txn_id → CF | Alle Änderungen anwenden via `sconf_set`; Slots freigeben |
+| `txconfig_abort` | EAX=txn_id → CF | Alte Werte wiederherstellen; Slots freigeben |
+
+**Selbsttest:** stage key=10→42, commit → sconf_get=42; stage→99, abort → sconf_get=42.
+
+**Panikcode:** 0x3093 (Slot 144)
+
+---
+
+### NPSPEC-TRANSACTION-MULTISERVICE-0001 (`txmulti_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+4-Slot dienstübergreifende Abstimmung. PENDING=0, COMMIT=1, ABORT=2.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `txmulti_register_service` | EAX=txn_id, EDX=svc_id → CF | Dienst als PENDING-Stimmabgabe registrieren |
+| `txmulti_vote` | EAX=txn_id, EDX=svc_id, ECX=vote → CF | Stimme aufzeichnen |
+| `txmulti_check` | EAX=txn_id → CF=0 wenn alle COMMIT | CF=1 wenn ein ABORT oder PENDING vorhanden |
+
+**Querverbindung:** COMMIT-Stimme → `txsys_participant_ready(txn_id)` (2PC-Koordination)
+
+**Selbsttest:** 2-Dienst-Transaktion, beide COMMIT → check CF=0.
+
+**Panikcode:** 0x3094 (Slot 145)
+
+---
+
+### NPSPEC-VERIFY-TEMPORAL-0001 (`vtemporal_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Invariante Tick-Fenster-Prüfer. Ereignis A muss innerhalb [min_gap, max_gap]
+nach dem Ankerpunkt eintreten.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `vtemporal_register` | EAX=inv_id, EDX=anchor_tick, ECX=min_gap → CF | Invariante registrieren; max_gap = 2×min_gap |
+| `vtemporal_check` | EAX=inv_id, EDX=event_tick → CF=1 wenn außerhalb | |
+
+**Querverbindung:** Verletzung → `sdiag_diagnose(LATENCY=1)` (Symptombehandlung)
+
+**Selbsttest:** Fenster [10,20]; Gap=15 ok; Gap=100 → Verletzung.
+
+**Panikcode:** 0x3095 (Slot 146)
+
+---
+
+### NPSPEC-VERIFY-INFORMATIONFLOW-0001 (`vinfoflow_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Kanal Label-basierte Informationsfluss-Kontrolle. Höher-markierte Quellen
+dürfen nicht in niedriger-markierte Senken schreiben.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `vinfoflow_register` | EAX=chan_id, EDX=label, ECX=owner → CF | Kanal registrieren |
+| `vinfoflow_check` | EAX=src_chan, EDX=dst_chan → CF=1 wenn verweigert | |
+
+**Querverbindung:** Verletzung → `security_audit_log(level=2, "IFLO")`
+
+**Selbsttest:** niedrig→hoch erlaubt; hoch→niedrig verweigert.
+
+**Panikcode:** 0x3096 (Slot 147)
+
+---
+
+### NPSPEC-VERIFY-CAPABILITYSAFETY-0001 (`vcapsafe_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Capability Proof-Token-Verifizierer. Jede Capability-Nutzung erfordert
+übereinstimmenden Token.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `vcapsafe_register` | EAX=cap_id, EDX=proof_token → CF | Capability mit Beweis-Token registrieren |
+| `vcapsafe_verify` | EAX=cap_id, EDX=supplied_proof → CF=1 bei Fehler | |
+
+**Querverbindung:** Token-Fehler → `security_audit_log(level=3, "CAPS")`
+
+**Selbsttest:** korrekter Token ok; falscher Token → CF=1.
+
+**Panikcode:** 0x3097 (Slot 148)
+
+---
+
+### NPSPEC-VERIFY-MEMORYSAFETY-0001 (`vmemsafe_*`)
+
+**Status:** umgesetzt, Selbsttest aktiv.
+
+8-Region Bereichs- und Alias-Prüfer. Zugriff außerhalb [base, base+size) ist
+eine Verletzung.
+
+| Funktion | Signatur | Beschreibung |
+|---|---|---|
+| `vmemsafe_register` | EAX=region_id, EDX=base, ECX=size → CF | Region registrieren |
+| `vmemsafe_check` | EAX=region_id, EDX=addr → CF=1 wenn außerhalb | |
+
+**Querverbindung:** Verletzung → `security_audit_log(level=3, "MSAF")`
+
+**Selbsttest:** 0x1050 in [0x1000, 0x1100) ok; 0x2000 → CF=1, Verletzungen > 0.
+
+**Panikcode:** 0x3098 (Slot 149)
+
+---
+
+## Gesamtübersicht implementierter NPSPEC-Subsysteme (Stand 2026-10-12)
+
+Alle Subsysteme werden beim Kernelstart initialisiert und selbst getestet.
+Bei Fehler erfolgt ein versionierter Kernel-Panic mit Slot-Nummer und Fehlercode.
+
+**Panikcode-Belegung:** 0x3052–0x3098 (Slots 1–149)
+
+**Vollständige Tabelle aller Subsysteme:**
+
+| Slot | Panikcode | Prefix | Kategorie |
+|------|-----------|--------|-----------|
+| 1–96 | 0x3052–0x3063 | diverse | Grundlage (frühere Sessions) |
+| 97 | 0x3064 | `fsm_*` | FSM |
+| 98 | 0x3065 | `txroll_*` | Transaction Rollback |
+| 99 | 0x3066 | `fi_*` | Fault Injection |
+| 100 | 0x3067 | `fclass_*` | Fault Classification |
+| 101 | 0x3068 | `rpol_*` | Recovery Policy |
+| 102 | 0x3069 | `rverif_*` | Resilience Verification |
+| 103 | 0x306A | `ssnap_*` | State Snapshot |
+| 104 | 0x306B | `shist_*` | State History |
+| 105 | 0x306C | `srec_*` | State Reconciliation |
+| 106 | 0x306D | `txlog_*` | Transaction Log |
+| 107 | 0x306E | `tbarrier_*` | Transaction Barrier |
+| 108 | 0x306F | `tcomp_*` | Transaction Compensation |
+| 109 | 0x3070 | `redundancy_*` | Redundancy |
+| 110 | 0x3071 | `chaos_*` | Chaos Testing |
+| 111 | 0x3072 | `resilisolation_*` | Resilience Isolation |
+| 112 | 0x3073 | `raccount_*` | Resource Accounting |
+| 113 | 0x3074 | `rguarant_*` | Resource Guarantee |
+| 114 | 0x3075 | `rreclaim_*` | Resource Reclaim |
+| 115 | 0x3076 | `sdiag_*` | Self Diagnosis |
+| 116 | 0x3077 | `sconf_*` | Self Config |
+| 117 | 0x3078 | `apred_*` | Adaptive Prediction |
+| 118 | 0x3079 | `selfopt_*` | Self Optimization |
+| 119 | 0x307A | `selfprot_*` | Self Protection |
+| 120 | 0x307B | `rresv_*` | Resource Reservation |
+| 121 | 0x307C | `aconstraint_*` | Adaptive Constraint |
+| 122 | 0x307D | `autopol_*` | Auto Policy |
+| 123 | 0x307E | `aschedsw_*` | Adaptive Scheduler |
+| 124 | 0x307F | `sver_*` | State Versioning |
+| 125 | 0x3080 | `sactual_*` | State Actual |
+| 126 | 0x3081 | `sdesired_*` | State Desired |
+| 127 | 0x3082 | `txres_*` | Transaction Resource |
+| 128 | 0x3083 | `txsys_*` | Transaction System |
+| 129 | 0x3084 | `rarbit_*` | Resource Arbitration |
+| 130 | 0x3085 | `acache_*` | Adaptive Cache |
+| 131 | 0x3086 | `apower_*` | Adaptive Power |
+| 132 | 0x3087 | `pollearn_*` | Policy Learning |
+| 133 | 0x3088 | `prederr_*` | Prediction Error |
+| 134 | 0x3089 | `aprefetch_*` | Adaptive Prefetch |
+| 135 | 0x308A | `apreload_*` | Adaptive Preload |
+| 136 | 0x308B | `astorage_*` | Adaptive Storage |
+| 137 | 0x308C | `anetwork_*` | Adaptive Network |
+| 138 | 0x308D | `uoverride_*` | User Override |
+| 139 | 0x308E | `rdeadline_*` | Resource Deadline |
+| 140 | 0x308F | `reconomy_*` | Resource Economy |
+| 141 | 0x3090 | `renergy_*` | Resource Energy |
+| 142 | 0x3091 | `rlatency_*` | Resource Latency |
+| 143 | 0x3092 | `sglobal_*` | State Global |
+| 144 | 0x3093 | `txconfig_*` | Transaction Config |
+| 145 | 0x3094 | `txmulti_*` | Transaction MultiService |
+| 146 | 0x3095 | `vtemporal_*` | Verify Temporal |
+| 147 | 0x3096 | `vinfoflow_*` | Verify Information Flow |
+| 148 | 0x3097 | `vcapsafe_*` | Verify Capability Safety |
+| 149 | 0x3098 | `vmemsafe_*` | Verify Memory Safety |
