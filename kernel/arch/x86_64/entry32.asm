@@ -1371,6 +1371,12 @@ kernel_entry:
     call crypto_self_test
     jc panic_driver_framework
 
+    ; §016 Network Stack
+    call network_stack_initialize
+    jc panic_driver_framework
+    call network_stack_self_test
+    jc panic_driver_framework
+
     ; §039 Compat
     call compat_initialize
     jc panic_driver_framework
@@ -2626,7 +2632,8 @@ panic_invalid_handoff:
 %include "arch/x86_64/modules/global32.inc"
 %include "arch/x86_64/modules/app32.inc"
 
-; §019 Crypto / §039 Compat
+; §016 Network / §019 Crypto / §039 Compat
+%include "arch/x86_64/modules/network32.inc"
 %include "arch/x86_64/modules/crypto32.inc"
 %include "arch/x86_64/modules/compat32.inc"
 
