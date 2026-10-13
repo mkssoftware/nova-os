@@ -206,6 +206,9 @@ typedef struct {nova_boot_log_level_t level;const char *message;} nova_boot_log_
 static nova_boot_view_t boot_view=NOVA_BOOT_VIEW_SPLASH;
 static uint16_t boot_progress_per_mille=0;
 static uint32_t boot_spinner_frame=0;
+#define SPIN_BG_SZ 64u
+static uint32_t boot_spinner_bg[SPIN_BG_SZ*SPIN_BG_SZ];
+static bool boot_spinner_bg_ok=false;
 static nova_boot_log_entry_t boot_log[18];
 static uint8_t boot_log_count=0;
 
@@ -389,6 +392,18 @@ static void boot_draw_spinner(const nova_graphics_context_t *g,uint32_t cx,uint3
     static const int32_t sdy[12]={-1000,-866,-500,0,500,866,1000,866,500,0,-500,-866};
     static const uint8_t sa[12]={255,210,170,135,105,80,58,42,29,18,10,5};
     uint32_t r=boot_ss(g,22),dot=boot_ss(g,4);if(dot<2u)dot=2u;
+    uint32_t bx=(cx>=SPIN_BG_SZ/2u)?cx-SPIN_BG_SZ/2u:0u;
+    uint32_t by=(cy>=SPIN_BG_SZ/2u)?cy-SPIN_BG_SZ/2u:0u;
+    if(!boot_spinner_bg_ok){
+        for(uint32_t row=0;row<SPIN_BG_SZ;++row)
+            for(uint32_t col=0;col<SPIN_BG_SZ;++col)
+                boot_spinner_bg[row*SPIN_BG_SZ+col]=boot_read_framebuffer_pixel(g,bx+col,by+row);
+        boot_spinner_bg_ok=true;
+    }else{
+        for(uint32_t row=0;row<SPIN_BG_SZ;++row)
+            for(uint32_t col=0;col<SPIN_BG_SZ;++col)
+                bootsplash_write_pixel(g,bx+col,by+row,boot_spinner_bg[row*SPIN_BG_SZ+col]);
+    }
     uint32_t f=boot_spinner_frame%12u;
     for(uint32_t i=0;i<12u;++i){
         uint32_t slot=(f+12u-i)%12u;
@@ -404,6 +419,7 @@ static void boot_draw_spinner(const nova_graphics_context_t *g,uint32_t cx,uint3
 static bool boot_render_splash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
 {
     if(!boot_draw_background(image,st))return false;
+    boot_spinner_bg_ok=false;
     const nova_graphics_context_t *g=nova_graphics_context();
     if(!g||!g->initialized)return false;
     uint32_t logo_size=boot_ss(g,420);
@@ -420,6 +436,7 @@ static bool boot_render_splash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
 static bool boot_render_console(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
 {
     if(!boot_draw_background(image,st))return false;
+    boot_spinner_bg_ok=false;
     const nova_graphics_context_t *g=nova_graphics_context();
     if(!g||!g->initialized)return false;
     uint32_t x=boot_sx(g,180),y=boot_sy(g,110),w=boot_sx(g,1320),h=boot_sy(g,700);boot_fill_rect(g,x,y,w,h,0xdd030915u);boot_stroke_rect(g,x,y,w,h,boot_ss(g,2),0xaa2c98ffu);
@@ -466,6 +483,10 @@ static void boot_view_switch_window(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,unsign
                     nova_debug_string("UEFI:BOOT-VIEW-SPLASH-READY\n");
                 }
             }
+        }
+        if(boot_view==NOVA_BOOT_VIEW_SPLASH){
+            const nova_graphics_context_t *g=nova_graphics_context();
+            if(g&&g->initialized)boot_draw_spinner(g,boot_sx(g,840),boot_sy(g,700));
         }
         st->BootServices->Stall(50000);
     }
