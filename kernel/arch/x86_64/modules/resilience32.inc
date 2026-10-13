@@ -973,6 +973,7 @@ RACCT_FLAG_MEM_SOFT equ 0x02
 RACCT_FLAG_IO_SOFT  equ 0x04
 
 resource_accounting_initialize:
+    cld
     mov edi, racct_table
     mov ecx, RACCT_CAPACITY * RACCT_RECORD_SIZE / 4
     xor eax, eax
@@ -1022,6 +1023,7 @@ resource_accounting_create:
     pop ebx
     ret
 .rac_full:
+    xor eax, eax
     stc
     pop esi
     pop ebx
@@ -1080,6 +1082,8 @@ resource_accounting_read:
     jae .racr_zero
     imul esi, eax, RACCT_RECORD_SIZE
     add esi, racct_table
+    cmp dword [esi + RACCT_STATE], RACCT_STATE_ACTIVE
+    jne .racr_zero
     mov eax, [esi + RACCT_CPU_USED]
     mov edx, [esi + RACCT_MEM_USED]
     mov ecx, [esi + RACCT_IO_USED]
@@ -1095,8 +1099,11 @@ resource_accounting_read:
     ret
 
 resource_accounting_self_test:
+    pushfd
+    cli
     push ebx
     xor ebx, ebx
+    mov dword [racct_test_slot], 0xFFFFFFFF
 
     ; T1: ready
     cmp dword [racct_ready], 1
@@ -1112,9 +1119,10 @@ resource_accounting_self_test:
     jnc .rast2_ok
     inc ebx
 .rast2_ok:
-    push eax         ; slot
+    mov [racct_test_slot], eax
 
     ; T3: charge (500 CPU, 1024 Mem)
+    mov eax, [racct_test_slot]
     mov edx, 500
     mov ecx, 1024
     call resource_accounting_charge
@@ -1123,6 +1131,7 @@ resource_accounting_self_test:
 .rast3_ok:
 
     ; T4: read → cpu=500, mem=1024
+    mov eax, [racct_test_slot]
     call resource_accounting_read
     cmp eax, 500
     je .rast4a_ok
@@ -1134,16 +1143,14 @@ resource_accounting_self_test:
 .rast4b_ok:
 
     ; T5: charge 600 CPU → überschreitet 1000 → CF=1
-    ; read hat EAX mit cpu_used überschrieben → Slot vom Stack nachladen
-    mov eax, [esp]       ; peek: Slot liegt noch oben (push aus T2, pop erst nach T5)
+    ; read hat EAX mit cpu_used überschrieben → Slot explizit nachladen
+    mov eax, [racct_test_slot]
     mov edx, 600
     mov ecx, 0
     call resource_accounting_charge
     jc .rast5_ok
     inc ebx
 .rast5_ok:
-    pop eax
-
     ; T6-T7: violations=1
     cmp dword [racct_violations], 1
     je .rast6_ok
@@ -1154,15 +1161,18 @@ resource_accounting_self_test:
     jnz .rastf
     clc
     pop ebx
+    popfd
     ret
 .rastf:
     stc
     pop ebx
+    popfd
     ret
 
 racct_ready:       dd 0
 racct_next_id:     dd 0
 racct_violations:  dd 0
+racct_test_slot:   dd 0
 align 4
 racct_table:
     times RACCT_CAPACITY * RACCT_RECORD_SIZE db 0
