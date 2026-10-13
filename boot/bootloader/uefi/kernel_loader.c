@@ -209,6 +209,7 @@ static uint32_t boot_spinner_frame=0;
 #define SPIN_BG_SZ 64u
 static uint32_t boot_spinner_bg[SPIN_BG_SZ*SPIN_BG_SZ];
 static bool boot_spinner_bg_ok=false;
+static EFI_EVENT boot_spinner_event=NULL;
 static nova_boot_log_entry_t boot_log[18];
 static uint8_t boot_log_count=0;
 
@@ -416,6 +417,37 @@ static void boot_draw_spinner(const nova_graphics_context_t *g,uint32_t cx,uint3
     ++boot_spinner_frame;
 }
 
+static EFIAPI void boot_spinner_on_timer(EFI_EVENT ev,void *ctx)
+{
+    (void)ev;(void)ctx;
+    if(boot_view!=NOVA_BOOT_VIEW_SPLASH)return;
+    const nova_graphics_context_t *g=nova_graphics_context();
+    if(g&&g->initialized)boot_draw_spinner(g,boot_sx(g,840),boot_sy(g,700));
+}
+
+static void boot_spinner_timer_start(EFI_BOOT_SERVICES *bs)
+{
+    if(!bs||boot_spinner_event)return;
+    efi_create_event_fn create=(efi_create_event_fn)bs->CreateEvent;
+    if(!create)return;
+    EFI_EVENT ev=NULL;
+    if(EFI_ERROR(create(EVT_TIMER|EVT_NOTIFY_SIGNAL,TPL_CALLBACK,boot_spinner_on_timer,NULL,&ev)))return;
+    efi_set_timer_fn settimer=(efi_set_timer_fn)bs->SetTimer;
+    /* 150ms = 1,500,000 × 100ns units → calm ~7fps */
+    if(settimer&&!EFI_ERROR(settimer(ev,TimerPeriodic,1500000u))){boot_spinner_event=ev;}
+    else{efi_close_event_fn close=(efi_close_event_fn)bs->CloseEvent;if(close)close(ev);}
+}
+
+static void boot_spinner_timer_stop(EFI_BOOT_SERVICES *bs)
+{
+    if(!bs||!boot_spinner_event)return;
+    efi_set_timer_fn settimer=(efi_set_timer_fn)bs->SetTimer;
+    if(settimer)settimer(boot_spinner_event,TimerCancel,0);
+    efi_close_event_fn close=(efi_close_event_fn)bs->CloseEvent;
+    if(close)close(boot_spinner_event);
+    boot_spinner_event=NULL;
+}
+
 static bool boot_render_splash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
 {
     if(!boot_draw_background(image,st))return false;
@@ -483,10 +515,6 @@ static void boot_view_switch_window(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,unsign
                     nova_debug_string("UEFI:BOOT-VIEW-SPLASH-READY\n");
                 }
             }
-        }
-        if(boot_view==NOVA_BOOT_VIEW_SPLASH){
-            const nova_graphics_context_t *g=nova_graphics_context();
-            if(g&&g->initialized)boot_draw_spinner(g,boot_sx(g,840),boot_sy(g,700));
         }
         st->BootServices->Stall(50000);
     }
@@ -1253,6 +1281,7 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     if(show_bootsplash(image_handle,st)){
         nova_debug_string("UEFI:BOOTSPLASH-READY\n");
         nova_debug_string("UEFI:BOOT-VIEW-SPLASH-READY\n");
+        boot_spinner_timer_start(st->BootServices);
     }
     else nova_debug_string("UEFI:BOOTSPLASH-ERROR\n");
     uint8_t *file=0;UINTN size=0;bool nki_container=true;
@@ -1388,6 +1417,7 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
         nova_debug_string("UEFI:NBHP-BIB-READY\n");
         boot_log_add(NOVA_BOOT_LOG_INFO,"NBHP BIB HANDOFF BLOCK READY");
         boot_set_progress(820);boot_refresh_boot_status(image_handle,st);
+        boot_spinner_timer_stop(st->BootServices);
         status=exit_bs(image_handle,map_key);
         if(!EFI_ERROR(status))break;
         nova_debug_string("UEFI:EXIT-BOOT-SERVICES-RETRY\n");

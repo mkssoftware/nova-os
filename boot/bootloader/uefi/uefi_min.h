@@ -16,6 +16,15 @@ typedef uint64_t EFI_STATUS;
 typedef uint64_t EFI_PHYSICAL_ADDRESS;
 typedef VOID *EFI_HANDLE;
 typedef VOID *EFI_EVENT;
+typedef uint64_t EFI_TPL;
+#define EVT_TIMER          0x80000000u
+#define EVT_NOTIFY_SIGNAL  0x00000200u
+#define TPL_CALLBACK       4u
+typedef void (EFIAPI *EFI_EVENT_NOTIFY)(EFI_EVENT,void *);
+typedef enum {TimerCancel=0,TimerPeriodic=1,TimerRelative=2} EFI_TIMER_DELAY;
+typedef EFI_STATUS (EFIAPI *efi_create_event_fn)(uint32_t,EFI_TPL,EFI_EVENT_NOTIFY,void *,EFI_EVENT *);
+typedef EFI_STATUS (EFIAPI *efi_set_timer_fn)(EFI_EVENT,EFI_TIMER_DELAY,uint64_t);
+typedef EFI_STATUS (EFIAPI *efi_close_event_fn)(EFI_EVENT);
 
 typedef struct {
     uint64_t Signature;
