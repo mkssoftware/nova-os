@@ -2152,8 +2152,7 @@ LAPIC_EOI               equ 0xB0        ; End-of-Interrupt
 LAPIC_ICR_LO            equ 0x300       ; Interrupt Command Register (low)
 LAPIC_ICR_HI            equ 0x310       ; Interrupt Command Register (high)
 LAPIC_ICR_DELIVERY_STS  equ (1 << 12)  ; Bit 12: Delivery Status (0=Idle)
-LAPIC_IPI_INIT          equ 0x0000C500  ; INIT Assert: delivery=INIT(101), Level=Assert(14), Trigger=Level(15)
-LAPIC_IPI_INIT_DA       equ 0x00008500  ; INIT De-Assert: Level=0, Trigger=Level (MP spec §B.4.2)
+LAPIC_IPI_INIT          equ 0x00004500  ; INIT-IPI: delivery=INIT(101), edge-triggered (TCG+WHPX kompatibel)
 LAPIC_IPI_SIPI          equ 0x00004600  ; Startup-IPI: delivery=Startup(110)
 
 ; LAPIC-Timer-Register (xAPIC)
@@ -2358,23 +2357,16 @@ smp_boot_ap:
     shl ecx, 24
     mov [LAPIC_BASE + LAPIC_ICR_HI], ecx
 
-    ; INIT Assert (Level=1 Trigger=Level – MP spec §B.4.2 / Intel SDM §10.6.7)
+    ; INIT-IPI (edge-triggered, TCG+WHPX kompatibel)
     mov dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_IPI_INIT
     call apic_wait_icr_idle
 
-    ; 30ms nach INIT warten (MP spec: min. 10ms; WHPX braucht etwas mehr Spielraum)
+    ; 10ms nach INIT warten (MP spec: min. 10ms)
     mov eax, [timer_ticks]
-    add eax, 3
+    inc eax
 .wait_init:
     cmp [timer_ticks], eax
     jb .wait_init
-
-    ; INIT De-Assert (benötigt von WHPX und strenger Hardware per MP spec)
-    mov ecx, esi
-    shl ecx, 24
-    mov [LAPIC_BASE + LAPIC_ICR_HI], ecx
-    mov dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_IPI_INIT_DA
-    call apic_wait_icr_idle
 
     ; Erster STARTUP IPI
     mov ecx, esi
