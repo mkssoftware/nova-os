@@ -234,6 +234,9 @@ kernel_entry:
     jc panic_hrt
     mov esi, message_hrt_ok
     call serial_write_string
+    ; §37: Basistick für TTID-Messung – nach erstem funktionsfähigen Timer
+    mov eax, [timer_ticks]
+    mov [boot_kernel_entry_ticks], eax
 
     call ipc_initialize
     jc panic_ipc
@@ -1357,22 +1360,8 @@ kernel_entry:
     call serial_write_string
     call boot_health_publish_system_root    ; §126: SYSTEM_ROOT Provider melden
 
-    call network_manager_initialize
-    jc panic_network_manager
-    call network_manager_self_test
-    jc panic_network_manager
-    mov esi, message_network_manager_ok
-    call serial_write_string
-
-    call power_manager_initialize
-    jc panic_power_manager
-    call power_manager_self_test
-    jc panic_power_manager
-    mov esi, message_power_manager_ok
-    call serial_write_string
-
-    ; Der Display Server übernimmt den Firmware-Framebuffer als kontrolliertes
-    ; Kernelobjekt. Userspace erhält nur die versionierte Display-Service-ABI.
+    ; §37: Display Server zuerst – kritischer Pfad zum sichtbaren Desktop.
+    ; Netzwerk und Power sind aufschiebbar und werden nach DESKTOP_READY gestartet.
     mov dword [kernel_spinner_active], 0
     call display_server_initialize
     jc panic_device_manager
@@ -1385,10 +1374,45 @@ kernel_entry:
     mov esi, message_display_server_fallback
     call serial_write_string
 .display_ready:
+    ; §37: DESKTOP_READY – Display bereit, TTID messen
+    mov eax, [timer_ticks]
+    mov [boot_ttid_ticks], eax
+    mov dword [boot_phase_last_success], BOOT_PHASE_ROOT_FILESYSTEM
+    mov dword [boot_phase_current], BOOT_PHASE_DESKTOP_READY
+    call boot_phase_log
+    mov esi, message_desktop_ready
+    call serial_write_string
+
+    ; §37: Aufschiebbare Subsysteme (starten nach DESKTOP_READY)
+    mov dword [comp_network_state], COMP_STATE_INITIALIZING
+    call network_manager_initialize
+    jc panic_network_manager
+    call network_manager_self_test
+    jc panic_network_manager
+    mov dword [comp_network_state], COMP_STATE_READY
+    mov esi, message_network_manager_ok
+    call serial_write_string
+
+    mov dword [comp_power_state], COMP_STATE_INITIALIZING
+    call power_manager_initialize
+    jc panic_power_manager
+    call power_manager_self_test
+    jc panic_power_manager
+    mov dword [comp_power_state], COMP_STATE_READY
+    mov esi, message_power_manager_ok
+    call serial_write_string
+
+    ; §37: SYSTEM_READY – alle aufschiebaren Subsysteme bereit
+    mov eax, [timer_ticks]
+    mov [boot_system_ready_ticks], eax
+    mov dword [boot_phase_current], BOOT_PHASE_SYSTEM_READY
+    call boot_phase_log
+    mov esi, message_system_ready
+    call serial_write_string
 
     ; Userspace ist die nächste, noch nicht abgeschlossene Bootphase. Der Kernel
     ; meldet deshalb bewusst noch keinen operationalen Zustand (Phase 11).
-    mov dword [boot_phase_last_success], BOOT_PHASE_ROOT_FILESYSTEM
+    mov dword [boot_phase_last_success], BOOT_PHASE_DESKTOP_READY
     mov dword [boot_phase_current], BOOT_PHASE_USERSPACE
     call boot_phase_log
     call userspace_initialize

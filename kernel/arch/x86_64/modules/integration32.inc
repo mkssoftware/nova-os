@@ -1969,6 +1969,15 @@ BOOT_PHASE_DEVICE_DISCOVERY equ 8
 BOOT_PHASE_ROOT_FILESYSTEM  equ 9
 BOOT_PHASE_USERSPACE        equ 10
 BOOT_PHASE_OPERATIONAL     equ 11
+BOOT_PHASE_DESKTOP_READY   equ 12
+BOOT_PHASE_SYSTEM_READY    equ 13
+
+; §37: Komponentenzustände für Dependency-aware Startup
+COMP_STATE_NOT_STARTED  equ 0
+COMP_STATE_INITIALIZING equ 1
+COMP_STATE_READY        equ 2
+COMP_STATE_DEGRADED     equ 3
+COMP_STATE_FAILED       equ 4
 BOOT_SEQUENCE_API_SIZE     equ 32
 BOOT_LOG_API_SIZE          equ 32
 BOOT_EVENT_SIZE            equ 24
@@ -2094,6 +2103,13 @@ boot_sequence_api:
     dd 0
 boot_phase_current:      dd BOOT_PHASE_NONE
 boot_phase_last_success: dd BOOT_PHASE_NONE
+; §37: Boot-Timing (timer_ticks-Snapshots)
+boot_kernel_entry_ticks:  dd 0
+boot_ttid_ticks:          dd 0
+boot_system_ready_ticks:  dd 0
+; §37: Komponentenzustände für aufschiebbare Initialisierungen
+comp_network_state:  dd COMP_STATE_NOT_STARTED
+comp_power_state:    dd COMP_STATE_NOT_STARTED
 
 ; Heapfreies Frühstartprotokoll; bewahrt sämtliche Aufruferregister.
 boot_phase_log:
@@ -6180,6 +6196,10 @@ message_bib_error:
     db "NOVA PANIC: ungueltiger Boot Handoff", 13, 10, 0
 message_ready:
     db "NOVA_KERNEL_READY", 13, 10, 0
+message_desktop_ready:
+    db "NOVA_DESKTOP_READY", 13, 10, 0
+message_system_ready:
+    db "NOVA_SYSTEM_READY", 13, 10, 0
 
 ; ===========================================================================
 ; §010 – Exception Manager 1.0 (NPSPEC-KERNEL-0010)
