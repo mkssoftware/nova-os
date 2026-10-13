@@ -1360,8 +1360,8 @@ kernel_entry:
     call serial_write_string
     call boot_health_publish_system_root    ; §126: SYSTEM_ROOT Provider melden
 
-    ; §37: Display Server zuerst – kritischer Pfad zum sichtbaren Desktop.
-    ; Netzwerk und Power sind aufschiebbar und werden nach DESKTOP_READY gestartet.
+    ; §38: Display Server → GRAPHICS_READY. Netzwerk/Power werden asynchron via
+    ; bg_init_thread nach dem Display-Start initialisiert (Background Init §38).
     mov dword [kernel_spinner_active], 0
     call display_server_initialize
     jc panic_device_manager
@@ -1374,49 +1374,51 @@ kernel_entry:
     mov esi, message_display_server_fallback
     call serial_write_string
 .display_ready:
-    ; §37: DESKTOP_READY – Display bereit, TTID messen
+    ; §38: GRAPHICS_READY – Framebuffer verfügbar, echter TTID-Startpunkt
+    mov eax, [timer_ticks]
+    mov [boot_graphics_ready_ticks], eax
+    mov dword [boot_phase_last_success], BOOT_PHASE_ROOT_FILESYSTEM
+    mov dword [boot_phase_current], BOOT_PHASE_GRAPHICS_READY
+    call boot_phase_log
+    mov esi, message_graphics_ready
+    call serial_write_string
+
+    ; §38: Background-Init-Thread für Netzwerk und Power registrieren.
+    ; Der Thread läuft via IRQ0-Preemption parallel zur restlichen Boot-Sequenz.
+    ; EAX=Einstieg, EDX=PID(1), ECX=CPU-Affinität(-1=beliebig).
+    mov eax, bg_init_thread
+    mov edx, 1
+    mov ecx, -1
+    call thread_create_dynamic
+    jc .bg_thread_sync_fallback
+    mov dword [bg_init_trigger], 1
+    mov esi, message_bg_init_thread_started
+    call serial_write_string
+    jmp .bg_thread_registered
+.bg_thread_sync_fallback:
+    ; Fallback: thread_create_dynamic fehlgeschlagen → synchron initialisieren.
+    mov esi, message_bg_init_fallback
+    call serial_write_string
+    call bg_init_sync
+.bg_thread_registered:
+
+    ; §38: Userspace-ABI vorbereiten. Läuft jetzt ohne Blockade durch Netz/Power.
+    call userspace_initialize
+    jc panic_userspace
+
+    ; §38: DESKTOP_READY – Display + Userspace-ABI bereit = tatsächlicher TTID.
     mov eax, [timer_ticks]
     mov [boot_ttid_ticks], eax
-    mov dword [boot_phase_last_success], BOOT_PHASE_ROOT_FILESYSTEM
+    mov dword [boot_phase_last_success], BOOT_PHASE_GRAPHICS_READY
     mov dword [boot_phase_current], BOOT_PHASE_DESKTOP_READY
     call boot_phase_log
     mov esi, message_desktop_ready
     call serial_write_string
 
-    ; §37: Aufschiebbare Subsysteme (starten nach DESKTOP_READY)
-    mov dword [comp_network_state], COMP_STATE_INITIALIZING
-    call network_manager_initialize
-    jc panic_network_manager
-    call network_manager_self_test
-    jc panic_network_manager
-    mov dword [comp_network_state], COMP_STATE_READY
-    mov esi, message_network_manager_ok
-    call serial_write_string
-
-    mov dword [comp_power_state], COMP_STATE_INITIALIZING
-    call power_manager_initialize
-    jc panic_power_manager
-    call power_manager_self_test
-    jc panic_power_manager
-    mov dword [comp_power_state], COMP_STATE_READY
-    mov esi, message_power_manager_ok
-    call serial_write_string
-
-    ; §37: SYSTEM_READY – alle aufschiebaren Subsysteme bereit
-    mov eax, [timer_ticks]
-    mov [boot_system_ready_ticks], eax
-    mov dword [boot_phase_current], BOOT_PHASE_SYSTEM_READY
-    call boot_phase_log
-    mov esi, message_system_ready
-    call serial_write_string
-
-    ; Userspace ist die nächste, noch nicht abgeschlossene Bootphase. Der Kernel
-    ; meldet deshalb bewusst noch keinen operationalen Zustand (Phase 11).
+    ; Userspace ist die nächste, noch nicht abgeschlossene Bootphase.
     mov dword [boot_phase_last_success], BOOT_PHASE_DESKTOP_READY
     mov dword [boot_phase_current], BOOT_PHASE_USERSPACE
     call boot_phase_log
-    call userspace_initialize
-    jc panic_userspace
     call boot_health_publish_session_provider ; §108: SESSION READY (Phase-1 Stub)
     ; §126: HealthConfirmed-Status seriell ausgeben
     cmp dword [boot_health_record + BH_RECORD_LAST], BOOT_HEALTH_MILESTONE_CONFIRMED
@@ -1471,6 +1473,54 @@ userspace_return:
     cmp dword [userspace_exit_seen], 1
     jne panic_userspace
     mov esi, message_userspace_exit_ok
+    call serial_write_string
+
+    ; §38: Background-Init auf Abschluss prüfen; kurze STI-Phase als Fallback.
+    cmp dword [bg_init_complete], 1
+    je .bg_post_ready
+    sti
+    mov ecx, 3000000
+.bg_post_spin:
+    cmp dword [bg_init_complete], 1
+    je .bg_post_cli
+    pause
+    dec ecx
+    jnz .bg_post_spin
+.bg_post_cli:
+    cli
+    cmp dword [bg_init_complete], 1
+    je .bg_post_ready
+    mov esi, message_bg_init_fallback
+    call serial_write_string
+    call bg_init_sync
+.bg_post_ready:
+    cmp dword [bg_init_net_ok], 1
+    jne .bg_skip_net_log
+    mov esi, message_network_manager_ok
+    call serial_write_string
+.bg_skip_net_log:
+    cmp dword [bg_init_power_ok], 1
+    jne .bg_skip_power_log
+    mov esi, message_power_manager_ok
+    call serial_write_string
+.bg_skip_power_log:
+    mov eax, [boot_core_services_ticks]
+    test eax, eax
+    jnz .bg_cst_ok
+    mov eax, [timer_ticks]
+    mov [boot_core_services_ticks], eax
+.bg_cst_ok:
+    mov dword [boot_phase_last_success], BOOT_PHASE_DESKTOP_READY
+    mov dword [boot_phase_current], BOOT_PHASE_CORE_SERVICES_READY
+    call boot_phase_log
+    mov esi, message_core_services_ready
+    call serial_write_string
+    mov dword [boot_phase_last_success], BOOT_PHASE_CORE_SERVICES_READY
+    mov dword [boot_phase_current], BOOT_PHASE_SYSTEM_READY
+    call boot_phase_log
+    mov eax, [timer_ticks]
+    mov [boot_system_ready_ticks], eax
+    mov esi, message_system_ready
     call serial_write_string
 
     ; Integration-Test: alle Subsysteme gemeinsam (nach vollständigem Bootstrap)

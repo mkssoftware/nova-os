@@ -1969,8 +1969,11 @@ BOOT_PHASE_DEVICE_DISCOVERY equ 8
 BOOT_PHASE_ROOT_FILESYSTEM  equ 9
 BOOT_PHASE_USERSPACE        equ 10
 BOOT_PHASE_OPERATIONAL     equ 11
-BOOT_PHASE_DESKTOP_READY   equ 12
-BOOT_PHASE_SYSTEM_READY    equ 13
+BOOT_PHASE_DESKTOP_READY        equ 12
+BOOT_PHASE_SYSTEM_READY         equ 13
+; §38: Progressive Readiness – Granulare Boot-Zustände
+BOOT_PHASE_GRAPHICS_READY       equ 14
+BOOT_PHASE_CORE_SERVICES_READY  equ 15
 
 ; §37: Komponentenzustände für Dependency-aware Startup
 COMP_STATE_NOT_STARTED  equ 0
@@ -1978,6 +1981,8 @@ COMP_STATE_INITIALIZING equ 1
 COMP_STATE_READY        equ 2
 COMP_STATE_DEGRADED     equ 3
 COMP_STATE_FAILED       equ 4
+; §38: Warten auf Abhängigkeit
+COMP_STATE_WAITING      equ 5
 BOOT_SEQUENCE_API_SIZE     equ 32
 BOOT_LOG_API_SIZE          equ 32
 BOOT_EVENT_SIZE            equ 24
@@ -2076,6 +2081,91 @@ kernel_panic:
     call serial_write_string
     jmp kernel_halt
 
+; ---------------------------------------------------------------------------
+; §38 – Background Init Thread (Scheduler-Kontext, kein Serial-I/O)
+; Wird via thread_create_dynamic gestartet und läuft parallel zum Userspace.
+; Kein serial_write_string – Ausgabe erfolgt durch den Hauptthread nach Abschluss.
+; ---------------------------------------------------------------------------
+bg_init_thread:
+    cmp dword [bg_init_trigger], 1
+    jne .wait
+    ; Netzwerk asynchron initialisieren
+    mov dword [comp_network_state], COMP_STATE_INITIALIZING
+    call network_manager_initialize
+    jc .net_fail
+    call network_manager_self_test
+    jc .net_fail
+    mov dword [comp_network_state], COMP_STATE_READY
+    mov dword [bg_init_net_ok], 1
+    jmp .do_power
+.net_fail:
+    mov dword [comp_network_state], COMP_STATE_FAILED
+.do_power:
+    mov dword [comp_power_state], COMP_STATE_INITIALIZING
+    call power_manager_initialize
+    jc .power_fail
+    call power_manager_self_test
+    jc .power_fail
+    mov dword [comp_power_state], COMP_STATE_READY
+    mov dword [bg_init_power_ok], 1
+    jmp .done
+.power_fail:
+    mov dword [comp_power_state], COMP_STATE_FAILED
+.done:
+    mov eax, [timer_ticks]
+    mov [boot_core_services_ticks], eax
+    mov dword [bg_init_complete], 1
+.idle:
+    pause
+    jmp .idle
+.wait:
+    pause
+    jmp bg_init_thread
+
+; §38: Sync-Fallback – wird vom Hauptthread gerufen wenn thread_create_dynamic
+; fehlschlug oder bg_init_thread bis nach userspace_return nicht fertig war.
+bg_init_sync:
+    cmp dword [bg_init_complete], 1   ; bereits fertig (parallel abgeschlossen)?
+    je .done
+    cmp dword [comp_network_state], COMP_STATE_READY
+    je .skip_net
+    mov dword [comp_network_state], COMP_STATE_INITIALIZING
+    call network_manager_initialize
+    jc .net_fail
+    call network_manager_self_test
+    jc .net_fail
+    mov dword [comp_network_state], COMP_STATE_READY
+    mov dword [bg_init_net_ok], 1
+    jmp .do_power
+.net_fail:
+    mov dword [comp_network_state], COMP_STATE_FAILED
+    jmp .do_power
+.skip_net:
+    mov dword [bg_init_net_ok], 1
+.do_power:
+    cmp dword [comp_power_state], COMP_STATE_READY
+    je .skip_power
+    mov dword [comp_power_state], COMP_STATE_INITIALIZING
+    call power_manager_initialize
+    jc .power_fail
+    call power_manager_self_test
+    jc .power_fail
+    mov dword [comp_power_state], COMP_STATE_READY
+    mov dword [bg_init_power_ok], 1
+    jmp .mark_done
+.power_fail:
+    mov dword [comp_power_state], COMP_STATE_FAILED
+    jmp .mark_done
+.skip_power:
+    mov dword [bg_init_power_ok], 1
+.mark_done:
+    mov eax, [timer_ticks]
+    mov [boot_core_services_ticks], eax
+    mov dword [bg_init_complete], 1
+.done:
+    clc
+    ret
+
 align 4
 panic_api:
     dd PANIC_API_SIZE
@@ -2104,12 +2194,20 @@ boot_sequence_api:
 boot_phase_current:      dd BOOT_PHASE_NONE
 boot_phase_last_success: dd BOOT_PHASE_NONE
 ; §37: Boot-Timing (timer_ticks-Snapshots)
-boot_kernel_entry_ticks:  dd 0
-boot_ttid_ticks:          dd 0
-boot_system_ready_ticks:  dd 0
+boot_kernel_entry_ticks:    dd 0
+boot_ttid_ticks:            dd 0
+boot_system_ready_ticks:    dd 0
+; §38: Erweiterte Boot-Timing-Snapshots
+boot_graphics_ready_ticks:  dd 0
+boot_core_services_ticks:   dd 0
 ; §37: Komponentenzustände für aufschiebbare Initialisierungen
 comp_network_state:  dd COMP_STATE_NOT_STARTED
 comp_power_state:    dd COMP_STATE_NOT_STARTED
+; §38: Background Init Control
+bg_init_trigger:   dd 0
+bg_init_complete:  dd 0
+bg_init_net_ok:    dd 0
+bg_init_power_ok:  dd 0
 
 ; Heapfreies Frühstartprotokoll; bewahrt sämtliche Aufruferregister.
 boot_phase_log:
@@ -6200,6 +6298,14 @@ message_desktop_ready:
     db "NOVA_DESKTOP_READY", 13, 10, 0
 message_system_ready:
     db "NOVA_SYSTEM_READY", 13, 10, 0
+message_graphics_ready:
+    db "NOVA_GRAPHICS_READY", 13, 10, 0
+message_core_services_ready:
+    db "NOVA_CORE_SERVICES_READY", 13, 10, 0
+message_bg_init_thread_started:
+    db "NOVA: Background Init Thread aktiv §38", 13, 10, 0
+message_bg_init_fallback:
+    db "NOVA: Background Init Sync-Fallback §38", 13, 10, 0
 
 ; ===========================================================================
 ; §010 – Exception Manager 1.0 (NPSPEC-KERNEL-0010)

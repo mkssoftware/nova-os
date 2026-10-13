@@ -2360,12 +2360,13 @@ smp_boot_ap:
     mov dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_IPI_INIT
     call apic_wait_icr_idle
 
-    ; Warte ca. 10 ms (Spin)
-    mov ecx, AP_BOOT_TIMEOUT_LOOPS / 2
+    ; §38-opt: 10ms via PIT-Timer-Ticks (hardwareunabhängig, QEMU-sicher).
+    ; Ersetzt den calibrierten pause-Loop (war zu langsam unter QEMU-TCG).
+    mov eax, [timer_ticks]
+    inc eax
 .wait_init:
-    pause
-    dec ecx
-    jnz .wait_init
+    cmp [timer_ticks], eax
+    jb .wait_init
 
     ; Erster STARTUP IPI
     mov ecx, esi
@@ -2374,8 +2375,8 @@ smp_boot_ap:
     mov dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_IPI_SIPI | AP_TRAMPOLINE_VECTOR
     call apic_wait_icr_idle
 
-    ; Kurze Pause (200 µs per Spec)
-    mov ecx, AP_BOOT_TIMEOUT_LOOPS / 100
+    ; §38-opt: 200µs Pause – kurzer pause-Loop reicht für SIPI-Abstand.
+    mov ecx, 200
 .wait_sipi1:
     pause
     dec ecx
@@ -2431,16 +2432,18 @@ smp_start_aps:
     mov eax, [acpi_apic_ids + ebx * 4]
     call smp_boot_ap
 
-    ; Warten bis cpu_online_count den erwarteten Wert erreicht
-    mov ecx, AP_BOOT_TIMEOUT_LOOPS
+    ; §38-opt: bis zu 100ms (10 PIT-Ticks) auf AP-Online warten.
+    mov eax, [timer_ticks]
+    add eax, 10
     mov edx, ebx
     inc edx                 ; erwartet: BSP (1) + AP-Index Zähler
 .wait_online:
     cmp [cpu_online_count], edx
     jae .ap_came_online
+    cmp [timer_ticks], eax
+    jae .ap_came_online     ; Timeout → Soft-Fail, nächsten versuchen
     pause
-    dec ecx
-    jnz .wait_online
+    jmp .wait_online
     ; Timeout – AP nicht gestartet; Soft-Fail, nächsten versuchen
 
 .ap_came_online:
@@ -2623,16 +2626,23 @@ smp_tlb_shootdown_page:
     mov eax, ebx
     mov ecx, SMP_IPI_TLB_SHOOTDOWN
     call smp_send_ipi
-    ; Auf ACKs aller Remote-CPUs warten (mit Timeout)
-    mov eax, SMP_CALL_TIMEOUT
+    ; §38-opt: bis zu 50ms (5 PIT-Ticks) auf TLB-ACK warten.
+    push ecx
+    mov ecx, [timer_ticks]
+    add ecx, 5
 .tlb_ack_wait:
     cmp dword [smp_tlb_ack_pending], 0
-    je .skip_remote
+    je .tlb_ack_done
+    cmp [timer_ticks], ecx
+    jae .tlb_ack_timeout
     pause
-    dec eax
-    jnz .tlb_ack_wait
-    ; Timeout: statistisch erfassen ohne Panic (Aufrufer kann eskalieren)
+    jmp .tlb_ack_wait
+.tlb_ack_timeout:
+    pop ecx
     inc dword [smp_rejected_remote_shootdowns]
+    jmp .skip_remote
+.tlb_ack_done:
+    pop ecx
 .skip_remote:
     pop ebx
     pop eax
@@ -2710,16 +2720,18 @@ smp_call_function:
     pop ecx
     pop eax
 
-    ; Auf ACK aller Ziel-CPUs warten
+    ; §38-opt: bis zu 50ms (5 PIT-Ticks) auf ACK warten.
     push ebx
-    mov ebx, SMP_CALL_TIMEOUT
+    mov ebx, [timer_ticks]
+    add ebx, 5
 .cf_ack_wait:
     cmp dword [smp_call_fn_ack], 0
     je .cf_ack_done
+    cmp [timer_ticks], ebx
+    jae .cf_ack_timeout
     pause
-    dec ebx
-    jnz .cf_ack_wait
-    ; Timeout
+    jmp .cf_ack_wait
+.cf_ack_timeout:
     pop ebx
     lock btr dword [smp_call_fn_lock], 0
     stc
