@@ -104,7 +104,11 @@ scheduler_on_tick:
     test edi, edi
     jnz .bsp_boot_lock_skip
     cmp dword [scheduler_bsp_boot_lock], 1
-    je .done
+    jne .bsp_boot_lock_skip
+    ; BSP nicht verdrängen: selected_slot auf -1 setzen damit der Caller
+    ; per_cpu_current_thread[0] nicht mit einem veralteten Slot überschreibt.
+    mov dword [scheduler_selected_slot], -1
+    jmp .done
 .bsp_boot_lock_skip:
 
     ; §133: Per-CPU-Slot bestimmen (statt globalem scheduler_current).
