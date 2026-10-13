@@ -2273,8 +2273,13 @@ ap_entry32_pm:
     push ecx                          ; Slot-Register sichern
     push edx
 
-    ; Schritt 1: DCR = divide-by-1 (Kodierung: 0b1011 = 0xB)
+    ; §40-opt: Kalibrierung überspringen wenn BSP/anderer AP schon kalibriert hat
+    ; (alle CPUs eines Boards haben gleiche LAPIC-Frequenz)
+    ; DCR immer setzen (divide-by-1 = 0xB), auch auf dem Skip-Pfad korrekt
     mov dword [LAPIC_BASE + LAPIC_TIMER_DCR], 0xB
+    mov eax, [lapic_timer_count]
+    test eax, eax
+    jnz .ap_cal_done
 
     ; Schritt 2+3: LVT maskiert, One-Shot; ICR auf Maximum
     mov dword [LAPIC_BASE + LAPIC_TIMER_LVT], LAPIC_LVT_MASKED | LAPIC_TIMER_VECTOR
@@ -2299,6 +2304,7 @@ ap_entry32_pm:
     mov eax, [LAPIC_BASE + LAPIC_TIMER_CCR]
     neg eax                           ; elapsed ≈ 0xFFFFFFFF − CCR + 1
     mov [lapic_timer_count], eax      ; Wert merken (alle APs eines Boards gleich)
+.ap_cal_done:
 
     ; Schritt 8: Periodischen Betrieb starten (unmaskiert, Vektor 0xEF)
     mov dword [LAPIC_BASE + LAPIC_TIMER_LVT], LAPIC_LVT_PERIODIC | LAPIC_TIMER_VECTOR
@@ -2423,7 +2429,7 @@ smp_start_aps:
     ; ap_alive_count zurücksetzen
     mov dword [ap_alive_count], 0
 
-    ; Jeden AP einzeln starten und auf Online-Meldung warten
+    ; Jeden AP einzeln starten und auf Online-Meldung warten (WHPX erfordert sequenziell)
     mov ebx, 1              ; Slot 0 = BSP, APs beginnen bei 1
 .ap_loop:
     cmp ebx, [cpu_discovered_count]
@@ -2433,19 +2439,18 @@ smp_start_aps:
     mov eax, [acpi_apic_ids + ebx * 4]
     call smp_boot_ap
 
-    ; bis zu 500ms (50 PIT-Ticks) auf AP-Online warten (WHPX braucht ~300ms).
+    ; bis zu 500ms (50 PIT-Ticks) auf AP-Online warten
     mov eax, [timer_ticks]
     add eax, 50
     mov edx, ebx
-    inc edx                 ; erwartet: BSP (1) + AP-Index Zähler
+    inc edx                 ; erwartet: BSP(1) + AP-Index
 .wait_online:
     cmp [cpu_online_count], edx
     jae .ap_came_online
     cmp [timer_ticks], eax
-    jae .ap_came_online     ; Timeout → Soft-Fail, nächsten versuchen
+    jae .ap_came_online     ; Timeout → Soft-Fail
     pause
     jmp .wait_online
-    ; Timeout – AP nicht gestartet; Soft-Fail, nächsten versuchen
 
 .ap_came_online:
     inc ebx
