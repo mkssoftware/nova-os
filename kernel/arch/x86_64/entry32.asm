@@ -1389,6 +1389,24 @@ kernel_entry:
     call time_subsystem_self_test
     jc panic_driver_framework
 
+    ; §043 Power Management
+    call power_extended_initialize
+    jc panic_driver_framework
+    call power_extended_self_test
+    jc panic_driver_framework
+
+    ; §045 Text Subsystem
+    call text_initialize
+    jc panic_driver_framework
+    call text_self_test
+    jc panic_driver_framework
+
+    ; §046 Font Manager
+    call font_manager_initialize
+    jc panic_driver_framework
+    call font_manager_self_test
+    jc panic_driver_framework
+
     call boot_health_mark_kernel_initialized
     jc panic_boot_health
     mov esi, message_boot_health_kernel_initialized
@@ -2636,6 +2654,11 @@ panic_invalid_handoff:
 %include "arch/x86_64/modules/network32.inc"
 %include "arch/x86_64/modules/crypto32.inc"
 %include "arch/x86_64/modules/compat32.inc"
+
+; §043 Power / §045 Text / §046 Font
+%include "arch/x86_64/modules/power32.inc"
+%include "arch/x86_64/modules/text32.inc"
+%include "arch/x86_64/modules/font32.inc"
 
 ; CAP-Integration 1.0
 %include "arch/x86_64/modules/cap_integration32.inc"
