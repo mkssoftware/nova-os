@@ -6871,27 +6871,50 @@ exception_manager_dispatch:
     call kernel_panic
 
 ; ---------------------------------------------------------------------------
-; exception_terminate_current_thread  – Stub (§35)
-;   Beendet den aktuellen Userspace-Thread. Delegiert an thread_manager.
+; exception_terminate_current_thread  – §35
+;   Beendet den aktuellen Userspace-Thread vollständig:
+;   - thread_table-Eintrag auf inaktiv setzen
+;   - scheduler_contexts[slot] nullen (Scheduler überspringt leere Slots)
+;   - thread_running_on[slot] freigeben
+;   - thread_count dekrementieren
+;   - per_cpu_current_thread[0] auf -1 setzen (CPU ist danach idle)
 ; ---------------------------------------------------------------------------
 exception_terminate_current_thread:
-    push eax
-    push ebx
-    push esi
+    pushad
     mov esi, message_exc_thread_terminated
     call serial_write_string
-    ; BSP-Thread-Slot aus per_cpu_current_thread holen
+    ; Slot-Index: per_cpu_current_thread[0] (BSP)
     mov eax, [per_cpu_current_thread]
     cmp eax, -1
     je .no_thread
-    ; Thread-Status auf 0 (inaktiv) setzen (Stub-Terminierung)
+    cmp eax, SCHEDULER_THREAD_COUNT
+    jae .no_thread
+
+    ; 1. thread_table-Eintrag auf inaktiv setzen
     imul ebx, eax, THREAD_RECORD_SIZE
     add ebx, thread_table
     mov dword [ebx + THREAD_STATE], 0
+
+    ; 2. Scheduler-Kontext-Frame nullen → Scheduler überspringt diesen Slot
+    mov dword [scheduler_contexts + eax * 4], 0
+
+    ; 3. Slot-Belegung freigeben
+    mov dword [thread_running_on + eax * 4], -1
+
+    ; 4. Task-ID-Zuordnung löschen
+    mov dword [thread_task_ids + eax * 4], 0
+
+    ; 5. Thread-Zähler dekrementieren (untere Grenze: 0)
+    cmp dword [thread_count], 0
+    je .skip_count
+    dec dword [thread_count]
+.skip_count:
+
+    ; 6. BSP als idle markieren; Scheduler wählt beim nächsten Tick neuen Slot
+    mov dword [per_cpu_current_thread], -1
+
 .no_thread:
-    pop esi
-    pop ebx
-    pop eax
+    popad
     ret
 
 ; ---------------------------------------------------------------------------

@@ -388,6 +388,7 @@ acpi_rsdp_initialize:
 .ready:
     call acpi_madt_discover
     call acpi_srat_discover
+    call acpi_hpet_discover
     mov esi, message_acpi_rsdp_ok
     call serial_write_string
     cmp dword [acpi_madt_valid], 1
@@ -1116,6 +1117,88 @@ acpi_root_entry_size:    dd 0
 acpi_root_entries_left:  dd 0
 acpi_root_cursor:        dd 0
 acpi_apic_ids:           times 8 dd 0
+; ---------------------------------------------------------------------------
+; ACPI HPET-Tabelle entdecken (NPSPEC-TIME-CLOCKSOURCE-0001).
+; Liest die MMIO-Basisadresse aus der ACPI HPET-Tabelle und speichert sie
+; in acpi_hpet_base. Falls keine Tabelle vorhanden: acpi_hpet_base bleibt 0.
+; ---------------------------------------------------------------------------
+acpi_hpet_discover:
+    mov dword [acpi_hpet_base], 0
+    mov ebp, [kernel_context + CONTEXT_ACPI_ADDRESS]
+    test ebp, ebp
+    jz .hpet_missing
+    ; XSDT oder RSDT wählen
+    cmp byte [ebp + 15], 2
+    jb .hpet_rsdt
+    cmp dword [ebp + 28], 0
+    jne .hpet_rsdt
+    mov esi, [ebp + 24]
+    mov eax, 0x54445358             ; XSDT
+    call acpi_table_validate
+    jc .hpet_rsdt
+    mov dword [acpi_hpet_entry_size], 8
+    jmp .hpet_root_ready
+.hpet_rsdt:
+    mov esi, [ebp + 16]
+    mov eax, 0x54445352             ; RSDT
+    call acpi_table_validate
+    jc .hpet_missing
+    mov dword [acpi_hpet_entry_size], 4
+.hpet_root_ready:
+    ; Anzahl der Einträge berechnen
+    mov eax, ecx
+    sub eax, 36
+    xor edx, edx
+    div dword [acpi_hpet_entry_size]
+    test edx, edx
+    jnz .hpet_missing
+    mov [acpi_hpet_entries_left], eax
+    lea eax, [esi + 36]
+    mov [acpi_hpet_cursor], eax
+.hpet_next:
+    cmp dword [acpi_hpet_entries_left], 0
+    je .hpet_missing
+    mov ebx, [acpi_hpet_cursor]
+    mov esi, [ebx]
+    cmp dword [acpi_hpet_entry_size], 8
+    jne .hpet_candidate
+    cmp dword [ebx + 4], 0
+    jne .hpet_advance
+.hpet_candidate:
+    mov eax, 0x54455048             ; HPET
+    call acpi_table_validate
+    jc .hpet_advance
+    ; HPET-Tabelle gefunden: Mindestgröße 56 Bytes prüfen
+    cmp ecx, 56
+    jb .hpet_advance
+    ; GAS.AddressSpaceID muss 0 sein (System Memory)
+    cmp byte [esi + 40], 0
+    jne .hpet_advance
+    ; Hohe 32 Bit müssen 0 sein (wir arbeiten in 32-Bit)
+    cmp dword [esi + 48], 0
+    jne .hpet_advance
+    ; Basisadresse aus GAS.Address (low 32 Bit, Offset 44)
+    mov eax, [esi + 44]
+    test eax, eax
+    jz .hpet_advance
+    mov [acpi_hpet_base], eax
+    ; HPET-Zähler aktivieren: General Configuration Register bei base+0x10
+    ; Bit 0 = ENABLE_CNF: Hauptzähler laufen lassen
+    or dword [eax + 0x10], 1
+    ret
+.hpet_advance:
+    mov eax, [acpi_hpet_entry_size]
+    add [acpi_hpet_cursor], eax
+    dec dword [acpi_hpet_entries_left]
+    jmp .hpet_next
+.hpet_missing:
+    ret
+
+acpi_hpet_base:          dd 0
+acpi_hpet_entry_size:    dd 0
+acpi_hpet_entries_left:  dd 0
+acpi_hpet_cursor:        dd 0
+
 acpi_srat_valid:         dd 0
 acpi_srat_cpu_count:     dd 0
 acpi_srat_memory_count:  dd 0

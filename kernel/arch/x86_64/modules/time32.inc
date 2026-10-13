@@ -523,6 +523,15 @@ clocksource_initialize:
     mov ecx, CS_FLAG_STABLE | CS_FLAG_NONSTOP
     mov ebx, clocksource_tsc_read
     call clocksource_register
+    ; HPET registrieren wenn ACPI-Tabelle gefunden (Rating 80: invariant, langsamer als TSC)
+    cmp dword [acpi_hpet_base], 0
+    je .no_hpet
+    mov eax, CS_TYPE_HPET
+    mov edx, 80
+    mov ecx, CS_FLAG_STABLE | CS_FLAG_NONSTOP | CS_FLAG_CONT
+    mov ebx, clocksource_hpet_read
+    call clocksource_register
+.no_hpet:
     ; Beste Quelle aktivieren
     call clocksource_select_best
     clc
@@ -608,6 +617,17 @@ clocksource_pit_read:
 clocksource_tsc_read:
     rdtsc
     ; EAX = low 32 bit TSC
+    ret
+
+; HPET: liest Main Counter Value Register (Offset 0x0F0 von der HPET-Basis)
+clocksource_hpet_read:
+    mov eax, [acpi_hpet_base]
+    test eax, eax
+    jz .zero
+    mov eax, [eax + 0x0F0]      ; low 32 Bit des 64-Bit Hauptzählers
+    ret
+.zero:
+    xor eax, eax
     ret
 
 clocksource_self_test:
