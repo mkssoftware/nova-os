@@ -2170,7 +2170,7 @@ SMP_IPI_VECTOR          equ 0xFE        ; generischer IPI-Empfangsvektor
 AP_TRAMPOLINE_BASE      equ 0x8000      ; physische Adresse < 1 MB
 AP_TRAMPOLINE_VECTOR    equ 0x08        ; SIPI-Vektor = Base >> 12
 AP_STACK_SIZE           equ 0x1000      ; 4 KiB Stack pro AP
-AP_BOOT_TIMEOUT_LOOPS   equ 20000000    ; Spin-Limit beim Warten auf AP-Start
+AP_BOOT_TIMEOUT_LOOPS   equ 2000000     ; Spin-Limit beim Warten auf AP-Start (≥10ms auch bei 1µs/pause)
 SMP_CALL_TIMEOUT        equ AP_BOOT_TIMEOUT_LOOPS  ; Spin-Limit für smp_call_function und TLB-ACK-Warten
 
 ; ---------------------------------------------------------------------------
