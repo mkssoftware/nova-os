@@ -197,6 +197,7 @@ kernel_entry:
     call timer_initialize
     jc panic_interrupt_manager
     sti
+    mov dword [kernel_spinner_active], 1
     call timer_self_test
     jc panic_interrupt_manager
     mov esi, message_interrupts_ok
@@ -1372,6 +1373,7 @@ kernel_entry:
 
     ; Der Display Server übernimmt den Firmware-Framebuffer als kontrolliertes
     ; Kernelobjekt. Userspace erhält nur die versionierte Display-Service-ABI.
+    mov dword [kernel_spinner_active], 0
     call display_server_initialize
     jc panic_device_manager
     cmp dword [display_server_ready], 1
@@ -2494,6 +2496,7 @@ panic_invalid_handoff:
 
 ; Integration-Pipelines, UI, Syscall-Interface, Datensegmente
 %include "arch/x86_64/modules/integration32.inc"
+%include "arch/x86_64/boot-spinner.inc"
 
 ; Boot-Assets
 %include "nova-art.inc"

@@ -474,6 +474,13 @@ interrupt_dispatch:
     jmp .done
 .timer:
     inc dword [timer_ticks]
+    cmp dword [kernel_spinner_active], 0
+    je .timer_no_spin
+    mov eax, [timer_ticks]
+    test eax, 15
+    jnz .timer_no_spin
+    call kernel_boot_spinner_tick
+.timer_no_spin:
     cmp dword [kernel_context + CONTEXT_PLATFORM], 2
     jne .timer_input
     mov dword [0xFEE000B0], 0       ; edge-triggered: früh quittieren
