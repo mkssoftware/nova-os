@@ -205,6 +205,7 @@ typedef enum {NOVA_BOOT_LOG_INFO,NOVA_BOOT_LOG_WARN,NOVA_BOOT_LOG_ERROR} nova_bo
 typedef struct {nova_boot_log_level_t level;const char *message;} nova_boot_log_entry_t;
 static nova_boot_view_t boot_view=NOVA_BOOT_VIEW_SPLASH;
 static uint16_t boot_progress_per_mille=0;
+static uint32_t boot_spinner_frame=0;
 static nova_boot_log_entry_t boot_log[18];
 static uint8_t boot_log_count=0;
 
@@ -382,11 +383,22 @@ static void boot_draw_nova_mark(const nova_graphics_context_t *g,uint32_t cx,uin
     boot_line(g,(int32_t)(cx+size/8),(int32_t)(cy+size/8),(int32_t)(cx+size/2),(int32_t)cy,blue,th);
 }
 
-static void boot_draw_progress(const nova_graphics_context_t *g,uint32_t x,uint32_t y,uint32_t w,uint32_t h)
+static void boot_draw_spinner(const nova_graphics_context_t *g,uint32_t cx,uint32_t cy)
 {
-    uint32_t inset=boot_ss(g,2);boot_fill_rect(g,x,y,w,h,0x66030a1cu);boot_stroke_rect(g,x,y,w,h,boot_ss(g,1),0xaa2d9cffu);
-    uint32_t fill=(uint32_t)((uint64_t)(w-inset*2u)*boot_progress_per_mille/1000u);
-    if(fill)boot_fill_rect(g,x+inset,y+inset,fill,h-inset*2u,0xff2ba8ffu);
+    static const int32_t sdx[12]={0,500,866,1000,866,500,0,-500,-866,-1000,-866,-500};
+    static const int32_t sdy[12]={-1000,-866,-500,0,500,866,1000,866,500,0,-500,-866};
+    static const uint8_t sa[12]={255,210,170,135,105,80,58,42,29,18,10,5};
+    uint32_t r=boot_ss(g,22),dot=boot_ss(g,4);if(dot<2u)dot=2u;
+    uint32_t f=boot_spinner_frame%12u;
+    for(uint32_t i=0;i<12u;++i){
+        uint32_t slot=(f+12u-i)%12u;
+        int32_t px=(int32_t)cx+(int32_t)((int64_t)sdx[slot]*(int32_t)r/1000);
+        int32_t py=(int32_t)cy+(int32_t)((int64_t)sdy[slot]*(int32_t)r/1000);
+        if(px<(int32_t)(dot/2u)||py<(int32_t)(dot/2u))continue;
+        uint32_t col=i==0u?0xeaf7ffu:i<3u?0x65d7ffu:0x2d9cffu;
+        boot_fill_rect(g,(uint32_t)px-dot/2u,(uint32_t)py-dot/2u,dot,dot,((uint32_t)sa[i]<<24)|col);
+    }
+    ++boot_spinner_frame;
 }
 
 static bool boot_render_splash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
@@ -402,7 +414,7 @@ static bool boot_render_splash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
         boot_draw_nova_mark(g,cx,cy,mark);
         boot_draw_text(g,boot_sx(g,724),boot_sy(g,496),"NovaOS",0xffdff7ffu,boot_ss(g,8));
     }
-    boot_draw_progress(g,boot_sx(g,560),boot_sy(g,662),boot_sx(g,560),boot_sy(g,8));return true;
+    boot_draw_spinner(g,boot_sx(g,840),boot_sy(g,700));return true;
 }
 
 static bool boot_render_console(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
@@ -416,7 +428,7 @@ static bool boot_render_console(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
     for(uint8_t index=0;index<boot_log_count;++index){uint32_t color=boot_log[index].level==NOVA_BOOT_LOG_ERROR?0xffff4b7du:boot_log[index].level==NOVA_BOOT_LOG_WARN?0xffffb84du:0xff5fe38au;
         boot_draw_text(g,x+boot_ss(g,44),log_y+index*line_h,boot_log[index].level==NOVA_BOOT_LOG_ERROR?"ERROR":boot_log[index].level==NOVA_BOOT_LOG_WARN?"WARN":"INFO",color,boot_ss(g,3));
         boot_draw_text(g,x+boot_ss(g,185),log_y+index*line_h,boot_log[index].message,0xffd7e4f2u,boot_ss(g,3));}
-    boot_draw_progress(g,x+boot_ss(g,44),y+h-boot_ss(g,80),w-boot_ss(g,88),boot_ss(g,10));boot_draw_text(g,x+boot_ss(g,44),y+h-boot_ss(g,48),"F3 Console | ESC Splash",0xff88a6c8u,boot_ss(g,3));return true;
+    boot_draw_spinner(g,x+w/2u,y+h-boot_ss(g,75));boot_draw_text(g,x+boot_ss(g,44),y+h-boot_ss(g,48),"F3 Console | ESC Splash",0xff88a6c8u,boot_ss(g,3));return true;
 }
 
 static bool show_bootsplash(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
@@ -432,7 +444,7 @@ static void boot_refresh_boot_status(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
         (void)image;(void)st;
         const nova_graphics_context_t *g=nova_graphics_context();
         if(g&&g->initialized)
-            boot_draw_progress(g,boot_sx(g,560),boot_sy(g,662),boot_sx(g,560),boot_sy(g,8));
+            boot_draw_spinner(g,boot_sx(g,840),boot_sy(g,700));
     }
 }
 
