@@ -1365,6 +1365,18 @@ kernel_entry:
     call app_manager_self_test
     jc panic_driver_framework
 
+    ; §019 Crypto
+    call crypto_initialize
+    jc panic_driver_framework
+    call crypto_self_test
+    jc panic_driver_framework
+
+    ; §044 Time Subsystem
+    call time_subsystem_initialize
+    jc panic_driver_framework
+    call time_subsystem_self_test
+    jc panic_driver_framework
+
     call boot_health_mark_kernel_initialized
     jc panic_boot_health
     mov esi, message_boot_health_kernel_initialized
@@ -2607,6 +2619,9 @@ panic_invalid_handoff:
 %include "arch/x86_64/modules/thermal32.inc"
 %include "arch/x86_64/modules/global32.inc"
 %include "arch/x86_64/modules/app32.inc"
+
+; §019 Crypto
+%include "arch/x86_64/modules/crypto32.inc"
 
 ; CAP-Integration 1.0
 %include "arch/x86_64/modules/cap_integration32.inc"
