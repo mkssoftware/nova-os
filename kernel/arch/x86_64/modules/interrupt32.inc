@@ -513,6 +513,12 @@ interrupt_dispatch:
     call scheduler_on_tick
     add esp, 4
     mov [interrupt_return_frame], eax
+    ; §133: BSP per-CPU current thread nachführen (wie isr_ap_timer für APs)
+    mov edx, [scheduler_selected_slot]
+    cmp edx, -1
+    je .bsp_sched_done
+    mov [per_cpu_current_thread], edx   ; per_cpu_current_thread[0] = neuer Slot
+.bsp_sched_done:
     lock btr dword [scheduler_lock], 0
     push eax
     mov al, PIC_EOI

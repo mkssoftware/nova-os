@@ -99,8 +99,22 @@ scheduler_on_tick:
     cmp dword [scheduler_enabled], 1
     jne .done
 
+    ; §133: Wenn BSP-Boot-Lock gesetzt ist, BSP nicht verdrängen (SMP-Init läuft).
+    mov edi, [scheduler_caller_cpu]
+    test edi, edi
+    jnz .bsp_boot_lock_skip
+    cmp dword [scheduler_bsp_boot_lock], 1
+    je .done
+.bsp_boot_lock_skip:
+
+    ; §133: Per-CPU-Slot bestimmen (statt globalem scheduler_current).
+    ; per_cpu_current_thread[caller_cpu] gibt an, welchen Slot diese CPU lief.
+    ; -1 = idle (kein Slot zu freigeben).
+    mov edx, [per_cpu_current_thread + edi * 4]
+    cmp edx, -1
+    je .idle_cpu                    ; CPU war idle – Slot 0 als Startpunkt
+
     ; Aktuellen Slot freigeben: Frame sichern, als "nicht laufend" markieren
-    mov edx, [scheduler_current]
     mov [scheduler_contexts + edx * 4], eax
     mov [scheduler_previous_slot], edx
     mov dword [thread_running_on + edx * 4], -1    ; §133: Slot freigeben
@@ -115,11 +129,16 @@ scheduler_on_tick:
     cmp dword [eax + TASK_STATE], TASK_STATE_RUNNING
     jne .select_next
     mov dword [eax + TASK_STATE], TASK_STATE_READY
+    jmp .select_next
+
+.idle_cpu:
+    ; CPU war idle – kein Slot freizugeben, Suche ab Slot 0 starten
+    xor edx, edx
+    mov [scheduler_previous_slot], edx
 
 .select_next:
     mov edx, [scheduler_previous_slot]
     mov esi, edx                    ; §133: Start für Wrap-Detection (kein Endlos-Loop)
-    mov edi, [scheduler_caller_cpu] ; §133: aufrufende CPU (gesetzt unter Spinlock)
 
 .try_slot:
     inc edx
@@ -171,10 +190,20 @@ scheduler_on_tick:
 
 .no_slot_found:
     ; §133: Kein freier kompatibler Slot.
+    ; War die CPU idle (per_cpu_current_thread = -1), gibt es keinen Slot
+    ; wiederherzustellen → Slot 0 in thread_running_on unberührt lassen.
+    cmp dword [per_cpu_current_thread + edi * 4], -1
+    je .no_restore_idle
     ; Aktuellen Slot wieder als "laufend" markieren und gleichen Frame zurückgeben.
     mov edx, [scheduler_previous_slot]
     mov [thread_running_on + edx * 4], edi
     mov [scheduler_current], edx
+    mov [scheduler_selected_slot], edx
+    jmp .no_slot_done
+.no_restore_idle:
+    ; CPU war idle und bleibt idle – nichts wiederherstellen.
+    mov dword [scheduler_selected_slot], -1
+.no_slot_done:
     mov eax, [esp + 12]
 
 .done:
@@ -268,6 +297,7 @@ scheduler_api:
 scheduler_lock:         dd 0       ; Spinlock – nur eine CPU gleichzeitig in scheduler_on_tick
 scheduler_caller_cpu:   dd 0       ; CPU-Slot des Aufrufers (unter Spinlock gesetzt, §133)
 scheduler_enabled:      dd 0
+scheduler_bsp_boot_lock: dd 0      ; 1 = BSP nicht verdrängen (während SMP-Init)
 scheduler_current:      dd 0
 scheduler_previous_slot: dd 0
 scheduler_selected_slot: dd 0

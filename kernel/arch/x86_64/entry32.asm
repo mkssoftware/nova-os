@@ -1245,6 +1245,8 @@ kernel_entry:
     call serial_write_string
     call scheduler_self_test
     jc panic_scheduler
+    ; BSP während SMP-Init nicht verdrängen – Spin-Loops laufen sonst 4× langsamer
+    mov dword [scheduler_bsp_boot_lock], 1
     mov esi, message_scheduler_dynamic_ok
     call serial_write_string
     mov esi, message_scheduler_ok
@@ -1284,6 +1286,8 @@ kernel_entry:
     jc panic_smp
     call smp_stress_test
     jc panic_smp
+    ; APs sind online – normales Scheduling wieder freigeben
+    mov dword [scheduler_bsp_boot_lock], 0
     mov esi, message_smp_ok
     call serial_write_string
     mov esi, message_smp_runtime_ok
