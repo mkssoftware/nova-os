@@ -500,6 +500,8 @@ static void boot_refresh_boot_status(EFI_HANDLE image,EFI_SYSTEM_TABLE *st)
 static void boot_view_switch_window(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,unsigned polls)
 {
     if(!st||!st->BootServices||!st->ConIn)return;
+    typedef EFI_STATUS (EFIAPI *efi_wfe_fn)(UINTN,EFI_EVENT *,UINTN *);
+    efi_wfe_fn wait=(efi_wfe_fn)st->BootServices->WaitForEvent;
     for(unsigned index=0;index<polls;++index){
         EFI_INPUT_KEY key;bytes_zero(&key,sizeof(key));
         EFI_STATUS status=st->ConIn->ReadKeyStroke(st->ConIn,&key);
@@ -516,7 +518,18 @@ static void boot_view_switch_window(EFI_HANDLE image,EFI_SYSTEM_TABLE *st,unsign
                 }
             }
         }
-        st->BootServices->Stall(50000);
+        /* Draw spinner explicitly (reliable fallback), then pace via WaitForEvent
+           so that EVT_NOTIFY_SIGNAL callbacks are properly dispatched by the firmware */
+        if(boot_view==NOVA_BOOT_VIEW_SPLASH){
+            const nova_graphics_context_t *g=nova_graphics_context();
+            if(g&&g->initialized)boot_draw_spinner(g,boot_sx(g,840),boot_sy(g,700));
+        }
+        if(wait&&boot_spinner_event){
+            EFI_EVENT evs[1]={boot_spinner_event};UINTN idx=0;
+            wait(1,evs,&idx); /* blocks ~150ms until timer fires; also dispatches callbacks */
+        }else{
+            st->BootServices->Stall(150000);
+        }
     }
 }
 
@@ -1394,7 +1407,7 @@ static EFI_STATUS boot_kernel(EFI_HANDLE image_handle,EFI_SYSTEM_TABLE *st,bool 
     boot_log_add(NOVA_BOOT_LOG_INFO,nki_container?"NKI KERNEL IMAGE VALIDATED":"ELF KERNEL IMAGE VALIDATED");
     boot_set_progress(450);
     boot_refresh_boot_status(image_handle,st);
-    boot_view_switch_window(image_handle,st,24);
+    boot_view_switch_window(image_handle,st,8); /* 8 × 150ms ≈ 1.2s */
     if(uefi_runtime_bridge_prepare(st)){
         nova_debug_string("UEFI:FIRMWARE-RUNTIME-BRIDGE-READY\n");
         boot_log_add(NOVA_BOOT_LOG_INFO,"FIRMWARE RUNTIME BRIDGE READY");
