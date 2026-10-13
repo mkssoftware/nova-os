@@ -1325,6 +1325,27 @@ kernel_entry:
     jc panic_driver_framework
     mov esi, message_driver_framework_ok
     call serial_write_string
+
+    ; §048 Driver Discovery
+    call driver_discovery_initialize
+    jc panic_driver_framework
+    call driver_pci_scan
+    call driver_discovery_self_test
+    jc panic_driver_framework
+
+    ; §048 Block Layer
+    call block_layer_initialize
+    jc panic_driver_framework
+    call block_layer_self_test
+    jc panic_driver_framework
+
+    ; §048 NVMe
+    call nvme_initialize
+    call nvme_self_test
+
+    ; §048 USB/xHCI
+    call usb_initialize
+    call usb_self_test
     call boot_health_mark_kernel_initialized
     jc panic_boot_health
     mov esi, message_boot_health_kernel_initialized
@@ -2525,6 +2546,13 @@ panic_invalid_handoff:
 %include "arch/x86_64/semantic_core32.inc"
 %include "arch/x86_64/state32.inc"
 %include "arch/x86_64/storage32.inc"
+
+; §048 NVMe/USB-Stack: Driver-Discovery, Block-Layer, NVMe, USB/xHCI
+%include "arch/x86_64/modules/driver32.inc"
+%include "arch/x86_64/modules/block32.inc"
+%include "arch/x86_64/modules/nvme32.inc"
+%include "arch/x86_64/modules/usb32.inc"
+
 %include "arch/x86_64/novafs32.inc"
 %include "arch/x86_64/vfs32.inc"
 %include "arch/x86_64/explorer32.inc"

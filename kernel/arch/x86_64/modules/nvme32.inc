@@ -202,13 +202,12 @@ nvme_probe_controller:
     jz .bar_mapped
     mov eax, edi
     mov edx, edi
-    mov ebp_save, ebx
-    mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | 0x18
     push ecx
     push edi
-    push ebp_save
+    push ebx
+    mov ebx, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | 0x18
     call paging_map_page
-    pop ebp_save
+    pop ebx
     pop edi
     pop ecx
     jc .failed_unmap
@@ -216,7 +215,6 @@ nvme_probe_controller:
     dec ecx
     jmp .map_bar
 .bar_mapped:
-    mov ebx, ebp_save
 
     ; Schritt 1: Controller deaktivieren (CC.EN = 0)
     mov eax, [ebx + NVME_CTL_BASE]
@@ -306,9 +304,10 @@ nvme_probe_controller:
     mov eax, edi
     shr eax, 20
     and eax, 0xF              ; DSTRD
-    mov ecx, 4
-    shl ecx, eax              ; dstride = 4 << DSTRD
-    mov [ebx + NVME_CTL_DSTRIDE], ecx
+    mov cl, al                 ; shift count must be in CL
+    mov eax, 4
+    shl eax, cl                ; dstride = 4 << DSTRD
+    mov [ebx + NVME_CTL_DSTRIDE], eax
 
     ; Schritt 7: Queue-Indizes initialisieren
     mov dword [ebx + NVME_CTL_SQTAIL_ADM], 0
