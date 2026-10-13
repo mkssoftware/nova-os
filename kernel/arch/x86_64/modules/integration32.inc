@@ -5643,7 +5643,7 @@ message_log_ring_ok:
 message_log_ring_error:
     db "NOVA PANIC: Kernel Log Ring nicht initialisierbar", 13, 10, 0
 message_introspection_ok:
-    db "NOVA: Introspection 1.0 bereit (16-Provider-Registry, 5 Subsysteme)", 13, 10, 0
+    db "NOVA: Introspection 1.0 bereit (5 Built-in-Provider: Kernel/Sched/Mem/Sec/Resil)", 13, 10, 0
 message_introspection_error:
     db "NOVA PANIC: Introspection Registry nicht initialisierbar", 13, 10, 0
 message_profiling_ok:

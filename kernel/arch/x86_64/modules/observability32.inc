@@ -1116,25 +1116,25 @@ intro_initialize:
     mov dword [intro_ready], 0
     mov dword [intro_count], 0
     mov dword [intro_next_id], 1
-    ; Pre-register 5 built-in providers (fn=0 → stub)
+    ; Pre-register 5 built-in providers with real query functions
     mov eax, INTRO_SYS_KERNEL
-    xor edx, edx
+    mov edx, intro_provider_kernel
     call intro_register
     jc .init_fail
     mov eax, INTRO_SYS_SCHED
-    xor edx, edx
+    mov edx, intro_provider_sched
     call intro_register
     jc .init_fail
     mov eax, INTRO_SYS_MEMORY
-    xor edx, edx
+    mov edx, intro_provider_memory
     call intro_register
     jc .init_fail
     mov eax, INTRO_SYS_SECURITY
-    xor edx, edx
+    mov edx, intro_provider_security
     call intro_register
     jc .init_fail
     mov eax, INTRO_SYS_RESILIENCE
-    xor edx, edx
+    mov edx, intro_provider_resilience
     call intro_register
     jc .init_fail
     mov dword [intro_ready], 1
@@ -1231,10 +1231,138 @@ intro_self_test:
     mov eax, 10
     call intro_query
     jc .istf
+    ; Invoke KERNEL provider key=0 → must return 12 bytes
+    push edi
+    lea edi, [intro_self_test_buf]
+    mov eax, INTRO_SYS_KERNEL
+    mov ebx, edi
+    xor ecx, ecx
+    call intro_invoke
+    pop edi
+    jc .istf
+    cmp eax, 12
+    jne .istf
+    ; Invoke with unknown sys-id → must fail
+    mov eax, 99
+    mov ebx, edi
+    xor ecx, ecx
+    call intro_invoke
+    jnc .istf
     clc
     ret
 .istf:
     stc
+    ret
+
+; ---------------------------------------------------------------------------
+; intro_invoke – ruft die Query-fn eines Subsystem-Providers auf.
+; IN:  EAX=sys_id, EBX=out_buf, ECX=query_key
+; OUT: EAX=bytes_written, CF=0 ok / CF=1 nicht gefunden oder fn=0
+; ---------------------------------------------------------------------------
+intro_invoke:
+    push esi
+    push edi
+    call intro_query         ; EAX=sys_id → EAX=slot, CF; EBX/ECX erhalten
+    jc .iv_fail
+    imul edi, eax, INTRO_RECORD_SIZE
+    add edi, intro_registry
+    mov esi, [edi + INTRO_FN_OFF]
+    test esi, esi
+    jz .iv_fail
+    mov eax, ebx             ; EAX = Ausgabepuffer
+    call esi                 ; EAX=buf, ECX=key → EAX=bytes
+    pop edi
+    pop esi
+    clc
+    ret
+.iv_fail:
+    pop edi
+    pop esi
+    xor eax, eax
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; Subsystem-Provider-Funktionen (NPSPEC-OBSERVABILITY-INTROSPECTION-0001)
+; Aufrufkonvention: EAX=Ausgabepuffer, ECX=Query-Key (0=Basisstatus)
+; Rückgabe: EAX=geschriebene Bytes (0 = unbekannter Key)
+; ---------------------------------------------------------------------------
+intro_provider_kernel:
+    test ecx, ecx
+    jnz .unsupported
+    push edi
+    mov edi, eax
+    mov eax, [boot_phase_current]
+    mov [edi],     eax
+    mov eax, [boot_phase_last_success]
+    mov [edi + 4], eax
+    mov eax, [timer_ticks]
+    mov [edi + 8], eax
+    pop edi
+    mov eax, 12
+    ret
+.unsupported:
+    xor eax, eax
+    ret
+
+intro_provider_sched:
+    test ecx, ecx
+    jnz .unsupported
+    push edi
+    mov edi, eax
+    mov eax, [thread_count]
+    mov [edi],     eax
+    mov eax, [per_cpu_current_thread]
+    mov [edi + 4], eax
+    pop edi
+    mov eax, 8
+    ret
+.unsupported:
+    xor eax, eax
+    ret
+
+intro_provider_memory:
+    test ecx, ecx
+    jnz .unsupported
+    push edi
+    mov edi, eax
+    mov eax, [pmm_frame_count]
+    mov [edi],     eax
+    mov eax, [heap_bytes]
+    mov [edi + 4], eax
+    pop edi
+    mov eax, 8
+    ret
+.unsupported:
+    xor eax, eax
+    ret
+
+intro_provider_security:
+    test ecx, ecx
+    jnz .unsupported
+    push edi
+    mov edi, eax
+    mov eax, [cap_next_id]
+    mov [edi], eax
+    pop edi
+    mov eax, 4
+    ret
+.unsupported:
+    xor eax, eax
+    ret
+
+intro_provider_resilience:
+    test ecx, ecx
+    jnz .unsupported
+    push edi
+    mov edi, eax
+    mov eax, [wd_global_tick]
+    mov [edi], eax
+    pop edi
+    mov eax, 4
+    ret
+.unsupported:
+    xor eax, eax
     ret
 
 intro_ready:      dd 0
@@ -1243,6 +1371,8 @@ intro_next_id:    dd 1
 align 4
 intro_registry:
     times INTRO_CAPACITY * INTRO_RECORD_SIZE db 0
+intro_self_test_buf:
+    times 32 db 0
 
 ; ---------------------------------------------------------------------------
 ; NPSPEC-OBSERVABILITY-PROFILING-0001 – Nova Tick-Based Sampling Profiler
