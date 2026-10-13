@@ -1346,6 +1346,25 @@ kernel_entry:
     ; §048 USB/xHCI
     call usb_initialize
     call usb_self_test
+
+    ; §040 Thermal Manager
+    call thermal_manager_initialize
+    jc panic_driver_framework
+    call thermal_manager_self_test
+    jc panic_driver_framework
+
+    ; §041 Globalization
+    call globalization_initialize
+    jc panic_driver_framework
+    call globalization_self_test
+    jc panic_driver_framework
+
+    ; §042 App Manager
+    call app_manager_initialize
+    jc panic_driver_framework
+    call app_manager_self_test
+    jc panic_driver_framework
+
     call boot_health_mark_kernel_initialized
     jc panic_boot_health
     mov esi, message_boot_health_kernel_initialized
@@ -2583,6 +2602,11 @@ panic_invalid_handoff:
 
 ; Adaptive / Autonomie / State / Transaktionen / Verifikation
 %include "arch/x86_64/modules/adaptive32.inc"
+
+; §040 Thermal / §041 Globalization / §042 App
+%include "arch/x86_64/modules/thermal32.inc"
+%include "arch/x86_64/modules/global32.inc"
+%include "arch/x86_64/modules/app32.inc"
 
 ; CAP-Integration 1.0
 %include "arch/x86_64/modules/cap_integration32.inc"
