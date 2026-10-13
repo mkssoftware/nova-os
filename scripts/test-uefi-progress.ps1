@@ -14,7 +14,7 @@ $logPath=[IO.Path]::GetFullPath((Join-Path $root $DebugLog))
 $shotPath=[IO.Path]::GetFullPath((Join-Path $root $Screenshot))
 $activityPath=[IO.Path]::GetFullPath((Join-Path $root $ActivityScreenshot))
 foreach($path in @($logPath,$shotPath,$activityPath)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
-$arguments=@('-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
+$arguments=@('-accel','whpx','-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
  '-drive',"format=raw,file=fat:rw:$FatDirectory",'-display','none','-serial','none',
  '-monitor',"tcp:127.0.0.1:$MonitorPort,server=on,wait=off",'-debugcon',"file:$DebugLog",
  '-global','isa-debugcon.iobase=0xe9','-no-reboot','-no-shutdown')

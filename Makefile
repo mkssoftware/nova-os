@@ -454,7 +454,7 @@ test-uefi-image: uefi $(KERNEL_IMAGE)
 test-uefi: boot-ui-runtime-check uefi
 	rm -f $(UEFI_DEBUG_LOG)
 	status=0; TMP=$(abspath $(BUILD_DIR)) TEMP=$(abspath $(BUILD_DIR)) \
-		timeout 75s "$(QEMU64)" -machine q35 \
+		timeout 75s "$(QEMU64)" -accel whpx -machine q35 \
 		-drive if=pflash,format=raw,snapshot=on,file=$(UEFI_FIRMWARE) \
 		-drive format=raw,file=fat:rw:$(UEFI_DIR) \
 		-display none -monitor none -serial none \

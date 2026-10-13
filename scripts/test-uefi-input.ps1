@@ -15,7 +15,7 @@ $screenshotPath = [IO.Path]::GetFullPath((Join-Path $root $Screenshot))
 if (Test-Path -LiteralPath $logPath) { Remove-Item -LiteralPath $logPath -Force }
 if (Test-Path -LiteralPath $screenshotPath) { Remove-Item -LiteralPath $screenshotPath -Force }
 $arguments = @(
-    '-machine','q35',
+    '-accel','whpx','-machine','q35',
     '-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
     '-drive',"format=raw,file=fat:rw:$FatDirectory",
     '-display','none','-serial','none',

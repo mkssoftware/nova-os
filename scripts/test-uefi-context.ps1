@@ -16,7 +16,7 @@ foreach ($path in @($logPath,$shotPath)) {
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
 }
 $arguments = @(
-    '-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
+    '-accel','whpx','-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
     '-drive',"format=raw,file=fat:rw:$FatDirectory",'-display','none','-serial','none',
     '-monitor',"tcp:127.0.0.1:$MonitorPort,server=on,wait=off",
     '-debugcon',"file:$DebugLog",'-global','isa-debugcon.iobase=0xe9',

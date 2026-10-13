@@ -15,7 +15,7 @@ $firmwareCopy=[IO.Path]::Combine($runDir,'firmware.fd')
 $completed=$false
 
 $arguments=@(
-    '-machine','q35',
+    '-accel','whpx','-machine','q35',
     '-m','256M',
     '-smp','4,sockets=2,cores=2,threads=1',
     '-object','memory-backend-ram,id=mem0,size=128M',

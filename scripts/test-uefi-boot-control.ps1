@@ -19,7 +19,7 @@ function Invoke-BootControlBoot([string]$name,[string]$requiredMarker,
     $debug=[IO.Path]::Combine($tempDir,$name+'.debug.log')
     $serial=[IO.Path]::Combine($tempDir,$name+'.serial.log')
     $stderr=[IO.Path]::Combine($tempDir,$name+'.stderr.log')
-    $arguments=@('-machine','q35','-m','256M',
+    $arguments=@('-accel','whpx','-machine','q35','-m','256M',
         '-drive',"if=pflash,format=raw,file=$firmwareCopy",
         '-drive',"format=raw,file=$imagePath,if=ide",'-display','none','-monitor','none',
         '-serial',"file:$serial",'-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',

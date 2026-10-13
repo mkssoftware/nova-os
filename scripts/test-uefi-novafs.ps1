@@ -69,7 +69,7 @@ function Invoke-Boot([string]$Disk,[string]$Tag){
     $serial=[IO.Path]::Combine($dir,"serial-$Tag.log");$stderr=[IO.Path]::Combine($dir,"stderr-$Tag.log")
     $firmwareCopy=[IO.Path]::Combine($dir,"firmware-$Tag.fd")
     [IO.File]::Copy([IO.Path]::GetFullPath($Firmware),$firmwareCopy,$true)
-    $arguments=@('-machine','q35','-m','256M','-smp','2',
+    $arguments=@('-accel','whpx','-machine','q35','-m','256M','-smp','2',
         '-drive',"if=pflash,format=raw,file=$firmwareCopy",
         '-drive',"format=raw,file=$Disk,if=ide",
         '-display','none','-monitor','none','-serial',"file:$serial",'-no-reboot','-no-shutdown')

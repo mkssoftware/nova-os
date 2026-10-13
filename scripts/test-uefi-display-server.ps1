@@ -46,7 +46,7 @@ function Send-QmpKey([int]$Port,[string]$Key) {
     }
 }
 
-$arguments=@('-machine','q35','-m','256M','-smp','4',
+$arguments=@('-accel','whpx','-machine','q35','-m','256M','-smp','4',
     '-drive',"if=pflash,format=raw,file=$firmwareCopy",
     '-drive',"format=raw,file=$([IO.Path]::GetFullPath($Image)),if=ide",
     '-display','none','-monitor','none','-qmp',"tcp:127.0.0.1:$qmpPort,server=on,wait=off",'-serial',"file:$serial",

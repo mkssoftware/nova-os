@@ -2152,7 +2152,8 @@ LAPIC_EOI               equ 0xB0        ; End-of-Interrupt
 LAPIC_ICR_LO            equ 0x300       ; Interrupt Command Register (low)
 LAPIC_ICR_HI            equ 0x310       ; Interrupt Command Register (high)
 LAPIC_ICR_DELIVERY_STS  equ (1 << 12)  ; Bit 12: Delivery Status (0=Idle)
-LAPIC_IPI_INIT          equ 0x00004500  ; INIT-IPI: delivery=INIT(101), level=assert
+LAPIC_IPI_INIT          equ 0x0000C500  ; INIT Assert: delivery=INIT(101), Level=Assert(14), Trigger=Level(15)
+LAPIC_IPI_INIT_DA       equ 0x00008500  ; INIT De-Assert: Level=0, Trigger=Level (MP spec §B.4.2)
 LAPIC_IPI_SIPI          equ 0x00004600  ; Startup-IPI: delivery=Startup(110)
 
 ; LAPIC-Timer-Register (xAPIC)
@@ -2199,6 +2200,8 @@ ap_trampoline_blob:
     mov ds, ax
     mov es, ax
     mov ss, ax
+    ; WHPX-AP-Sync: I/O-VMEXIT damit der WHPX-Hypervisor den AP-Start abschließt
+    out 0x80, al            ; POST-Port (2 Bytes) – kein sichtbarer Effekt außer VMEXIT
     lgdt [word 0x8002]      ; GDT laden (Patch-Bereich bei 0x8002)
     mov eax, cr0
     or  al, 1               ; PE setzen
@@ -2320,7 +2323,6 @@ ap_entry32_pm:
     jmp .ap_idle
 
 .halt_unknown:
-    ; Unbekannte APIC-ID – sicher anhalten
     cli
 .halt_forever:
     hlt
@@ -2356,17 +2358,23 @@ smp_boot_ap:
     shl ecx, 24
     mov [LAPIC_BASE + LAPIC_ICR_HI], ecx
 
-    ; INIT Assert
+    ; INIT Assert (Level=1 Trigger=Level – MP spec §B.4.2 / Intel SDM §10.6.7)
     mov dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_IPI_INIT
     call apic_wait_icr_idle
 
-    ; §38-opt: 10ms via PIT-Timer-Ticks (hardwareunabhängig, QEMU-sicher).
-    ; Ersetzt den calibrierten pause-Loop (war zu langsam unter QEMU-TCG).
+    ; 30ms nach INIT warten (MP spec: min. 10ms; WHPX braucht etwas mehr Spielraum)
     mov eax, [timer_ticks]
-    inc eax
+    add eax, 3
 .wait_init:
     cmp [timer_ticks], eax
     jb .wait_init
+
+    ; INIT De-Assert (benötigt von WHPX und strenger Hardware per MP spec)
+    mov ecx, esi
+    shl ecx, 24
+    mov [LAPIC_BASE + LAPIC_ICR_HI], ecx
+    mov dword [LAPIC_BASE + LAPIC_ICR_LO], LAPIC_IPI_INIT_DA
+    call apic_wait_icr_idle
 
     ; Erster STARTUP IPI
     mov ecx, esi
@@ -2408,6 +2416,7 @@ smp_start_aps:
     mov edi, AP_TRAMPOLINE_BASE
     mov ecx, (ap_trampoline_blob_end - ap_trampoline_blob + 3) >> 2
     rep movsd
+    wbinvd                  ; Cache-Flush: WHPX und Hardware sehen Trampoline sofort
 
     ; Patch: GDT-Limit und GDT-Basis (aus kernel_gdt_descriptor)
     movzx eax, word [kernel_gdt_descriptor]
@@ -2432,9 +2441,9 @@ smp_start_aps:
     mov eax, [acpi_apic_ids + ebx * 4]
     call smp_boot_ap
 
-    ; §38-opt: bis zu 100ms (10 PIT-Ticks) auf AP-Online warten.
+    ; bis zu 500ms (50 PIT-Ticks) auf AP-Online warten (WHPX braucht ~300ms).
     mov eax, [timer_ticks]
-    add eax, 10
+    add eax, 50
     mov edx, ebx
     inc edx                 ; erwartet: BSP (1) + AP-Index Zähler
 .wait_online:

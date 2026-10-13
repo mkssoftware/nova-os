@@ -45,7 +45,7 @@ function Invoke-SuccessCase([string]$name,[string]$image,[string[]]$requiredMark
     $debug=[IO.Path]::Combine($tempDir,$name+'.debug.log')
     $serial=[IO.Path]::Combine($tempDir,$name+'.serial.log')
     $stderr=[IO.Path]::Combine($tempDir,$name+'.stderr.log')
-    $arguments=@('-machine','q35','-m','256M','-smp','4',
+    $arguments=@('-accel','whpx','-machine','q35','-m','256M','-smp','4',
         '-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
         '-drive',"format=raw,file=$image,if=ide",'-display','none','-monitor','none',
         '-serial',"file:$serial",'-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
@@ -80,7 +80,7 @@ function Invoke-ValidationCase([string]$name,[string]$image,[string]$forbiddenMa
     $debug=[IO.Path]::Combine($tempDir,$name+'.debug.log')
     $serial=[IO.Path]::Combine($tempDir,$name+'.serial.log')
     $stderr=[IO.Path]::Combine($tempDir,$name+'.stderr.log')
-    $arguments=@('-machine','q35','-m','256M','-smp','4',
+    $arguments=@('-accel','whpx','-machine','q35','-m','256M','-smp','4',
         '-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
         '-drive',"format=raw,file=$image,if=ide",'-display','none','-monitor','none',
         '-serial',"file:$serial",'-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
@@ -114,7 +114,7 @@ function Invoke-RecoveryCase([string]$name,[string]$image) {
     $debug=[IO.Path]::Combine($tempDir,$name+'.debug.log')
     $serial=[IO.Path]::Combine($tempDir,$name+'.serial.log')
     $stderr=[IO.Path]::Combine($tempDir,$name+'.stderr.log')
-    $arguments=@('-machine','q35','-m','256M','-smp','4',
+    $arguments=@('-accel','whpx','-machine','q35','-m','256M','-smp','4',
         '-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
         '-drive',"format=raw,file=$image,if=ide",'-display','none','-monitor','none',
         '-serial',"file:$serial",'-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',
@@ -152,7 +152,7 @@ function Invoke-BackupCase([string]$name,[string]$image) {
     $debug=[IO.Path]::Combine($tempDir,$name+'.debug.log')
     $serial=[IO.Path]::Combine($tempDir,$name+'.serial.log')
     $stderr=[IO.Path]::Combine($tempDir,$name+'.stderr.log')
-    $arguments=@('-machine','q35','-m','256M','-smp','4',
+    $arguments=@('-accel','whpx','-machine','q35','-m','256M','-smp','4',
         '-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
         '-drive',"format=raw,file=$image,if=ide",'-display','none','-monitor','none',
         '-serial',"file:$serial",'-debugcon',"file:$debug",'-global','isa-debugcon.iobase=0xe9',

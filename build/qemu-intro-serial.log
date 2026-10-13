@@ -218,12 +218,11 @@ NOVA: NovaFS kein Systemvolume gefunden, Bootstrap-RAMFS bleibt Root
 NOVA: Boot Health wartet auf persistentes SystemRoot und Trust
 NOVA: Boot Health SystemRoot Provider DEGRADED (kein rw-Volume)
 NOVA: Display Server ABI 1.0, Firmware-Framebuffer uebernommen
-NOVA: BOOT phase=0x0000000C last_phase=0x00000009
+NOVA: BOOT phase=0x0000000E last_phase=0x00000009
+NOVA_GRAPHICS_READY
+NOVA: Background Init Thread aktiv §38
+NOVA: BOOT phase=0x0000000C last_phase=0x0000000E
 NOVA_DESKTOP_READY
-NOVA: Network ABI 1.0, IPv4/IPv6 UDP, ICMP und TCP bereit
-NOVA: Power Manager ABI 1.0 und Shutdown-Pfad bereit
-NOVA: BOOT phase=0x0000000D last_phase=0x00000009
-NOVA_SYSTEM_READY
 NOVA: BOOT phase=0x0000000A last_phase=0x0000000C
 NOVA: Boot Health Session Provider READY (Phase-1 Stub)
 NOVA: Boot Health DegradedConfirmed (Meilensteine via DEGRADED-Pfad erreicht)

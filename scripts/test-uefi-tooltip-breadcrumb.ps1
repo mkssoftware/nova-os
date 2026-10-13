@@ -16,7 +16,7 @@ $shotPath=[IO.Path]::GetFullPath((Join-Path $root $Screenshot))
 $breadcrumbPath=[IO.Path]::GetFullPath((Join-Path $root $BreadcrumbScreenshot))
 $breadcrumbFocusPath=[IO.Path]::GetFullPath((Join-Path $root $BreadcrumbFocusScreenshot))
 foreach($path in @($logPath,$shotPath,$breadcrumbPath,$breadcrumbFocusPath)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
-$arguments=@('-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
+$arguments=@('-accel','whpx','-machine','q35','-drive',"if=pflash,format=raw,snapshot=on,file=$Firmware",
  '-drive',"format=raw,file=fat:rw:$FatDirectory",'-display','none','-serial','none',
  '-monitor',"tcp:127.0.0.1:$MonitorPort,server=on,wait=off",'-debugcon',"file:$DebugLog",
  '-global','isa-debugcon.iobase=0xe9','-no-reboot','-no-shutdown')
