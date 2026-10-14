@@ -153,8 +153,8 @@ bootmgr_self_test:
 .rollback_triggered:
     ; Rollback ist auch ein gueltiger Pfad - kein Fehler
 .done:
-    pop esi
     test esi, esi
+    pop esi
     jz .ok
     stc
     ret

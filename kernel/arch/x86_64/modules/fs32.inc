@@ -585,8 +585,8 @@ fs_self_test:
     jnc .done
     inc esi
 .done:
-    pop esi
     test esi, esi
+    pop esi
     jz .ok
     stc
     ret
