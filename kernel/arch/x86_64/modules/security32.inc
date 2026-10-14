@@ -2457,6 +2457,10 @@ smp_start_aps:
     jmp .ap_loop
 
 .all_done:
+    ; cpu_discovered_count auf tatsaechlich gestartete CPUs korrigieren
+    ; (Soft-Fail-Timeout: nicht gestartete APs werden nicht gezaehlt)
+    mov eax, [cpu_online_count]
+    mov [cpu_discovered_count], eax
     pop ecx
     pop ebx
     pop edi

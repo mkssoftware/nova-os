@@ -97,10 +97,12 @@ driver_discovery_self_test:
     mov esi, disc_records
     mov dword [esi + DISC_REC_STATE], DRV_LC_UNBOUND
     mov dword [disc_count], 0
+    push edi                    ; Fehlerzähler sichern – rep stosd clobbert EDI
     mov edi, disc_records
     xor eax, eax
     mov ecx, DISC_RECORD_SIZE / 4
     rep stosd
+    pop edi                     ; Fehlerzähler wiederherstellen
 
 .done:
     test edi, edi

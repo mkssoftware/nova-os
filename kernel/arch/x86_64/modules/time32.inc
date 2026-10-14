@@ -411,7 +411,7 @@ time_timer_arm:
     mov [edi + TR_ID], esi
     mov [edi + TR_OWNER], ebx
     mov [edi + TR_TYPE], ecx
-    mov [edi + TR_STATE], TIMER_ST_ARMED
+    mov [edi + TR_STATE], dword TIMER_ST_ARMED
     mov [edi + TR_DOMAIN], dword CLKDOM_SYSTEM
     mov [edi + TR_DEADLINE_LO], edx
     mov [edi + TR_DEADLINE_HI], dword 0

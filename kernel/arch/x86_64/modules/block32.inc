@@ -113,10 +113,12 @@ block_layer_self_test:
     inc edi
 .cleanup:
     mov dword [block_count], 0
+    push edi                    ; Fehlerzähler sichern – rep stosd clobbert EDI
     mov edi, block_records
     xor eax, eax
     mov ecx, BLOCK_RECORD_SIZE / 4
     rep stosd
+    pop edi                     ; Fehlerzähler wiederherstellen
 .done:
     test edi, edi
     jz .ok
