@@ -1407,6 +1407,24 @@ kernel_entry:
     call font_manager_self_test
     jc panic_driver_framework
 
+    ; §038 Filesystem VFS + Volume
+    call fs_initialize
+    jc panic_driver_framework
+    call fs_self_test
+    jc panic_driver_framework
+
+    ; §038 Filesystem Index + Sysdir
+    call fsindex_initialize
+    jc panic_driver_framework
+    call fsindex_self_test
+    jc panic_driver_framework
+
+    ; §038 Program-Manager + Registry + Capability
+    call program_manager_initialize
+    jc panic_driver_framework
+    call program_manager_self_test
+    jc panic_driver_framework
+
     call boot_health_mark_kernel_initialized
     jc panic_boot_health
     mov esi, message_boot_health_kernel_initialized
@@ -2659,6 +2677,11 @@ panic_invalid_handoff:
 %include "arch/x86_64/modules/power32.inc"
 %include "arch/x86_64/modules/text32.inc"
 %include "arch/x86_64/modules/font32.inc"
+
+; §038 Filesystem
+%include "arch/x86_64/modules/fs32.inc"
+%include "arch/x86_64/modules/fsindex32.inc"
+%include "arch/x86_64/modules/program32.inc"
 
 ; CAP-Integration 1.0
 %include "arch/x86_64/modules/cap_integration32.inc"
