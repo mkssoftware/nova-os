@@ -1485,6 +1485,66 @@ kernel_entry:
     call update_self_test
     jc panic_driver_framework
 
+    ; §001 UI
+    call ui_initialize
+    jc panic_driver_framework
+    call ui_self_test
+    jc panic_driver_framework
+
+    ; §002 ARCH
+    call arch_initialize
+    jc panic_driver_framework
+    call arch_self_test
+    jc panic_driver_framework
+
+    ; §004 Boot-Manager
+    call bootmgr_initialize
+    jc panic_driver_framework
+    call bootmgr_self_test
+    jc panic_driver_framework
+
+    ; §011 DataMove
+    call datamove_initialize
+    jc panic_driver_framework
+    call datamove_self_test
+    jc panic_driver_framework
+
+    ; §024 Semantic (extended manager)
+    call semmgr_initialize
+    jc panic_driver_framework
+    call semmgr_self_test
+    jc panic_driver_framework
+
+    ; §027 Execution
+    call execution_initialize
+    jc panic_driver_framework
+    call execution_self_test
+    jc panic_driver_framework
+
+    ; §028 Distributed
+    call distributed_initialize
+    jc panic_driver_framework
+    call distributed_self_test
+    jc panic_driver_framework
+
+    ; §034 Transaction-Manager
+    call txmgr_initialize
+    jc panic_driver_framework
+    call txmgr_self_test
+    jc panic_driver_framework
+
+    ; §035 ABI (extended manager)
+    call abimgr_initialize
+    jc panic_driver_framework
+    call abimgr_self_test
+    jc panic_driver_framework
+
+    ; §036 State-Manager
+    call statemgr_initialize
+    jc panic_driver_framework
+    call statemgr_self_test
+    jc panic_driver_framework
+
     call boot_health_mark_kernel_initialized
     jc panic_boot_health
     mov esi, message_boot_health_kernel_initialized
@@ -2758,6 +2818,22 @@ panic_invalid_handoff:
 ; §036-VERIFY / §037 Update
 %include "arch/x86_64/modules/verify32.inc"
 %include "arch/x86_64/modules/update32.inc"
+
+; §001 UI / §002 ARCH / §004 Boot / §011 DataMove
+%include "arch/x86_64/modules/ui32.inc"
+%include "arch/x86_64/modules/arch32.inc"
+%include "arch/x86_64/modules/bootmgr32.inc"
+%include "arch/x86_64/modules/datamove32.inc"
+
+; §024 Semantic / §027 Execution / §028 Distributed
+%include "arch/x86_64/modules/semantic32.inc"
+%include "arch/x86_64/modules/execution32.inc"
+%include "arch/x86_64/modules/distributed32.inc"
+
+; §034 Transaction / §035 ABI / §036 State
+%include "arch/x86_64/modules/txmgr32.inc"
+%include "arch/x86_64/modules/abi32.inc"
+%include "arch/x86_64/modules/statemgr32.inc"
 
 ; CAP-Integration 1.0
 %include "arch/x86_64/modules/cap_integration32.inc"
