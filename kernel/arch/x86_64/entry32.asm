@@ -1425,6 +1425,66 @@ kernel_entry:
     call program_manager_self_test
     jc panic_driver_framework
 
+    ; §017 Distributed Communications
+    call distcom_initialize
+    jc panic_driver_framework
+    call distcom_self_test
+    jc panic_driver_framework
+
+    ; §020 Privacy
+    call privacy_ext_initialize
+    jc panic_driver_framework
+    call privacy_ext_self_test
+    jc panic_driver_framework
+
+    ; §021 Identity (extended manager, adaptive32 already initializes core)
+    call identity_mgr_initialize
+    jc panic_driver_framework
+    call identity_mgr_self_test
+    jc panic_driver_framework
+
+    ; §022 Trust (extended manager, adaptive32 already initializes core)
+    call trust_mgr_initialize
+    jc panic_driver_framework
+    call trust_mgr_self_test
+    jc panic_driver_framework
+
+    ; §025 Object
+    call object_initialize
+    jc panic_driver_framework
+    call object_self_test
+    jc panic_driver_framework
+
+    ; §026 Resource
+    call resource_initialize
+    jc panic_driver_framework
+    call resource_self_test
+    jc panic_driver_framework
+
+    ; §031 Autonomy
+    call autonomy_initialize
+    jc panic_driver_framework
+    call autonomy_self_test
+    jc panic_driver_framework
+
+    ; §032 Realtime
+    call realtime_initialize
+    jc panic_driver_framework
+    call realtime_self_test
+    jc panic_driver_framework
+
+    ; §036-VERIFY Verification
+    call verify_initialize
+    jc panic_driver_framework
+    call verify_self_test
+    jc panic_driver_framework
+
+    ; §037 Update-Manager
+    call update_initialize
+    jc panic_driver_framework
+    call update_self_test
+    jc panic_driver_framework
+
     call boot_health_mark_kernel_initialized
     jc panic_boot_health
     mov esi, message_boot_health_kernel_initialized
@@ -2682,6 +2742,22 @@ panic_invalid_handoff:
 %include "arch/x86_64/modules/fs32.inc"
 %include "arch/x86_64/modules/fsindex32.inc"
 %include "arch/x86_64/modules/program32.inc"
+
+; §017 DistCom / §020 Privacy / §021 Identity / §022 Trust
+%include "arch/x86_64/modules/distcom32.inc"
+%include "arch/x86_64/modules/privacy32.inc"
+%include "arch/x86_64/modules/identity32.inc"
+%include "arch/x86_64/modules/trust32.inc"
+
+; §025 Object / §026 Resource / §031 Autonomy / §032 Realtime
+%include "arch/x86_64/modules/object32.inc"
+%include "arch/x86_64/modules/resource32.inc"
+%include "arch/x86_64/modules/autonomy32.inc"
+%include "arch/x86_64/modules/realtime32.inc"
+
+; §036-VERIFY / §037 Update
+%include "arch/x86_64/modules/verify32.inc"
+%include "arch/x86_64/modules/update32.inc"
 
 ; CAP-Integration 1.0
 %include "arch/x86_64/modules/cap_integration32.inc"
