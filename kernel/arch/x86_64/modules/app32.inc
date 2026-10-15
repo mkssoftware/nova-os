@@ -332,54 +332,51 @@ svc_register:
 ; ---------------------------------------------------------------------------
 app_manager_self_test:
     push esi
-    xor esi, esi
+    push ebx
 
+    ; Test 1: Manager bereit
     cmp dword [app_mgr_ready], 1
-    je .t2
-    inc esi
-.t2:
-    ; Test: App registrieren
-    mov eax, 0xDEADBEEF        ; Test-App-ID
+    jne .fail
+
+    ; Test 2: App registrieren (ESI = Record-Ptr bei Erfolg)
+    mov eax, 0xDEADBEEF
     mov ebx, APP_TYPE_FOREGROUND
     mov ecx, APP_SANDBOX_STANDARD
     mov edx, APP_FLAG_PORTABLE
     call app_register
-    jnc .t3
-    inc esi
-    jmp .done
-.t3:
-    ; App-ID suchen
+    jc .fail
+    mov ebx, esi               ; EBX = Record-Ptr (ESI freigeben)
+
+    ; Test 3: App-ID suchen
     mov eax, 0xDEADBEEF
     call app_find_by_id
-    jnc .t4
-    inc esi
-    jmp .done
-.t4:
-    ; App starten
+    jc .cleanup_fail
+
+    ; Test 4: App starten (ESI = Record-Ptr von app_find_by_id)
     call app_start
-    jnc .t5
-    inc esi
-    jmp .done
-.t5:
-    ; App stoppen
-    ; Zustand auf RUNNING setzen fuer Stop-Test
+    jc .cleanup_fail
+
+    ; Test 5: App stoppen
     mov dword [esi + APP_STATE], APP_STATE_RUNNING
     call app_stop
-    jnc .cleanup
-    inc esi
-.cleanup:
-    ; Cleanup: Slot zur‹ckgeben
+    jc .cleanup_fail
+
+    ; Cleanup: Slot freigeben
     mov dword [esi + APP_STATE], APP_STATE_INACTIVE
     dec dword [app_count]
-.done:
-    test esi, esi
-    jz .ok
-    pop esi
-    stc
-    ret
-.ok:
+    pop ebx
     pop esi
     clc
+    ret
+
+.cleanup_fail:
+    mov esi, ebx
+    mov dword [esi + APP_STATE], APP_STATE_INACTIVE
+    dec dword [app_count]
+.fail:
+    pop ebx
+    pop esi
+    stc
     ret
 
 ; ---------------------------------------------------------------------------

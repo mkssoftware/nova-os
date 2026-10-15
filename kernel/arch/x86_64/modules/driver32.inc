@@ -70,39 +70,49 @@ driver_discovery_self_test:
     push edi
     xor edi, edi
 
+    ; Test 1: Subsystem bereit
     cmp dword [disc_mgr_ready], 1
-    je .t2
-    inc edi
-.t2:
-    cmp dword [disc_count], 0
     je .t3
     inc edi
+
+    ; Test 2 entfaellt: driver_pci_scan laeuft vor dem Self-Test und kann
+    ; disc_count > 0 hinterlassen – kein Fehler.
+
 .t3:
-    ; Virtuelles Testgeraet registrieren
+    push dword [disc_count]         ; aktuellen Zaehlerstand sichern
     mov eax, DISC_SRC_VIRTUAL
     xor edx, edx
     xor ebx, ebx
     xor ecx, ecx
-    mov esi, 0
+    xor esi, esi
     call disc_register_device
-    jnc .t4
+    jc .reg_fail
+
+    ; Test 4: disc_count == gespeicherter_count + 1
+    mov eax, [esp]
+    inc eax
+    cmp [disc_count], eax
+    je .cleanup
     inc edi
+    jmp .cleanup
+
+.reg_fail:
+    inc edi
+    pop eax                         ; gespeicherten disc_count verwerfen
     jmp .done
-.t4:
-    cmp dword [disc_count], 1
-    je .t5
-    inc edi
-.t5:
-    ; Registrierten Eintrag wieder auf Discovered setzen (Test-Cleanup)
-    mov esi, disc_records
-    mov dword [esi + DISC_REC_STATE], DRV_LC_UNBOUND
-    mov dword [disc_count], 0
-    push edi                    ; Fehlerzähler sichern – rep stosd clobbert EDI
-    mov edi, disc_records
-    xor eax, eax
+
+.cleanup:
+    ; ESI = Zeiger auf registrierten Record; nur diesen Record nullen
+    push ecx
+    push edi                        ; Fehlerzaehler sichern
     mov ecx, DISC_RECORD_SIZE / 4
+    mov edi, esi
+    xor eax, eax
     rep stosd
-    pop edi                     ; Fehlerzähler wiederherstellen
+    pop edi                         ; Fehlerzaehler wiederherstellen
+    pop ecx
+    pop eax                         ; gespeicherter disc_count
+    mov [disc_count], eax           ; Zaehler auf Ursprungswert zuruecksetzen
 
 .done:
     test edi, edi

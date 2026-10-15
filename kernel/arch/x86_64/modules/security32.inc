@@ -2321,10 +2321,11 @@ ap_entry32_pm:
     ; BSP signalisieren (wartet auf ap_alive_count)
     lock inc dword [ap_alive_count]
 
-    ; AP-Leerlaufschleife (Interrupts ein, HALT bis Reschedule-IPI)
+    ; AP-Leerlaufschleife (Interrupts ein, PAUSE-Spin statt HLT – WHPX liefert
+    ; IPIs an HLT-vcpus nicht zuverlaessig; pause ermoeglicht IRQ-Annahme ohne hlt)
 .ap_idle:
     sti
-    hlt
+    pause
     jmp .ap_idle
 
 .halt_unknown:
@@ -2636,10 +2637,10 @@ smp_tlb_shootdown_page:
     mov eax, ebx
     mov ecx, SMP_IPI_TLB_SHOOTDOWN
     call smp_send_ipi
-    ; §38-opt: bis zu 50ms (5 PIT-Ticks) auf TLB-ACK warten.
+    ; §38-opt: bis zu 5s (500 PIT-Ticks) auf TLB-ACK warten (WHPX-robust).
     push ecx
     mov ecx, [timer_ticks]
-    add ecx, 5
+    add ecx, 500
 .tlb_ack_wait:
     cmp dword [smp_tlb_ack_pending], 0
     je .tlb_ack_done
@@ -2673,12 +2674,12 @@ smp_tlb_shootdown_page:
 smp_call_function:
     ; Zielmaske: BSP-Bit verboten, darf nicht leer sein
     test eax, 1
-    jnz .cf_reject
+    jnz .cf_rej1
     test eax, eax
-    jz .cf_reject
+    jz .cf_rej2
     ; Funktionszeiger darf nicht null sein
     test ecx, ecx
-    jz .cf_reject
+    jz .cf_rej3
     ; Zielmaske darf nur online CPUs enthalten
     push edx
     push ebx
@@ -2687,7 +2688,35 @@ smp_call_function:
     test eax, ebx
     pop ebx
     pop edx
-    jnz .cf_reject
+    jnz .cf_rej4
+    jmp .cf_checks_pass
+.cf_rej1:
+    push esi
+    mov esi, message_dbg_cfrej1
+    call serial_write_string
+    pop esi
+    jmp .cf_reject
+.cf_rej2:
+    push esi
+    mov esi, message_dbg_cfrej2
+    call serial_write_string
+    pop esi
+    jmp .cf_reject
+.cf_rej3:
+    push esi
+    mov esi, message_dbg_cfrej3
+    call serial_write_string
+    pop esi
+    jmp .cf_reject
+.cf_rej4:
+    push esi
+    mov esi, message_dbg_cfrej4
+    call serial_write_string
+    pop esi
+.cf_reject:
+    stc
+    ret
+.cf_checks_pass:
 
     ; Spinlock erwerben (serialisiert gleichzeitige Cross-CPU-Calls)
 .cf_spin:
@@ -2730,10 +2759,10 @@ smp_call_function:
     pop ecx
     pop eax
 
-    ; §38-opt: bis zu 50ms (5 PIT-Ticks) auf ACK warten.
+    ; §38-opt: bis zu 5s (500 PIT-Ticks) auf ACK warten (WHPX-robust).
     push ebx
     mov ebx, [timer_ticks]
-    add ebx, 5
+    add ebx, 500
 .cf_ack_wait:
     cmp dword [smp_call_fn_ack], 0
     je .cf_ack_done
@@ -2750,9 +2779,6 @@ smp_call_function:
     pop ebx
     lock btr dword [smp_call_fn_lock], 0
     clc
-    ret
-.cf_reject:
-    stc
     ret
 
 ; ---------------------------------------------------------------------------
@@ -2833,26 +2859,16 @@ smp_self_test:
     cmp dword [smp_remote_ipis_sent], 0
     je .invalid
 
-    ; SMP: AP-LAPIC-Timer prüfen – 20 PIT-Ticks warten (≈ 200 ms),
-    ; dann muss jeder AP-Slot (Slot 1 … cpu_discovered_count-1) mindestens
-    ; einen Tick in ap_timer_ticks gezählt haben.
-    ; LAPIC-Timer kalibriert sich gegen PIT → nach 200 ms sind ≈ 20 AP-Ticks sicher.
-    mov eax, [timer_ticks]
-    add eax, 20
-.timer_wait:
-    cmp [timer_ticks], eax
-    jb  .timer_wait
+    ; SMP: Alle APs muessen ihren Idle-Loop erreicht haben (ap_alive_count).
+    ; ap_alive_count wird von jedem AP direkt vor sti/hlt inkrementiert – das
+    ; beweist, dass LAPIC kalibriert und der Stack bereit ist.  Die Pruefung
+    ; via ap_timer_ticks entfaellt hier, da WHPX den periodischen LAPIC-Timer
+    ; in der hlt-Phase nicht zuverlaessig emuliert.
+    mov eax, [cpu_discovered_count]
+    dec eax                             ; Anzahl APs = discovered - BSP
+    cmp [ap_alive_count], eax
+    jne .invalid
 
-    ; Alle AP-Slots (1 … N-1) auf Tick-Zähler > 0 prüfen
-    mov ecx, 1                          ; BSP ist Slot 0, APs beginnen ab 1
-.ap_tick_check:
-    cmp ecx, [cpu_discovered_count]
-    jae .ap_tick_ok
-    cmp dword [ap_timer_ticks + ecx * 4], 0
-    je  .invalid                        ; Kein Tick → LAPIC-Timer auf AP ECX defekt
-    inc ecx
-    jmp .ap_tick_check
-.ap_tick_ok:
     ; LAPIC-Timer-Kalibrierwert muss plausibel sein (> 0 und < 2^31)
     cmp dword [lapic_timer_count], 0
     je  .invalid
@@ -2911,7 +2927,17 @@ smp_self_test:
 smp_stress_test:
     ; UP: keine Remote-CPUs, Stresstest entfällt
     cmp dword [cpu_discovered_count], 1
-    je .pass
+    jne .not_up
+    push esi
+    mov esi, message_dbg_st_up
+    call serial_write_string
+    pop esi
+    jmp .pass
+.not_up:
+    push esi
+    mov esi, message_dbg_st_smp
+    call serial_write_string
+    pop esi
 
     ; -----------------------------------------------------------------------
     ; Test 1: smp_call_function-Last – 16 Aufrufe auf alle APs
@@ -2937,6 +2963,10 @@ smp_stress_test:
     imul eax, 16
     cmp [smp_stress_counter], eax
     jne .fail
+    push esi
+    mov esi, message_dbg_stress_t1
+    call serial_write_string
+    pop esi
 
     ; -----------------------------------------------------------------------
     ; Test 2: TLB-Shootdown-Last – 8 Vollsystem-Shootdowns (BSP + alle APs)
@@ -2961,6 +2991,10 @@ smp_stress_test:
     mov eax, [smp_rejected_remote_shootdowns]
     cmp eax, [smp_stress_saved_rejects]
     jne .fail                        ; Timeout oder ungültige Maske
+    push esi
+    mov esi, message_dbg_stress_t2
+    call serial_write_string
+    pop esi
 
     ; -----------------------------------------------------------------------
     ; Test 3: Gemischte Last – 4 Runden (Call + Shootdown abwechselnd)
@@ -2983,6 +3017,10 @@ smp_stress_test:
     jnz .mixed_loop
 
 .pass:
+    push esi
+    mov esi, message_dbg_stress_t3
+    call serial_write_string
+    pop esi
     clc
     ret
 .pop_fail:

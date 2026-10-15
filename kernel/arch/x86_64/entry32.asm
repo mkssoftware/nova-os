@@ -1284,10 +1284,16 @@ kernel_entry:
     mov esi, message_qos_ok
     call serial_write_string
 
+    mov esi, message_dbg_smp1
+    call serial_write_string
     call smp_initialize
     jc panic_smp
+    mov esi, message_dbg_smp2
+    call serial_write_string
     call smp_self_test
     jc panic_smp
+    mov esi, message_dbg_smp3
+    call serial_write_string
     call smp_stress_test
     jc panic_smp
     ; APs sind online – normales Scheduling wieder freigeben
@@ -1327,17 +1333,23 @@ kernel_entry:
     call serial_write_string
 
     ; §048 Driver Discovery
+    mov esi, message_dbg_dd_init
+    call serial_write_string
     call driver_discovery_initialize
     jc panic_driver_framework
     call driver_pci_scan
     call driver_discovery_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_dd_done
+    call serial_write_string
 
     ; §048 Block Layer
     call block_layer_initialize
     jc panic_driver_framework
     call block_layer_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_bl_done
+    call serial_write_string
 
     ; §048 NVMe
     call nvme_initialize
@@ -1352,198 +1364,264 @@ kernel_entry:
     jc panic_driver_framework
     call thermal_manager_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_th_done
+    call serial_write_string
 
     ; §041 Globalization
     call globalization_initialize
     jc panic_driver_framework
     call globalization_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_glob
+    call serial_write_string
 
     ; §042 App Manager
     call app_manager_initialize
     jc panic_driver_framework
     call app_manager_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_appmgr
+    call serial_write_string
 
     ; §019 Crypto
     call crypto_initialize
     jc panic_driver_framework
     call crypto_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_crypto
+    call serial_write_string
 
     ; §016 Network Stack
     call network_stack_initialize
     jc panic_driver_framework
     call network_stack_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_net
+    call serial_write_string
 
     ; §039 Compat
     call compat_initialize
     jc panic_driver_framework
     call compat_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_compat
+    call serial_write_string
 
     ; §044 Time Subsystem
     call time_subsystem_initialize
     jc panic_driver_framework
     call time_subsystem_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_time
+    call serial_write_string
 
     ; §043 Power Management
     call power_extended_initialize
     jc panic_driver_framework
     call power_extended_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_power
+    call serial_write_string
 
     ; §045 Text Subsystem
     call text_initialize
     jc panic_driver_framework
     call text_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_text
+    call serial_write_string
 
     ; §046 Font Manager
     call font_manager_initialize
     jc panic_driver_framework
     call font_manager_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_font
+    call serial_write_string
 
     ; §038 Filesystem VFS + Volume
     call fs_initialize
     jc panic_driver_framework
     call fs_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_vfs
+    call serial_write_string
 
     ; §038 Filesystem Index + Sysdir
     call fsindex_initialize
     jc panic_driver_framework
     call fsindex_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_fsidx
+    call serial_write_string
 
     ; §038 Program-Manager + Registry + Capability
     call program_manager_initialize
     jc panic_driver_framework
     call program_manager_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_progmgr
+    call serial_write_string
 
     ; §017 Distributed Communications
     call distcom_initialize
     jc panic_driver_framework
     call distcom_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_distcom
+    call serial_write_string
 
     ; §020 Privacy
     call privacy_ext_initialize
     jc panic_driver_framework
     call privacy_ext_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_privacy
+    call serial_write_string
 
     ; §021 Identity (extended manager, adaptive32 already initializes core)
     call identity_mgr_initialize
     jc panic_driver_framework
     call identity_mgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_identity
+    call serial_write_string
 
     ; §022 Trust (extended manager, adaptive32 already initializes core)
     call trust_mgr_initialize
     jc panic_driver_framework
     call trust_mgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_trust
+    call serial_write_string
 
     ; §025 Object
     call object_initialize
     jc panic_driver_framework
     call object_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_object
+    call serial_write_string
 
     ; §026 Resource
     call resource_initialize
     jc panic_driver_framework
     call resource_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_resource
+    call serial_write_string
 
     ; §031 Autonomy
     call autonomy_initialize
     jc panic_driver_framework
     call autonomy_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_autonomy
+    call serial_write_string
 
     ; §032 Realtime
     call realtime_initialize
     jc panic_driver_framework
     call realtime_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_realtime
+    call serial_write_string
 
     ; §036-VERIFY Verification
     call verify_initialize
     jc panic_driver_framework
     call verify_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_verify
+    call serial_write_string
 
     ; §037 Update-Manager
     call update_initialize
     jc panic_driver_framework
     call update_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_update
+    call serial_write_string
 
     ; §001 UI
     call ui_initialize
     jc panic_driver_framework
     call ui_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_ui
+    call serial_write_string
 
     ; §002 ARCH
     call arch_initialize
     jc panic_driver_framework
     call arch_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_arch
+    call serial_write_string
 
     ; §004 Boot-Manager
     call bootmgr_initialize
     jc panic_driver_framework
     call bootmgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_bootmgr
+    call serial_write_string
 
     ; §011 DataMove
     call datamove_initialize
     jc panic_driver_framework
     call datamove_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_datamove
+    call serial_write_string
 
     ; §024 Semantic (extended manager)
     call semmgr_initialize
     jc panic_driver_framework
     call semmgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_semmgr
+    call serial_write_string
 
     ; §027 Execution
     call execution_initialize
     jc panic_driver_framework
     call execution_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_exec
+    call serial_write_string
 
     ; §028 Distributed
     call distributed_initialize
     jc panic_driver_framework
     call distributed_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_dist
+    call serial_write_string
 
     ; §034 Transaction-Manager
     call txmgr_initialize
     jc panic_driver_framework
     call txmgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_txmgr
+    call serial_write_string
 
     ; §035 ABI (extended manager)
     call abimgr_initialize
     jc panic_driver_framework
     call abimgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_abimgr
+    call serial_write_string
 
     ; §036 State-Manager
     call statemgr_initialize
     jc panic_driver_framework
     call statemgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_p8_statemgr
+    call serial_write_string
 
     call boot_health_mark_kernel_initialized
     jc panic_boot_health
