@@ -6244,63 +6244,8 @@ message_device_manager_ok:
     db "NOVA: Device Manager ABI 1.0 und Bootgeraete aktiv", 13, 10, 0
 message_device_manager_error:
     db "NOVA PANIC: Kernel Device Manager nicht initialisierbar", 13, 10, 0
-message_dbg_p8_glob:     db "DBG:glob ok",13,10,0
-message_dbg_p8_appmgr:   db "DBG:appmgr ok",13,10,0
-message_dbg_p8_crypto:   db "DBG:crypto ok",13,10,0
-message_dbg_p8_net:      db "DBG:net ok",13,10,0
-message_dbg_p8_compat:   db "DBG:compat ok",13,10,0
-message_dbg_p8_time:     db "DBG:time ok",13,10,0
-message_dbg_p8_power:    db "DBG:power ok",13,10,0
-message_dbg_p8_text:     db "DBG:text ok",13,10,0
-message_dbg_p8_font:     db "DBG:font ok",13,10,0
-message_dbg_p8_vfs:      db "DBG:vfs ok",13,10,0
-message_dbg_p8_fsidx:    db "DBG:fsidx ok",13,10,0
-message_dbg_p8_progmgr:  db "DBG:progmgr ok",13,10,0
-message_dbg_p8_distcom:  db "DBG:distcom ok",13,10,0
-message_dbg_p8_privacy:  db "DBG:privacy ok",13,10,0
-message_dbg_p8_identity: db "DBG:identity ok",13,10,0
-message_dbg_p8_trust:    db "DBG:trust ok",13,10,0
-message_dbg_p8_object:   db "DBG:object ok",13,10,0
-message_dbg_p8_resource: db "DBG:resource ok",13,10,0
-message_dbg_p8_autonomy: db "DBG:autonomy ok",13,10,0
-message_dbg_p8_realtime: db "DBG:realtime ok",13,10,0
-message_dbg_p8_verify:   db "DBG:verify ok",13,10,0
-message_dbg_p8_update:   db "DBG:update ok",13,10,0
-message_dbg_p8_ui:       db "DBG:ui ok",13,10,0
-message_dbg_p8_arch:     db "DBG:arch ok",13,10,0
-message_dbg_p8_bootmgr:  db "DBG:bootmgr ok",13,10,0
-message_dbg_p8_datamove: db "DBG:datamove ok",13,10,0
-message_dbg_p8_semmgr:   db "DBG:semmgr ok",13,10,0
-message_dbg_p8_exec:     db "DBG:exec ok",13,10,0
-message_dbg_p8_dist:     db "DBG:dist ok",13,10,0
-message_dbg_p8_txmgr:    db "DBG:txmgr ok",13,10,0
-message_dbg_p8_abimgr:   db "DBG:abimgr ok",13,10,0
-message_dbg_p8_statemgr: db "DBG:statemgr ok",13,10,0
-message_dbg_st_up:  db "DBG:ST_UP", 13, 10, 0
-message_dbg_st_smp: db "DBG:ST_SMP", 13, 10, 0
-message_dbg_cfrej1:   db "DBG:CF_REJ1_BSP", 13, 10, 0
-message_dbg_cfrej2:   db "DBG:CF_REJ2_EMPTY", 13, 10, 0
-message_dbg_cfrej3:   db "DBG:CF_REJ3_NULLFN", 13, 10, 0
-message_dbg_cfrej4:   db "DBG:CF_REJ4_OFFLINE", 13, 10, 0
-message_dbg_stress_t1: db "DBG:smp_st1 ok", 13, 10, 0
-message_dbg_stress_t2: db "DBG:smp_st2 ok", 13, 10, 0
-message_dbg_stress_t3: db "DBG:smp_st3 ok", 13, 10, 0
-message_dbg_smp1:
-    db "NOVA: [DBG] smp_initialize...", 13, 10, 0
-message_dbg_smp2:
-    db "NOVA: [DBG] smp_self_test...", 13, 10, 0
-message_dbg_smp3:
-    db "NOVA: [DBG] smp_stress_test...", 13, 10, 0
 message_driver_framework_ok:
     db "NOVA: Driver Framework ABI 1.0 bereit", 13, 10, 0
-message_dbg_dd_init:
-    db "NOVA: [DBG] Driver-Discovery-Init...", 13, 10, 0
-message_dbg_dd_done:
-    db "NOVA: [DBG] Driver-Discovery-Self-Test OK", 13, 10, 0
-message_dbg_bl_done:
-    db "NOVA: [DBG] Block-Layer-Self-Test OK", 13, 10, 0
-message_dbg_th_done:
-    db "NOVA: [DBG] Thermal-Self-Test OK", 13, 10, 0
 message_driver_framework_error:
     db "NOVA PANIC: Driver Framework nicht initialisierbar", 13, 10, 0
 message_numa_ok:

@@ -2691,28 +2691,9 @@ smp_call_function:
     jnz .cf_rej4
     jmp .cf_checks_pass
 .cf_rej1:
-    push esi
-    mov esi, message_dbg_cfrej1
-    call serial_write_string
-    pop esi
-    jmp .cf_reject
 .cf_rej2:
-    push esi
-    mov esi, message_dbg_cfrej2
-    call serial_write_string
-    pop esi
-    jmp .cf_reject
 .cf_rej3:
-    push esi
-    mov esi, message_dbg_cfrej3
-    call serial_write_string
-    pop esi
-    jmp .cf_reject
 .cf_rej4:
-    push esi
-    mov esi, message_dbg_cfrej4
-    call serial_write_string
-    pop esi
 .cf_reject:
     stc
     ret
@@ -2928,16 +2909,8 @@ smp_stress_test:
     ; UP: keine Remote-CPUs, Stresstest entfällt
     cmp dword [cpu_discovered_count], 1
     jne .not_up
-    push esi
-    mov esi, message_dbg_st_up
-    call serial_write_string
-    pop esi
     jmp .pass
 .not_up:
-    push esi
-    mov esi, message_dbg_st_smp
-    call serial_write_string
-    pop esi
 
     ; -----------------------------------------------------------------------
     ; Test 1: smp_call_function-Last – 16 Aufrufe auf alle APs
@@ -2963,10 +2936,6 @@ smp_stress_test:
     imul eax, 16
     cmp [smp_stress_counter], eax
     jne .fail
-    push esi
-    mov esi, message_dbg_stress_t1
-    call serial_write_string
-    pop esi
 
     ; -----------------------------------------------------------------------
     ; Test 2: TLB-Shootdown-Last – 8 Vollsystem-Shootdowns (BSP + alle APs)
@@ -2991,10 +2960,6 @@ smp_stress_test:
     mov eax, [smp_rejected_remote_shootdowns]
     cmp eax, [smp_stress_saved_rejects]
     jne .fail                        ; Timeout oder ungültige Maske
-    push esi
-    mov esi, message_dbg_stress_t2
-    call serial_write_string
-    pop esi
 
     ; -----------------------------------------------------------------------
     ; Test 3: Gemischte Last – 4 Runden (Call + Shootdown abwechselnd)
@@ -3017,10 +2982,6 @@ smp_stress_test:
     jnz .mixed_loop
 
 .pass:
-    push esi
-    mov esi, message_dbg_stress_t3
-    call serial_write_string
-    pop esi
     clc
     ret
 .pop_fail:

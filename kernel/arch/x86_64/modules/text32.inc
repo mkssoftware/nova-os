@@ -80,7 +80,8 @@ TEXT_ENC_CAPACITY     equ 8
 ; ---------------------------------------------------------------------------
 text_initialize:
     push edi
-    ; Encoding-Tabelle loeschen
+    ; Encoding-Tabelle und Zaehler loeschen
+    mov dword [text_enc_count], 0
     mov edi, text_enc_table
     xor eax, eax
     mov ecx, (TEXT_ENC_CAPACITY * TEXT_ENC_DESC_SIZE) / 4
@@ -323,54 +324,54 @@ text_utf8_encode:
 ; (NPSPEC-TEXT-SCRIPT-0001)
 ; ---------------------------------------------------------------------------
 text_detect_script:
-    ; Latein: U+0041..U+007A, U+00C0..U+024F
+    ; Latein: U+0041..U+024F
     cmp eax, 0x0041
-    jb .check_arabic
-    cmp eax, 0x024F
-    ja .check_cyrillic
-    mov ebx, SCRIPT_LATIN
-    ret
-.check_arabic:
-    cmp eax, 0x0600
-    jb .check_hebrew
-    cmp eax, 0x06FF
-    ja .check_hebrew
-    mov ebx, SCRIPT_ARABIC
-    ret
-.check_hebrew:
-    cmp eax, 0x0590
-    jb .check_cjk
-    cmp eax, 0x05FF
-    ja .check_cjk
-    mov ebx, SCRIPT_HEBREW
-    ret
-.check_cjk:
-    cmp eax, 0x4E00
-    jb .check_devanagari
-    cmp eax, 0x9FFF
-    ja .check_devanagari
-    mov ebx, SCRIPT_CJK
-    ret
-.check_devanagari:
-    cmp eax, 0x0900
-    jb .check_cyrillic
-    cmp eax, 0x097F
-    ja .check_cyrillic
-    mov ebx, SCRIPT_DEVANAGARI
-    ret
-.check_cyrillic:
-    cmp eax, 0x0400
     jb .check_greek
-    cmp eax, 0x04FF
+    cmp eax, 0x024F
     ja .check_greek
-    mov ebx, SCRIPT_CYRILLIC
+    mov ebx, SCRIPT_LATIN
     ret
 .check_greek:
     cmp eax, 0x0370
-    jb .unknown
+    jb .check_cyrillic
     cmp eax, 0x03FF
-    ja .unknown
+    ja .check_cyrillic
     mov ebx, SCRIPT_GREEK
+    ret
+.check_cyrillic:
+    cmp eax, 0x0400
+    jb .check_hebrew
+    cmp eax, 0x04FF
+    ja .check_hebrew
+    mov ebx, SCRIPT_CYRILLIC
+    ret
+.check_hebrew:
+    cmp eax, 0x0590
+    jb .check_arabic
+    cmp eax, 0x05FF
+    ja .check_arabic
+    mov ebx, SCRIPT_HEBREW
+    ret
+.check_arabic:
+    cmp eax, 0x0600
+    jb .check_devanagari
+    cmp eax, 0x06FF
+    ja .check_devanagari
+    mov ebx, SCRIPT_ARABIC
+    ret
+.check_devanagari:
+    cmp eax, 0x0900
+    jb .check_cjk
+    cmp eax, 0x097F
+    ja .check_cjk
+    mov ebx, SCRIPT_DEVANAGARI
+    ret
+.check_cjk:
+    cmp eax, 0x4E00
+    jb .unknown
+    cmp eax, 0x9FFF
+    ja .unknown
+    mov ebx, SCRIPT_CJK
     ret
 .unknown:
     mov ebx, SCRIPT_UNKNOWN
