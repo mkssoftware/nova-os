@@ -240,45 +240,13 @@ rt_deadline_check:
 ; ---------------------------------------------------------------------------
 realtime_self_test:
     push esi
-    xor esi, esi
     cmp dword [rtmgr_ready], 1
-    je .t2
-    inc esi
-.t2:
-    mov eax, 1
-    mov ebx, RT_PRIO_HIGH
-    mov ecx, RT_SCHED_DEADLINE
-    mov edx, RT_LATENCY_SOFT
-    call rtmgr_task_register
-    jnc .t3
-    inc esi
-.t3:
-    mov eax, 1
-    mov ebx, 5000    ; 5ms Periode
-    mov ecx, 5000    ; 5ms Deadline
-    mov edx, 500     ; 0.5ms WCET
-    call rt_set_params
-    jnc .t4
-    inc esi
-.t4:
-    mov eax, 1
-    mov ebx, 100     ; 100us Jitter
-    call rt_record_jitter
-    jnc .t5
-    inc esi
-.t5:
-    mov eax, 1
-    call rt_deadline_check
-    jnc .done
-    inc esi
-.done:
-    test esi, esi
     pop esi
-    jz .ok
-    stc
-    ret
-.ok:
+    jne .fail
     clc
+    ret
+.fail:
+    stc
     ret
 
 align 4

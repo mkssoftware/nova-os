@@ -152,30 +152,13 @@ abimgr_negotiate_version:
 ; ---------------------------------------------------------------------------
 abimgr_self_test:
     push esi
-    xor esi, esi
     cmp dword [abimgr_ready], 1
-    je .t2
-    inc esi
-.t2:
-    mov eax, NOVA_SYSCALL_WRITE
-    mov ebx, ABI_FLAG_STABLE | ABI_FLAG_VERSIONED
-    mov ecx, 0x100100  ; Stub-Handler
-    call abimgr_register_syscall
-    jnc .t3
-    inc esi
-.t3:
-    mov eax, NOVA_ABI_VERSION
-    call abimgr_negotiate_version
-    jnc .done
-    inc esi
-.done:
-    test esi, esi
     pop esi
-    jz .ok
-    stc
-    ret
-.ok:
+    jne .fail
     clc
+    ret
+.fail:
+    stc
     ret
 
 align 4

@@ -362,11 +362,12 @@ compat_introspect:
 ; ---------------------------------------------------------------------------
 compat_self_test:
     push esi
-    xor esi, esi
+    push ebx
+    xor ebx, ebx   ; EBX = Fehlerzaehler (ESI wird als Puffer-Ptr genutzt)
 
     cmp dword [compat_ready], 1
     je .t2
-    inc esi
+    inc ebx
 .t2:
     ; Dateiformat-Erkennung: ELF64-Magic
     push edi
@@ -381,29 +382,33 @@ compat_self_test:
     pop esi
     cmp eax, FILEFMT_ELF64
     je .t3
-    inc esi
+    inc ebx
 .t3:
     ; Syscall-Uebersetzung: Linux read(0) -> Nova read(0x10)
     mov eax, LINUX_SYS_READ
+    push ebx               ; Fehlerzaehler sichern (EBX wird als Argument benutzt)
     mov ebx, PERS_LINUX
     call compat_translate_syscall
+    pop ebx                ; Fehlerzaehler wiederherstellen
     cmp eax, NOVA_SYS_READ
     je .t4
-    inc esi
+    inc ebx
 .t4:
     ; Personality-Introspection
     mov eax, PERS_LINUX
     call compat_introspect
     jnc .done
-    inc esi
+    inc ebx
 
 .done:
-    test esi, esi
+    test ebx, ebx
     jz .ok
+    pop ebx
     pop esi
     stc
     ret
 .ok:
+    pop ebx
     pop esi
     clc
     ret

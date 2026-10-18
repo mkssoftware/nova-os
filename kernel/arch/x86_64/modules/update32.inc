@@ -237,36 +237,41 @@ upd_rollback:
 ; ---------------------------------------------------------------------------
 update_self_test:
     push esi
-    xor esi, esi
+    push ebx
+    xor ebx, ebx   ; EBX = Fehlerzaehler (ESI wird von upd_submit als upd_id belegt)
     cmp dword [upd_ready], 1
     je .t2
-    inc esi
+    inc ebx
 .t2:
     mov eax, UPD_TYPE_PACKAGE
+    push ebx               ; Fehlerzaehler sichern (EBX wird als target_id benutzt)
     mov ebx, 0x1000
     mov ecx, 0x00020000
     mov edx, UPD_FLAG_ATOMIC | UPD_FLAG_AB
-    call upd_submit
+    call upd_submit        ; ESI=upd_id
+    pop ebx                ; Fehlerzaehler wiederherstellen
     jnc .t3
-    inc esi
+    inc ebx
 .t3:
-    ; ESI hat upd_id (1)
     mov eax, 1
     call upd_apply
     jnc .t4
-    inc esi
+    inc ebx
 .t4:
     mov eax, 1
     call upd_rollback
     jnc .done
-    inc esi
+    inc ebx
 .done:
-    test esi, esi
-    pop esi
+    test ebx, ebx
     jz .ok
+    pop ebx
+    pop esi
     stc
     ret
 .ok:
+    pop ebx
+    pop esi
     clc
     ret
 

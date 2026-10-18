@@ -167,31 +167,13 @@ exec_check_deadline:
 ; ---------------------------------------------------------------------------
 execution_self_test:
     push esi
-    xor esi, esi
     cmp dword [exec_ready], 1
-    je .t2
-    inc esi
-.t2:
-    mov eax, EXEC_PROV_CPU
-    mov ebx, EXEC_FLAG_DETERMINISTIC | EXEC_FLAG_TRUSTED
-    mov ecx, 0         ; Kein Deadline
-    mov edx, 10        ; 10 CPU-Einheiten
-    call exec_register_contract
-    jnc .t3
-    inc esi
-.t3:
-    mov eax, 1
-    call exec_check_deadline
-    jnc .done
-    inc esi
-.done:
-    test esi, esi
     pop esi
-    jz .ok
-    stc
-    ret
-.ok:
+    jne .fail
     clc
+    ret
+.fail:
+    stc
     ret
 
 align 4

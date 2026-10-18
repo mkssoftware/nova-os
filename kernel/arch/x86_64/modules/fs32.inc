@@ -538,59 +538,76 @@ fs_temp_clear:
 ; ---------------------------------------------------------------------------
 fs_self_test:
     push esi
-    xor esi, esi
+    push ebx
+    xor ebx, ebx   ; EBX = Fehlerzaehler
 
     cmp dword [fs_ready], 1
     je .t2
-    inc esi
+    inc ebx
 .t2:
     ; Volume vorhanden?
     cmp dword [fs_vol_count], 0
     jne .t3
-    inc esi
+    inc ebx
 .t3:
     ; Namespace vorhanden?
     cmp dword [fs_ns_count], 0
     jne .t4
-    inc esi
+    inc ebx
 .t4:
-    ; Volume Lookup: Root-NS -> vol 0
+    ; Volume Lookup: Root-NS -> vol 0 (EBX=vol_id als Rueckgabe)
     mov eax, FS_NS_ROOT
+    push ebx               ; Fehlerzaehler sichern (EBX wird von fs_vol_lookup beschrieben)
     call fs_vol_lookup
-    jnc .t5
-    inc esi
+    jnc .t4_ok
+    pop ebx
+    inc ebx
+    jmp .t5
+.t4_ok:
+    pop ebx
 .t5:
-    ; Policy-Check: Root darf lesen
+    ; Policy-Check: Root darf lesen (EBX=policy als Argument)
     mov eax, FS_NS_ROOT
+    push ebx               ; Fehlerzaehler sichern
     mov ebx, FSPOLICY_ALLOW_READ
     call fs_ns_check_policy
+    pop ebx                ; Fehlerzaehler wiederherstellen
     jnc .t6
-    inc esi
+    inc ebx
 .t6:
-    ; Transaktion starten und committen
+    ; Transaktion starten und committen (EBX=tx_id als Rueckgabe von fs_tx_begin)
     mov eax, 0
-    call fs_tx_begin
-    jnc .t7
-    inc esi
+    push ebx               ; Fehlerzaehler sichern
+    call fs_tx_begin       ; EBX = tx_id
+    jc .tx_fail
+    call fs_tx_commit      ; EBX=tx_id als Argument
+    jnc .tx_done
+    pop ebx                ; Fehlerzaehler wiederherstellen
+    inc ebx
     jmp .t8
-.t7:
-    call fs_tx_commit
-    jnc .t8
-    inc esi
+.tx_fail:
+    pop ebx                ; Fehlerzaehler wiederherstellen
+    inc ebx
+    jmp .t8
+.tx_done:
+    pop ebx                ; Fehlerzaehler wiederherstellen
 .t8:
-    ; ObjectID erzeugen
+    ; ObjectID erzeugen (ESI=objid_buf als Rueckgabe)
     mov eax, 0
     mov edx, OBJID_ROOT_INODE_LO
     call fs_objid_make
     jnc .done
-    inc esi
+    inc ebx
 .done:
-    test esi, esi
-    pop esi
+    test ebx, ebx
     jz .ok
+    pop ebx
+    pop esi
     stc
     ret
 .ok:
+    pop ebx
+    pop esi
     clc
     ret
 

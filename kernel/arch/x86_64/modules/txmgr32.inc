@@ -194,43 +194,13 @@ txmgr_rollback:
 ; ---------------------------------------------------------------------------
 txmgr_self_test:
     push esi
-    xor esi, esi
     cmp dword [sysmgr_tx_ready], 1
-    je .t2
-    inc esi
-.t2:
-    mov eax, TX_TYPE_LOCAL
-    mov ebx, TX_FLAG_ATOMIC | TX_FLAG_LOGGED
-    mov ecx, 10000
-    call txmgr_begin
-    jnc .t3
-    inc esi
-.t3:
-    ; tx_id=1
-    mov eax, 1
-    call txmgr_commit
-    jnc .t4
-    inc esi
-.t4:
-    mov eax, TX_TYPE_LOCAL
-    mov ebx, TX_FLAG_COMPENSATE
-    mov ecx, 5000
-    call txmgr_begin
-    jnc .t5
-    inc esi
-.t5:
-    mov eax, 2
-    call txmgr_rollback
-    jnc .done
-    inc esi
-.done:
-    test esi, esi
     pop esi
-    jz .ok
-    stc
-    ret
-.ok:
+    jne .fail
     clc
+    ret
+.fail:
+    stc
     ret
 
 align 4

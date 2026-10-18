@@ -217,6 +217,8 @@ resource_self_test:
     jnc .t3
     inc esi
 .t3:
+    mov eax, RES_TYPE_CPU  ; res_request clobbers EAX, restore type
+    mov ebx, 20
     call res_release
     jnc .t4
     inc esi

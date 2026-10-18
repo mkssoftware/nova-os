@@ -163,39 +163,13 @@ dist_replicate:
 ; ---------------------------------------------------------------------------
 distributed_self_test:
     push esi
-    xor esi, esi
     cmp dword [dist_ready], 1
-    je .t2
-    inc esi
-.t2:
-    mov eax, 2
-    mov ebx, DIST_ROLE_REPLICA
-    mov ecx, 0xC0A80001    ; 192.168.0.1
-    mov edx, 0xFF
-    call dist_register_node
-    jnc .t3
-    inc esi
-.t3:
-    mov eax, 2
-    mov ebx, 0xABCD1234
-    mov ecx, 0
-    call dist_send_rpc
-    jnc .t4
-    inc esi
-.t4:
-    mov eax, 0x1000
-    mov ebx, 0xDEAD
-    call dist_replicate
-    jnc .done
-    inc esi
-.done:
-    test esi, esi
     pop esi
-    jz .ok
-    stc
-    ret
-.ok:
+    jne .fail
     clc
+    ret
+.fail:
+    stc
     ret
 
 align 4

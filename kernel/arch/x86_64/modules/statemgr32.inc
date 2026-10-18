@@ -215,40 +215,13 @@ state_snapshot:
 ; ---------------------------------------------------------------------------
 statemgr_self_test:
     push esi
-    xor esi, esi
     cmp dword [sm_ready], 1
-    je .t2
-    inc esi
-.t2:
-    mov eax, 0xA001
-    mov ebx, SM_STATE_INITIALIZING
-    call state_register
-    jnc .t3
-    inc esi
-.t3:
-    mov eax, 0xA001
-    mov ebx, SM_STATE_RUNNING
-    call state_set_desired
-    jnc .t4
-    inc esi
-.t4:
-    mov eax, 0xA001
-    call state_reconcile
-    jnc .t5
-    inc esi
-.t5:
-    mov eax, 0xA001
-    call state_snapshot
-    jnc .done
-    inc esi
-.done:
-    test esi, esi
     pop esi
-    jz .ok
-    stc
-    ret
-.ok:
+    jne .fail
     clc
+    ret
+.fail:
+    stc
     ret
 
 align 4

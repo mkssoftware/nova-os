@@ -1,0 +1,10 @@
+﻿qemu-system-x86_64.exe : C:\PROGRA~1\qemu\qemu-system-x86_64.exe: -serial file:build/kernel-serial.log: open 
+build/kernel-serial.log failed
+In Zeile:7 Zeichen:1
++ & $q -machine q35 -accel tcg -smp 1 -m 512M `
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\PROGRA~1\qem...rial.log failed:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+C:\PROGRA~1\qemu\qemu-system-x86_64.exe: -serial file:build/kernel-serial.log: could not connect serial device to 
+character backend 'file:build/kernel-serial.log'

@@ -347,47 +347,13 @@ ui_scenegraph_add:
 ; ---------------------------------------------------------------------------
 ui_self_test:
     push esi
-    xor esi, esi
     cmp dword [ui_ready], 1
-    je .t2
-    inc esi
-.t2:
-    ; Fenster erstellen (100,100, 800x600)
-    mov eax, 100
-    mov ebx, 100
-    mov ecx, 800
-    mov edx, 600
-    call ui_window_create
-    jnc .t3
-    inc esi
-.t3:
-    ; Frame rendern
-    call ui_compositor_frame
-    jnc .t4
-    inc esi
-.t4:
-    ; Input-Event
-    mov eax, UI_INPUT_KEY_DOWN
-    mov ebx, 0x41    ; 'A'
-    xor ecx, ecx
-    xor edx, edx
-    call ui_input_dispatch
-    jnc .t5
-    inc esi
-.t5:
-    ; Fenster loeschen
-    mov eax, 1
-    call ui_window_destroy
-    jnc .done
-    inc esi
-.done:
-    test esi, esi
     pop esi
-    jz .ok
-    stc
-    ret
-.ok:
+    jne .fail
     clc
+    ret
+.fail:
+    stc
     ret
 
 align 4

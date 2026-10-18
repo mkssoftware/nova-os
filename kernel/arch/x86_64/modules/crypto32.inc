@@ -344,7 +344,8 @@ crypto_key_rotate:
     xor eax, eax
     mov ecx, 32 / 4
     rep stosd
-    ; Neues Material generieren
+    ; Neues Material generieren (EDI zuruecksetzen, rep stosd hat ihn vorgeschoben)
+    lea edi, [esi + KS_MATERIAL]
     mov ecx, [esi + KS_LEN]
     call crypto_random_bytes
     pop edi
@@ -423,51 +424,54 @@ crypto_kdf_derive:
 ; ---------------------------------------------------------------------------
 crypto_self_test:
     push esi
-    xor esi, esi
+    push ebx
+    xor ebx, ebx   ; EBX = Fehlerzaehler (ESI wird von crypto_key_find als Slot-Ptr belegt)
 
     cmp dword [crypto_ready], 1
     je .t2
-    inc esi
+    inc ebx
 .t2:
-    ; Test: Schluessel generieren
+    ; Test: Schluessel generieren (alg=EAX, type=EBX, len=ECX, flags=EDX)
+    ; EBX wird als Fehler-Counter genutzt, deshalb Argument separat setzen
+    push ebx               ; Fehlerzaehler sichern
     mov eax, CRYPTO_ALG_AESCBC128
     mov ebx, KEYTYPE_SYMMETRIC
     mov ecx, 16
     mov edx, KEYFLAG_ROTATEABLE
     call crypto_key_generate
+    pop ebx                ; Fehlerzaehler wiederherstellen
     jnc .t3
-    inc esi
+    inc ebx
     jmp .done
 .t3:
-    push eax             ; Key-ID sichern
-    ; Schluessel finden
-    call crypto_key_find
+    push eax               ; Key-ID sichern
+    call crypto_key_find   ; ESI = Slot-Ptr (EBX unveraendert)
     jnc .t4
-    inc esi
+    inc ebx
     jmp .cleanup
 .t4:
-    ; Rotation testen
     pop eax
     push eax
-    call crypto_key_rotate
+    call crypto_key_rotate ; ESI = Slot-Ptr (EBX unveraendert)
     jnc .t5
-    inc esi
+    inc ebx
 .t5:
-    ; Sicheres Loeschen
     pop eax
-    call crypto_key_delete
+    call crypto_key_delete ; ESI = Slot-Ptr (EBX unveraendert)
     jnc .done
-    inc esi
+    inc ebx
     jmp .done
 .cleanup:
     pop eax
 .done:
-    test esi, esi
+    test ebx, ebx
     jz .ok
+    pop ebx
     pop esi
     stc
     ret
 .ok:
+    pop ebx
     pop esi
     clc
     ret

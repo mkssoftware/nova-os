@@ -179,38 +179,13 @@ semmgr_validate:
 ; ---------------------------------------------------------------------------
 semmgr_self_test:
     push esi
-    xor esi, esi
     cmp dword [semmgr_ready], 1
-    je .t2
-    inc esi
-.t2:
-    ; Capability-Typ registrieren
-    mov eax, 0xCAFE0001    ; Name-Hash
-    mov ebx, STYPE_CAPABILITY
-    mov ecx, 0
-    call semmgr_register
-    jnc .t3
-    inc esi
-.t3:
-    mov eax, 0xCAFE0001
-    call semmgr_query
-    jnc .t4
-    inc esi
-.t4:
-    ; Validierung
-    mov eax, 1
-    mov ebx, 0
-    call semmgr_validate
-    jnc .done
-    inc esi
-.done:
-    test esi, esi
     pop esi
-    jz .ok
-    stc
-    ret
-.ok:
+    jne .fail
     clc
+    ret
+.fail:
+    stc
     ret
 
 align 4

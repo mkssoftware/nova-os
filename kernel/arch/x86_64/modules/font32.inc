@@ -245,36 +245,42 @@ font_set_axis:
 ; ---------------------------------------------------------------------------
 font_manager_self_test:
     push esi
-    xor esi, esi
+    push ebx
+    xor ebx, ebx   ; EBX = Fehlerzaehler (ESI wird von font_get_glyph als Glyph-Ptr belegt)
 
     cmp dword [font_ready], 1
     je .t2
-    inc esi
+    inc ebx
 .t2:
     cmp dword [font_count], 0
     jne .t3
-    inc esi
+    inc ebx
 .t3:
     ; Glyph-Lookup: 'A' = 0x41
     mov eax, 0x41
-    xor ebx, ebx
-    call font_get_glyph
+    push ebx               ; Fehlerzaehler sichern (EBX wird als font_id benutzt)
+    xor ebx, ebx           ; EBX=0 = font_id
+    call font_get_glyph    ; ESI=Glyph-Ptr (EBX unveraendert)
+    pop ebx                ; Fehlerzaehler wiederherstellen
     jnc .t4
-    inc esi
+    inc ebx
 .t4:
     ; Fallback-Lookup: Emoji (U+1F600, ausserhalb)
     mov eax, 0x1F600
-    xor ebx, ebx
-    call font_get_glyph
-    ; CF gesetzt ist ok (Fallback geliefert)
+    push ebx               ; Fehlerzaehler sichern
+    xor ebx, ebx           ; font_id=0
+    call font_get_glyph    ; CF gesetzt ist ok (Fallback geliefert)
+    pop ebx                ; Fehlerzaehler wiederherstellen
     jmp .done
 .done:
-    test esi, esi
+    test ebx, ebx
     jz .ok
+    pop ebx
     pop esi
     stc
     ret
 .ok:
+    pop ebx
     pop esi
     clc
     ret
