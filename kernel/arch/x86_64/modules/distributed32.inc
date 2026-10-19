@@ -50,12 +50,28 @@ DIST_NODE_CAPACITY    equ 8
 ; distributed_initialize
 ; ---------------------------------------------------------------------------
 distributed_initialize:
+    push esi
+    mov esi, message_dbg_dist_enter
+    call serial_write_string
+    pop esi
+    push eax
+    mov eax, [esp + 4]          ; return address (after push eax)
+    call serial_write_hex32
+    pop eax
+    push esi
+    mov esi, message_newline
+    call serial_write_string
+    pop esi
     push edi
     mov edi, dist_node_table
     xor eax, eax
     mov ecx, (DIST_NODE_CAPACITY * DIST_NODE_SIZE) / 4
     rep stosd
     pop edi
+    push esi
+    mov esi, message_dbg_dist_stosd_ok
+    call serial_write_string
+    pop esi
     mov dword [dist_node_count], 0
     mov dword [dist_local_id], 1
     mov dword [dist_consistency], DIST_CONS_EVENTUAL

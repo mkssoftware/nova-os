@@ -99,14 +99,11 @@ scheduler_on_tick:
     cmp dword [scheduler_enabled], 1
     jne .done
 
-    ; §133: Wenn BSP-Boot-Lock gesetzt ist, BSP nicht verdrängen (SMP-Init läuft).
-    mov edi, [scheduler_caller_cpu]
-    test edi, edi
-    jnz .bsp_boot_lock_skip
+    ; §133: BSP-Boot-Lock gilt für alle CPUs – kein Scheduling während BSP-Init.
+    ; Ohne diesen Schutz kann der AP den BSP-Thread selektieren und auf dessen
+    ; Stack wechseln, während der BSP gleichzeitig darauf arbeitet (Stack-Race).
     cmp dword [scheduler_bsp_boot_lock], 1
     jne .bsp_boot_lock_skip
-    ; BSP nicht verdrängen: selected_slot auf -1 setzen damit der Caller
-    ; per_cpu_current_thread[0] nicht mit einem veralteten Slot überschreibt.
     mov dword [scheduler_selected_slot], -1
     jmp .done
 .bsp_boot_lock_skip:
@@ -114,6 +111,7 @@ scheduler_on_tick:
     ; §133: Per-CPU-Slot bestimmen (statt globalem scheduler_current).
     ; per_cpu_current_thread[caller_cpu] gibt an, welchen Slot diese CPU lief.
     ; -1 = idle (kein Slot zu freigeben).
+    mov edi, [scheduler_caller_cpu]
     mov edx, [per_cpu_current_thread + edi * 4]
     cmp edx, -1
     je .idle_cpu                    ; CPU war idle – Slot 0 als Startpunkt

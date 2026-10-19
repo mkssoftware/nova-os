@@ -1330,6 +1330,8 @@ kernel_entry:
     call serial_write_string
 
     ; §048 Driver Discovery
+    mov esi, message_dbg_phase8_d1
+    call serial_write_string
     call driver_discovery_initialize
     jc panic_driver_framework
     call driver_pci_scan
@@ -1343,6 +1345,8 @@ kernel_entry:
     jc panic_driver_framework
 
     ; §048 NVMe
+    mov esi, message_dbg_phase8_d2
+    call serial_write_string
     call nvme_initialize
     call nvme_self_test
 
@@ -1411,6 +1415,8 @@ kernel_entry:
     jc panic_driver_framework
 
     ; §038 Filesystem VFS + Volume
+    mov esi, message_dbg_phase8_d3
+    call serial_write_string
     call fs_initialize
     jc panic_driver_framework
     call fs_self_test
@@ -1489,62 +1495,114 @@ kernel_entry:
     jc panic_driver_framework
 
     ; §001 UI
+    mov esi, message_dbg_phase8_d4
+    call serial_write_string
     call ui_initialize
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_e1
+    call serial_write_string
     call ui_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_e2
+    call serial_write_string
 
     ; §002 ARCH
     call arch_initialize
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_e3
+    call serial_write_string
     call arch_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_e4
+    call serial_write_string
 
     ; §004 Boot-Manager
     call bootmgr_initialize
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_e5
+    call serial_write_string
     call bootmgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_e6
+    call serial_write_string
 
     ; §011 DataMove
     call datamove_initialize
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_e7
+    call serial_write_string
     call datamove_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_e8
+    call serial_write_string
 
     ; §024 Semantic (extended manager)
     call semmgr_initialize
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_e9
+    call serial_write_string
     call semmgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_ea
+    call serial_write_string
 
     ; §027 Execution
     call execution_initialize
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_eb
+    call serial_write_string
     call execution_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_ec
+    call serial_write_string
 
     ; §028 Distributed
+    mov esi, message_dbg_esp_pre
+    call serial_write_string
+    mov eax, esp
+    call serial_write_hex32
+    mov esi, message_newline
+    call serial_write_string
     call distributed_initialize
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_ed
+    call serial_write_string
+    mov esi, message_dbg_esp_post
+    call serial_write_string
+    mov eax, esp
+    call serial_write_hex32
+    mov esi, message_newline
+    call serial_write_string
     call distributed_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_ee
+    call serial_write_string
 
     ; §034 Transaction-Manager
     call txmgr_initialize
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_ef
+    call serial_write_string
     call txmgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_f0
+    call serial_write_string
 
     ; §035 ABI (extended manager)
     call abimgr_initialize
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_f1
+    call serial_write_string
     call abimgr_self_test
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_f2
+    call serial_write_string
 
     ; §036 State-Manager
     call statemgr_initialize
     jc panic_driver_framework
+    mov esi, message_dbg_phase8_f3
+    call serial_write_string
     call statemgr_self_test
     jc panic_driver_framework
 

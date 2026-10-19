@@ -455,9 +455,11 @@ input_router_enqueue_target:
 interrupt_dispatch:
     push ebp
     mov ebp, esp
+    push ebx                            ; callee-saved; holds our frame ptr locally
     mov eax, [ebp + 8]
     mov edx, [ebp + 12]
     mov [interrupt_return_frame], edx
+    mov ebx, edx                        ; keep frame ptr in EBX (race-safe local copy)
     cmp eax, 32
     je .timer
     cmp eax, 33
@@ -515,11 +517,12 @@ interrupt_dispatch:
     lock bts dword [scheduler_lock], 0
     jc .sched_skip              ; Sollte auf BSP nie eintreten (defensive Guard)
     mov dword [scheduler_caller_cpu], 0  ; BSP = CPU-Slot 0 (§133)
-    mov eax, [interrupt_return_frame]
+    mov eax, ebx                        ; use our local frame ptr (not shared global)
     push eax
     call scheduler_on_tick
     add esp, 4
     mov [interrupt_return_frame], eax
+    mov ebx, eax                        ; keep local copy in sync
     ; §133: BSP per-CPU current thread nachführen (wie isr_ap_timer für APs)
     mov edx, [scheduler_selected_slot]
     cmp edx, -1
@@ -602,13 +605,15 @@ interrupt_dispatch:
     test eax, eax
     jz .exception_done
     mov [interrupt_return_frame], eax
+    mov ebx, eax                        ; keep local copy in sync
 .exception_done:
 .done:
     cmp dword [kernel_context + CONTEXT_PLATFORM], 2
     jne .return_frame
     mov dword [0xFEE000B0], 0       ; Local-APIC EOI
 .return_frame:
-    mov eax, [interrupt_return_frame]
+    mov eax, ebx                    ; use race-safe local copy instead of shared global
+    pop ebx
     pop ebp
     ret
 

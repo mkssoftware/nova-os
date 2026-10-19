@@ -2321,8 +2321,7 @@ ap_entry32_pm:
     ; BSP signalisieren (wartet auf ap_alive_count)
     lock inc dword [ap_alive_count]
 
-    ; AP-Leerlaufschleife (Interrupts ein, PAUSE-Spin statt HLT – WHPX liefert
-    ; IPIs an HLT-vcpus nicht zuverlaessig; pause ermoeglicht IRQ-Annahme ohne hlt)
+    ; AP-Leerlaufschleife (PAUSE-Spin: IPI-Annahme ohne hlt-Stall in TCG/WHPX)
 .ap_idle:
     sti
     pause
@@ -2458,10 +2457,6 @@ smp_start_aps:
     jmp .ap_loop
 
 .all_done:
-    ; cpu_discovered_count auf tatsaechlich gestartete CPUs korrigieren
-    ; (Soft-Fail-Timeout: nicht gestartete APs werden nicht gezaehlt)
-    mov eax, [cpu_online_count]
-    mov [cpu_discovered_count], eax
     pop ecx
     pop ebx
     pop edi
@@ -2774,8 +2769,8 @@ smp_self_test:
     cmp dword [cpu_failed_set], 0
     jne .invalid
 
-    ; Alle entdeckten CPUs müssen online und aktiv sein
-    mov ecx, [cpu_discovered_count]
+    ; Alle online CPUs muessen aktiv sein
+    mov ecx, [cpu_online_count]
     cmp ecx, 0
     je .invalid
     cmp ecx, CPU_CAPACITY
@@ -2813,7 +2808,7 @@ smp_self_test:
     jnc .invalid
 
     ; UP-spezifische Prüfungen
-    cmp dword [cpu_discovered_count], 1
+    cmp dword [cpu_online_count], 1
     jne .smp_checks
 
     ; UP: Slot-1-Daten unbenutzt
@@ -2841,12 +2836,9 @@ smp_self_test:
     je .invalid
 
     ; SMP: Alle APs muessen ihren Idle-Loop erreicht haben (ap_alive_count).
-    ; ap_alive_count wird von jedem AP direkt vor sti/hlt inkrementiert – das
-    ; beweist, dass LAPIC kalibriert und der Stack bereit ist.  Die Pruefung
-    ; via ap_timer_ticks entfaellt hier, da WHPX den periodischen LAPIC-Timer
-    ; in der hlt-Phase nicht zuverlaessig emuliert.
-    mov eax, [cpu_discovered_count]
-    dec eax                             ; Anzahl APs = discovered - BSP
+    ; ap_alive_count wird von jedem AP direkt vor sti/hlt inkrementiert.
+    mov eax, [cpu_online_count]
+    dec eax                             ; Anzahl APs = online - BSP
     cmp [ap_alive_count], eax
     jne .invalid
 
@@ -2907,10 +2899,8 @@ smp_self_test:
 ; ---------------------------------------------------------------------------
 smp_stress_test:
     ; UP: keine Remote-CPUs, Stresstest entfällt
-    cmp dword [cpu_discovered_count], 1
-    jne .not_up
-    jmp .pass
-.not_up:
+    cmp dword [cpu_online_count], 1
+    je .pass
 
     ; -----------------------------------------------------------------------
     ; Test 1: smp_call_function-Last – 16 Aufrufe auf alle APs
@@ -2930,8 +2920,8 @@ smp_stress_test:
     dec ecx
     jnz .call_loop
 
-    ; Zähler muss exakt (cpu_discovered_count - 1) * 16 sein
-    mov eax, [cpu_discovered_count]
+    ; Zähler muss exakt (cpu_online_count - 1) * 16 sein
+    mov eax, [cpu_online_count]
     dec eax
     imul eax, 16
     cmp [smp_stress_counter], eax

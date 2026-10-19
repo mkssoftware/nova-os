@@ -68,6 +68,7 @@ NOVA: IO Completion Queue ABI 1.0, FIFO und Batch aktiv
 NOVA: Shared Buffer ABI 1.0, IO-Lease und Copy-Fallback aktiv
 NOVA: HAL Topology ABI 1.0, Busse, Devices und IOMMU-Gruppen aktiv
 NOVA: HAL Topology, normalisierte CPU-Threads (hex): 0x00000002
+NOVA: HAL CPUID Hierarchy, Packages/Core/Threads (hex): 0x00000001/0x00000002/0x00000002
 NOVA: IOMMU ABI 1.0, Domains, Gruppen und Fault-Zuordnung aktiv
 NOVA: DMA Mapping ABI 1.0, Pinning und sicherer Fallback aktiv
 NOVA: Scatter Gather ABI 1.0, Segmente und Lifetime aktiv
@@ -201,9 +202,6 @@ NOVA: Work Stealing 1.0 bereit (8 Slots, RT-Schutz, Affinitaet)
 NOVA: RT Scheduler 1.0 bereit (8 Tasks, EDF/FIFO-RT)
 NOVA: Fair Scheduler 1.0 bereit (8 Tasks, vruntime-basiert)
 NOVA: QoS Scheduler 1.0 bereit (4 Klassen, Budget-Buckets)
-NOVA: [DBG] smp_initialize...
-NOVA: [DBG] smp_self_test...
-NOVA: [DBG] smp_stress_test...
 NOVA: SMP-Grundlage ABI 1.0, BSP-Barriere und lokaler TLB-Pfad bereit
 NOVA: SMP AP-LAPIC-Timer und AP-Scheduler aktiv
 NOVA: SMP-Stresstest (§62) bestanden: Call, TLB-Shootdown, gemischte Last
@@ -214,10 +212,6 @@ NOVA: Storage SATA-Datentraeger Port 0x00000000 DeviceID 0x677B94E3 Sektoren 0x0
 NOVA: Storage ABI 1.0, AHCI-Controller (Polling) aktiv, Datentraeger 0x00000001
 NOVA: Storage DMA-Lesetest und Bereichspruefung bereit
 NOVA: Driver Framework ABI 1.0 bereit
-NOVA: [DBG] Driver-Discovery-Init...
-NOVA: [DBG] Driver-Discovery-Self-Test OK
-NOVA: [DBG] Block-Layer-Self-Test OK
-NOVA: [DBG] Thermal-Self-Test OK
-NOVA PANIC REPORT code=0x00002018 subsystem=0x00000018 eip=0x00801023 cr2=0x00000000 phase=0x00000008 last_phase=0x00000007 cpu=0x00000000 security=0x00000003
-NOVA PANIC: Driver Framework nicht initialisierbar
-NOVA_PANIC_HALTED
+NOVA PANIC: Kernel-Exception ohne Fixup bei EIP 0x008020F5
+NOVA PANIC REPORT code=0x0000000C subsystem=0x007F03F8 eip=0x0015C303 cr2=0x81000712 phase=0x00000008 last_phase=0x00000007 cpu=0x00000000 security=0x00000003
+NOVA_PANIC_HALTED

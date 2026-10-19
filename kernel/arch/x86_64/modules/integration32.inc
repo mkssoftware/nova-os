@@ -6246,6 +6246,60 @@ message_device_manager_error:
     db "NOVA PANIC: Kernel Device Manager nicht initialisierbar", 13, 10, 0
 message_driver_framework_ok:
     db "NOVA: Driver Framework ABI 1.0 bereit", 13, 10, 0
+message_dbg_phase8_d1:
+    db "NOVA: DBG Phase8-D1 (disc-init)", 13, 10, 0
+message_dbg_phase8_d2:
+    db "NOVA: DBG Phase8-D2 (nvme-init)", 13, 10, 0
+message_dbg_phase8_d3:
+    db "NOVA: DBG Phase8-D3 (fs-init)", 13, 10, 0
+message_dbg_phase8_d4:
+    db "NOVA: DBG Phase8-D4 (ui-init)", 13, 10, 0
+message_dbg_phase8_e1:
+    db "NOVA: DBG E1 (ui_init ok)", 13, 10, 0
+message_dbg_phase8_e2:
+    db "NOVA: DBG E2 (ui_st ok)", 13, 10, 0
+message_dbg_phase8_e3:
+    db "NOVA: DBG E3 (arch_init ok)", 13, 10, 0
+message_dbg_phase8_e4:
+    db "NOVA: DBG E4 (arch_st ok)", 13, 10, 0
+message_dbg_phase8_e5:
+    db "NOVA: DBG E5 (bootmgr_init ok)", 13, 10, 0
+message_dbg_phase8_e6:
+    db "NOVA: DBG E6 (bootmgr_st ok)", 13, 10, 0
+message_dbg_phase8_e7:
+    db "NOVA: DBG E7 (datamove_init ok)", 13, 10, 0
+message_dbg_phase8_e8:
+    db "NOVA: DBG E8 (datamove_st ok)", 13, 10, 0
+message_dbg_phase8_e9:
+    db "NOVA: DBG E9 (semmgr_init ok)", 13, 10, 0
+message_dbg_phase8_ea:
+    db "NOVA: DBG EA (semmgr_st ok)", 13, 10, 0
+message_dbg_phase8_eb:
+    db "NOVA: DBG EB (exec_init ok)", 13, 10, 0
+message_dbg_phase8_ec:
+    db "NOVA: DBG EC (exec_st ok)", 13, 10, 0
+message_dbg_phase8_ed:
+    db "NOVA: DBG ED (dist_init ok)", 13, 10, 0
+message_dbg_phase8_ee:
+    db "NOVA: DBG EE (dist_st ok)", 13, 10, 0
+message_dbg_phase8_ef:
+    db "NOVA: DBG EF (txmgr_init ok)", 13, 10, 0
+message_dbg_phase8_f0:
+    db "NOVA: DBG F0 (txmgr_st ok)", 13, 10, 0
+message_dbg_phase8_f1:
+    db "NOVA: DBG F1 (abimgr_init ok)", 13, 10, 0
+message_dbg_phase8_f2:
+    db "NOVA: DBG F2 (abimgr_st ok)", 13, 10, 0
+message_dbg_phase8_f3:
+    db "NOVA: DBG F3 (statemgr_init ok)", 13, 10, 0
+message_dbg_esp_pre:
+    db "NOVA: ESP pre-dist=", 0
+message_dbg_esp_post:
+    db "NOVA: ESP post-dist=", 0
+message_dbg_dist_enter:
+    db "NOVA: DBG dist-enter ret=", 0
+message_dbg_dist_stosd_ok:
+    db "NOVA: DBG dist-stosd-ok", 13, 10, 0
 message_driver_framework_error:
     db "NOVA PANIC: Driver Framework nicht initialisierbar", 13, 10, 0
 message_numa_ok:

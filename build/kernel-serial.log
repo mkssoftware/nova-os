@@ -68,7 +68,6 @@ NOVA: IO Completion Queue ABI 1.0, FIFO und Batch aktiv
 NOVA: Shared Buffer ABI 1.0, IO-Lease und Copy-Fallback aktiv
 NOVA: HAL Topology ABI 1.0, Busse, Devices und IOMMU-Gruppen aktiv
 NOVA: HAL Topology, normalisierte CPU-Threads (hex): 0x00000001
-NOVA: HAL CPUID Hierarchy, Packages/Core/Threads (hex): 0x00000001/0x00000001/0x00000001
 NOVA: IOMMU ABI 1.0, Domains, Gruppen und Fault-Zuordnung aktiv
 NOVA: DMA Mapping ABI 1.0, Pinning und sicherer Fallback aktiv
 NOVA: Scatter Gather ABI 1.0, Segmente und Lifetime aktiv
@@ -202,14 +201,6 @@ NOVA: Work Stealing 1.0 bereit (8 Slots, RT-Schutz, Affinitaet)
 NOVA: RT Scheduler 1.0 bereit (8 Tasks, EDF/FIFO-RT)
 NOVA: Fair Scheduler 1.0 bereit (8 Tasks, vruntime-basiert)
 NOVA: QoS Scheduler 1.0 bereit (4 Klassen, Budget-Buckets)
-NOVA: [DBG] smp_initialize...
-NOVA: [DBG] smp_self_test...
-DBG:CF_REJ2_EMPTY
-DBG:CF_REJ1_BSP
-DBG:CF_REJ3_NULLFN
-NOVA: [DBG] smp_stress_test...
-DBG:ST_UP
-DBG:smp_st3 ok
 NOVA: SMP-Grundlage ABI 1.0, BSP-Barriere und lokaler TLB-Pfad bereit
 NOVA: SMP AP-LAPIC-Timer und AP-Scheduler aktiv
 NOVA: SMP-Stresstest (§62) bestanden: Call, TLB-Shootdown, gemischte Last
@@ -220,106 +211,23 @@ NOVA: Storage SATA-Datentraeger Port 0x00000000 DeviceID 0x677B94E3 Sektoren 0x0
 NOVA: Storage ABI 1.0, AHCI-Controller (Polling) aktiv, Datentraeger 0x00000001
 NOVA: Storage DMA-Lesetest und Bereichspruefung bereit
 NOVA: Driver Framework ABI 1.0 bereit
-NOVA: [DBG] Driver-Discovery-Init...
-NOVA: [DBG] Driver-Discovery-Self-Test OK
-NOVA: [DBG] Block-Layer-Self-Test OK
-NOVA: [DBG] Thermal-Self-Test OK
-DBG:glob ok
-DBG:appmgr ok
-DBG:ci
-DBG:crypto ok
-DBG:net ok
-DBG:co-i
-DBG:compat ok
-DBG:time ok
-DBG:power ok
-DBG:tx-r1
-DBG:tx-r2
-DBG:tx-r3
-DBG:tx-i
-DBG:text ok
-DBG:font ok
-DBG:vfs-i
-DBG:vfs ok
-DBG:fsidx ok
-DBG:progmgr ok
-DBG:distcom ok
-DBG:privacy ok
-DBG:identity ok
-DBG:trust ok
-DBG:object ok
-DBG:resource ok
-DBG:autonomy ok
-DBG:rt-i
-DBG:realtime ok
-DBG:verify ok
-DBG:update ok
-DBG:ui-i
-DBG:ui ok
-DBG:arch ok
-DBG:bootmgr ok
-DBG:datamove ok
-DBG:semmgr ok
-DBG:exec ok
-DBG:dist ok
-DBG:txmgr ok
-DBG:abimgr ok
-DBG:statemgr ok
-NOVA: Boot Health Milestone KernelInitialized aggregiert
-NOVA: BOOT phase=0x00000009 last_phase=0x00000008
-NOVA: NovaFS kein Systemvolume gefunden, Bootstrap-RAMFS bleibt Root
-NOVA: Boot Health wartet auf persistentes SystemRoot und Trust
-NOVA: Boot Health SystemRoot Provider DEGRADED (kein rw-Volume)
-NOVA: Display Server ABI 1.0, Firmware-Framebuffer uebernommen
-NOVA: BOOT phase=0x0000000E last_phase=0x00000009
-NOVA_GRAPHICS_READY
-NOVA: Background Init Thread aktiv §38
-NOVA: BOOT phase=0x0000000C last_phase=0x0000000E
-NOVA_DESKTOP_READY
-NOVA: BOOT phase=0x0000000A last_phase=0x0000000C
-NOVA: Boot Health Session Provider READY (Phase-1 Stub)
-NOVA: Boot Health DegradedConfirmed (Meilensteine via DEGRADED-Pfad erreicht)
-NOVA: x86-32 Userspace, TSS und System-Call ABI 1.0 bereit
-NOVA: BOOT phase=0x0000000B last_phase=0x0000000A
-NOVA: Kernel Context und Framebuffer aktiv
-NOVA_KERNEL_READY
-NOVA: Userspace Process.QuerySelf erfolgreich
-NOVA: Process.OpenSelf Handle typ- und rechtegeprueft
-NOVA: Userspace Thread.QuerySelf erfolgreich
-NOVA: Thread.OpenSelf Handle typ- und rechtegeprueft
-NOVA: Userspace IPC Inline-Roundtrip atomar erfolgreich
-NOVA: Typed IPC, fremder Type und Version sicher abgewiesen
-NOVA: Semantic Validation, ungueltiger Wert strukturiert abgewiesen
-NOVA: Userspace VFS.OpenRoot Handle erfolgreich
-NOVA: Userspace VFS.Lookup Pfad '/' erfolgreich
-NOVA: Userspace Handle geschlossen, alter Wert ungueltig
-NOVA: Userspace Power.QuerySystem capability-geprueft
-NOVA: Userspace Power.WakeAcquire zeitlich begrenzt
-NOVA: Userspace Power.WakeRelease validiert
-NOVA: Userspace Power.SetProfile capability-geprueft
-NOVA: Userspace Power.RequestState ohne Capability abgewiesen
-NOVA: Userspace IPv4/IPv6 Datagramm-Socketobjekt erstellt
-NOVA: Userspace Socket an IPv4 127.0.0.1 Port 9000 gebunden
-NOVA: Ueberlanges Loopback-Datagramm sicher abgewiesen
-NOVA: IPv4/UDP Loopback-Datagramm in begrenzte Queue eingestellt
-NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK
-NOVA: IPv4/UDP Loopback mit Header- und Pruefsummenvalidierung erfolgreich
-NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK
-NOVA: Userspace TCP-Stream-Socketobjekt erstellt
-NOVA: TCP-Stream mit IPv4 127.0.0.1 Port 9000 verbunden
-NOVA: TCP-Streamdaten in begrenzte Sendewarteschlange eingestellt
-NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK
-NOVA: TCP-Streamdaten geordnet aus Empfangswarteschlange gelesen
-NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK
-NOVA: Userspace TCP-Stream-Socketobjekt erstellt
-NOVA: TCP-Listener an IPv4 127.0.0.1 Port 9000 gebunden
-NOVA: TCP-Listener mit begrenztem Backlog aktiv
-NOVA: TCP-Verbindung als separates Socket-Handle akzeptiert
-NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK
-NOVA: Userspace Network.Query capability-geprueft
-NOVA: Userspace Raw-Socket ohne Capability abgewiesen
-NOVA: Userspace Logging.Query capability-geprueft
-NOVA: Userspace neuesten atomar publizierten Logrecord gelesen
-NOVA: Userspace Display.QueryPrimary ohne MMIO-Adresse erfolgreich
-NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert
-NOVA: Shared Service Page im Userspace validiert
+NOVA: DBG Phase8-D1 (disc-init)
+NOVA: DBG Phase8-D2 (nvme-init)
+NOVA: DBG Phase8-D3 (fs-init)
+NOVA: DBG Phase8-D4 (ui-init)
+NOVA: DBG E1 (ui_init ok)
+NOVA: DBG E2 (ui_st ok)
+NOVA: DBG E3 (arch_init ok)
+NOVA: DBG E4 (arch_st ok)
+NOVA: DBG E5 (bootmgr_init ok)
+NOVA: DBG E6 (bootmgr_st ok)
+NOVA: DBG E7 (datamove_init ok)
+NOVA: DBG E8 (datamove_st ok)
+NOVA: DBG E9 (semmgr_init ok)
+NOVA: DBG EA (semmgr_st ok)
+NOVA: DBG EB (exec_init ok)
+NOVA: DBG EC (exec_st ok)
+NOVA: ESP pre-dist=00090000
+NOVA PANIC: Kernel-Exception ohne Fixup bei EIP 0x00149EDD
+NOVA PANIC REPORT code=0x0000000C subsystem=0x000803F8 eip=0x0015C653 cr2=0x7478E800 phase=0x00000008 last_phase=0x00000007 cpu=0x00000000 security=0x00000003
+NOVA_PANIC_HALTED
