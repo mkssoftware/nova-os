@@ -22,6 +22,18 @@
 #include "bib.h"
 #include "framebuffer.h"
 #include "desktop.h"
+#include "pmm.h"
+#include "paging.h"
+#include "process.h"
+#include "arch.h"
+#include "bootmgr.h"
+#include "abi.h"
+#include "semantic.h"
+#include "execution.h"
+#include "privacy.h"
+#include "verify.h"
+#include "txmgr.h"
+#include "autonomy.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -84,6 +96,17 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     report("NOVA: dist_replicate", dist_replicate(42, 0x1234u) == 0);
 
+    int pmm_ok = bib_ok && pmm_initialize() == 0;
+    report("NOVA: pmm_initialize", pmm_ok);
+    report("NOVA: pmm_self_test", pmm_ok && pmm_self_test() == 0);
+
+    heap_initialize();
+    report("NOVA: heap_self_test", pmm_ok && heap_self_test() == 0);
+
+    int paging_ok = pmm_ok && paging_initialize() == 0;
+    report("NOVA: paging_initialize", paging_ok);
+    report("NOVA: paging_self_test", paging_ok && paging_self_test() == 0);
+
     oom_initialize();
     report("NOVA: oom_self_test", oom_self_test() == 0);
 
@@ -96,9 +119,6 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     slab_initialize();
     report("NOVA: slab_self_test", slab_self_test() == 0);
 
-    heap_initialize();
-    report("NOVA: heap_self_test", heap_self_test() == 0);
-
     object_manager_initialize();
     report("NOVA: object_manager_self_test", object_manager_self_test() == 0);
 
@@ -107,6 +127,56 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     component_manager_initialize();
     report("NOVA: component_manager_self_test", component_manager_self_test() == 0);
+
+    process_manager_initialize();
+    report("NOVA: process_manager_self_test", process_manager_self_test() == 0);
+
+    arch_initialize();
+    report("NOVA: arch_self_test", arch_self_test() == 0);
+
+    bootmgr_initialize();
+    report("NOVA: bootmgr_self_test", bootmgr_self_test() == 0);
+
+    abimgr_initialize();
+    report("NOVA: abimgr_self_test", abimgr_self_test() == 0);
+    int abi_rc = abimgr_register_syscall(NOVA_SYSCALL_WRITE, ABI_FLAG_STABLE, 0xDEAD0001u);
+    uint32_t negotiated = 0;
+    int negotiate_rc = abimgr_negotiate_version(NOVA_ABI_VERSION, &negotiated);
+    report("NOVA: abimgr_register_syscall+negotiate",
+           abi_rc == 0 && negotiate_rc == 0 && negotiated == NOVA_ABI_VERSION);
+
+    semmgr_initialize();
+    report("NOVA: semmgr_self_test", semmgr_self_test() == 0);
+    uint32_t sem_id = 0;
+    int sem_rc = semmgr_register(0x1234ABCDu, STYPE_CAPABILITY, 0, &sem_id);
+    void *sem_rec = semmgr_query(0x1234ABCDu);
+    uint32_t sem_result = 0;
+    int validate_rc = semmgr_validate(sem_id, 42, &sem_result);
+    report("NOVA: semmgr_register+query+validate",
+           sem_rc == 0 && sem_rec != 0 && validate_rc == 0 && sem_result == SVAL_OK);
+
+    execution_initialize();
+    report("NOVA: execution_self_test", execution_self_test() == 0);
+    uint32_t contract_id = 0;
+    int exec_rc = exec_register_contract(EXEC_PROV_CPU, EXEC_FLAG_DETERMINISTIC, 0, 10,
+                                          &contract_id);
+    report("NOVA: exec_register_contract+check_deadline",
+           exec_rc == 0 && exec_check_deadline(contract_id) == 0);
+
+    privacy_ext_initialize();
+    report("NOVA: privacy_ext_self_test", privacy_ext_self_test() == 0);
+
+    verify_initialize();
+    report("NOVA: verify_self_test", verify_self_test() == 0);
+
+    txmgr_initialize();
+    report("NOVA: txmgr_self_test", txmgr_self_test() == 0);
+    uint32_t tx_id = 0;
+    int tx_rc = txmgr_begin(TX_TYPE_LOCAL, TX_FLAG_ATOMIC, 0, &tx_id);
+    report("NOVA: txmgr_begin+commit", tx_rc == 0 && txmgr_commit(tx_id) == 0);
+
+    autonomy_initialize();
+    report("NOVA: autonomy_self_test", autonomy_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;

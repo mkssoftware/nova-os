@@ -2,26 +2,12 @@
    Bootstrap-Allokationen sind maximal eine Seite gross und werden auf
    HEAP_ALIGNMENT ausgerichtet; neue Seiten werden deterministisch genullt. */
 #include "heap.h"
-
-#define PMM_PAGE_SIZE 4096u
+#include "pmm.h"
 
 static uint8_t *heap_page = 0;
 static uint32_t heap_offset = PMM_PAGE_SIZE;
 static uint32_t heap_allocations = 0;
 static uint32_t heap_bytes = 0;
-
-/* TODO: durch den echten Physical-Memory-Manager (E820/NUMA, pmm_alloc_page)
-   ersetzen, sobald dieser portiert ist. Bis dahin: statisches Seiten-Arena. */
-#define BOOTSTRAP_PAGE_ARENA_PAGES 64u
-static uint8_t bootstrap_page_arena[BOOTSTRAP_PAGE_ARENA_PAGES][PMM_PAGE_SIZE] __attribute__((aligned(16)));
-static uint32_t bootstrap_page_arena_next = 0;
-
-static void *bootstrap_pmm_alloc_page(void) {
-    if (bootstrap_page_arena_next >= BOOTSTRAP_PAGE_ARENA_PAGES) {
-        return 0;
-    }
-    return bootstrap_page_arena[bootstrap_page_arena_next++];
-}
 
 void heap_initialize(void) {
     heap_page = 0;
@@ -46,16 +32,19 @@ void *heap_allocate(uint32_t size) {
     }
 
     if (end > PMM_PAGE_SIZE) {
-        uint8_t *new_page = bootstrap_pmm_alloc_page();
-        if (!new_page) {
+        uint32_t numa_node;
+        uint32_t new_page_addr = pmm_alloc_page(&numa_node);
+        if (new_page_addr == 0) {
             return 0;
         }
-        heap_page = new_page;
+        heap_page = (uint8_t *)(uintptr_t)new_page_addr;
         offset = 0;
-        /* Neue Heap-Seiten werden deterministisch genullt (bootstrap_page_arena
-           liefert bereits genullte Seiten, daher kein expliziter memset hier -
-           sobald der echte PMM nicht-garantiert-genullte Seiten liefert, muss
-           hier wieder genullt werden). */
+
+        /* Neue Heap-Seiten werden deterministisch genullt (wie im alten ASM). */
+        uint32_t *words = (uint32_t *)heap_page;
+        for (uint32_t i = 0; i < PMM_PAGE_SIZE / 4; ++i) {
+            words[i] = 0;
+        }
     }
 
     void *result = heap_page + offset;
