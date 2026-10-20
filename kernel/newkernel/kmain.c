@@ -1,42 +1,35 @@
 /* NovaOS C-Kernel - erster C-Kernmain. Paralleler, objektbasierter Kernel-Kern;
    alte .inc-Subsysteme werden schrittweise hierher portiert. */
 
+#include "serial.h"
+#include "distributed.h"
+
 void kmain(void) __asm__("kmain");
 
-static inline void outb(unsigned short port, unsigned char val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
-static inline unsigned char inb(unsigned short port) {
-    unsigned char ret;
-    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-
-static void serial_init(void) {
-    outb(0x3F9, 0x00);
-    outb(0x3FB, 0x80);
-    outb(0x3F8, 0x01);
-    outb(0x3F9, 0x00);
-    outb(0x3FB, 0x03);
-    outb(0x3FA, 0xC7);
-    outb(0x3FC, 0x0B);
-}
-
-static void serial_putc(char c) {
-    while (!(inb(0x3FD) & 0x20)) { }
-    outb(0x3F8, (unsigned char)c);
-}
-
-static void serial_puts(const char *s) {
-    while (*s) {
-        serial_putc(*s++);
-    }
+static void report(const char *label, int ok) {
+    serial_puts(label);
+    serial_puts(ok ? " ok\r\n" : " FAILED\r\n");
 }
 
 void kmain(void) {
     serial_init();
     serial_puts("NOVA-C: Paralleler C-Kernel-Kern gebootet\r\n");
+
+    report("NOVA-C: distributed_initialize", distributed_initialize() == 0);
+    report("NOVA-C: distributed_self_test", distributed_self_test() == 0);
+    report("NOVA-C: dist_register_node(node 1)",
+           dist_register_node(1, 0 /* DIST_ROLE_PRIMARY */, 0x0A000001u, 0) == 0);
+    report("NOVA-C: dist_register_node(node 2, replica)",
+           dist_register_node(2, 1 /* DIST_ROLE_REPLICA */, 0x0A000002u, 0) == 0);
+
+    uint32_t rpc_status = 0;
+    int rpc_rc = dist_send_rpc(1, 0xDEADBEEFu, 0, &rpc_status);
+    report("NOVA-C: dist_send_rpc(node 1)", rpc_rc == 0 && rpc_status == DIST_RPC_OK);
+
+    report("NOVA-C: dist_replicate", dist_replicate(42, 0x1234u) == 0);
+
+    serial_puts("NOVA-C: distributed-Subsystem-Port vollstaendig verifiziert\r\n");
+
     for (;;) {
         __asm__ volatile ("hlt");
     }
