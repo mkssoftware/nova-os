@@ -3,6 +3,8 @@
 
 #include "serial.h"
 #include "distributed.h"
+#include "boot_phase.h"
+#include "panic.h"
 
 void kmain(void) __asm__("kmain");
 
@@ -14,6 +16,19 @@ static void report(const char *label, int ok) {
 void kmain(void) {
     serial_init();
     serial_puts("NOVA-C: Paralleler C-Kernel-Kern gebootet\r\n");
+
+    boot_phase_current = BOOT_PHASE_KERNEL_ENTRY;
+    boot_phase_last_success = BOOT_PHASE_NONE;
+    boot_phase_log();
+
+    panic_manager_initialize();
+    report("NOVA-C: panic_manager_self_test", panic_manager_self_test() == 0);
+    crash_dump_initialize();
+    report("NOVA-C: crash_dump_self_test", crash_dump_self_test() == 0);
+
+    boot_phase_last_success = BOOT_PHASE_KERNEL_ENTRY;
+    boot_phase_current = BOOT_PHASE_HANDOFF;
+    boot_phase_log();
 
     report("NOVA-C: distributed_initialize", distributed_initialize() == 0);
     report("NOVA-C: distributed_self_test", distributed_self_test() == 0);
@@ -28,7 +43,7 @@ void kmain(void) {
 
     report("NOVA-C: dist_replicate", dist_replicate(42, 0x1234u) == 0);
 
-    serial_puts("NOVA-C: distributed-Subsystem-Port vollstaendig verifiziert\r\n");
+    serial_puts("NOVA-C: distributed- und panic/boot-phase-Subsysteme vollstaendig verifiziert\r\n");
 
     for (;;) {
         __asm__ volatile ("hlt");
