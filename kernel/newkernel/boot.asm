@@ -11,8 +11,8 @@ _start:
     cli
     cld
     xor ebp, ebp
-    mov [boot_eax], eax
-    mov [boot_ebx], ebx
+    mov esi, eax        ; boot_magic (EAX) - ueberlebt den Segment-Setup
+    mov edi, ebx         ; bib_physical_address (EBX)
 
     lgdt [gdt_descriptor]
     mov ax, 0x10
@@ -24,6 +24,8 @@ _start:
 
     mov esp, stack_top
 
+    push edi             ; 2. Argument: bib_physical_address
+    push esi             ; 1. Argument: boot_magic
     call kmain
 
 .hang:
@@ -42,11 +44,6 @@ gdt_end:
 gdt_descriptor:
     dw gdt_end - gdt_start - 1
     dd gdt_start
-
-global boot_eax
-global boot_ebx
-boot_eax: dd 0
-boot_ebx: dd 0
 
 section .bss
 align 16
