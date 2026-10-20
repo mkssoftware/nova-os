@@ -34,6 +34,8 @@
 #include "verify.h"
 #include "txmgr.h"
 #include "autonomy.h"
+#include "datamove.h"
+#include "statemgr.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -47,19 +49,19 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     /* --- Unverzichtbare Grundlage (Diagnose/Absturzsicherheit) --- */
     serial_init();
-    serial_puts("NOVA: Paralleler C-Kernel-Kern gebootet\r\n");
+    serial_puts("NOVA: Kernel-Kern gebootet\r\n");
 
     logging_initialize();
-    report("NOVA: logging_self_test", logging_self_test() == 0);
+    report("NOVA: Logging Selftest", logging_self_test() == 0);
 
     boot_phase_current = BOOT_PHASE_KERNEL_ENTRY;
     boot_phase_last_success = BOOT_PHASE_NONE;
     boot_phase_log();
 
     panic_manager_initialize();
-    report("NOVA: panic_manager_self_test", panic_manager_self_test() == 0);
+    report("NOVA: Panic Manager Selftest", panic_manager_self_test() == 0);
     crash_dump_initialize();
-    report("NOVA: crash_dump_self_test", crash_dump_self_test() == 0);
+    report("NOVA: Crash Dump Selftest", crash_dump_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_KERNEL_ENTRY;
     boot_phase_current = BOOT_PHASE_HANDOFF;
@@ -67,15 +69,15 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     /* --- Desktop First: so frueh wie moeglich sichtbar --- */
     int bib_ok = (bib_parse(bib_physical_address) == 0);
-    report("NOVA: bib_parse", bib_ok);
+    report("NOVA: BIP Parse", bib_ok);
 
     const bib_graphics_info_t *gfx = bib_graphics();
     int fb_ok = bib_ok && gfx->has_graphics &&
         framebuffer_initialize(gfx->framebuffer_address, gfx->pitch,
                                 gfx->width, gfx->height, gfx->bits_per_pixel) == 0;
-    report("NOVA: framebuffer_initialize", fb_ok);
+    report("NOVA: Framebuffer Initialize", fb_ok);
 
-    report("NOVA: desktop_show", fb_ok && desktop_show() == 0);
+    report("NOVA: Desktop Show", fb_ok && desktop_show() == 0);
     serial_puts("NOVA: Desktop angezeigt - Hintergrund-Subsysteme laden jetzt weiter\r\n");
 
     boot_phase_last_success = BOOT_PHASE_HANDOFF;
@@ -177,6 +179,19 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     autonomy_initialize();
     report("NOVA: autonomy_self_test", autonomy_self_test() == 0);
+
+    datamove_initialize();
+    report("NOVA: datamove_self_test", datamove_self_test() == 0);
+
+    statemgr_initialize();
+    report("NOVA: statemgr_self_test", statemgr_self_test() == 0);
+    uint32_t sm_slot = 0;
+    int sm_state_rc = state_register(1, SM_STATE_RUNNING, &sm_slot);
+    uint32_t reconcile_result = 0;
+    int reconcile_rc = state_set_desired(1, SM_STATE_DEGRADED) == 0 &&
+                        state_reconcile(1, &reconcile_result) == 0;
+    report("NOVA: state_register+set_desired+reconcile",
+           sm_state_rc == 0 && reconcile_rc && reconcile_result == SM_RECONCILE_OK);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
