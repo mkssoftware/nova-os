@@ -5,6 +5,13 @@
 #include "distributed.h"
 #include "boot_phase.h"
 #include "panic.h"
+#include "logging.h"
+#include "oom.h"
+#include "cow.h"
+#include "aslr.h"
+#include "slab.h"
+#include "heap.h"
+#include "object.h"
 
 void kmain(void) __asm__("kmain");
 
@@ -16,6 +23,9 @@ static void report(const char *label, int ok) {
 void kmain(void) {
     serial_init();
     serial_puts("NOVA-C: Paralleler C-Kernel-Kern gebootet\r\n");
+
+    logging_initialize();
+    report("NOVA-C: logging_self_test", logging_self_test() == 0);
 
     boot_phase_current = BOOT_PHASE_KERNEL_ENTRY;
     boot_phase_last_success = BOOT_PHASE_NONE;
@@ -43,7 +53,25 @@ void kmain(void) {
 
     report("NOVA-C: dist_replicate", dist_replicate(42, 0x1234u) == 0);
 
-    serial_puts("NOVA-C: distributed- und panic/boot-phase-Subsysteme vollstaendig verifiziert\r\n");
+    oom_initialize();
+    report("NOVA-C: oom_self_test", oom_self_test() == 0);
+
+    cow_initialize();
+    report("NOVA-C: cow_self_test", cow_self_test() == 0);
+
+    aslr_initialize();
+    report("NOVA-C: aslr_self_test", aslr_self_test() == 0);
+
+    slab_initialize();
+    report("NOVA-C: slab_self_test", slab_self_test() == 0);
+
+    heap_initialize();
+    report("NOVA-C: heap_self_test", heap_self_test() == 0);
+
+    object_manager_initialize();
+    report("NOVA-C: object_manager_self_test", object_manager_self_test() == 0);
+
+    serial_puts("NOVA-C: alle bisherigen Subsysteme vollstaendig verifiziert\r\n");
 
     for (;;) {
         __asm__ volatile ("hlt");
