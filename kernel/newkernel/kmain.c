@@ -65,6 +65,7 @@
 #include "nvme.h"
 #include "scheduler.h"
 #include "hal.h"
+#include "usb.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -349,6 +350,8 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     report("NOVA: Early Security Entropy Selftest",
            early_security_entropy_initialize() == 0 && early_security_entropy_self_test() == 0);
+
+    report("NOVA: USB xHCI Selftest", usb_initialize() == 0 && usb_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
