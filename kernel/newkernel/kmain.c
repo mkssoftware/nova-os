@@ -54,6 +54,13 @@
 #include "crypto.h"
 #include "compat.h"
 #include "power.h"
+#include "thermal.h"
+#include "fs.h"
+#include "font.h"
+#include "network.h"
+#include "program.h"
+#include "interrupt.h"
+#include "time.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -273,6 +280,34 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     power_extended_initialize();
     report("NOVA: Power Management Selftest", power_extended_self_test() == 0);
+
+    thermal_manager_initialize();
+    report("NOVA: Thermal Manager Selftest", thermal_manager_self_test() == 0);
+
+    fs_initialize();
+    report("NOVA: Filesystem Subsystem Selftest", fs_self_test() == 0);
+
+    font_manager_initialize();
+    report("NOVA: Font Manager Selftest", font_manager_self_test() == 0);
+
+    network_stack_initialize();
+    report("NOVA: Network Stack Selftest", network_stack_self_test() == 0);
+
+    program_manager_initialize();
+    report("NOVA: Program Manager Selftest", program_manager_self_test() == 0);
+
+    interrupt_initialize();
+    report("NOVA: Interrupt Subsystem Selftest", interrupt_self_test() == 0);
+
+    timer_initialize();
+    interrupt_enable();
+    report("NOVA: Timer Subsystem Selftest", timer_self_test() == 0);
+
+    time_subsystem_initialize();
+    report("NOVA: Time Subsystem Selftest", time_subsystem_self_test() == 0);
+
+    deferred_initialize();
+    report("NOVA: Deferred Work Queue Selftest", deferred_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;

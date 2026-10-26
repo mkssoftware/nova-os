@@ -1,12 +1,10 @@
 /* NovaOS C-Kernel - Filesystem-Index und System-Verzeichnis (Port aus
-   fsindex32.inc, NPSPEC-INDEX- und NPSPEC-SYSTEM-Spezifikationen).
-   TODO: FS_NS_SYSTEM/TRUST_SYSTEM/TRUST_USER/FSOBJ_TYPE_DIR hier lokal
-   definiert (Werte aus fs32.inc uebernommen) - vereinheitlichen, sobald
-   fs32.inc portiert ist. */
+   fsindex32.inc, NPSPEC-INDEX- und NPSPEC-SYSTEM-Spezifikationen). */
 #ifndef NOVA_FSINDEX_H
 #define NOVA_FSINDEX_H
 
 #include <stdint.h>
+#include "fs.h"
 
 #define SYSDIR_KERNEL     0u
 #define SYSDIR_BOOT       1u
@@ -40,12 +38,6 @@
 #define IDX_FLAG_RELATION  0x08u
 
 #define IDX_CAPACITY 32u
-
-/* TODO: aus fs32.inc uebernommene Werte (siehe Kommentar oben). */
-#define FS_NS_SYSTEM    1u
-#define TRUST_SYSTEM    1u
-#define TRUST_USER      2u
-#define FSOBJ_TYPE_DIR  2u
 
 void fsindex_initialize(void);
 int fsindex_self_test(void); /* 0 = ok */
