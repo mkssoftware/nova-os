@@ -61,11 +61,14 @@ int cpuidle_query(uint32_t state, uint32_t *out_residency_ticks, uint32_t *out_e
 }
 
 int cpuidle_self_test(void) {
-    if (cpuidle_enter(CPUIDLE_STATE_C1) != 0) return -1;
+    /* Bewusst CPUIDLE_STATE_C0 statt C1 (wie power_cpu_idle/
+       power_manager_platform_off NIEMALS ein echtes HLT im Selbsttest
+       auslösen - siehe cpuidle_enter: nur state != C0 fuehrt HLT aus). */
+    if (cpuidle_enter(CPUIDLE_STATE_C0) != 0) return -1;
     cpuidle_exit();
 
     uint32_t residency, count;
-    if (cpuidle_query(CPUIDLE_STATE_C1, &residency, &count) != 0) return -1;
+    if (cpuidle_query(CPUIDLE_STATE_C0, &residency, &count) != 0) return -1;
     if (count < 1) return -1;
 
     return 0;

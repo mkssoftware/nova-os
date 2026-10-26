@@ -1,0 +1,2 @@
+C:\Program Files\qemu\qemu-system-x86_64.exe: -accel whpx: warning: WHPX: Failed to get performance monitoring features, hr=80370300
+C:\Program Files\qemu\qemu-system-x86_64.exe: warning: Ignoring request for interrupt vector 0

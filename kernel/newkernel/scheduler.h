@@ -94,4 +94,11 @@ void qos_new_epoch(void); /* setzt alle Budgets auf ihr Max zurueck */
 /* 0 = Erfolg (Budget und Max gesetzt), -1 wenn class ungueltig. */
 int qos_query(uint32_t qos_class, uint32_t *out_budget, uint32_t *out_max);
 
+/* Pipeline 3 (Port aus integration32.inc, NPSPEC-INTEGRATION-0001):
+   Scheduler Task Admission. priority>=200 -> RT (EDF, Deadline =
+   aktuelle Ticks + 500); sonst QoS-Budget pruefen -> CFS-Enqueue mit
+   invertiertem Gewicht (256-priority, min. 1). 0 = Erfolg (*out_slot
+   gesetzt), -1 wenn kein Platz/Budget. */
+int scheduler_admit_task(uint32_t owner, uint32_t priority, uint32_t qos_class, uint32_t *out_slot);
+
 #endif

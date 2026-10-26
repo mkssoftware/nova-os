@@ -24,7 +24,7 @@ int thermal_self_test(void); /* 0 = ok */
    siehe Rueckgabewert-Hinweis unten). */
 int thermal_update(uint32_t zone_id, uint32_t temperature, int *out_throttled);
 
-/* 0 = Erfolg (*out_state/*out_temperature gesetzt), -1 wenn zone_id ungueltig. */
+/* 0 = Erfolg (Zustand und Temperatur gesetzt), -1 wenn zone_id ungueltig. */
 int thermal_query(uint32_t zone_id, uint32_t *out_state, uint32_t *out_temperature);
 
 #endif

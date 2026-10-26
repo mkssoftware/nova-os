@@ -455,3 +455,19 @@ int qos_self_test(void) {
 
     return 0;
 }
+
+#define SCHED_RT_THRESHOLD 200u
+
+int scheduler_admit_task(uint32_t owner, uint32_t priority, uint32_t qos_class, uint32_t *out_slot) {
+    if (priority >= SCHED_RT_THRESHOLD) {
+        uint32_t deadline = wd_global_tick_stub() + 500u;
+        return rt_task_register(owner, deadline, priority, RT_POLICY_EDF, out_slot);
+    }
+
+    if (qos_consume(qos_class) != 0) return -1;
+
+    uint32_t weight = (priority >= 256u) ? 1u : (256u - priority);
+    if (weight < 1u) weight = 1u;
+
+    return cfs_task_enqueue(owner, weight, out_slot);
+}

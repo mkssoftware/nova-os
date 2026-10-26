@@ -21,7 +21,7 @@ int cpuidle_self_test(void); /* 0 = ok */
 int cpuidle_enter(uint32_t state);
 void cpuidle_exit(void); /* misst Residency, setzt Zustand auf C0 zurueck */
 
-/* 0 = Erfolg (*out_residency_ticks/*out_enter_count gesetzt), -1 wenn
+/* 0 = Erfolg (Residency und Enter-Count gesetzt), -1 wenn
    state > CPUIDLE_STATE_C3. */
 int cpuidle_query(uint32_t state, uint32_t *out_residency_ticks, uint32_t *out_enter_count);
 

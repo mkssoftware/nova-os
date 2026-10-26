@@ -78,6 +78,14 @@
 #include "powermgr.h"
 #include "exception.h"
 #include "syscall.h"
+#include "csprng.h"
+#include "cpuidle.h"
+#include "thermthrottle.h"
+#include "identreg.h"
+#include "trustanchor.h"
+#include "adaptfb.h"
+#include "radmit.h"
+#include "excon.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -399,6 +407,29 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     syscall_manager_initialize();
     report("NOVA: System Call Interface Selftest", syscall_manager_self_test() == 0);
+
+    csprng_initialize();
+    report("NOVA: CSPRNG Entropy Pool Selftest", csprng_self_test() == 0);
+
+    cpuidle_initialize();
+    report("NOVA: CPU Idle State Management Selftest", cpuidle_self_test() == 0);
+
+    thermal_initialize();
+    report("NOVA: Thermal Throttle Policy Selftest", thermal_self_test() == 0);
+
+    identity_initialize();
+    report("NOVA: Identity Registry Selftest", identity_self_test() == 0);
+
+    report("NOVA: Trust Anchor Chain Selftest", trust_initialize() == 0 && trust_self_test() == 0);
+
+    adapt_initialize();
+    report("NOVA: Adaptive Feedback Loop Selftest", adapt_self_test() == 0);
+
+    radmit_initialize();
+    report("NOVA: Resource Admission Control Selftest", radmit_self_test() == 0);
+
+    excon_initialize();
+    report("NOVA: Execution Contract Selftest", excon_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
