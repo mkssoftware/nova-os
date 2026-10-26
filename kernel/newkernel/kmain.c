@@ -86,6 +86,11 @@
 #include "adaptfb.h"
 #include "radmit.h"
 #include "excon.h"
+#include "tmpiso.h"
+#include "privlabel.h"
+#include "retry.h"
+#include "rmode.h"
+#include "rtv.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -430,6 +435,21 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     excon_initialize();
     report("NOVA: Execution Contract Selftest", excon_self_test() == 0);
+
+    tmpiso_initialize();
+    report("NOVA: RT Temporal Isolation Selftest", tmpiso_self_test() == 0);
+
+    privlabel_initialize();
+    report("NOVA: Privacy Label Policy Selftest", privlabel_self_test() == 0);
+
+    retry_initialize();
+    report("NOVA: Retry Manager Selftest", retry_self_test() == 0);
+
+    rmode_initialize();
+    report("NOVA: Recovery Mode Manager Selftest", rmode_self_test() == 0);
+
+    rtv_initialize();
+    report("NOVA: Runtime Verification Monitor Selftest", rtv_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
