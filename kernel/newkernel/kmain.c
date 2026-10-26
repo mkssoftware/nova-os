@@ -93,6 +93,21 @@
 #include "retry.h"
 #include "rmode.h"
 #include "rtv.h"
+#include "sgraph.h"
+#include "fsm.h"
+#include "txroll.h"
+#include "fi.h"
+#include "fclass.h"
+#include "rpol.h"
+#include "rverif.h"
+#include "ssnap.h"
+#include "shist.h"
+#include "srec.h"
+#include "txlog.h"
+#include "tbarrier.h"
+#include "tcomp.h"
+#include "redundancy.h"
+#include "chaos.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -454,6 +469,51 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     rtv_initialize();
     report("NOVA: Runtime Verification Monitor Selftest", rtv_self_test() == 0);
+
+    sgraph_initialize();
+    report("NOVA: System State Graph Selftest", sgraph_self_test() == 0);
+
+    fsm_initialize();
+    report("NOVA: Finite State Machine Selftest", fsm_self_test() == 0);
+
+    txroll_initialize();
+    report("NOVA: Transaction Rollback Journal Selftest", txroll_self_test() == 0);
+
+    fi_initialize();
+    report("NOVA: Fault Injection Framework Selftest", fi_self_test() == 0);
+
+    fclass_initialize();
+    report("NOVA: Fault Classification Selftest", fclass_self_test() == 0);
+
+    rpol_initialize();
+    report("NOVA: Recovery Policy Manager Selftest", rpol_self_test() == 0);
+
+    rverif_initialize();
+    report("NOVA: Resilience Verification Selftest", rverif_self_test() == 0);
+
+    ssnap_initialize();
+    report("NOVA: State Snapshot Selftest", ssnap_self_test() == 0);
+
+    shist_initialize();
+    report("NOVA: State History Ring Selftest", shist_self_test() == 0);
+
+    srec_initialize();
+    report("NOVA: State Reconciliation Selftest", srec_self_test() == 0);
+
+    txlog_initialize();
+    report("NOVA: Transaction Log Selftest", txlog_self_test() == 0);
+
+    tbarrier_initialize();
+    report("NOVA: Transaction Barrier Selftest", tbarrier_self_test() == 0);
+
+    tcomp_initialize();
+    report("NOVA: Transaction Compensation Selftest", tcomp_self_test() == 0);
+
+    redundancy_initialize();
+    report("NOVA: Redundancy Manager Selftest", redundancy_self_test() == 0);
+
+    chaos_initialize();
+    report("NOVA: Chaos Engine Selftest", chaos_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;

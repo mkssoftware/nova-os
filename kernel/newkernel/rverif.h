@@ -24,7 +24,7 @@ int rverif_register(uint32_t subsys_id, uint32_t expected_state, uint32_t *out_s
    erzeugt) oder subsys_id unbekannt/ungueltig. */
 int rverif_check(uint32_t subsys_id, uint32_t observed_state);
 
-/* 0 = Erfolg (*out_observed/*out_expected gesetzt), -1 wenn subsys_id
+/* 0 = Erfolg (out_observed und out_expected gesetzt), -1 wenn subsys_id
    unbekannt/ungueltig. */
 int rverif_query(uint32_t subsys_id, uint32_t *out_observed, uint32_t *out_expected);
 

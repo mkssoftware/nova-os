@@ -18,7 +18,7 @@ int srec_register(uint32_t rec_id, uint32_t desired_state, uint32_t *out_slot);
    rec_id unbekannt/ungueltig. */
 int srec_reconcile(uint32_t rec_id, uint32_t actual_state);
 
-/* 0 = Erfolg (*out_desired/*out_actual/*out_diverge_count gesetzt),
+/* 0 = Erfolg (out_desired, out_actual und out_diverge_count gesetzt),
    -1 wenn rec_id unbekannt/ungueltig. */
 int srec_query(uint32_t rec_id, uint32_t *out_desired, uint32_t *out_actual, uint32_t *out_diverge_count);
 
