@@ -66,6 +66,18 @@
 #include "scheduler.h"
 #include "hal.h"
 #include "usb.h"
+#include "kog.h"
+#include "evbus.h"
+#include "uobj.h"
+#include "cap.h"
+#include "security.h"
+#include "audit.h"
+#include "mac.h"
+#include "dac.h"
+#include "rbac.h"
+#include "powermgr.h"
+#include "exception.h"
+#include "syscall.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -352,6 +364,41 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
            early_security_entropy_initialize() == 0 && early_security_entropy_self_test() == 0);
 
     report("NOVA: USB xHCI Selftest", usb_initialize() == 0 && usb_self_test() == 0);
+
+    kog_initialize();
+    report("NOVA: Kernel Object Graph Selftest", kog_self_test() == 0);
+
+    evbus_initialize();
+    report("NOVA: Event Bus Selftest", evbus_self_test() == 0);
+
+    uobj_initialize();
+    report("NOVA: Unified Object API Selftest", uobj_self_test() == 0);
+
+    report("NOVA: Capability Framework Selftest", cap_initialize() == 0 && cap_self_test() == 0);
+
+    security_initialize();
+    report("NOVA: Security Capability Manager Selftest", security_self_test() == 0);
+
+    security_audit_initialize();
+    report("NOVA: Security Audit Log Selftest", security_audit_self_test() == 0);
+
+    mac_initialize();
+    report("NOVA: Mandatory Access Control Selftest", mac_self_test() == 0);
+
+    dac_initialize();
+    report("NOVA: Discretionary Access Control Selftest", dac_self_test() == 0);
+
+    rbac_initialize();
+    report("NOVA: Role-Based Access Control Selftest", rbac_self_test() == 0);
+
+    power_manager_initialize();
+    report("NOVA: Power Manager ABI Selftest", power_manager_self_test() == 0);
+
+    exception_manager_initialize();
+    report("NOVA: Exception Manager Selftest", exception_manager_self_test() == 0);
+
+    syscall_manager_initialize();
+    report("NOVA: System Call Interface Selftest", syscall_manager_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;

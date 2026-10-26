@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Power Management (Port aus power32.inc). */
 #include "power.h"
+#include "powermgr.h"
 
 typedef struct {
     uint32_t id;
@@ -31,11 +32,6 @@ static int32_t power_budget_mws = 100000;
 static uint32_t power_cpu_count = 0;
 static uint32_t power_dev_count = 0;
 static int power_ext_ready = 0;
-
-/* TODO: durch echten Aufruf ersetzen, sobald integration32.inc (power_manager)
-   portiert ist. */
-static void power_manager_request_shutdown(void) {
-}
 
 /* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {

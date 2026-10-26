@@ -1,6 +1,7 @@
 /* NovaOS C-Kernel - Thermal Manager (Port aus thermal32.inc). */
 #include "thermal.h"
 #include "serial.h"
+#include "powermgr.h"
 
 typedef struct {
     uint32_t id;
@@ -42,11 +43,6 @@ static int therm_mgr_ready = 0;
 /* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
     return 0;
-}
-
-/* TODO: durch echten Aufruf ersetzen, sobald integration32.inc (power_manager)
-   portiert ist. */
-static void power_manager_request_shutdown(void) {
 }
 
 static void therm_create_cpu_zone(void) {
