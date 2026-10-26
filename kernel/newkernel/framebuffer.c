@@ -55,3 +55,19 @@ void framebuffer_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint3
 void framebuffer_clear(uint32_t rgb) {
     framebuffer_fill_rect(0, 0, fb_width, fb_height, rgb);
 }
+
+uint32_t framebuffer_get_pixel(uint32_t x, uint32_t y) {
+    if (!fb_ok || x >= fb_width || y >= fb_height) {
+        return 0;
+    }
+    uint32_t *pixel_row = (uint32_t *)(fb_base + (uint64_t)y * fb_pitch);
+    return pixel_row[x];
+}
+
+void framebuffer_set_pixel(uint32_t x, uint32_t y, uint32_t rgb) {
+    if (!fb_ok || x >= fb_width || y >= fb_height) {
+        return;
+    }
+    uint32_t *pixel_row = (uint32_t *)(fb_base + (uint64_t)y * fb_pitch);
+    pixel_row[x] = rgb;
+}

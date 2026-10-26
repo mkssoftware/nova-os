@@ -16,4 +16,10 @@ uint32_t framebuffer_height(void);
 void framebuffer_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t rgb);
 void framebuffer_clear(uint32_t rgb);
 
+/* 0 = ausserhalb des Framebuffers/kein Framebuffer verfuegbar (liefert 0),
+   sonst gibt es den Rueckgabewert selbst als Pixelwert zurueck - zur
+   Unterscheidung bei (0,0) ggf. framebuffer_available() zusaetzlich pruefen. */
+uint32_t framebuffer_get_pixel(uint32_t x, uint32_t y);
+void framebuffer_set_pixel(uint32_t x, uint32_t y, uint32_t rgb);
+
 #endif

@@ -21,6 +21,8 @@
 #include "component.h"
 #include "bib.h"
 #include "framebuffer.h"
+#include "display.h"
+#include "compositor.h"
 #include "desktop.h"
 #include "pmm.h"
 #include "paging.h"
@@ -128,9 +130,11 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     const bib_graphics_info_t *gfx = bib_graphics();
     int fb_ok = bib_ok && gfx->has_graphics &&
-        framebuffer_initialize(gfx->framebuffer_address, gfx->pitch,
-                                gfx->width, gfx->height, gfx->bits_per_pixel) == 0;
+        display_initialize(gfx->framebuffer_address, gfx->pitch,
+                            gfx->width, gfx->height, gfx->bits_per_pixel) == 0;
     report("NOVA: Framebuffer Initialize", fb_ok);
+    report("NOVA: Display Manager Selftest", fb_ok && display_self_test() == 0);
+    report("NOVA: Compositor Selftest", fb_ok && compositor_self_test() == 0);
 
     report("NOVA: Desktop Show", fb_ok && desktop_show() == 0);
     serial_puts("NOVA: Desktop angezeigt - Hintergrund-Subsysteme laden jetzt weiter\r\n");
