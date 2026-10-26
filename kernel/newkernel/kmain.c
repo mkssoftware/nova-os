@@ -43,6 +43,11 @@
 #include "trust.h"
 #include "nobj.h"
 #include "global.h"
+#include "pci.h"
+#include "driver.h"
+#include "update.h"
+#include "block.h"
+#include "ui.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -223,6 +228,23 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     globalization_initialize();
     report("NOVA: Globalization Selftest", globalization_self_test() == 0);
+
+    driver_discovery_initialize();
+    report("NOVA: Driver Discovery Selftest", driver_discovery_self_test() == 0);
+    report("NOVA: Driver Discovery PCI Scan", driver_pci_scan() == 0);
+
+    update_initialize();
+    report("NOVA: Update Manager Selftest", update_self_test() == 0);
+
+    block_layer_initialize();
+    report("NOVA: Storage Block Layer Selftest", block_layer_self_test() == 0);
+
+    ui_initialize();
+    report("NOVA: UI Subsystem Selftest", ui_self_test() == 0);
+    uint32_t ui_win_id = 0;
+    int ui_rc = ui_window_create(0, 0, 320, 240, &ui_win_id);
+    report("NOVA: UI Window Create + Compositor Frame",
+           ui_rc == 0 && ui_compositor_frame() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
