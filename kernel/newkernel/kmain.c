@@ -112,6 +112,11 @@
 #include "raccount.h"
 #include "rguarant.h"
 #include "rreclaim.h"
+#include "sdiag.h"
+#include "sconf.h"
+#include "apred.h"
+#include "selfopt.h"
+#include "selfprot.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -530,6 +535,21 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     rreclaim_initialize();
     report("NOVA: Resource Reclaim Selftest", rreclaim_self_test() == 0);
+
+    sdiag_initialize();
+    report("NOVA: Self-Diagnosis Selftest", sdiag_self_test() == 0);
+
+    sconf_initialize();
+    report("NOVA: Self-Configuration Selftest", sconf_self_test() == 0);
+
+    apred_initialize();
+    report("NOVA: Adaptive Prediction Selftest", apred_self_test() == 0);
+
+    selfopt_initialize();
+    report("NOVA: Self-Optimization Selftest", selfopt_self_test() == 0);
+
+    selfprot_initialize();
+    report("NOVA: Self-Protection Selftest", selfprot_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
