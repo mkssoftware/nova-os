@@ -48,4 +48,9 @@ void driver_enable_bus_master(uint32_t pci_bus_addr);
 
 uint32_t disc_count(void);
 
+/* Durchsucht die Discovery-Tabelle nach dem index-ten (0-basiert) Eintrag
+   mit passender class24 UND DISC_FLAG_MATCHED. 0 = gefunden (out_bus_addr/
+   out_bar0 gesetzt), -1 wenn nicht vorhanden. */
+int disc_find_matched(uint32_t class24, uint32_t index, uint32_t *out_bus_addr, uint32_t *out_bar0);
+
 #endif

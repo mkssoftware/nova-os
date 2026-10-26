@@ -70,4 +70,9 @@ int block_io_submit(void *record, uint32_t lba_lo, uint32_t lba_hi, uint32_t cou
 /* 0 = Erfolg (*out_record erhaelt den Record-Zeiger), -1 wenn nicht gefunden. */
 int block_device_lookup_by_handle(uint32_t driver_handle, void **out_record);
 
+/* Liest das driver_handle-Feld eines Record-Zeigers zurueck (z.B. fuer
+   Block-I/O-Callbacks, die aus dem opaken record* ihren Treiber-Kontext
+   wiederfinden muessen, wie im alten ASM via BLK_DRIVER_HANDLE). */
+uint32_t block_record_driver_handle(void *record);
+
 #endif

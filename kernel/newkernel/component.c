@@ -88,6 +88,12 @@ int component_activate(uint32_t id) {
     return 0;
 }
 
+int component_is_active(uint32_t id) {
+    component_record_t *rec = (component_record_t *)component_lookup(id);
+    if (!rec) return -1;
+    return (rec->state == COMPONENT_STATE_ACTIVE) ? 0 : -1;
+}
+
 int component_manager_self_test(void) {
     uint32_t handle = component_register(0x434F5245u /* "CORE" */, 0x00010000u, 1);
     if (handle == 0) return -1;

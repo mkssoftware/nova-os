@@ -67,6 +67,22 @@ int disc_register_device(uint32_t source, uint32_t pci_bus_addr, uint32_t vendor
     return 0;
 }
 
+int disc_find_matched(uint32_t class24, uint32_t index, uint32_t *out_bus_addr, uint32_t *out_bar0) {
+    uint32_t seen = 0;
+    for (uint32_t i = 0; i < DISC_CAPACITY; ++i) {
+        disc_record_t *rec = &disc_records[i];
+        if (rec->class24 != class24) continue;
+        if ((rec->flags & DISC_FLAG_MATCHED) == 0) continue;
+        if (seen == index) {
+            *out_bus_addr = rec->pci_bus_addr;
+            *out_bar0 = rec->bar0;
+            return 0;
+        }
+        ++seen;
+    }
+    return -1;
+}
+
 int driver_pci_scan(void) {
     for (uint32_t bus_addr = 0; bus_addr < 0x01000000u; ) {
         uint32_t vendor_device = pci_config_read32(bus_addr);

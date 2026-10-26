@@ -8,6 +8,8 @@
 static bib_graphics_info_t graphics_info = {0};
 static bib_memory_info_t memory_info = {0};
 static bib_kernel_info_t kernel_info = {0};
+static bib_acpi_info_t acpi_info = {0};
+static bib_entropy_info_t entropy_info = {0};
 
 static uint32_t crc32_bib(const uint8_t *data, uint32_t length) {
     uint32_t crc = 0xFFFFFFFFu;
@@ -35,12 +37,22 @@ const bib_kernel_info_t *bib_kernel(void) {
     return &kernel_info;
 }
 
+const bib_acpi_info_t *bib_acpi(void) {
+    return &acpi_info;
+}
+
+const bib_entropy_info_t *bib_entropy(void) {
+    return &entropy_info;
+}
+
 #define NOVA_MEMORY_MAP_ENTRY_SIZE 24u
 
 int bib_parse(uint32_t bib_physical_address) {
     graphics_info = (bib_graphics_info_t){0};
     memory_info = (bib_memory_info_t){0};
     kernel_info = (bib_kernel_info_t){0};
+    acpi_info = (bib_acpi_info_t){0};
+    entropy_info = (bib_entropy_info_t){0};
 
     if (bib_physical_address == 0 || (bib_physical_address & 7u) != 0) {
         return -1;
@@ -99,6 +111,20 @@ int bib_parse(uint32_t bib_physical_address) {
                 kernel_info.has_kernel = 1;
                 kernel_info.load_address = k->load_address;
                 kernel_info.image_size = k->image_size;
+            }
+        } else if (tlv->type == NOVA_BIB_TLV_ACPI) {
+            if (tlv->length >= sizeof(nova_bib_pointer_info_t)) {
+                const nova_bib_pointer_info_t *p = (const nova_bib_pointer_info_t *)value;
+                acpi_info.has_acpi = 1;
+                /* Nur 32-Bit-adressierbare RSDP-Zeiger werden unterstuetzt
+                   (wie im alten ASM: hohes DWord muss 0 sein). */
+                acpi_info.address = (p->address >> 32) == 0 ? (uint32_t)p->address : 0;
+            }
+        } else if (tlv->type == NOVA_BIB_TLV_ENTROPY) {
+            if (tlv->length >= sizeof(nova_bib_entropy_t)) {
+                const nova_bib_entropy_t *e = (const nova_bib_entropy_t *)value;
+                entropy_info.has_entropy = 1;
+                for (int i = 0; i < 16; ++i) entropy_info.seed[i] = e->seed[i];
             }
         }
 

@@ -61,6 +61,10 @@
 #include "program.h"
 #include "interrupt.h"
 #include "time.h"
+#include "ipc.h"
+#include "nvme.h"
+#include "scheduler.h"
+#include "hal.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -308,6 +312,43 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     deferred_initialize();
     report("NOVA: Deferred Work Queue Selftest", deferred_self_test() == 0);
+
+    ipc_initialize();
+    report("NOVA: IPC Queue Selftest", ipc_self_test() == 0);
+
+    device_manager_initialize();
+    report("NOVA: Device Manager Selftest", device_manager_self_test() == 0);
+
+    driver_framework_initialize();
+    report("NOVA: Driver Framework Selftest", driver_framework_self_test() == 0);
+
+    vfs_initialize();
+    report("NOVA: VFS Bootstrap Selftest", vfs_self_test() == 0);
+
+    service_manager_initialize();
+    report("NOVA: Service Manager Selftest", service_manager_self_test() == 0);
+
+    report("NOVA: NVMe Controller Selftest", nvme_initialize() == 0 && nvme_self_test() == 0);
+
+    scheduler_initialize();
+    report("NOVA: Scheduler Frame Selftest", scheduler_self_test() == 0);
+
+    worksteal_initialize();
+    report("NOVA: Work Stealing Selftest", worksteal_self_test() == 0);
+
+    rt_scheduler_initialize();
+    report("NOVA: RT Scheduler Selftest", rt_scheduler_self_test() == 0);
+
+    cfs_initialize();
+    report("NOVA: Fair Scheduler Selftest", cfs_self_test() == 0);
+
+    qos_initialize();
+    report("NOVA: QoS Scheduler Selftest", qos_self_test() == 0);
+
+    report("NOVA: ACPI HAL Selftest", acpi_rsdp_initialize() == 0 && acpi_hal_self_test() == 0);
+
+    report("NOVA: Early Security Entropy Selftest",
+           early_security_entropy_initialize() == 0 && early_security_entropy_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;

@@ -251,8 +251,9 @@ uint64_t time_media_get_position(void) {
     if (time_tsc_freq_khz == 0) {
         return 0;
     }
-    uint64_t tsc = time_get_tsc();
-    return (tsc * 10u) / time_tsc_freq_khz; /* 100ns-Einheiten */
+    /* Wie im alten ASM nur das untere 32-Bit-Wort verwenden. */
+    uint32_t tsc_lo = (uint32_t)time_get_tsc();
+    return (uint64_t)((tsc_lo * 10u) / time_tsc_freq_khz); /* 100ns-Einheiten */
 }
 
 void time_monotonic_initialize(void) {

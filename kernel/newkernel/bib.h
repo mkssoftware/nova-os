@@ -38,6 +38,16 @@ typedef struct {
     uint32_t image_size;
 } bib_kernel_info_t;
 
+typedef struct {
+    int has_acpi;
+    uint32_t address; /* 0 = nicht adressierbar (nur 32-Bit unterstuetzt) */
+} bib_acpi_info_t;
+
+typedef struct {
+    int has_entropy;
+    uint8_t seed[16];
+} bib_entropy_info_t;
+
 /* Validiert den BIB (Magic, Version, Header-Groesse, Architektur, CRC32)
    und extrahiert Graphics-, Memory- und Kernel-TLV, falls vorhanden.
    0 = BIB gueltig. */
@@ -49,5 +59,7 @@ const bib_graphics_info_t *bib_graphics(void);
 
 const bib_memory_info_t *bib_memory(void);
 const bib_kernel_info_t *bib_kernel(void);
+const bib_acpi_info_t *bib_acpi(void);
+const bib_entropy_info_t *bib_entropy(void);
 
 #endif

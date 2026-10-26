@@ -146,6 +146,10 @@ int block_io_submit(void *record, uint32_t lba_lo, uint32_t lba_hi, uint32_t cou
     }
 }
 
+uint32_t block_record_driver_handle(void *record) {
+    return ((block_record_t *)record)->driver_handle;
+}
+
 int block_device_lookup_by_handle(uint32_t driver_handle, void **out_record) {
     for (uint32_t i = 0; i < BLOCK_CAPACITY; ++i) {
         if (block_records[i].driver_handle == driver_handle) {

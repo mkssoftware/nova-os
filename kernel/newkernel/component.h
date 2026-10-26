@@ -20,6 +20,9 @@ void *component_lookup(uint32_t id);
 
 int component_activate(uint32_t id); /* 0 = ok */
 
+/* 0 = Komponente existiert und ist aktiv, -1 sonst. */
+int component_is_active(uint32_t id);
+
 uint32_t component_count(void);
 
 #endif
