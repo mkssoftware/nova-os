@@ -108,6 +108,10 @@
 #include "tcomp.h"
 #include "redundancy.h"
 #include "chaos.h"
+#include "resiso.h"
+#include "raccount.h"
+#include "rguarant.h"
+#include "rreclaim.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -514,6 +518,18 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     chaos_initialize();
     report("NOVA: Chaos Engine Selftest", chaos_self_test() == 0);
+
+    resilisolation_initialize();
+    report("NOVA: Resilience Isolation Selftest", resilisolation_self_test() == 0);
+
+    raccount_initialize();
+    report("NOVA: Resource Accounting Selftest", raccount_self_test() == 0);
+
+    rguarant_initialize();
+    report("NOVA: Resource Guarantee Selftest", rguarant_self_test() == 0);
+
+    rreclaim_initialize();
+    report("NOVA: Resource Reclaim Selftest", rreclaim_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
