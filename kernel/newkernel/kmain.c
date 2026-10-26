@@ -48,6 +48,12 @@
 #include "update.h"
 #include "block.h"
 #include "ui.h"
+#include "app.h"
+#include "text.h"
+#include "fsindex.h"
+#include "crypto.h"
+#include "compat.h"
+#include "power.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -245,6 +251,28 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     int ui_rc = ui_window_create(0, 0, 320, 240, &ui_win_id);
     report("NOVA: UI Window Create + Compositor Frame",
            ui_rc == 0 && ui_compositor_frame() == 0);
+
+    app_manager_initialize();
+    report("NOVA: Application Model Selftest", app_manager_self_test() == 0);
+
+    text_initialize();
+    report("NOVA: Text Subsystem Selftest", text_self_test() == 0);
+    static const uint8_t arabic_text[] = {0xD8, 0xB0}; /* U+0630 (arabisch) */
+    report("NOVA: Text Bidi Classify + Security Check",
+           text_bidi_classify(arabic_text, sizeof(arabic_text)) == BIDI_RTL &&
+           text_security_check(arabic_text, sizeof(arabic_text)) == 0);
+
+    fsindex_initialize();
+    report("NOVA: Filesystem-Index Selftest", fsindex_self_test() == 0);
+
+    crypto_initialize();
+    report("NOVA: Crypto Subsystem Selftest", crypto_self_test() == 0);
+
+    compat_initialize();
+    report("NOVA: Compatibility Layer Selftest", compat_self_test() == 0);
+
+    power_extended_initialize();
+    report("NOVA: Power Management Selftest", power_extended_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
