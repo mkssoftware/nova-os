@@ -117,6 +117,19 @@
 #include "apred.h"
 #include "selfopt.h"
 #include "selfprot.h"
+#include "rresv.h"
+#include "aconstraint.h"
+#include "autopol.h"
+#include "aschedsw.h"
+#include "sver.h"
+#include "sactual.h"
+#include "sdesired.h"
+#include "txres.h"
+#include "txsys.h"
+#include "rarbit.h"
+#include "acache.h"
+#include "apower.h"
+#include "pollearn.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -550,6 +563,45 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     selfprot_initialize();
     report("NOVA: Self-Protection Selftest", selfprot_self_test() == 0);
+
+    rresv_initialize();
+    report("NOVA: Resource Reservation Selftest", rresv_self_test() == 0);
+
+    aconstraint_initialize();
+    report("NOVA: Autonomy Constraint Engine Selftest", aconstraint_self_test() == 0);
+
+    autopol_initialize();
+    report("NOVA: Autonomy Policy Manager Selftest", autopol_self_test() == 0);
+
+    aschedsw_initialize();
+    report("NOVA: Adaptive Scheduler Selftest", aschedsw_self_test() == 0);
+
+    sver_initialize();
+    report("NOVA: State Versioning Selftest", sver_self_test() == 0);
+
+    sactual_initialize();
+    report("NOVA: State Actual Store Selftest", sactual_self_test() == 0);
+
+    sdesired_initialize();
+    report("NOVA: State Desired Store Selftest", sdesired_self_test() == 0);
+
+    txres_initialize();
+    report("NOVA: Transaction Resource Manager Selftest", txres_self_test() == 0);
+
+    txsys_initialize();
+    report("NOVA: Transaction System Coordinator Selftest", txsys_self_test() == 0);
+
+    rarbit_initialize();
+    report("NOVA: Resource Arbitration Selftest", rarbit_self_test() == 0);
+
+    acache_initialize();
+    report("NOVA: Adaptive Cache Manager Selftest", acache_self_test() == 0);
+
+    apower_initialize();
+    report("NOVA: Adaptive Power Manager Selftest", apower_self_test() == 0);
+
+    pollearn_initialize();
+    report("NOVA: Policy Learning Engine Selftest", pollearn_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
