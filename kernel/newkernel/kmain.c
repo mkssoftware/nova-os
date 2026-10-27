@@ -148,6 +148,13 @@
 #include "vcapsafe.h"
 #include "vmemsafe.h"
 #include "ring3.h"
+#include "sync.h"
+#include "syncext.h"
+#include "futex.h"
+#include "deadlock.h"
+#include "pimutex.h"
+#include "irqmgr.h"
+#include "modloader.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -671,6 +678,27 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     vmemsafe_initialize();
     report("NOVA: Memory Safety Verifier Selftest", vmemsafe_self_test() == 0);
+
+    sync_initialize();
+    report("NOVA: Synchronisation Bootstrap Selftest", sync_self_test() == 0);
+
+    sync_ext_initialize();
+    report("NOVA: Synchronisation Erweiterung (Mutex/Cond/WQ/RCU) Selftest", sync_ext_self_test() == 0);
+
+    futex_initialize();
+    report("NOVA: Futex Selftest", futex_self_test() == 0);
+
+    deadlock_initialize();
+    report("NOVA: Deadlock Detection Selftest", deadlock_self_test() == 0);
+
+    pi_initialize();
+    report("NOVA: Priority Inheritance Mutex Selftest", pi_self_test() == 0);
+
+    irq_manager_initialize();
+    report("NOVA: Interrupt Manager 1.0 Selftest", irq_manager_self_test() == 0);
+
+    module_loader_initialize();
+    report("NOVA: Kernel Module Loader Selftest", module_loader_self_test() == 0);
 
     int ring3_ok = ring3_initialize() == 0;
     report("NOVA: Ring-3-Bootstrap (GDT/TSS/User-Pages) Initialize", ring3_ok);
