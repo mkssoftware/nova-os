@@ -122,6 +122,16 @@ int ring3_initialize(void) {
         return -1;
     }
 
+    uint32_t gui_buffer_page = pmm_alloc_page(&numa);
+    if (gui_buffer_page == 0) return -1;
+    uint8_t *gui_buffer_dst = (uint8_t *)gui_buffer_page;
+    for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) gui_buffer_dst[i] = 0;
+
+    if (paging_map_page(RING3_GUI_BUFFER_VADDR, gui_buffer_page,
+                         PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
+        return -1;
+    }
+
     /* TLB-Eintraege der zuvor (ohne User-Bit) identisch gemappten Seiten
        verwerfen - sonst greift die CPU weiter auf die alten Supervisor-
        Only-Uebersetzungen zu. */

@@ -24,6 +24,7 @@
 #include "display.h"
 #include "compositor.h"
 #include "desktop.h"
+#include "surface.h"
 #include "pmm.h"
 #include "paging.h"
 #include "process.h"
@@ -202,6 +203,8 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
                             gfx->width, gfx->height, gfx->bits_per_pixel) == 0;
     report("NOVA: Framebuffer Initialize", fb_ok);
     report("NOVA: Display Manager Selftest", fb_ok && display_self_test() == 0);
+    surface_manager_initialize();
+    report("NOVA: Surface Manager Selftest", surface_self_test() == 0);
     report("NOVA: Compositor Selftest", fb_ok && compositor_self_test() == 0);
 
     report("NOVA: Desktop Show", fb_ok && desktop_show() == 0);

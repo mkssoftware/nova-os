@@ -21,6 +21,18 @@
 
 #include <stdint.h>
 
+/* Feste, user-zugaengliche Pufferseite fuer den einzigen bisher
+   existierenden Ring-3-Client (GUI-Syscall-Service, siehe syscall.h/.c) -
+   bereits in ring3_initialize() mitgemappt (PRESENT|WRITE|USER), damit der
+   eigentliche Syscall-Dispatch (laeuft mit IF=0 im ISR-Kontext) NIE selbst
+   pmm_alloc_page/paging_map_page aufrufen muss. Liegt innerhalb des
+   bestehenden Bootstrap-Userspace-Fensters [USER_ADDRESS_MIN,
+   USER_ADDRESS_MAX) aus syscall.h. Mehrere Clients/Surfaces teilen sich
+   vorerst diese EINE physische Seite (reicht fuer den Einzel-Client-Beweis
+   dieser Sitzung) - echte Pro-Surface-Puffer brauchen dynamische
+   Seitenzuteilung pro Client, bewusst nicht in dieser Sitzung geloest. */
+#define RING3_GUI_BUFFER_VADDR 0x00402000u
+
 /* 0 = Erfolg (GDT/TSS geladen, Code+Stack-Seite user-gemappt, Prozess
    registriert), -1 wenn eine Seite/der Prozess-Slot nicht verfuegbar ist. */
 int ring3_initialize(void);

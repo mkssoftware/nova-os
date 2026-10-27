@@ -29,11 +29,29 @@
 #define SYSCALL_STATUS_SERVICE   (-8)
 #define SYSCALL_STATUS_OPERATION (-9)
 #define SYSCALL_STATUS_POINTER   (-15)
+#define SYSCALL_STATUS_SURFACE   (-16) /* surface.c hat die Operation abgelehnt (unbekanntes Handle/ungueltiger Zustand) */
 
 #define SYSCALL_ABI_VERSION   1u
 #define SYSCALL_SERVICE_CORE  1u
 #define SYSCALL_CORE_EXIT     1u
 #define SYSCALL_CORE_READY    2u
+
+/* NPSPEC-DISPLAY-ARCH-0003/0004 (Display-Protokoll/Client-Kommunikation),
+   reduziert auf einen festen Satz Operationen ueber denselben int-0x80-
+   Dispatch-Mechanismus wie SYSCALL_SERVICE_CORE (NICHT ueber die globale
+   ipc.c-Queue - siehe surface.h fuer die Begruendung: deren Queue hat keine
+   Client-Adressierung, fuer einen Request/Response-Pfad ungeeignet).
+   Parameter-Uebergabe ueber zusaetzliche Trap-Frame-Register (siehe
+   syscall.c): EDX = x|(y<<16), ESI = w|(h<<16) fuer CREATE_SURFACE; EDX =
+   Handle fuer ATTACH_BUFFER/COMMIT/DESTROY. Rueckgabe: EAX = Status, EDI =
+   neues Handle (nur bei CREATE_SURFACE). Der Pixel-Puffer liegt IMMER an
+   der festen Adresse RING3_GUI_BUFFER_VADDR (ring3.h) - es existiert
+   bisher nur ein Client, daher keine dynamische Pufferzuteilung. */
+#define SYSCALL_SERVICE_GUI       2u
+#define GUI_OP_CREATE_SURFACE     1u
+#define GUI_OP_ATTACH_BUFFER      2u
+#define GUI_OP_COMMIT             3u
+#define GUI_OP_DESTROY            4u
 
 void syscall_manager_initialize(void);
 int syscall_manager_self_test(void); /* 0 = ok */

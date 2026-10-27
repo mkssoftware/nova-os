@@ -4,6 +4,8 @@
 #include "syscall.h"
 #include "serial.h"
 #include "scheduler.h"
+#include "surface.h"
+#include "ring3.h"
 
 static int syscall_mgr_initialized = 0;
 static int syscall_sysenter_available = 0;
@@ -14,6 +16,7 @@ static volatile int syscall_ready_heartbeat_logged = 0;
 
 /* Byte-Offsets in den von interrupt_isr.asm erzeugten Trap-Frame (siehe
    syscall.h fuer die Herleitung aus pushad+Segmentregister-Reihenfolge). */
+#define FRAME_OFF_EDI    16u
 #define FRAME_OFF_ESI    20u
 #define FRAME_OFF_EBX    32u
 #define FRAME_OFF_EDX    36u
@@ -79,19 +82,82 @@ void syscall_manager_initialize(void) {
     syscall_mgr_initialized = 1;
 }
 
+/* Einziger bisher existierender Client (ring3.c) - echte Mehr-Client-PID-
+   Aufloesung (z.B. ueber den aktuell laufenden Scheduler-Slot) ist bewusst
+   nicht in dieser Sitzung geloest, siehe syscall.h. */
+#define GUI_SINGLE_CLIENT_PID 1u
+
+static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
+    uint32_t edx = frame_read(frame_ptr, FRAME_OFF_EDX);
+
+    if (operation == GUI_OP_CREATE_SURFACE) {
+        uint32_t x = edx & 0xFFFFu;
+        uint32_t y = (edx >> 16) & 0xFFFFu;
+        uint32_t esi = frame_read(frame_ptr, FRAME_OFF_ESI);
+        uint32_t w = esi & 0xFFFFu;
+        uint32_t h = (esi >> 16) & 0xFFFFu;
+
+        uint32_t handle = 0;
+        if (surface_create(GUI_SINGLE_CLIENT_PID, x, y, w, h, &handle) != 0 ||
+            surface_configure(handle, x, y, w, h) != 0) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_SURFACE);
+            return frame_ptr;
+        }
+
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EDI, handle);
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == GUI_OP_ATTACH_BUFFER) {
+        int ok = (surface_attach_buffer(edx, RING3_GUI_BUFFER_VADDR) == 0);
+        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX,
+                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
+        return frame_ptr;
+    }
+
+    if (operation == GUI_OP_COMMIT) {
+        int ok = (surface_commit(edx) == 0);
+        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX,
+                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
+        return frame_ptr;
+    }
+
+    if (operation == GUI_OP_DESTROY) {
+        int ok = (surface_destroy(edx) == 0);
+        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX,
+                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
+        return frame_ptr;
+    }
+
+    ++syscall_stats_failed;
+    frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OPERATION);
+    return frame_ptr;
+}
+
 uint32_t syscall_dispatch(uint32_t frame_ptr) {
     uint32_t service = frame_read(frame_ptr, FRAME_OFF_EAX);
     uint32_t operation = frame_read(frame_ptr, FRAME_OFF_EBX);
     uint32_t abi_version = frame_read(frame_ptr, FRAME_OFF_ECX);
 
-    if (service != SYSCALL_SERVICE_CORE) {
-        ++syscall_stats_failed;
-        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_SERVICE);
-        return frame_ptr;
-    }
     if (abi_version != SYSCALL_ABI_VERSION) {
         ++syscall_stats_failed;
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_ABI);
+        return frame_ptr;
+    }
+
+    if (service == SYSCALL_SERVICE_GUI) {
+        return syscall_dispatch_gui(frame_ptr, operation);
+    }
+
+    if (service != SYSCALL_SERVICE_CORE) {
+        ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_SERVICE);
         return frame_ptr;
     }
 
@@ -129,6 +195,58 @@ int syscall_manager_self_test(void) {
     if (syscall_stats_successful == 0xFFFFFFFFu) return -1;
     if (syscall_call_depth != 0) return -1;
     if (syscall_sysenter_available > 1) return -1;
+
+    /* SYSCALL_SERVICE_GUI-Dispatch mit einem synthetischen, auf dem Stack
+       angelegten Trap-Frame pruefen (1:1 dasselbe Layout wie der echte,
+       von interrupt_isr.asm gebaute Frame) - ohne echten int-0x80/Ring-3-
+       Rundweg, der erst mit ring3_initialize() (laeuft deutlich spaeter im
+       Boot) existiert. Das deckt die reine Dispatch-Logik (Parameter-
+       Dekodierung, surface.c-Anbindung, Fehlerpfade) unabhaengig ab. */
+    surface_manager_initialize();
+    uint8_t fake_frame[72] = {0};
+    uint32_t frame_addr = (uint32_t)(uintptr_t)fake_frame;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_CREATE_SURFACE);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    frame_write(frame_addr, FRAME_OFF_EDX, 5u | (6u << 16)); /* x=5, y=6 */
+    frame_write(frame_addr, FRAME_OFF_ESI, 7u | (8u << 16)); /* w=7, h=8 */
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) { serial_puts("DBG1\r\n"); return -1; }
+    uint32_t gui_handle = frame_read(frame_addr, FRAME_OFF_EDI);
+    if (gui_handle == 0) { serial_puts("DBG2\r\n"); return -1; }
+    uint32_t gx, gy, gw, gh;
+    if (surface_rect(gui_handle, &gx, &gy, &gw, &gh) != 0) { serial_puts("DBG3\r\n"); return -1; }
+    if (gx != 5u || gy != 6u || gw != 7u || gh != 8u) { serial_puts("DBG4\r\n"); return -1; }
+
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_ATTACH_BUFFER);
+    frame_write(frame_addr, FRAME_OFF_EDX, gui_handle);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) { serial_puts("DBG5\r\n"); return -1; }
+    if (surface_buffer_addr(gui_handle) != RING3_GUI_BUFFER_VADDR) { serial_puts("DBG6\r\n"); return -1; }
+
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_COMMIT);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) { serial_puts("DBG7\r\n"); return -1; }
+    if (surface_state(gui_handle) != SURFACE_STATE_ACTIVE) { serial_puts("DBG8\r\n"); return -1; }
+
+    /* Unbekanntes Handle muss SYSCALL_STATUS_SURFACE liefern, unbekannte
+       GUI-Operation SYSCALL_STATUS_OPERATION - beide Fehlerpfade duerfen
+       die bereits aktive Surface nicht beeinflussen. */
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_COMMIT);
+    frame_write(frame_addr, FRAME_OFF_EDX, 0xFFFFu);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_SURFACE) { serial_puts("DBG9\r\n"); return -1; }
+
+    frame_write(frame_addr, FRAME_OFF_EBX, 0xFFu);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OPERATION) { serial_puts("DBG10\r\n"); return -1; }
+
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_DESTROY);
+    frame_write(frame_addr, FRAME_OFF_EDX, gui_handle);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) { serial_puts("DBG11\r\n"); return -1; }
+    if (surface_state(gui_handle) != SURFACE_STATE_FREE) { serial_puts("DBG12\r\n"); return -1; }
 
     serial_puts("NOVA: System Call Interface Selbsttest OK (7/7)\r\n");
     return 0;

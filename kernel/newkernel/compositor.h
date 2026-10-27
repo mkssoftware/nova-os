@@ -36,7 +36,14 @@ int compositor_window_set_shadow(uint32_t window_id, int enabled);
 void compositor_set_cursor(uint32_t x, uint32_t y, uint32_t rgb);
 
 /* Zeichnet Hintergrund, Schatten, Fenster (in Erstellungsreihenfolge) und
-   Cursor vollstaendig neu in den Framebuffer. */
+   Cursor vollstaendig neu in den Framebuffer. Fenster, die vollstaendig von
+   einem spaeteren, voll deckenden Fenster ueberdeckt sind, werden dabei
+   per Occlusion Culling (NPSPEC-COMPOSITOR-RENDER-0003) uebersprungen - das
+   Endergebnis im Framebuffer ist identisch zu ungekuerztem Zeichnen. */
 void compositor_composite(void);
+
+/* Anzahl der beim letzten compositor_composite()-Aufruf per Occlusion
+   Culling uebersprungenen Fenster-Zeichenoperationen (Diagnose/Selbsttest). */
+uint32_t compositor_last_occluded_count(void);
 
 #endif
