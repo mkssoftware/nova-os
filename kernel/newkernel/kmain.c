@@ -130,6 +130,24 @@
 #include "acache.h"
 #include "apower.h"
 #include "pollearn.h"
+#include "prederr.h"
+#include "aprefetch.h"
+#include "apreload.h"
+#include "astorage.h"
+#include "anetwork.h"
+#include "uoverride.h"
+#include "rdeadline.h"
+#include "reconomy.h"
+#include "renergy.h"
+#include "rlatency.h"
+#include "sglobal.h"
+#include "txconfig.h"
+#include "txmulti.h"
+#include "vtemporal.h"
+#include "vinfoflow.h"
+#include "vcapsafe.h"
+#include "vmemsafe.h"
+#include "ring3.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -603,11 +621,73 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     pollearn_initialize();
     report("NOVA: Policy Learning Engine Selftest", pollearn_self_test() == 0);
 
+    prederr_initialize();
+    report("NOVA: Prediction Error Tracker Selftest", prederr_self_test() == 0);
+
+    aprefetch_initialize();
+    report("NOVA: Adaptive Prefetch Engine Selftest", aprefetch_self_test() == 0);
+
+    apreload_initialize();
+    report("NOVA: Adaptive Preload Manager Selftest", apreload_self_test() == 0);
+
+    astorage_initialize();
+    report("NOVA: Adaptive Storage Manager Selftest", astorage_self_test() == 0);
+
+    anetwork_initialize();
+    report("NOVA: Adaptive Network Manager Selftest", anetwork_self_test() == 0);
+
+    uoverride_initialize();
+    report("NOVA: User Override Manager Selftest", uoverride_self_test() == 0);
+
+    rdeadline_initialize();
+    report("NOVA: Resource Deadline Manager Selftest", rdeadline_self_test() == 0);
+
+    reconomy_initialize();
+    report("NOVA: Resource Economy Manager Selftest", reconomy_self_test() == 0);
+
+    renergy_initialize();
+    report("NOVA: Resource Energy Manager Selftest", renergy_self_test() == 0);
+
+    rlatency_initialize();
+    report("NOVA: Resource Latency Monitor Selftest", rlatency_self_test() == 0);
+
+    sglobal_initialize();
+    report("NOVA: State Global Store Selftest", sglobal_self_test() == 0);
+
+    txconfig_initialize();
+    report("NOVA: Transaction Config Manager Selftest", txconfig_self_test() == 0);
+
+    txmulti_initialize();
+    report("NOVA: Tx MultiService Coordinator Selftest", txmulti_self_test() == 0);
+
+    vtemporal_initialize();
+    report("NOVA: Temporal Invariant Verifier Selftest", vtemporal_self_test() == 0);
+
+    vinfoflow_initialize();
+    report("NOVA: Information Flow Verifier Selftest", vinfoflow_self_test() == 0);
+
+    vcapsafe_initialize();
+    report("NOVA: Capability Safety Verifier Selftest", vcapsafe_self_test() == 0);
+
+    vmemsafe_initialize();
+    report("NOVA: Memory Safety Verifier Selftest", vmemsafe_self_test() == 0);
+
+    int ring3_ok = ring3_initialize() == 0;
+    report("NOVA: Ring-3-Bootstrap (GDT/TSS/User-Pages) Initialize", ring3_ok);
+    report("NOVA: Ring-3-Bootstrap Selftest", ring3_ok && ring3_self_test() == 0);
+
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
     boot_phase_log();
 
     serial_puts("NOVA: alle bisherigen Subsysteme vollstaendig verifiziert\r\n");
+
+    if (ring3_ok) {
+        /* Einweg-Uebergang: ab hier laeuft der erste Userspace-Thread in
+           Ring 3 (siehe ring3.c). Der Heartbeat-Syscall-Log-Eintrag oben
+           in interrupt_dispatch_c ist der eigentliche Beweis dafuer. */
+        ring3_enter();
+    }
 
     for (;;) {
         __asm__ volatile ("hlt");

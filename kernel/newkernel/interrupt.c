@@ -13,6 +13,7 @@ typedef struct {
 
 static idt_entry_t idt_table[IDT_ENTRY_COUNT];
 static volatile uint32_t timer_ticks_value = 0;
+static volatile int ring3_heartbeat_logged = 0;
 
 /* ISR-Trampoline aus interrupt_isr.asm. Die __asm__-Labels verhindern das
    automatische Underscore-Praefix des PE-Targets, damit die Namen exakt auf
@@ -77,7 +78,19 @@ uint32_t interrupt_dispatch_c(uint32_t vector, uint32_t frame_ptr) {
             __asm__ volatile ("hlt");
         }
     }
-    /* 0x80 Syscall oder isr_unexpected (255): noch kein Dispatch. */
+    if (vector == 0x80) {
+        /* Heartbeat-Beweis fuer Ring 3 (siehe ring3.c): das Testprogramm
+           setzt EAX="RIN3" vor jedem int 0x80. Nur die erste Ankunft wird
+           protokolliert, damit der dauerhaft wiederholte Heartbeat das
+           Boot-Log nicht zumuellt. Rueckgabe des unveraenderten Frames
+           laesst iretd exakt hinter dem int 0x80 nach Ring 3 zurueckkehren. */
+        if (((uint32_t *)frame_ptr)[11] == 0x52494E33u && !ring3_heartbeat_logged) {
+            ring3_heartbeat_logged = 1;
+            serial_puts("NOVA: Ring 3 Userspace aktiv - Heartbeat-Syscall empfangen\r\n");
+        }
+        return frame_ptr;
+    }
+    /* isr_unexpected (255): noch kein Dispatch. */
     return frame_ptr;
 }
 

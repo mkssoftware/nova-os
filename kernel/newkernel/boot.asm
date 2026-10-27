@@ -6,6 +6,7 @@ bits 32
 extern kmain
 
 global _start
+global stack_top
 section .text
 _start:
     cli
