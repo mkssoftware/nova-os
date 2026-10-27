@@ -21,8 +21,21 @@
 
 #define COMPOSITOR_WINDOW_CAPACITY 4u
 
+/* NPSPEC-COMPOSITOR-ARCH-0004 (Lifecycle), stark reduziert: nur die zwei
+   Zustaende, die ohne eigenstaendigen Fault-Recovery-Supervisor (ARCH-0005,
+   BLOCKED) sinnvoll unterscheidbar sind. READY wird von jedem
+   compositor_initialize()-Aufruf gesetzt (auch von Selbsttests); RUNNING
+   erst durch den echten, dauerhaft laufenden Compositor-Thread (siehe
+   compositor_thread_start) - erst dann "uebernimmt der Display-Server die
+   Ausgabe" im eigentlichen Sinn (kontinuierliches Redraw statt einmaligem
+   compositor_composite()-Aufruf beim Boot). */
+#define COMPOSITOR_STATE_UNINITIALIZED 0u
+#define COMPOSITOR_STATE_READY         1u
+#define COMPOSITOR_STATE_RUNNING       2u
+
 void compositor_initialize(void);
 int compositor_self_test(void); /* 0 = ok */
+uint32_t compositor_state(void);
 
 void compositor_set_background(uint32_t rgb);
 
@@ -45,5 +58,22 @@ void compositor_composite(void);
 /* Anzahl der beim letzten compositor_composite()-Aufruf per Occlusion
    Culling uebersprungenen Fenster-Zeichenoperationen (Diagnose/Selbsttest). */
 uint32_t compositor_last_occluded_count(void);
+
+/* Einziger Einstiegspunkt eines dauerhaft laufenden Kernel-Threads (siehe
+   compositor_thread_start) - matcht thread_create_dynamic's Signatur
+   (parameterlos, nicht zurueckkehrend). Ruft compositor_composite() in
+   einem festen Zeitabstand (echte Timer-Ticks, siehe interrupt.h
+   timer_get_ticks - NICHT jeden Scheduler-Durchlauf, das waere reine
+   Verschwendung ohne VSync zum Takten gegen). NICHT direkt aufrufen. */
+void compositor_thread_body(void);
+
+/* Registriert compositor_thread_body als echten, dauerhaft laufenden
+   Kernel-Thread (thread_create_dynamic) - ERST NACHDEM thread_manager
+   initialisiert wurde, aber VOR scheduler_enable() (das erst viel spaeter,
+   nach dem Ring-3-Rundweg, in syscall.c aufgerufen wird - der neue Thread
+   sitzt bis dahin einfach inaktiv in seinem Scheduler-Slot, exakt wie
+   scheduler_thread1/2). 0 = Erfolg (Zustand -> RUNNING), -1 wenn kein
+   freier Scheduler-Slot mehr verfuegbar ist. */
+int compositor_thread_start(void);
 
 #endif

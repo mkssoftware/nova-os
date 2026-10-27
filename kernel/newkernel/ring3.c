@@ -21,25 +21,61 @@ extern uint8_t stack_top[] __asm__("stack_top");
 /* Minimales Ring-3-Testprogramm (handgeschriebenes Maschinencode-Shellcode,
    da ein von GCC kompiliertes C-Programm beim Kopieren auf eine frische
    Seite Relokationen/Aufrufe in den Rest des Kernel-Images verlieren
-   wuerde): ruft echte Syscalls ueber den Dispatch in syscall.c auf -
-   zuerst SYSCALL_CORE_READY (Heartbeat/Beweis, dass Service+Op+ABI
-   korrekt ausgewertet werden und iretd nach Ring 3 zurueckkehrt), dann
+   wuerde): ruft echte Syscalls ueber den Dispatch in syscall.c auf.
+
+   Ablauf: (1) SYSCALL_CORE_READY (Heartbeat/Beweis, dass Service+Op+ABI
+   korrekt ausgewertet werden und iretd nach Ring 3 zurueckkehrt); (2)
+   SYSCALL_SERVICE_GUI/GUI_OP_CREATE_SURFACE (x=20,y=50,w=16,h=4 -> Handle
+   in EDI, siehe syscall.h fuer das EDX=x|(y<<16)/ESI=w|(h<<16)-Protokoll);
+   (3) vier direkte Schreibzugriffe auf die bereits in ring3_initialize()
+   user-gemappte Pufferseite RING3_GUI_BUFFER_VADDR (0x402000) - der
+   Ring-3-Client schreibt seinen Pixelinhalt bewusst SELBST (siehe
+   render2d.h/Architekturentscheidung: client-seitiges Zeichnen statt
+   Draw-Syscall pro Pixel); (4) GUI_OP_ATTACH_BUFFER (Handle aus EDI nach
+   EDX uebernommen); (5) GUI_OP_COMMIT (macht die Surface fuer den
+   Compositor-Thread sichtbar - siehe compositor_thread_body); (6)
    SYSCALL_CORE_EXIT (Beweis, dass der Frame-Rewrite den Ruecksprung nach
    Ring 0 tatsaechlich auslöst). Der abschliessende jmp-$ ist nur ein
    Sicherheitsnetz, falls der EXIT-Rueckweg (noch) nicht greift.
 
-   B8 01 00 00 00   mov eax, 1      ; SYSCALL_SERVICE_CORE
-   BB 02 00 00 00   mov ebx, 2      ; SYSCALL_CORE_READY
-   B9 01 00 00 00   mov ecx, 1      ; SYSCALL_ABI_VERSION
-   31 D2            xor edx, edx    ; kein Ergebnispuffer
-   31 F6            xor esi, esi    ; Laenge 0
+   WICHTIG: syscall_dispatch() ueberschreibt EAX IMMER mit dem Status-Code
+   (siehe syscall.c) - EAX muss daher vor JEDEM der fuenf int-0x80-Aufrufe
+   neu gesetzt werden, exakt wie schon beim urspruenglichen READY->EXIT-
+   Uebergang (siehe auch syscall_manager_self_test's gleichnamiger Bug-
+   Fix in dieser Sitzung).
+
+   B8 01 00 00 00   mov eax, 1          ; SYSCALL_SERVICE_CORE
+   BB 02 00 00 00   mov ebx, 2          ; SYSCALL_CORE_READY
+   B9 01 00 00 00   mov ecx, 1          ; SYSCALL_ABI_VERSION
+   31 D2            xor edx, edx
+   31 F6            xor esi, esi
    CD 80            int 0x80
-   B8 01 00 00 00   mov eax, 1      ; SYSCALL_SERVICE_CORE (EAX wurde vom
-                                    ; Dispatch mit dem READY-Status
-                                    ; ueberschrieben, siehe syscall.c -
-                                    ; muss vor dem naechsten Syscall neu
-                                    ; gesetzt werden)
-   BB 01 00 00 00   mov ebx, 1      ; SYSCALL_CORE_EXIT (EDX/ESI bleiben 0)
+   ; --- GUI_OP_CREATE_SURFACE: x=20,y=50,w=16,h=4 ---
+   B8 02 00 00 00   mov eax, 2          ; SYSCALL_SERVICE_GUI
+   BB 01 00 00 00   mov ebx, 1          ; GUI_OP_CREATE_SURFACE
+   B9 01 00 00 00   mov ecx, 1          ; SYSCALL_ABI_VERSION
+   BA 14 00 32 00   mov edx, 0x00320014 ; x=20 (0x14), y=50 (0x32)<<16
+   BE 10 00 04 00   mov esi, 0x00040010 ; w=16 (0x10), h=4<<16
+   CD 80            int 0x80            ; -> EDI = neues Handle
+   ; --- Pixelinhalt direkt in die gemappte GUI-Pufferseite schreiben ---
+   C7 05 00 20 40 00 00 00 FF 00   mov dword [0x00402000], 0x00FF0000 (rot)
+   C7 05 04 20 40 00 00 FF 00 00   mov dword [0x00402004], 0x0000FF00 (gruen)
+   C7 05 08 20 40 00 FF 00 00 00   mov dword [0x00402008], 0x000000FF (blau)
+   C7 05 0C 20 40 00 FF FF FF 00   mov dword [0x0040200C], 0x00FFFFFF (weiss)
+   ; --- GUI_OP_ATTACH_BUFFER(Handle) ---
+   89 FA            mov edx, edi        ; Handle von CREATE_SURFACE uebernehmen
+   B8 02 00 00 00   mov eax, 2          ; SYSCALL_SERVICE_GUI
+   BB 02 00 00 00   mov ebx, 2          ; GUI_OP_ATTACH_BUFFER
+   B9 01 00 00 00   mov ecx, 1          ; SYSCALL_ABI_VERSION
+   CD 80            int 0x80
+   ; --- GUI_OP_COMMIT(Handle) ---
+   B8 02 00 00 00   mov eax, 2          ; SYSCALL_SERVICE_GUI
+   BB 03 00 00 00   mov ebx, 3          ; GUI_OP_COMMIT
+   B9 01 00 00 00   mov ecx, 1          ; SYSCALL_ABI_VERSION (EDX=Handle unveraendert)
+   CD 80            int 0x80
+   ; --- SYSCALL_CORE_EXIT ---
+   B8 01 00 00 00   mov eax, 1          ; SYSCALL_SERVICE_CORE
+   BB 01 00 00 00   mov ebx, 1          ; SYSCALL_CORE_EXIT
    CD 80            int 0x80
    EB FE            jmp $ (Sicherheitsnetz) */
 static const uint8_t ring3_program[] = {
@@ -49,6 +85,30 @@ static const uint8_t ring3_program[] = {
     0x31, 0xD2,
     0x31, 0xF6,
     0xCD, 0x80,
+    /* GUI_OP_CREATE_SURFACE */
+    0xB8, 0x02, 0x00, 0x00, 0x00,
+    0xBB, 0x01, 0x00, 0x00, 0x00,
+    0xB9, 0x01, 0x00, 0x00, 0x00,
+    0xBA, 0x14, 0x00, 0x32, 0x00,
+    0xBE, 0x10, 0x00, 0x04, 0x00,
+    0xCD, 0x80,
+    /* Pixelinhalt in die GUI-Pufferseite schreiben */
+    0xC7, 0x05, 0x00, 0x20, 0x40, 0x00, 0x00, 0x00, 0xFF, 0x00,
+    0xC7, 0x05, 0x04, 0x20, 0x40, 0x00, 0x00, 0xFF, 0x00, 0x00,
+    0xC7, 0x05, 0x08, 0x20, 0x40, 0x00, 0xFF, 0x00, 0x00, 0x00,
+    0xC7, 0x05, 0x0C, 0x20, 0x40, 0x00, 0xFF, 0xFF, 0xFF, 0x00,
+    /* GUI_OP_ATTACH_BUFFER */
+    0x89, 0xFA,
+    0xB8, 0x02, 0x00, 0x00, 0x00,
+    0xBB, 0x02, 0x00, 0x00, 0x00,
+    0xB9, 0x01, 0x00, 0x00, 0x00,
+    0xCD, 0x80,
+    /* GUI_OP_COMMIT */
+    0xB8, 0x02, 0x00, 0x00, 0x00,
+    0xBB, 0x03, 0x00, 0x00, 0x00,
+    0xB9, 0x01, 0x00, 0x00, 0x00,
+    0xCD, 0x80,
+    /* SYSCALL_CORE_EXIT */
     0xB8, 0x01, 0x00, 0x00, 0x00,
     0xBB, 0x01, 0x00, 0x00, 0x00,
     0xCD, 0x80,

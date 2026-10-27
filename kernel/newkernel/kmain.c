@@ -25,6 +25,7 @@
 #include "compositor.h"
 #include "desktop.h"
 #include "surface.h"
+#include "window.h"
 #include "pmm.h"
 #include "paging.h"
 #include "process.h"
@@ -60,6 +61,7 @@
 #include "thermal.h"
 #include "fs.h"
 #include "font.h"
+#include "render2d.h"
 #include "network.h"
 #include "program.h"
 #include "interrupt.h"
@@ -205,6 +207,9 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     report("NOVA: Display Manager Selftest", fb_ok && display_self_test() == 0);
     surface_manager_initialize();
     report("NOVA: Surface Manager Selftest", surface_self_test() == 0);
+    window_manager_initialize();
+    report("NOVA: Window Manager Selftest", window_self_test() == 0);
+    surface_manager_initialize();
     report("NOVA: Compositor Selftest", fb_ok && compositor_self_test() == 0);
 
     report("NOVA: Desktop Show", fb_ok && desktop_show() == 0);
@@ -394,6 +399,7 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     font_manager_initialize();
     report("NOVA: Font Manager Selftest", font_manager_self_test() == 0);
+    report("NOVA: Render2D Selftest", render2d_self_test() == 0);
 
     network_stack_initialize();
     report("NOVA: Network Stack Selftest", network_stack_self_test() == 0);
@@ -725,6 +731,17 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     int thread_mgr_ok = thread_manager_initialize() == 0;
     report("NOVA: Thread Manager Initialize", thread_mgr_ok);
     report("NOVA: Thread Manager Selftest", thread_mgr_ok && thread_manager_self_test() == 0);
+
+    /* Registriert den echten, dauerhaft laufenden Compositor-Thread (siehe
+       compositor.h) - erst ab hier "uebernimmt der Display-Server die
+       Ausgabe" im eigentlichen Sinn (kontinuierliches Redraw statt des
+       einmaligen compositor_composite()-Aufrufs in desktop_show() oben).
+       Sitzt bis zum echten scheduler_enable() (passiert viel spaeter, nach
+       dem Ring-3-Rundweg, in syscall.c) inaktiv in seinem Scheduler-Slot -
+       exakt wie scheduler_thread1/2, siehe scheduler.h fuer die
+       Ordnungs-Invariante. */
+    report("NOVA: Compositor Thread Start",
+           thread_mgr_ok && compositor_thread_start() == 0);
 
     int smp_ok = smp_initialize() == 0;
     report("NOVA: SMP/AP-Aktivierung Initialize", smp_ok);

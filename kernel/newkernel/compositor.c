@@ -2,10 +2,33 @@
 #include "compositor.h"
 #include "framebuffer.h"
 #include "surface.h"
+#include "window.h"
+#include "render2d.h"
+#include "threadmgr.h"
+#include "interrupt.h"
+#include "serial.h"
+
+/* Mindestabstand zwischen zwei automatischen Redraws des Compositor-
+   Threads, in echten Timer-Ticks (keine VSync/VRR-Quelle vorhanden, siehe
+   NPSPEC-COMPOSITOR-RENDER-0005/0006 - BLOCKED). ~5 Ticks bei 100Hz PIT
+   entspricht ~50ms (~20 FPS) - ausreichend fuer sichtbare Aktualisierung,
+   ohne jeden Scheduler-Durchlauf unnoetig einen vollen Frame neu zu
+   zeichnen. */
+#define COMPOSITOR_THREAD_INTERVAL_TICKS 5u
 
 #define COMPOSITOR_SHADOW_OFFSET 6u
 #define COMPOSITOR_SHADOW_RGB    0x000000u
 #define COMPOSITOR_SHADOW_ALPHA  80u
+
+/* NPSPEC-WINDOW-DECORATION-0001..0003 (Rahmen/Titelleiste/Controls),
+   reduziert auf eine feste Titelleisten-Hoehe + Fuellfarbe (kein Theme-
+   System, keine Minimize/Maximize/Close-Buttons - die bräuchten Klick-
+   Erkennung, die ohne Input-Subsystem (siehe window.h) ohnehin wirkungslos
+   waere). Nur window.c-Fenster mit decorated!=0 bekommen eine Titelleiste;
+   compositor_windows (Desktop-Chrome wie die Taskbar) bleiben unberuehrt. */
+#define COMPOSITOR_TITLEBAR_HEIGHT     20u
+#define COMPOSITOR_TITLEBAR_RGB        0x30343Cu
+#define COMPOSITOR_TITLEBAR_FOCUS_RGB  0x2D5FA0u
 
 typedef struct {
     uint32_t id; /* 0 = frei */
@@ -26,6 +49,8 @@ static uint32_t compositor_cursor_y = 0;
 static uint32_t compositor_cursor_rgb = 0xFFFFFFu;
 static int compositor_cursor_visible = 0;
 static uint32_t compositor_occluded_count = 0;
+static uint32_t compositor_state_value = COMPOSITOR_STATE_UNINITIALIZED;
+static uint32_t compositor_last_thread_tick = 0;
 
 static uint8_t compositor_blend_channel(uint8_t src, uint8_t dst, uint32_t alpha) {
     /* Porter-Duff Source-Over (NPSPEC-COMPOSITOR-EFFECTS-0001, Abschnitt 6),
@@ -77,6 +102,13 @@ void compositor_initialize(void) {
     compositor_next_id = 1;
     compositor_background_rgb = 0x000000u;
     compositor_cursor_visible = 0;
+    if (compositor_state_value == COMPOSITOR_STATE_UNINITIALIZED) {
+        compositor_state_value = COMPOSITOR_STATE_READY;
+    }
+}
+
+uint32_t compositor_state(void) {
+    return compositor_state_value;
 }
 
 void compositor_set_background(uint32_t rgb) {
@@ -194,6 +226,63 @@ static void compositor_draw_surfaces(void) {
     }
 }
 
+static void compositor_uint_to_str(uint32_t value, char *out, uint32_t out_cap) {
+    if (out_cap == 0) return;
+    if (value == 0) {
+        out[0] = '0';
+        if (out_cap > 1) out[1] = '\0';
+        return;
+    }
+    char tmp[12];
+    uint32_t n = 0;
+    while (value > 0 && n < 11u) {
+        tmp[n++] = (char)('0' + (value % 10u));
+        value /= 10u;
+    }
+    uint32_t i = 0;
+    while (n > 0 && i < out_cap - 1u) {
+        out[i++] = tmp[--n];
+    }
+    out[i] = '\0';
+}
+
+/* Zeichnet eine feste Titelleiste (+ "W<Handle>"-Beschriftung) oberhalb
+   jedes sichtbaren, dekorierten window.c-Fensters, direkt in den
+   Framebuffer (nach den Surfaces, vor dem Cursor) - siehe render2d.h fuer
+   den Pixelpuffer-Adapter. Fokussierte Fenster bekommen eine andere
+   Fuellfarbe (NPSPEC-WINDOW-MANAGEMENT-0006 Datenmodell-Teil: reiner
+   visueller Hinweis, keine Eingabe-gesteuerte Fokus-Aenderung moeglich,
+   siehe window.h). */
+static void compositor_draw_decorations(void) {
+    if (!framebuffer_available()) return;
+
+    render2d_surface_t fb_surf;
+    render2d_init_surface(&fb_surf, framebuffer_pixels(), framebuffer_width(),
+                           framebuffer_height(), framebuffer_stride());
+
+    uint32_t focused = window_focused_handle();
+    uint32_t capacity = window_capacity();
+    for (uint32_t slot = 0; slot < capacity; ++slot) {
+        uint32_t handle = window_handle_at_slot(slot);
+        if (handle == 0) continue;
+        if (!window_is_decorated(handle)) continue;
+        if (!window_is_visible(handle)) continue;
+
+        uint32_t x, y, w, h;
+        if (surface_rect(handle, &x, &y, &w, &h) != 0) continue;
+        if (y < COMPOSITOR_TITLEBAR_HEIGHT) continue; /* kein Platz oberhalb */
+
+        uint32_t bar_rgb = (handle == focused) ? COMPOSITOR_TITLEBAR_FOCUS_RGB
+                                                : COMPOSITOR_TITLEBAR_RGB;
+        uint32_t bar_y = y - COMPOSITOR_TITLEBAR_HEIGHT;
+        render2d_fill_rect(&fb_surf, x, bar_y, w, COMPOSITOR_TITLEBAR_HEIGHT, bar_rgb);
+
+        char label[16] = "W";
+        compositor_uint_to_str(handle, &label[1], sizeof(label) - 1u);
+        render2d_draw_text(&fb_surf, x + 4u, bar_y + 2u, label, 0xFFFFFFu, bar_rgb, 0);
+    }
+}
+
 void compositor_composite(void) {
     if (!framebuffer_available()) return;
 
@@ -223,6 +312,7 @@ void compositor_composite(void) {
     }
 
     compositor_draw_surfaces();
+    compositor_draw_decorations();
 
     if (compositor_cursor_visible) {
         compositor_blend_rect(compositor_cursor_x, compositor_cursor_y, 8u, 8u,
@@ -234,10 +324,66 @@ uint32_t compositor_last_occluded_count(void) {
     return compositor_occluded_count;
 }
 
+/* Einmaliger Diagnose-Beweis (kein funktionaler Teil des Redraw-Loops):
+   sobald irgendeine Client-Surface (egal welcher Owner-PID - nicht an den
+   aktuellen Einzel-Client gebunden) erstmals ACTIVE mit angehaengtem
+   Buffer wird, deren tatsaechlich im FRAMEBUFFER gelandetes Pixel loggen.
+   Beweist den vollstaendigen Rundweg Client->Syscall->surface.c->
+   compositor_thread_body->Framebuffer unabhaengig vom spezifischen
+   Ring-3-Demoprogramm in ring3.c. */
+static int compositor_client_proof_logged = 0;
+
+static void compositor_log_client_proof_once(void) {
+    if (compositor_client_proof_logged) return;
+
+    uint32_t capacity = surface_capacity();
+    for (uint32_t slot = 0; slot < capacity; ++slot) {
+        uint32_t handle = surface_handle_at_slot(slot);
+        if (handle == 0) continue;
+        if (surface_state(handle) != SURFACE_STATE_ACTIVE) continue;
+        if (surface_buffer_addr(handle) == 0) continue;
+
+        uint32_t x, y, w, h;
+        if (surface_rect(handle, &x, &y, &w, &h) != 0) continue;
+        (void)w;
+        (void)h;
+
+        serial_puts("NOVA: Display-Server zeigt echten Client-Inhalt - Framebuffer-Pixel=");
+        serial_put_hex32(framebuffer_get_pixel(x, y));
+        serial_puts("\r\n");
+        compositor_client_proof_logged = 1;
+        return;
+    }
+}
+
+void compositor_thread_body(void) {
+    for (;;) {
+        uint32_t now = timer_get_ticks();
+        if ((now - compositor_last_thread_tick) >= COMPOSITOR_THREAD_INTERVAL_TICKS) {
+            compositor_last_thread_tick = now;
+            compositor_composite();
+            compositor_log_client_proof_once();
+        }
+        __asm__ volatile ("pause");
+    }
+}
+
+int compositor_thread_start(void) {
+    uint32_t tid;
+    compositor_last_thread_tick = timer_get_ticks();
+    if (thread_create_dynamic((uint32_t)(uintptr_t)compositor_thread_body, 1u, -1,
+                               &tid) != 0) {
+        return -1;
+    }
+    compositor_state_value = COMPOSITOR_STATE_RUNNING;
+    return 0;
+}
+
 int compositor_self_test(void) {
     if (!framebuffer_available()) return -1;
 
     compositor_initialize();
+    if (compositor_state() == COMPOSITOR_STATE_UNINITIALIZED) return -1;
     compositor_set_background(0x202020u);
 
     uint32_t window_id;
@@ -318,5 +464,45 @@ int compositor_self_test(void) {
     if (framebuffer_get_pixel(30u, 40u) != 0x000000u) return -1;
 
     surface_destroy(surf_handle);
+
+    /* Dekorationen (NPSPEC-WINDOW-DECORATION) ueber einem echten
+       window.c-Fenster: Titelleiste in Normal- und Fokus-Farbe, plus
+       Beweis, dass ueberhaupt Text gezeichnet wurde (mind. ein Pixel im
+       Beschriftungsbereich weicht von der reinen Balkenfarbe ab). */
+    surface_manager_initialize();
+    window_manager_initialize();
+    compositor_initialize();
+    compositor_set_background(0x000000u);
+
+    /* Breit genug, damit die Titelleiste auch die Beschriftung "W<Handle>"
+       (Text beginnt bei x+4, mindestens ein Zeichen a 8px) vollstaendig
+       aufnimmt - ein zu schmales Fenster wuerde den Text ausserhalb des
+       sichtbaren Titelleisten-Rechtecks zeichnen (immer noch korrekt
+       geclippt, aber dann vom folgenden Scan nicht erfassbar). */
+    static uint32_t win_pixels[30 * 4];
+    for (uint32_t i = 0; i < 30u * 4u; ++i) win_pixels[i] = 0x654321u;
+    uint32_t win_handle;
+    if (window_create(1u, 10u, 30u, 30u, 4u, 1, &win_handle) != 0) return -1;
+    if (surface_attach_buffer(win_handle, (uint32_t)(uintptr_t)win_pixels) != 0) return -1;
+    if (surface_commit(win_handle) != 0) return -1;
+
+    compositor_composite();
+    if (framebuffer_get_pixel(10u, 10u) != COMPOSITOR_TITLEBAR_RGB) return -1;
+
+    int found_label_pixel = 0;
+    for (uint32_t row = 10u; row < 10u + COMPOSITOR_TITLEBAR_HEIGHT; ++row) {
+        for (uint32_t col = 10u; col < 10u + 30u; ++col) {
+            if (framebuffer_get_pixel(col, row) != COMPOSITOR_TITLEBAR_RGB) {
+                found_label_pixel = 1;
+            }
+        }
+    }
+    if (!found_label_pixel) return -1;
+
+    if (window_focus(win_handle) != 0) return -1;
+    compositor_composite();
+    if (framebuffer_get_pixel(10u, 10u) != COMPOSITOR_TITLEBAR_FOCUS_RGB) return -1;
+
+    window_destroy(win_handle);
     return 0;
 }

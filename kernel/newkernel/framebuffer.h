@@ -22,4 +22,13 @@ void framebuffer_clear(uint32_t rgb);
 uint32_t framebuffer_get_pixel(uint32_t x, uint32_t y);
 void framebuffer_set_pixel(uint32_t x, uint32_t y, uint32_t rgb);
 
+/* Roher Zugriff fuer render2d.c (direktes Zeichnen von Decorations/Text
+   in den Framebuffer, ohne den Umweg ueber framebuffer_set_pixel je
+   Pixel). 0/NULL wenn kein Framebuffer verfuegbar - immer zuerst
+   framebuffer_available() pruefen. */
+uint32_t *framebuffer_pixels(void);
+/* Stride in PIXELN (nicht Bytes) - framebuffer_pitch_bytes()/4, gueltig
+   da nur 32bpp unterstuetzt wird (siehe framebuffer_initialize). */
+uint32_t framebuffer_stride(void);
+
 #endif

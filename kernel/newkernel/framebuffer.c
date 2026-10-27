@@ -35,6 +35,16 @@ uint32_t framebuffer_height(void) {
     return fb_height;
 }
 
+uint32_t *framebuffer_pixels(void) {
+    if (!fb_ok) return 0;
+    return (uint32_t *)fb_base;
+}
+
+uint32_t framebuffer_stride(void) {
+    if (!fb_ok) return 0;
+    return fb_pitch / 4u;
+}
+
 void framebuffer_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t rgb) {
     if (!fb_ok) {
         return;

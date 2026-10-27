@@ -1,0 +1,212 @@
+/* NovaOS C-Kernel - Nova Window Manager (siehe window.h fuer Scope). */
+#include "window.h"
+#include "surface.h"
+
+typedef struct {
+    uint32_t handle; /* == Surface-Handle; 0 = Slot frei */
+    uint32_t parent_handle;
+    uint32_t z_order;
+    int decorated;
+} window_record_t;
+
+static window_record_t window_table[WINDOW_CAPACITY];
+static uint32_t window_next_z = 1;
+static uint32_t window_focused = 0;
+
+static int window_find_slot(uint32_t handle) {
+    if (handle == 0) return -1;
+    for (uint32_t i = 0; i < WINDOW_CAPACITY; ++i) {
+        if (window_table[i].handle == handle) return (int)i;
+    }
+    return -1;
+}
+
+void window_manager_initialize(void) {
+    for (uint32_t i = 0; i < WINDOW_CAPACITY; ++i) window_table[i] = (window_record_t){0};
+    window_next_z = 1;
+    window_focused = 0;
+}
+
+int window_create(uint32_t owner_pid, uint32_t x, uint32_t y, uint32_t w,
+                   uint32_t h, int decorated, uint32_t *out_handle) {
+    int slot = -1;
+    for (uint32_t i = 0; i < WINDOW_CAPACITY; ++i) {
+        if (window_table[i].handle == 0) { slot = (int)i; break; }
+    }
+    if (slot < 0) return -1;
+
+    uint32_t handle;
+    if (surface_create(owner_pid, x, y, w, h, &handle) != 0) return -1;
+    if (surface_configure(handle, x, y, w, h) != 0) {
+        surface_destroy(handle);
+        return -1;
+    }
+
+    window_table[slot].handle = handle;
+    window_table[slot].parent_handle = 0;
+    window_table[slot].z_order = window_next_z++;
+    window_table[slot].decorated = decorated ? 1 : 0;
+
+    *out_handle = handle;
+    return 0;
+}
+
+int window_destroy(uint32_t handle) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return -1;
+
+    /* Verwaiste Kinder behalten ihre Parent-Referenz nicht - sie werden
+       zu eigenstaendigen Top-Level-Fenstern (kein rekursives Zerstoeren). */
+    for (uint32_t i = 0; i < WINDOW_CAPACITY; ++i) {
+        if (window_table[i].parent_handle == handle) window_table[i].parent_handle = 0;
+    }
+    if (window_focused == handle) window_focused = 0;
+
+    window_table[slot] = (window_record_t){0};
+    surface_destroy(handle);
+    return 0;
+}
+
+int window_is_visible(uint32_t handle) {
+    return surface_state(handle) == SURFACE_STATE_ACTIVE;
+}
+
+int window_is_decorated(uint32_t handle) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return 0;
+    return window_table[slot].decorated;
+}
+
+int window_set_parent(uint32_t handle, uint32_t parent_handle) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return -1;
+    if (parent_handle == handle) return -1;
+    if (parent_handle != 0 && window_find_slot(parent_handle) < 0) return -1;
+
+    window_table[slot].parent_handle = parent_handle;
+    return 0;
+}
+
+uint32_t window_parent(uint32_t handle) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return 0;
+    return window_table[slot].parent_handle;
+}
+
+int window_raise(uint32_t handle) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return -1;
+    window_table[slot].z_order = window_next_z++;
+    return 0;
+}
+
+int window_lower(uint32_t handle) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return -1;
+
+    uint32_t min_z = window_table[slot].z_order;
+    for (uint32_t i = 0; i < WINDOW_CAPACITY; ++i) {
+        if (window_table[i].handle != 0 && window_table[i].z_order < min_z) {
+            min_z = window_table[i].z_order;
+        }
+    }
+    window_table[slot].z_order = min_z - 1u;
+    return 0;
+}
+
+uint32_t window_z_order(uint32_t handle) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return 0;
+    return window_table[slot].z_order;
+}
+
+int window_focus(uint32_t handle) {
+    if (handle == 0) {
+        window_focused = 0;
+        return 0;
+    }
+    if (window_find_slot(handle) < 0) return -1;
+    window_focused = handle;
+    return 0;
+}
+
+uint32_t window_focused_handle(void) {
+    return window_focused;
+}
+
+uint32_t window_capacity(void) {
+    return WINDOW_CAPACITY;
+}
+
+uint32_t window_handle_at_slot(uint32_t slot_index) {
+    if (slot_index >= WINDOW_CAPACITY) return 0;
+    return window_table[slot_index].handle;
+}
+
+uint32_t window_count_in_use(void) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < WINDOW_CAPACITY; ++i) {
+        if (window_table[i].handle != 0) ++count;
+    }
+    return count;
+}
+
+int window_self_test(void) {
+    surface_manager_initialize();
+    window_manager_initialize();
+
+    uint32_t w1, w2, w3;
+    if (window_create(1u, 0u, 0u, 10u, 10u, 1, &w1) != 0) return -1;
+    if (!window_is_decorated(w1)) return -1;
+    if (window_is_visible(w1)) return -1; /* vor Attach+Commit nicht ACTIVE */
+
+    if (window_create(1u, 5u, 5u, 10u, 10u, 0, &w2) != 0) return -1;
+    if (window_is_decorated(w2)) return -1;
+    if (window_count_in_use() != 2u) return -1;
+
+    /* Z-Order: zuletzt erzeugtes Fenster liegt zunaechst oben. */
+    if (window_z_order(w2) <= window_z_order(w1)) return -1;
+
+    /* Raise von w1 muss es ueber w2 bringen. */
+    if (window_raise(w1) != 0) return -1;
+    if (window_z_order(w1) <= window_z_order(w2)) return -1;
+
+    /* Lower von w1 muss es wieder unter w2 bringen. */
+    if (window_lower(w1) != 0) return -1;
+    if (window_z_order(w1) >= window_z_order(w2)) return -1;
+
+    /* Parent/Child. */
+    if (window_create(1u, 1u, 1u, 2u, 2u, 0, &w3) != 0) return -1;
+    if (window_set_parent(w3, w1) != 0) return -1;
+    if (window_parent(w3) != w1) return -1;
+    if (window_set_parent(w3, w3) == 0) return -1; /* Selbstreferenz verboten */
+    if (window_set_parent(w3, 0xFFFFu) == 0) return -1; /* unbekannter Parent */
+
+    /* Fokus. */
+    if (window_focused_handle() != 0) return -1;
+    if (window_focus(w2) != 0) return -1;
+    if (window_focused_handle() != w2) return -1;
+    if (window_focus(0xFFFFu) == 0) return -1; /* unbekannt */
+    if (window_focused_handle() != w2) return -1; /* unveraendert nach Fehlversuch */
+
+    /* Zerstoeren von w1: w3 (Kind) muss seine Parent-Referenz verlieren,
+       Fokus auf w2 bleibt unberuehrt. */
+    if (window_destroy(w1) != 0) return -1;
+    if (window_parent(w3) != 0) return -1;
+    if (window_focused_handle() != w2) return -1;
+    if (window_count_in_use() != 2u) return -1;
+
+    /* Fokus auf das zerstoerte Fenster selbst muss aufgehoben werden. */
+    if (window_focus(w3) != 0) return -1;
+    if (window_destroy(w3) != 0) return -1;
+    if (window_focused_handle() != 0) return -1;
+
+    if (window_destroy(w2) != 0) return -1;
+    if (window_count_in_use() != 0u) return -1;
+
+    /* Unbekanntes Handle muss ueberall sauber fehlschlagen. */
+    if (window_destroy(0xFFFFu) == 0) return -1;
+    if (window_raise(0xFFFFu) == 0) return -1;
+
+    return 0;
+}
