@@ -2,6 +2,7 @@
    interrupt32.inc). ISR-Trampoline liegen in interrupt_isr.asm. */
 #include "interrupt.h"
 #include "serial.h"
+#include "syscall.h"
 
 typedef struct {
     uint16_t offset_low;
@@ -13,7 +14,6 @@ typedef struct {
 
 static idt_entry_t idt_table[IDT_ENTRY_COUNT];
 static volatile uint32_t timer_ticks_value = 0;
-static volatile int ring3_heartbeat_logged = 0;
 
 /* ISR-Trampoline aus interrupt_isr.asm. Die __asm__-Labels verhindern das
    automatische Underscore-Praefix des PE-Targets, damit die Namen exakt auf
@@ -79,16 +79,12 @@ uint32_t interrupt_dispatch_c(uint32_t vector, uint32_t frame_ptr) {
         }
     }
     if (vector == 0x80) {
-        /* Heartbeat-Beweis fuer Ring 3 (siehe ring3.c): das Testprogramm
-           setzt EAX="RIN3" vor jedem int 0x80. Nur die erste Ankunft wird
-           protokolliert, damit der dauerhaft wiederholte Heartbeat das
-           Boot-Log nicht zumuellt. Rueckgabe des unveraenderten Frames
-           laesst iretd exakt hinter dem int 0x80 nach Ring 3 zurueckkehren. */
-        if (((uint32_t *)frame_ptr)[11] == 0x52494E33u && !ring3_heartbeat_logged) {
-            ring3_heartbeat_logged = 1;
-            serial_puts("NOVA: Ring 3 Userspace aktiv - Heartbeat-Syscall empfangen\r\n");
-        }
-        return frame_ptr;
+        /* Echter Syscall-Dispatch (siehe syscall.c): wertet Service/Op/ABI
+           aus dem Trap-Frame aus. Bei SYSCALL_CORE_READY wird der
+           unveraenderte Frame zurueckgegeben (iretd kehrt nach Ring 3
+           zurueck); bei SYSCALL_CORE_EXIT ist der Frame so umgeschrieben,
+           dass iretd statt dessen nach Ring 0 zurueckkehrt. */
+        return syscall_dispatch(frame_ptr);
     }
     /* isr_unexpected (255): noch kein Dispatch. */
     return frame_ptr;

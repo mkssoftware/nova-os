@@ -24,9 +24,16 @@
 #define SYSCALL_CALL_DEPTH_MAX 8u
 
 #define SYSCALL_STATUS_OK        0
+#define SYSCALL_STATUS_ABI       (-1)
 #define SYSCALL_STATUS_SIZE      (-4)
+#define SYSCALL_STATUS_SERVICE   (-8)
 #define SYSCALL_STATUS_OPERATION (-9)
 #define SYSCALL_STATUS_POINTER   (-15)
+
+#define SYSCALL_ABI_VERSION   1u
+#define SYSCALL_SERVICE_CORE  1u
+#define SYSCALL_CORE_EXIT     1u
+#define SYSCALL_CORE_READY    2u
 
 void syscall_manager_initialize(void);
 int syscall_manager_self_test(void); /* 0 = ok */
@@ -34,5 +41,19 @@ int syscall_manager_self_test(void); /* 0 = ok */
 /* 0 = gueltig (liegt vollstaendig in [USER_ADDRESS_MIN, USER_ADDRESS_MAX],
    kein Overflow, length!=0), -1 = ungueltig. */
 int syscall_validate_user_range(uint32_t addr, uint32_t length);
+
+/* Wertet einen von interrupt_dispatch_c (Vektor 0x80) hereingereichten
+   Trap-Frame aus (Layout exakt wie in interrupt_isr.asm erzeugt: EAX an
+   Byte-Offset 44 = Service, EBX an 32 = Operation, ECX an 40 =
+   ABI-Version). Fuer SYSCALL_SERVICE_CORE/SYSCALL_CORE_READY wird nur
+   EAX (Status) gesetzt und derselbe Frame zurueckgegeben (iretd kehrt
+   nach Ring 3 zurueck). Fuer SYSCALL_CORE_EXIT wird der Frame so
+   umgeschrieben (EIP/CS/EFLAGS), dass iretd statt dessen nach Ring 0
+   zu einer dedizierten Rueckkehrstelle wechselt - eine echte
+   Privilegstufen-Rueckkehr per Frame-Rewrite (1:1 wie im alten ASM
+   `syscall_dispatch`, NPSPEC-KERNEL-0011 / io_qos32.inc, reduziert auf
+   SYSCALL_SERVICE_CORE). Gibt den (ggf. umgeschriebenen) Frame-Zeiger
+   zurueck. */
+uint32_t syscall_dispatch(uint32_t frame_ptr);
 
 #endif

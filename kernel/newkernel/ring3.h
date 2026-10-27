@@ -8,11 +8,14 @@
    registriert den zugehoerigen Prozess. `ring3_enter` fuehrt den
    eigentlichen Ring0->Ring3-Sprung per `iret` aus - das ist, wie bei
    jedem echten Kernel beim allerersten Usermode-Handoff, eine EINWEG-
-   Operation (kehrt nie normal zu C zurueck). Das Testprogramm sendet
-   fortlaufend einen Heartbeat-Syscall (int 0x80, EAX="RIN3"-Magic), den
-   `interrupt_dispatch_c` beim ersten Empfang einmalig auf die serielle
-   Konsole protokolliert - das ist der eigentliche Beweis, dass Ring 3
-   erreicht wurde (siehe interrupt.c). */
+   Operation (kehrt nie normal zu C zurueck). Das Testprogramm ruft zwei
+   echte Syscalls ueber syscall.c's Dispatch auf: zuerst
+   SYSCALL_CORE_READY (Heartbeat, einmalig auf der seriellen Konsole
+   protokolliert - der Beweis, dass Ring 3 erreicht wurde und iretd
+   korrekt dorthin zurueckkehrt), danach SYSCALL_CORE_EXIT (der Dispatch
+   schreibt den Trap-Frame so um, dass iretd stattdessen nach Ring 0
+   zurueckkehrt - der Beweis, dass die Privilegstufen-Rueckkehr per
+   Frame-Rewrite funktioniert, siehe syscall.c). */
 #ifndef NOVA_RING3_H
 #define NOVA_RING3_H
 

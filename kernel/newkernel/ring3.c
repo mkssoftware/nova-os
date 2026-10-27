@@ -21,15 +21,38 @@ extern uint8_t stack_top[] __asm__("stack_top");
 /* Minimales Ring-3-Testprogramm (handgeschriebenes Maschinencode-Shellcode,
    da ein von GCC kompiliertes C-Programm beim Kopieren auf eine frische
    Seite Relokationen/Aufrufe in den Rest des Kernel-Images verlieren
-   wuerde): wiederholt EAX="RIN3"-Magic setzen, int 0x80 (Heartbeat-Syscall),
-   zurueckspringen. Rest der Seite bleibt mit Nullen gefuellt (unerreichbar).
-   B8 33 4E 49 52   mov eax, 0x52494E33
+   wuerde): ruft echte Syscalls ueber den Dispatch in syscall.c auf -
+   zuerst SYSCALL_CORE_READY (Heartbeat/Beweis, dass Service+Op+ABI
+   korrekt ausgewertet werden und iretd nach Ring 3 zurueckkehrt), dann
+   SYSCALL_CORE_EXIT (Beweis, dass der Frame-Rewrite den Ruecksprung nach
+   Ring 0 tatsaechlich auslöst). Der abschliessende jmp-$ ist nur ein
+   Sicherheitsnetz, falls der EXIT-Rueckweg (noch) nicht greift.
+
+   B8 01 00 00 00   mov eax, 1      ; SYSCALL_SERVICE_CORE
+   BB 02 00 00 00   mov ebx, 2      ; SYSCALL_CORE_READY
+   B9 01 00 00 00   mov ecx, 1      ; SYSCALL_ABI_VERSION
+   31 D2            xor edx, edx    ; kein Ergebnispuffer
+   31 F6            xor esi, esi    ; Laenge 0
    CD 80            int 0x80
-   EB F7            jmp $-9 (zurueck zu "mov eax") */
+   B8 01 00 00 00   mov eax, 1      ; SYSCALL_SERVICE_CORE (EAX wurde vom
+                                    ; Dispatch mit dem READY-Status
+                                    ; ueberschrieben, siehe syscall.c -
+                                    ; muss vor dem naechsten Syscall neu
+                                    ; gesetzt werden)
+   BB 01 00 00 00   mov ebx, 1      ; SYSCALL_CORE_EXIT (EDX/ESI bleiben 0)
+   CD 80            int 0x80
+   EB FE            jmp $ (Sicherheitsnetz) */
 static const uint8_t ring3_program[] = {
-    0xB8, 0x33, 0x4E, 0x49, 0x52,
+    0xB8, 0x01, 0x00, 0x00, 0x00,
+    0xBB, 0x02, 0x00, 0x00, 0x00,
+    0xB9, 0x01, 0x00, 0x00, 0x00,
+    0x31, 0xD2,
+    0x31, 0xF6,
     0xCD, 0x80,
-    0xEB, 0xF7,
+    0xB8, 0x01, 0x00, 0x00, 0x00,
+    0xBB, 0x01, 0x00, 0x00, 0x00,
+    0xCD, 0x80,
+    0xEB, 0xFE,
 };
 
 static uint64_t ring3_gdt[6];
