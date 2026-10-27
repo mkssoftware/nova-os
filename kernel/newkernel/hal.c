@@ -452,6 +452,10 @@ int acpi_rsdp_initialize(void) {
 
 int acpi_madt_valid(void) { return g_madt_valid; }
 uint32_t acpi_cpu_count(void) { return g_cpu_count; }
+uint32_t acpi_cpu_apic_id(uint32_t index) {
+    if (index >= ACPI_CPU_CAPACITY) return 0;
+    return g_apic_ids[index];
+}
 int acpi_srat_valid(void) { return g_srat_valid; }
 uint32_t acpi_srat_cpu_count(void) { return g_srat_cpu_count; }
 uint32_t acpi_srat_memory_count(void) { return g_srat_memory_count; }

@@ -25,6 +25,9 @@ int acpi_hal_self_test(void); /* 0 = ok */
 
 int acpi_madt_valid(void);
 uint32_t acpi_cpu_count(void);
+/* APIC-ID der entdeckten CPU an index (0 = BSP, 1..acpi_cpu_count()-1 =
+   APs); 0 wenn index ausserhalb des gueltigen Bereichs liegt. */
+uint32_t acpi_cpu_apic_id(uint32_t index);
 
 int acpi_srat_valid(void);
 uint32_t acpi_srat_cpu_count(void);
