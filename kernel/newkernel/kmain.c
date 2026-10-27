@@ -726,6 +726,9 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     int smp_ok = smp_initialize() == 0;
     report("NOVA: SMP/AP-Aktivierung Initialize", smp_ok);
     report("NOVA: SMP/AP-Aktivierung Selftest", smp_ok && smp_self_test() == 0);
+    serial_puts("NOVA: SMP Online-APs=");
+    serial_put_hex32(smp_ap_online_count());
+    serial_puts("\r\n");
 
     int ring3_ok = ring3_initialize() == 0;
     report("NOVA: Ring-3-Bootstrap (GDT/TSS/User-Pages) Initialize", ring3_ok);
