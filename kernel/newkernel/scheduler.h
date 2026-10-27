@@ -2,14 +2,28 @@
    NPSPEC-SCHEDULER-FAIR-0001 / NPSPEC-SCHEDULER-REALTIME-0001 /
    NPSPEC-SCHEDULER-QOS-0001 / NPSPEC-CONCURRENCY-WORKSTEALING-0001).
 
-   WICHTIG (Nutzer-Entscheidung 2026-10-26): Nur Datenstrukturen + Selbsttests
-   portiert, OHNE echten Taskwechsel. scheduler_on_tick wird NICHT an
-   interrupt_dispatch_c angebunden - der bereits verifizierte Minimal-Dispatch
-   aus interrupt.c bleibt unveraendert. scheduler_initialize/create_frame
-   bauen echte, gueltige Interrupt-Frames (kompatibel mit interrupt_isr.asm's
-   Stack-Layout), aber niemand schaltet bisher tatsaechlich auf sie um.
-   Echtes Preemptive-Multitasking (inkl. SMP/AP-Bringup aus dem noch nicht
-   portierten sync32.inc) ist ein spaeterer Schritt. */
+   WICHTIG (2026-10-27): `scheduler_on_tick` ist jetzt ein echter,
+   vereinfachter (Single-CPU, kein SMP/AP) Port des Round-Robin-
+   Taskwechsels und wird von `interrupt_dispatch_c` bei jedem Timer-Tick
+   aufgerufen (siehe interrupt.c). Er bleibt aber bis zum expliziten
+   Aufruf von `scheduler_enable()` inaktiv (No-Op) - erst DANACH kann
+   jeder weitere Tick die aktuell laufende Ausfuehrung permanent zugunsten
+   von scheduler_thread1/2 verdraengen (genau wie `ring3_enter`: eine
+   EINWEG-Uebergabe an einen fortlaufenden Betriebszustand, kein
+   normaler Funktionsaufruf, der zur sequentiellen Boot-Logik
+   zurueckkehrt). Deshalb wird `scheduler_enable()` erst als allerletzte
+   Aktion aufgerufen (aus `syscall.c`s `syscall_userspace_exit`, NACH dem
+   Ring-3-Rundweg - siehe dort). `scheduler_initialize`/`create_frame`
+   bauen weiterhin nur die Datenstrukturen/Frames auf, OHNE den
+   Taskwechsel scharf zu schalten. Fehlend gegenueber dem alten ASM:
+   SMP/AP-Bringup (per_cpu_current_thread wird durch eine einzelne
+   Variable ersetzt, da nur 1 CPU existiert; scheduler_lock/
+   scheduler_caller_cpu/scheduler_bsp_boot_lock entfallen ganz - ohne
+   SMP gibt es keine Nebenlaeufigkeit in scheduler_on_tick, das IDT-
+   Interrupt-Gate deaktiviert IF schon automatisch) und die
+   Thread-Manager-Synchronisation (`thread_manager_ready`-Zweige, da der
+   Thread Manager aus sync32.inc weiterhin nicht portiert ist - siehe
+   project_c_kernel_migration_status). */
 #ifndef NOVA_SCHEDULER_H
 #define NOVA_SCHEDULER_H
 
@@ -18,17 +32,58 @@
 #define SCHEDULER_THREAD_COUNT 8u
 #define SCHEDULER_FRAME_SIZE   68u
 
-/* Erzeugt zwei synthetische Thread-Kontexte (scheduler_thread1/2). 0 = ok. */
+/* Erzeugt zwei synthetische Thread-Kontexte (scheduler_thread1/2). */
 void scheduler_initialize(void);
-/* Reduzierter Selbsttest (siehe Hinweis oben): prueft Initialisierung und
-   dass beide Thread-Frames gueltig aufgebaut wurden, NICHT dass die Threads
-   real liefen (das setzt echten Taskwechsel voraus). 0 = ok. */
+/* Prueft Initialisierung und dass beide Thread-Frames gueltig aufgebaut
+   wurden (EIP/CS/EFLAGS) - NICHT dass die Threads real liefen (echter
+   Taskwechsel ist zu diesem Zeitpunkt noch nicht aktiviert, siehe
+   Hinweis oben). 0 = ok. */
 int scheduler_self_test(void);
 
 /* Alloziert eine Seite und baut darin einen synthetischen Interrupt-Frame
    (SCHEDULER_FRAME_SIZE Bytes, endend am Seitenende) fuer entry_point auf.
    0 = Fehler, sonst Zeiger auf den Frame-Anfang. */
 uint32_t scheduler_create_frame(uint32_t entry_point);
+
+/* EINWEG: schaltet den echten Taskwechsel scharf (siehe Hinweis oben). */
+void scheduler_enable(void);
+
+/* Von interrupt_dispatch_c bei jedem Timer-Tick (Vektor 32) aufgerufen.
+   frame_ptr ist der unterbrochene Trap-Frame; der Rueckgabewert wird an
+   iretd weitergereicht (Round-Robin ueber alle Slots mit gueltigem
+   Kontext, Slot 0 bleibt dauerhaft reserviert). No-Op (gibt frame_ptr
+   unveraendert zurueck), solange scheduler_enable() noch nicht
+   aufgerufen wurde. */
+uint32_t scheduler_on_tick(uint32_t frame_ptr);
+
+/* Thread-Koerper (scheduler_thread1/2 fuer threadmgr.c's statische
+   Registrierung, scheduler_dynamic_thread als Einstiegspunkt fuer per
+   threadmgr.c's thread_create_dynamic erzeugte Threads). Nicht direkt
+   aufzurufen - nur ihre Adresse wird gebraucht (scheduler_create_frame/
+   thread_register). */
+void scheduler_thread1(void);
+void scheduler_thread2(void);
+void scheduler_dynamic_thread(void);
+
+/* Fuer threadmgr.c (NPSPEC-KERNEL-0016-Thread-Manager, sync32.inc):
+   kontrollierter Zugriff auf scheduler.c's sonst private Slot-Tabellen,
+   ohne sie direkt offenzulegen. */
+
+/* 0 = Erfolg (*out_slot gesetzt, Kontext gebaut, Affinitaet gesetzt,
+   als frei-aber-belegt markiert), -1 wenn kein freier Slot (1..COUNT-1)
+   mehr frei ist oder scheduler_create_frame fehlschlaegt. Slot 0 bleibt
+   dauerhaft reserviert (siehe scheduler_initialize) und wird nie
+   vergeben. */
+int scheduler_claim_dynamic_slot(uint32_t entry_point, int32_t cpu_affinity, uint32_t *out_slot);
+/* Gibt einen per scheduler_claim_dynamic_slot belegten Slot wieder frei
+   (Fehlerpfad in thread_create_dynamic). */
+void scheduler_release_dynamic_slot(uint32_t slot);
+/* Liest scheduler_contexts[slot]/thread_cpu_affinity[slot]/
+   thread_running_on[slot], oder 0/-1 wenn slot ausserhalb des gueltigen
+   Bereichs liegt. */
+uint32_t scheduler_context_at(uint32_t slot);
+int32_t scheduler_affinity_at(uint32_t slot);
+int32_t scheduler_running_on_at(uint32_t slot);
 
 #define WS_SLOT_COUNT      SCHEDULER_THREAD_COUNT
 #define WS_QUEUE_DEPTH     4u

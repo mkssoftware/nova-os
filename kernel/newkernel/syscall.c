@@ -3,6 +3,7 @@
    den Hinweis zum nicht portierten SYSENTER-Trampolin/Dispatch. */
 #include "syscall.h"
 #include "serial.h"
+#include "scheduler.h"
 
 static int syscall_mgr_initialized = 0;
 static int syscall_sysenter_available = 0;
@@ -31,11 +32,17 @@ static inline void frame_write(uint32_t frame_ptr, uint32_t byte_offset, uint32_
 }
 
 /* Rueckkehrstelle fuer SYSCALL_CORE_EXIT: laeuft in Ring 0 weiter, sobald
-   iretd den von syscall_dispatch umgeschriebenen Frame konsumiert hat. Es
-   gibt noch keinen Scheduler, der hier etwas anderes vorzieht - der Kernel
-   geht in den normalen Idle-Zustand. */
+   iretd den von syscall_dispatch umgeschriebenen Frame konsumiert hat.
+   Der Ring-3-Rundweg ist damit abgeschlossen - ERST JETZT wird der echte
+   Taskwechsel scharf geschaltet (scheduler_enable, siehe scheduler.h):
+   das garantiert, dass kein Timer-Tick den Ring-3-Heartbeat/Exit-Rundweg
+   vorzeitig unterbrechen konnte (scheduler_on_tick war bis hierhin ein
+   No-Op), und ist selbst wieder eine EINWEG-Uebergabe - der folgende
+   hlt-Block laeuft nur, bis der naechste Tick zugunsten von
+   scheduler_thread1/2 verdraengt. */
 static void syscall_userspace_exit(void) {
     serial_puts("NOVA: Ring 3 -> Ring 0 per SYSCALL_CORE_EXIT zurueckgekehrt\r\n");
+    scheduler_enable();
     for (;;) {
         __asm__ volatile ("hlt");
     }

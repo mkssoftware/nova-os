@@ -1,37 +1,88 @@
 /* NovaOS C-Kernel - Scheduler-Familie (Port aus scheduler32.inc). Siehe
-   scheduler.h fuer den Hinweis zum bewusst fehlenden echten Taskwechsel. */
+   scheduler.h fuer den Hinweis zum jetzt verdrahteten, aber bewusst erst
+   spaet aktivierten echten Taskwechsel. */
 #include "scheduler.h"
 #include "pmm.h"
 #include "ipc.h"
+#include "serial.h"
 
 #define CODE_SEGMENT 0x08u
 #define DATA_SEGMENT 0x10u
 
 /* --------------------------------------------------------------------- */
-/* Haupt-Scheduler (nur Frame-Aufbau, kein echter Taskwechsel)            */
+/* Haupt-Scheduler (Frame-Aufbau + echter Round-Robin-Taskwechsel)        */
 /* --------------------------------------------------------------------- */
 
 static uint32_t scheduler_contexts[SCHEDULER_THREAD_COUNT];
-static int scheduler_enabled = 0;
+static int32_t thread_cpu_affinity[SCHEDULER_THREAD_COUNT]; /* -1 = beliebige CPU */
+static int32_t thread_running_on[SCHEDULER_THREAD_COUNT];   /* -1 = frei, 0 = CPU0 */
+static int32_t scheduler_current_thread = -1; /* Pendant zu per_cpu_current_thread[0] - nur 1 CPU */
+static int scheduler_frames_ready = 0; /* Frames gueltig aufgebaut (fuer scheduler_self_test) */
+static int scheduler_enabled = 0;      /* echter Taskwechsel aktiv (siehe scheduler_enable) */
 static uint32_t scheduler_thread1_runs = 0;
 static uint32_t scheduler_thread2_runs = 0;
 
-/* Bewusst niemals aufgerufen ohne echten Taskwechsel (siehe scheduler.h) -
-   faehrt fort, sobald der Frame tatsaechlich geladen wird. */
-static void scheduler_thread1(void) {
-    ++scheduler_thread1_runs;
-    ipc_message_t msg = {{1, 0, 0x4E4F5641u, 0}};
-    ipc_send(&msg);
+static uint32_t ipc_sent = 0;
+static uint32_t ipc_received = 0;
+static uint32_t ipc_error = 0;
+static uint32_t ipc_last_sequence = 0;
+static int preempt_thread1_logged = 0;
+static int preempt_thread2_logged = 0;
+static uint32_t scheduler_dynamic_runs = 0;
+static int preempt_dynamic_logged = 0;
+
+/* Laufen erst, sobald scheduler_on_tick sie tatsaechlich einlastet (siehe
+   scheduler_enable) - bis dahin bleiben ihre Frames unbenutztes, aber
+   gueltiges Datenmaterial fuer scheduler_self_test. Nicht static, da
+   threadmgr.c ihre Adresse fuer thread_register braucht. */
+void scheduler_thread1(void) {
     for (;;) {
+        ++scheduler_thread1_runs;
+        if (!preempt_thread1_logged) {
+            preempt_thread1_logged = 1;
+            serial_puts("NOVA: Praeemptiver Taskwechsel aktiv - Thread 1 lief\r\n");
+        }
+        uint32_t seq = ipc_sent + 1;
+        ipc_message_t msg = {{1, seq, 0x4E4F5641u, 0}};
+        if (ipc_send(&msg) != 0) {
+            ++ipc_sent;
+        }
         __asm__ volatile ("pause");
     }
 }
 
-static void scheduler_thread2(void) {
-    ++scheduler_thread2_runs;
-    ipc_message_t msg;
-    ipc_receive(&msg);
+void scheduler_thread2(void) {
     for (;;) {
+        ++scheduler_thread2_runs;
+        if (!preempt_thread2_logged) {
+            preempt_thread2_logged = 1;
+            serial_puts("NOVA: Praeemptiver Taskwechsel aktiv - Thread 2 lief\r\n");
+        }
+        ipc_message_t msg;
+        if (ipc_receive(&msg) != 0) {
+            if (msg.words[0] != 1 || msg.words[2] != 0x4E4F5641u) {
+                ipc_error = 1;
+            } else if (msg.words[1] > ipc_last_sequence) {
+                ipc_last_sequence = msg.words[1];
+                ++ipc_received;
+            } else {
+                ipc_error = 1;
+            }
+        }
+        __asm__ volatile ("pause");
+    }
+}
+
+/* Einstiegspunkt fuer dynamisch erzeugte Threads (threadmgr.c's
+   thread_create_dynamic) - minimaler Platzhalter-Koerper, 1:1 wie im
+   alten ASM (nur Lebenszeichen, kein eigener Zweck). */
+void scheduler_dynamic_thread(void) {
+    for (;;) {
+        ++scheduler_dynamic_runs;
+        if (!preempt_dynamic_logged) {
+            preempt_dynamic_logged = 1;
+            serial_puts("NOVA: Praeemptiver Taskwechsel aktiv - dynamischer Thread lief\r\n");
+        }
         __asm__ volatile ("pause");
     }
 }
@@ -71,9 +122,19 @@ uint32_t scheduler_create_frame(uint32_t entry_point) {
 
 void scheduler_initialize(void) {
     scheduler_enabled = 0;
+    scheduler_frames_ready = 0;
+    scheduler_current_thread = -1;
     for (uint32_t i = 0; i < SCHEDULER_THREAD_COUNT; ++i) {
         scheduler_contexts[i] = 0;
+        thread_cpu_affinity[i] = -1;
+        thread_running_on[i] = -1;
     }
+    /* §133: Slot 0 (BSP-Idle/Kernel-Thread) auf CPU 0 pinnen - belegt
+       reserviert diesen Slot permanent, scheduler_on_tick wird ihn daher
+       nie als Ziel waehlen. */
+    thread_cpu_affinity[0] = 0;
+    thread_running_on[0] = 0;
+
     scheduler_thread1_runs = 0;
     scheduler_thread2_runs = 0;
 
@@ -85,11 +146,102 @@ void scheduler_initialize(void) {
     if (frame2 == 0) return;
     scheduler_contexts[2] = frame2;
 
+    scheduler_frames_ready = 1;
+}
+
+/* EINWEG-Freigabe des echten Taskwechsels (siehe scheduler.h) - erst
+   aufzurufen, wenn nichts im Aufrufer mehr sequentiell weiterlaufen
+   muss, danach kann jeder Timer-Tick die aktuelle Ausfuehrung permanent
+   zugunsten von scheduler_thread1/2 verdraengen. */
+void scheduler_enable(void) {
     scheduler_enabled = 1;
 }
 
+uint32_t scheduler_on_tick(uint32_t frame_ptr) {
+    if (!scheduler_enabled) return frame_ptr;
+
+    int32_t previous_slot;
+    int32_t current = scheduler_current_thread;
+
+    if (current == -1) {
+        /* CPU war idle - Slot 0 nur als Suchstartpunkt, kein Frame zu sichern. */
+        previous_slot = 0;
+    } else {
+        scheduler_contexts[current] = frame_ptr;
+        thread_running_on[current] = -1;
+        previous_slot = current;
+    }
+
+    int32_t search_start = previous_slot;
+    int32_t selected = -1;
+    int32_t slot = previous_slot;
+    for (;;) {
+        slot = (slot + 1 >= (int32_t)SCHEDULER_THREAD_COUNT) ? 0 : slot + 1;
+        if (slot == search_start) break; /* alle Slots geprueft, keiner passt */
+
+        if (thread_cpu_affinity[slot] != -1 && thread_cpu_affinity[slot] != 0) continue;
+        if (thread_running_on[slot] != -1) continue;
+        if (scheduler_contexts[slot] == 0) continue;
+
+        selected = slot;
+        break;
+    }
+
+    if (selected != -1) {
+        scheduler_current_thread = selected;
+        thread_running_on[selected] = 0;
+        return scheduler_contexts[selected];
+    }
+
+    /* Kein kompatibler Slot gefunden. */
+    if (current == -1) {
+        return frame_ptr; /* war idle, bleibt idle */
+    }
+    thread_running_on[previous_slot] = 0;
+    scheduler_current_thread = previous_slot;
+    return frame_ptr; /* gleicher Thread laeuft unveraendert weiter */
+}
+
+int scheduler_claim_dynamic_slot(uint32_t entry_point, int32_t cpu_affinity, uint32_t *out_slot) {
+    for (uint32_t slot = 1; slot < SCHEDULER_THREAD_COUNT; ++slot) {
+        if (scheduler_contexts[slot] != 0) continue;
+
+        uint32_t context = scheduler_create_frame(entry_point);
+        if (context == 0) return -1;
+
+        scheduler_contexts[slot] = context;
+        thread_cpu_affinity[slot] = cpu_affinity;
+        thread_running_on[slot] = -1;
+        *out_slot = slot;
+        return 0;
+    }
+    return -1;
+}
+
+void scheduler_release_dynamic_slot(uint32_t slot) {
+    if (slot == 0 || slot >= SCHEDULER_THREAD_COUNT) return;
+    scheduler_contexts[slot] = 0;
+    thread_cpu_affinity[slot] = -1;
+    thread_running_on[slot] = -1;
+}
+
+uint32_t scheduler_context_at(uint32_t slot) {
+    if (slot >= SCHEDULER_THREAD_COUNT) return 0;
+    return scheduler_contexts[slot];
+}
+
+int32_t scheduler_affinity_at(uint32_t slot) {
+    if (slot >= SCHEDULER_THREAD_COUNT) return -1;
+    return thread_cpu_affinity[slot];
+}
+
+int32_t scheduler_running_on_at(uint32_t slot) {
+    if (slot >= SCHEDULER_THREAD_COUNT) return -1;
+    return thread_running_on[slot];
+}
+
 int scheduler_self_test(void) {
-    if (scheduler_enabled != 1) return -1;
+    if (scheduler_frames_ready != 1) return -1;
     if (scheduler_contexts[1] == 0 || scheduler_contexts[2] == 0) return -1;
 
     /* Frame-Inhalt pruefen (EIP/CS/EFLAGS an den erwarteten Offsets). */

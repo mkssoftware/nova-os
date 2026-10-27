@@ -155,6 +155,12 @@
 #include "pimutex.h"
 #include "irqmgr.h"
 #include "modloader.h"
+#include "taskscope.h"
+#include "task.h"
+#include "taskdeadline.h"
+#include "taskgroup.h"
+#include "threadmgr.h"
+#include "smp.h"
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 
@@ -699,6 +705,27 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     module_loader_initialize();
     report("NOVA: Kernel Module Loader Selftest", module_loader_self_test() == 0);
+
+    int tscope_ok = task_scope_manager_initialize() == 0;
+    report("NOVA: Task Scope Manager Initialize", tscope_ok);
+    report("NOVA: Task Scope Manager Selftest", tscope_ok && task_scope_manager_self_test() == 0);
+
+    task_manager_initialize();
+    report("NOVA: Task Manager Selftest", task_manager_self_test() == 0);
+
+    task_deadline_manager_initialize();
+    report("NOVA: Task Deadline Manager Selftest", task_deadline_manager_self_test() == 0);
+
+    task_group_manager_initialize();
+    report("NOVA: Task Group Manager Selftest", task_group_manager_self_test() == 0);
+
+    int thread_mgr_ok = thread_manager_initialize() == 0;
+    report("NOVA: Thread Manager Initialize", thread_mgr_ok);
+    report("NOVA: Thread Manager Selftest", thread_mgr_ok && thread_manager_self_test() == 0);
+
+    int smp_ok = smp_initialize() == 0;
+    report("NOVA: SMP/AP-Aktivierung Initialize", smp_ok);
+    report("NOVA: SMP/AP-Aktivierung Selftest", smp_ok && smp_self_test() == 0);
 
     int ring3_ok = ring3_initialize() == 0;
     report("NOVA: Ring-3-Bootstrap (GDT/TSS/User-Pages) Initialize", ring3_ok);

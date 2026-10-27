@@ -3,6 +3,8 @@
 #include "interrupt.h"
 #include "serial.h"
 #include "syscall.h"
+#include "scheduler.h"
+#include "taskdeadline.h"
 
 typedef struct {
     uint16_t offset_low;
@@ -49,15 +51,24 @@ static void idt_set_gate(uint32_t vector, uint32_t handler_addr) {
 }
 
 /* Minimaler Dispatch (cdecl, aus interrupt_isr.asm aufgerufen): zaehlt
-   Timer-Ticks und quittiert IRQs. Scheduler-/Keyboard-/Syscall-Routing
-   folgt, sobald die jeweiligen Subsysteme portiert sind. Gibt den
-   (unveraenderten) Frame-Zeiger zurueck. */
+   Timer-Ticks, quittiert IRQs, pollt Task-Deadlines und reicht den
+   Timer-Tick an scheduler_on_tick weiter (echter Taskwechsel, siehe
+   scheduler.h - bis scheduler_enable() aufgerufen wird, ist das ein
+   No-Op und frame_ptr kommt unveraendert zurueck). `task_deadline_poll`
+   hat ebenfalls ein eigenes Ready-Flag und ist deshalb schon vor
+   scheduler_enable() ein sicheres No-Op, falls task_deadline_manager_
+   initialize() noch nicht gelaufen ist. `io_request_poll_deadlines`/
+   `io_cancel_for_requested_tasks` (io32.inc) werden weiterhin NICHT
+   aufgerufen - das I/O-Request-Subsystem ist nicht portiert (siehe
+   task.h). Keyboard-Routing folgt, sobald das jeweilige Subsystem
+   portiert ist. */
 uint32_t interrupt_dispatch_c(uint32_t vector, uint32_t frame_ptr) __asm__("interrupt_dispatch_c");
 uint32_t interrupt_dispatch_c(uint32_t vector, uint32_t frame_ptr) {
     if (vector == 32) {
         ++timer_ticks_value;
         outb(PIC1_COMMAND, PIC_EOI);
-        return frame_ptr;
+        task_deadline_poll();
+        return scheduler_on_tick(frame_ptr);
     }
     if (vector == 33) {
         (void)inb(0x60); /* Scancode quittieren, noch kein Input-Router */
