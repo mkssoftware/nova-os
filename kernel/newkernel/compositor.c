@@ -587,6 +587,12 @@ static void compositor_log_client_proof_once(void) {
         if (handle == 0) continue;
         if (surface_state(handle) != SURFACE_STATE_ACTIVE) continue;
         if (surface_buffer_addr(handle) == 0) continue;
+        /* owner_pid==0 ist die Desktop Shell selbst (siehe desktop_shell.c
+           SHELL_OWNER_PID) - deren Chrome-Fenster (Taskbar/Icons/
+           Startmenue) entstehen bereits VOR dem echten Ring-3-Client und
+           wuerden diesen einmaligen Beweis sonst vorzeitig mit dem
+           falschen Fenster feuern. */
+        if (surface_owner_pid(handle) == 0u) continue;
 
         uint32_t x, y, w, h;
         if (surface_rect(handle, &x, &y, &w, &h) != 0) continue;

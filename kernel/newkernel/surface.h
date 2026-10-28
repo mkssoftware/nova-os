@@ -16,7 +16,12 @@
 
 #include <stdint.h>
 
-#define SURFACE_CAPACITY 8u
+/* War urspruenglich 8 - angehoben, weil die neue Desktop Shell
+   (desktop_shell.c) allein schon Taskbar+Icon-Layer+Startmenue+mehrere
+   Notification-Toasts als eigene window.c/surface.c-Fenster anlegt (siehe
+   Lektion aus BLOCK_CAPACITY, block.h) und dafuer neben echten
+   Anwendungsfenstern noch Spielraum braucht. */
+#define SURFACE_CAPACITY 16u
 
 #define SURFACE_STATE_FREE        0u /* Slot frei, kein Handle vergeben */
 #define SURFACE_STATE_CREATED     1u

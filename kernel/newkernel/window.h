@@ -24,7 +24,9 @@
 
 #include <stdint.h>
 
-#define WINDOW_CAPACITY 8u
+/* An SURFACE_CAPACITY gekoppelt (1 Window = 1 Surface) - siehe deren
+   Kommentar in surface.h fuer den Grund der Anhebung von 8 auf 16. */
+#define WINDOW_CAPACITY 16u
 
 /* NPSPEC-WINDOW-MANAGEMENT-0004 (Min/Maximize) + -0009 (Fullscreen),
    Darstellungsmodus getrennt vom Surface-Lifecycle (NPSPEC-WINDOW-ARCH-

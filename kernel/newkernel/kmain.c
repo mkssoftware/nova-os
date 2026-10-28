@@ -24,6 +24,7 @@
 #include "display.h"
 #include "compositor.h"
 #include "desktop.h"
+#include "desktop_shell.h"
 #include "surface.h"
 #include "window.h"
 #include "pmm.h"
@@ -843,6 +844,30 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
        Ordnungs-Invariante. */
     report("NOVA: Compositor Thread Start",
            thread_mgr_ok && compositor_thread_start() == 0);
+
+    /* Desktop Shell (siehe desktop_shell.h fuer Scope/NPSPEC-Bezug): echte
+       window.c/surface.c-Fenster fuer Taskbar/Desktop-Icons/Startmenue, die
+       der bereits laufende Compositor-Thread automatisch mitzeichnet
+       (compositor_draw_surfaces_clip). Statische Registrierung MUSS vor
+       desktop_shell_show() erfolgen. Laeuft bewusst erst hier, NICHT in der
+       fruehen "Desktop First"-Phase oben (die nutzt bewusst nur die alte,
+       einfachere compositor_window_create-Rechteck-API fuer den
+       allerersten sichtbaren Frame, siehe desktop.c). */
+    report("NOVA: Desktop Shell Selftest", fb_ok && desktop_shell_self_test() == 0);
+    desktop_shell_initialize();
+    desktop_icon_register_static(0u, 0u, "Explorer");
+    desktop_icon_register_static(1u, 0u, "Terminal");
+    desktop_icon_register_static(2u, 0u, "Settings");
+    start_menu_register_static("Explorer", 0);
+    start_menu_register_static("Terminal", 0);
+    start_menu_register_static("Settings", 0);
+    start_menu_register_static("Shutdown", 0);
+    systray_register_static("Network");
+    systray_register_static("Battery");
+    int shell_ok = fb_ok && desktop_shell_show() == 0;
+    report("NOVA: Desktop Shell Show", shell_ok);
+    report("NOVA: Desktop Shell Thread Start",
+           shell_ok && thread_mgr_ok && desktop_shell_thread_start() == 0);
 
     /* Registriert den echten Progressive-Readiness-Hintergrund-Thread
        (siehe readiness.h) - sitzt ebenso inaktiv bis scheduler_enable(),
