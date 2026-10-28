@@ -150,6 +150,14 @@ uint32_t block_record_driver_handle(void *record) {
     return ((block_record_t *)record)->driver_handle;
 }
 
+void block_record_info(void *record, uint32_t *out_block_size,
+                        uint32_t *out_block_count_lo, uint32_t *out_block_count_hi) {
+    block_record_t *rec = (block_record_t *)record;
+    if (out_block_size) *out_block_size = rec->block_size;
+    if (out_block_count_lo) *out_block_count_lo = rec->block_count_lo;
+    if (out_block_count_hi) *out_block_count_hi = rec->block_count_hi;
+}
+
 int block_device_lookup_by_handle(uint32_t driver_handle, void **out_record) {
     for (uint32_t i = 0; i < BLOCK_CAPACITY; ++i) {
         if (block_records[i].driver_handle == driver_handle) {

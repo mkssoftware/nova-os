@@ -69,6 +69,7 @@
 #include "ipc.h"
 #include "nvme.h"
 #include "ahci.h"
+#include "gpt.h"
 #include "scheduler.h"
 #include "hal.h"
 #include "usb.h"
@@ -473,6 +474,22 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     serial_puts(" Sektoren[0]=");
     serial_put_hex32(ahci_disk_sectors_lo(0));
     serial_puts("\r\n");
+
+    report("NOVA: GPT Partition Scanner Selftest", gpt_self_test() == 0);
+    if (ahci_disk_count_value() > 0) {
+        void *gpt_disk_record = ahci_disk_block_record(0);
+        uint32_t gpt_first_lba = 0, gpt_sectors = 0;
+        int gpt_rc = gpt_find_novafs_partition(gpt_disk_record, &gpt_first_lba, &gpt_sectors);
+        serial_puts("NOVA: GPT NovaFS-Partitionssuche=");
+        serial_put_hex32((uint32_t)gpt_rc);
+        if (gpt_rc == 0) {
+            serial_puts(" ErsteLBA=");
+            serial_put_hex32(gpt_first_lba);
+            serial_puts(" Sektoren=");
+            serial_put_hex32(gpt_sectors);
+        }
+        serial_puts("\r\n");
+    }
 
     scheduler_initialize();
     report("NOVA: Scheduler Frame Selftest", scheduler_self_test() == 0);

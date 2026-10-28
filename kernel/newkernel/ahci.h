@@ -25,4 +25,9 @@ int ahci_self_test(void); /* 0 = ok (kein Controller/Datentraeger = ok) */
 uint32_t ahci_disk_count_value(void);
 uint32_t ahci_disk_sectors_lo(uint32_t index);
 
+/* block.c-Record-Zeiger (fuer block_io_submit/gpt.c) des Datentraegers am
+   Index, oder 0 wenn index >= ahci_disk_count_value() oder dessen
+   Registrierung bei block.c fehlschlug. */
+void *ahci_disk_block_record(uint32_t index);
+
 #endif

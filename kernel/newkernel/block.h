@@ -75,4 +75,11 @@ int block_device_lookup_by_handle(uint32_t driver_handle, void **out_record);
    wiederfinden muessen, wie im alten ASM via BLK_DRIVER_HANDLE). */
 uint32_t block_record_driver_handle(void *record);
 
+/* Liest Blockgroesse und Gesamtkapazitaet (in Bloecken) eines Records
+   zurueck - fuer Aufrufer, die einen Teilbereich (z.B. eine GPT-Partition)
+   gegen die tatsaechliche Geraetegroesse pruefen muessen. out_*-Parameter
+   sind einzeln optional (0 = ignorieren). */
+void block_record_info(void *record, uint32_t *out_block_size,
+                        uint32_t *out_block_count_lo, uint32_t *out_block_count_hi);
+
 #endif

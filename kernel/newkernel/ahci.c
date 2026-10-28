@@ -389,6 +389,11 @@ uint32_t ahci_disk_sectors_lo(uint32_t index) {
     return ahci_disks[index].sectors_lo;
 }
 
+void *ahci_disk_block_record(uint32_t index) {
+    if (index >= ahci_disk_count) return 0;
+    return ahci_disks[index].blkdev;
+}
+
 int ahci_self_test(void) {
     if (ahci_mgr_ready != 1) return -1;
     if (ahci_disk_count == 0) return 0; /* kein Datentraeger - kein Fehler */
