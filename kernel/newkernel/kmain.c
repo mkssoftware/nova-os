@@ -509,6 +509,9 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     report("NOVA: NovaFS B+-Tree Kern Selftest", novafs_tree_self_test() == 0);
     report("NOVA: NovaFS Pfadaufloesung Selftest", novafs_path_self_test() == 0);
     report("NOVA: NovaFS Verzeichnislistung Selftest", novafs_dir_self_test() == 0);
+    report("NOVA: NovaFS Extent/Read Selftest", novafs_extent_self_test() == 0);
+    report("NOVA: NovaFS Journal+Write Selftest", novafs_write_self_test() == 0);
+    report("NOVA: NovaFS Objekt-Lifecycle Selftest", novafs_lifecycle_self_test() == 0);
 
     scheduler_initialize();
     report("NOVA: Scheduler Frame Selftest", scheduler_self_test() == 0);

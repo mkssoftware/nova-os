@@ -152,4 +152,100 @@ int novafs_path_self_test(void); /* 0 = ok */
 
 int novafs_dir_self_test(void); /* 0 = ok */
 
+/* ===================================================================== */
+/* Extents und Dateidaten (Batch 7): Logisch->Physisch-Abbildung + echtes */
+/* Lesen von Dateiinhalten - NUR LESEN (Allokation/Schreiben folgt mit    */
+/* dem Journal-/Write-Batch).                                             */
+/* ===================================================================== */
+
+/* Bildet logical_block (0-basierter 4-KiB-Blockindex innerhalb der
+   Datei) auf einen physischen Volume-Block ab. 0 = Erfolg
+   (*out_physical_block gesetzt - 0 bedeutet ein Loch/Sparse-Bereich,
+   KEIN Fehler), -1 bei einem beschaedigten Extent-Baum. */
+int novafs_extent_map(uint32_t object_id, uint32_t logical_block, uint32_t *out_physical_block);
+
+/* Liest length Byte ab offset aus der Datei object_id nach out_buffer
+   (gekuerzt auf die tatsaechliche Dateigroesse, siehe *out_bytes_read).
+   Loecher werden als Nullen geliefert, ohne I/O. 0 = Erfolg, -1 wenn
+   object_id keine Datei ist oder der Extent-/Datenbereich beschaedigt
+   ist. */
+int novafs_read(uint32_t object_id, uint32_t offset, uint32_t length, uint8_t *out_buffer,
+                 uint32_t *out_bytes_read);
+
+int novafs_extent_self_test(void); /* 0 = ok */
+
+/* ===================================================================== */
+/* Transaction Log + Writes (Batch 8): echte, journalisierte Aenderungen. */
+/* OHNE Copy-on-Write/Snapshots (Stretch/BLOCKED - dieser Kernel hat kein */
+/* Snapshot-Feature; ohne Snapshots ist ein In-Place-Update unter         */
+/* Journal-Schutz genauso crash-sicher). OHNE novafs_create (Anlegen      */
+/* neuer Objekte/Verzeichniseintraege) - das folgt mit dem Objekt-        */
+/* Lifecycle-Batch (Create/Delete/Rename).                                */
+/* ===================================================================== */
+
+/* Beginnt eine neue Aenderung - MUSS vor novafs_write() (und jeder
+   zukuenftigen schreibenden Operation) aufgerufen werden, damit
+   Metadaten-Schreibvorgaenge journalisiert und bei einem Fehler per
+   novafs_change_abort() zurueckgerollt werden koennen. 0 = Erfolg, -1
+   wenn nicht gemountet oder das Volume read-only ist. */
+int novafs_change_begin(void);
+
+/* Schliesst die laufende Aenderung unumkehrbar ab (Generation++, Zustand
+   CLEAN, Bitmap falls geaendert, Backup-Superblock aktualisiert). 0 =
+   Erfolg. */
+int novafs_change_commit(void);
+
+/* Bricht die laufende Aenderung ab und stellt per Journal-Wiedergabe
+   exakt den Zustand vor novafs_change_begin() wieder her. 0 = Erfolg
+   (auch wenn gar keine Aenderung lief - dann ein No-op), -1 wenn die
+   Wiederherstellung selbst fehlschlaegt (das Volume bleibt dann aus
+   Sicherheitsgruenden im DIRTY-Zustand). */
+int novafs_change_abort(void);
+
+/* Schreibt item (NOVAFS_OBJECT_ITEM_SIZE Byte, z.B. eine per
+   novafs_object_find() geholte und veraenderte Kopie) an seine Position
+   im Object-Baum zurueck. 0 = Erfolg. */
+int novafs_object_store(uint32_t object_id, const uint8_t *item);
+
+/* Schreibt length Byte aus buffer ab offset in die Datei object_id -
+   erfordert eine laufende Aenderung (novafs_change_begin) fuer echte
+   Crash-Sicherheit. Neue Bloecke werden genullt, bestehende per Read-
+   Modify-Write aktualisiert; die Dateigroesse waechst monoton. 0 =
+   Erfolg, -1 wenn das Volume read-only ist, object_id keine Datei ist,
+   oder ein Block nicht alloziert/geschrieben werden kann. */
+int novafs_write(uint32_t object_id, uint32_t offset, uint32_t length, const uint8_t *buffer);
+
+int novafs_write_self_test(void); /* 0 = ok */
+
+/* ===================================================================== */
+/* Objekt-Lifecycle (Batch 9): Anlegen/Loeschen/Umbenennen. Erfordert     */
+/* eine laufende Aenderung (novafs_change_begin) fuer echte Crash-        */
+/* Sicherheit, wie novafs_write. Zeitstempel werden bewusst NICHT         */
+/* gesetzt (keine RTC-Anbindung in novafs.c verdrahtet).                 */
+/* ===================================================================== */
+
+/* Legt eine neue Datei/ein neues Verzeichnis namens name (len Byte, KEIN
+   Nullterminator) unter parent_id an. Die ObjectID wird monoton vergeben
+   und NIE wiederverwendet. 0 = Erfolg (*out_object_id gesetzt), -1 wenn
+   read-only, der Name ungueltig ist, parent_id kein Verzeichnis ist, der
+   Name bereits existiert, oder die Kapazitaet erschoepft ist. */
+int novafs_create(uint32_t parent_id, uint32_t type, const char *name, uint32_t len,
+                   uint32_t *out_object_id);
+
+/* Loescht den Verzeichniseintrag name unter parent_id samt Objekt und
+   (bei einer Datei) allen Extents/deren Bloecken. ObjectIDs unterhalb
+   NOVAFS_FIRST_DYNAMIC_ID(256) sind geschuetzt. Ein Verzeichnis muss leer
+   sein. 0 = Erfolg. */
+int novafs_delete(uint32_t parent_id, const char *name, uint32_t len);
+
+/* Benennt um bzw. verschiebt src_name unter src_parent zu dst_name unter
+   dst_parent. Ein vorhandenes Ziel wird NICHT ueberschrieben;
+   Verzeichnisse duerfen nicht in sich selbst oder ihre eigenen
+   Nachfahren verschoben werden. 0 = Erfolg (auch wenn Quelle und Ziel
+   identisch sind - dann ein No-op). */
+int novafs_rename(uint32_t src_parent, const char *src_name, uint32_t src_len,
+                   uint32_t dst_parent, const char *dst_name, uint32_t dst_len);
+
+int novafs_lifecycle_self_test(void); /* 0 = ok */
+
 #endif

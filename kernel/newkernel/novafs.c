@@ -9,6 +9,7 @@
 #define NOVAFS_JOURNAL_BLOCKS 17u /* NOVAFS_JOURNAL_SLOTS(16) + 1 */
 #define NOVAFS_INCOMPAT_KNOWN 3u
 #define NOVAFS_STATE_CLEAN 0u
+#define NOVAFS_STATE_DIRTY 1u
 #define NOVAFS_FIRST_DYNAMIC_ID 256u
 
 /* Superblock-Feldoffsets (siehe novafs32.inc). */
@@ -29,6 +30,7 @@
 #define NFS_SB_STATE          388u
 #define NFS_SB_NEXT_OBJECT    392u
 #define NFS_SB_BITMAP_BLOCKS  400u
+#define NFS_SB_OBJECT_COUNT   408u
 #define NFS_SB_BACKUP_BLOCK   416u
 #define NFS_SB_BITMAP_CRC     424u
 
@@ -45,6 +47,7 @@ static uint32_t nfs_bitmap_blocks_value = 0;
    das zuletzt per novafs_probe_volume() erfolgreich sondierte Geraet. */
 static void *nfs_record = 0;
 static uint32_t nfs_part_first_lba = 0;
+static uint32_t nfs_part_blocks_value = 0;
 
 static uint32_t crc32c_update(uint32_t crc, const uint8_t *data, uint32_t length) {
     for (uint32_t i = 0; i < length; ++i) {
@@ -254,6 +257,7 @@ int novafs_probe_volume(void *record, uint32_t part_first_lba, uint32_t part_sec
 
     nfs_record = record;
     nfs_part_first_lba = part_first_lba;
+    nfs_part_blocks_value = part_blocks;
     nfs_used_backup = used_backup;
     nfs_mounted = 1;
     return 0;
@@ -297,6 +301,7 @@ int novafs_is_used_backup(void) {
 #define NFS_N_TREE       8u
 #define NFS_N_BLOCK      16u
 #define NFS_N_PARENT     24u
+#define NFS_N_GENERATION 32u
 #define NFS_N_CHECKSUM   40u
 #define NFS_N_ITEM_SIZE  72u
 #define NFS_N_MAX_ITEMS  74u
@@ -331,9 +336,406 @@ static int novafs_read_block(uint32_t block, uint8_t *buf) {
 }
 
 static int novafs_write_block(uint32_t block, uint8_t *buf) {
+    if (nfs_readonly) return -1;
     if (nfs_record == 0 || block >= nfs_total_blocks_value) return -1;
     uint32_t lba = nfs_part_first_lba + block * NOVAFS_SECTORS_PER_BLOCK;
     return block_io_submit(nfs_record, lba, 0u, NOVAFS_SECTORS_PER_BLOCK, buf, BLK_IO_WRITE);
+}
+
+static int novafs_device_flush(void) {
+    return block_io_submit(nfs_record, 0u, 0u, 0u, 0, BLK_IO_FLUSH);
+}
+
+/* ===================================================================== */
+/* Transaction Log + Writes (Batch 8): Undo-Journal, Bitmap-Allokation,  */
+/* Transaktionsklammer (change_begin/commit/abort). Port aus             */
+/* novafs32.inc's §9-Transaction-Log + Bitmap-Allokationsteil - OHNE     */
+/* Copy-on-Write/Snapshots (§125-Erweiterung, bewusst Stretch/BLOCKED,   */
+/* da dieser Kernel keine Snapshots unterstuetzt - ohne Snapshots ist    */
+/* ein einfaches In-Place-Update unter Journal-Schutz genauso sicher).   */
+/* ===================================================================== */
+
+#define NOVAFS_JOURNAL_SLOTS  16u
+#define NOVAFS_JOURNAL_MAGIC  0x4E524A4Eu /* "NJRN" */
+#define NFS_J_MAGIC      0u
+#define NFS_J_VERSION    4u
+#define NFS_J_GENERATION 8u
+#define NFS_J_COUNT      16u
+#define NFS_J_CHECKSUM   24u
+#define NFS_J_ENTRIES    56u
+
+static int nfs_txn_open = 0;
+static uint32_t nfs_journal_count = 0;
+static uint32_t nfs_journal_entries[NOVAFS_JOURNAL_SLOTS];
+static uint32_t nfs_journal_slot_page = 0;
+static uint32_t nfs_journal_header_page = 0;
+static int nfs_bitmap_dirty = 0;
+
+static int novafs_journal_write_header(void) {
+    if (nfs_journal_header_page == 0) {
+        uint32_t numa;
+        nfs_journal_header_page = pmm_alloc_page(&numa);
+        if (nfs_journal_header_page == 0) return -1;
+    }
+    uint8_t *hdr = (uint8_t *)(uintptr_t)nfs_journal_header_page;
+    for (uint32_t i = 0; i < NOVAFS_BLOCK_SIZE; ++i) hdr[i] = 0;
+
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    *(uint32_t *)(hdr + NFS_J_MAGIC) = NOVAFS_JOURNAL_MAGIC;
+    *(uint32_t *)(hdr + NFS_J_VERSION) = 1u;
+    *(uint32_t *)(hdr + NFS_J_GENERATION) = *(const uint32_t *)(sb + NFS_SB_GENERATION);
+    *(uint32_t *)(hdr + NFS_J_GENERATION + 4) = *(const uint32_t *)(sb + NFS_SB_GENERATION + 4);
+    *(uint32_t *)(hdr + NFS_J_COUNT) = nfs_journal_count;
+    for (uint32_t i = 0; i < nfs_journal_count; ++i) {
+        *(uint32_t *)(hdr + NFS_J_ENTRIES + i * 4u) = nfs_journal_entries[i];
+    }
+    novafs_seal(hdr, NOVAFS_BLOCK_SIZE, NFS_J_CHECKSUM);
+
+    uint32_t journal_block = *(const uint32_t *)(sb + NFS_SB_JOURNAL_BLOCK);
+    return novafs_write_block(journal_block, hdr);
+}
+
+/* Sichert block's BISHERIGEN Inhalt im Undo-Journal, sofern eine
+   Aenderung laeuft und der Block in dieser Transaktion noch nicht
+   gesichert wurde (Port aus novafs_journal_capture). Ohne laufende
+   Aenderung ein No-op (0 = Erfolg). */
+static int novafs_journal_capture(uint32_t block) {
+    if (!nfs_txn_open) return 0;
+    for (uint32_t i = 0; i < nfs_journal_count; ++i) {
+        if (nfs_journal_entries[i] == block) return 0; /* bereits gesichert */
+    }
+    if (nfs_journal_count >= NOVAFS_JOURNAL_SLOTS) return -1;
+
+    if (nfs_journal_slot_page == 0) {
+        uint32_t numa;
+        nfs_journal_slot_page = pmm_alloc_page(&numa);
+        if (nfs_journal_slot_page == 0) return -1;
+    }
+    uint8_t *slot = (uint8_t *)(uintptr_t)nfs_journal_slot_page;
+    if (novafs_read_block(block, slot) != 0) return -1;
+
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    uint32_t journal_block = *(const uint32_t *)(sb + NFS_SB_JOURNAL_BLOCK);
+    if (novafs_write_block(journal_block + 1u + nfs_journal_count, slot) != 0) return -1;
+
+    nfs_journal_entries[nfs_journal_count] = block;
+    ++nfs_journal_count;
+    if (novafs_journal_write_header() != 0) return -1;
+    return novafs_device_flush();
+}
+
+/* Wie novafs_write_block, sichert aber zuerst den bisherigen Inhalt im
+   Undo-Journal (Port aus novafs_write_block_logged). JEDE Metadaten-
+   Aenderung (Knoten/Superblock/Bitmap) MUSS darueber laufen, damit ein
+   Absturz mitten in der Transaktion per novafs_change_abort sauber
+   zurueckgerollt werden kann. */
+static int novafs_write_block_logged(uint32_t block, uint8_t *buf) {
+    if (novafs_journal_capture(block) != 0) return -1;
+    return novafs_write_block(block, buf);
+}
+
+/* Versiegelt den aktuellen Superblock-Puffer und schreibt ihn (journaliert)
+   an seine PRIMAERE Position (Block 1). Der Backup-Superblock wird bewusst
+   NICHT journalisiert (NPSPEC-NOVAFS-ONDISK-0001 §9) - er wird separat in
+   novafs_change_commit() geschrieben, erst NACHDEM die Transaktion bereits
+   unumkehrbar abgeschlossen ist. */
+static int novafs_superblock_write_primary(void) {
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    novafs_seal(sb, NOVAFS_BLOCK_SIZE, NFS_SB_CHECKSUM);
+    return novafs_write_block_logged(1u, sb);
+}
+
+/* Rollt alle in dieser Transaktion gesicherten Pre-Images zurueck (Port
+   aus novafs_journal_undo). Erwartet, dass [nfs_sb_page] den aktuellen
+   (DIRTY) Superblock enthaelt. 0 = Erfolg (Journal konsumiert), -1 wenn
+   keine gueltige, zu dieser Transaktion passende Journal-Region gefunden
+   wurde - dann wurde nichts veraendert. */
+static int novafs_journal_undo(void) {
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    uint32_t journal_block = *(const uint32_t *)(sb + NFS_SB_JOURNAL_BLOCK);
+    if (journal_block >= nfs_total_blocks_value) return -1;
+
+    if (nfs_journal_header_page == 0) {
+        uint32_t numa;
+        nfs_journal_header_page = pmm_alloc_page(&numa);
+        if (nfs_journal_header_page == 0) return -1;
+    }
+    uint8_t *hdr = (uint8_t *)(uintptr_t)nfs_journal_header_page;
+    if (novafs_read_block(journal_block, hdr) != 0) return -1;
+    if (*(const uint32_t *)(hdr + NFS_J_MAGIC) != NOVAFS_JOURNAL_MAGIC) return -1;
+    if (*(const uint32_t *)(hdr + NFS_J_VERSION) != 1u) return -1;
+    if (novafs_verify(hdr, NOVAFS_BLOCK_SIZE, NFS_J_CHECKSUM) != 0) return -1;
+    if (*(const uint32_t *)(hdr + NFS_J_GENERATION) != *(const uint32_t *)(sb + NFS_SB_GENERATION) ||
+        *(const uint32_t *)(hdr + NFS_J_GENERATION + 4) !=
+            *(const uint32_t *)(sb + NFS_SB_GENERATION + 4)) {
+        return -1;
+    }
+
+    uint32_t count = *(const uint32_t *)(hdr + NFS_J_COUNT);
+    if (count == 0u || count > NOVAFS_JOURNAL_SLOTS) return -1;
+
+    uint32_t undo_entries[NOVAFS_JOURNAL_SLOTS];
+    for (uint32_t i = 0; i < count; ++i) {
+        undo_entries[i] = *(const uint32_t *)(hdr + NFS_J_ENTRIES + i * 4u);
+    }
+
+    int saved_ro = nfs_readonly;
+    nfs_readonly = 0;
+
+    if (nfs_journal_slot_page == 0) {
+        uint32_t numa;
+        nfs_journal_slot_page = pmm_alloc_page(&numa);
+        if (nfs_journal_slot_page == 0) {
+            nfs_readonly = saved_ro;
+            return -1;
+        }
+    }
+    uint8_t *slot = (uint8_t *)(uintptr_t)nfs_journal_slot_page;
+
+    /* In umgekehrter Reihenfolge wiederherstellen (letzte Aenderung zuerst
+       zuruecknehmen), exakt wie im alten ASM. */
+    for (uint32_t i = count; i > 0u; --i) {
+        uint32_t idx = i - 1u;
+        if (novafs_read_block(journal_block + 1u + idx, slot) != 0) {
+            nfs_readonly = saved_ro;
+            return -1;
+        }
+        if (novafs_write_block(undo_entries[idx], slot) != 0) {
+            nfs_readonly = saved_ro;
+            return -1;
+        }
+    }
+    if (novafs_device_flush() != 0) {
+        nfs_readonly = saved_ro;
+        return -1;
+    }
+
+    nfs_journal_count = 0;
+    if (novafs_journal_write_header() != 0) {
+        nfs_readonly = saved_ro;
+        return -1;
+    }
+    if (novafs_device_flush() != 0) {
+        nfs_readonly = saved_ro;
+        return -1;
+    }
+
+    nfs_readonly = saved_ro;
+    return 0;
+}
+
+static int novafs_bitmap_test_and_set(uint32_t block) {
+    uint32_t page_index = block >> 15;
+    if (page_index >= nfs_bitmap_blocks_value) return 1; /* ausserhalb -> "belegt" */
+    uint32_t bit = block & 0x7FFFu;
+    uint32_t *words = (uint32_t *)(uintptr_t)nfs_bitmap_pages[page_index];
+    uint32_t mask = 1u << (bit & 31u);
+    uint32_t *word = &words[bit >> 5];
+    int was_set = (*word & mask) != 0u;
+    *word |= mask;
+    return was_set;
+}
+
+static int novafs_bitmap_test_and_clear(uint32_t block) {
+    uint32_t page_index = block >> 15;
+    if (page_index >= nfs_bitmap_blocks_value) return 0;
+    uint32_t bit = block & 0x7FFFu;
+    uint32_t *words = (uint32_t *)(uintptr_t)nfs_bitmap_pages[page_index];
+    uint32_t mask = 1u << (bit & 31u);
+    uint32_t *word = &words[bit >> 5];
+    int was_set = (*word & mask) != 0u;
+    *word &= ~mask;
+    return was_set;
+}
+
+/* EAX=gewuenschter Block. CF=1 wenn belegt oder ausserhalb (Port aus
+   novafs_alloc_specific). 0 = Erfolg (Bit gesetzt, AVAILABLE dekrementiert,
+   Bitmap als dirty markiert). */
+static int novafs_alloc_specific(uint32_t block) {
+    if (block >= nfs_total_blocks_value) return -1;
+    if (novafs_bitmap_test_and_set(block)) return -1; /* war schon belegt */
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    *(uint32_t *)(sb + NFS_SB_AVAILABLE) = *(const uint32_t *)(sb + NFS_SB_AVAILABLE) - 1u;
+    nfs_bitmap_dirty = 1;
+    return 0;
+}
+
+/* Sucht ab hint (wrapt am Volumeende) den naechsten freien Block (Port
+   aus novafs_alloc_block). 0 = Erfolg (*out_block gesetzt), -1 wenn das
+   Volume voll ist. */
+static int novafs_alloc_block(uint32_t hint, uint32_t *out_block) {
+    uint32_t total = nfs_total_blocks_value;
+    if (total == 0u) return -1;
+    if (hint >= total) hint = 0u;
+    uint32_t block = hint;
+    for (;;) {
+        if (novafs_alloc_specific(block) == 0) {
+            *out_block = block;
+            return 0;
+        }
+        ++block;
+        if (block >= total) block = 0u;
+        if (block == hint) return -1; /* voll */
+    }
+}
+
+/* Nur fuer die Rueckabwicklung nicht geschriebener Allokationen derselben
+   Operation (Port aus novafs_free_block). */
+static void novafs_free_block(uint32_t block) {
+    if (block >= nfs_total_blocks_value) return;
+    if (novafs_bitmap_test_and_clear(block)) {
+        uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+        *(uint32_t *)(sb + NFS_SB_AVAILABLE) = *(const uint32_t *)(sb + NFS_SB_AVAILABLE) + 1u;
+        nfs_bitmap_dirty = 1;
+    }
+}
+
+/* Beginnt eine neue Aenderung (Port aus novafs_change_begin). 0 = Erfolg,
+   -1 wenn nicht gemountet oder das Volume read-only ist. */
+int novafs_change_begin(void) {
+    if (!nfs_mounted) return -1;
+    if (nfs_readonly) return -1;
+
+    nfs_journal_count = 0;
+    nfs_txn_open = 1;
+
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    if (*(const uint32_t *)(sb + NFS_SB_STATE) == NOVAFS_STATE_DIRTY) return 0;
+
+    *(uint32_t *)(sb + NFS_SB_STATE) = NOVAFS_STATE_DIRTY;
+    if (novafs_superblock_write_primary() != 0) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+    if (novafs_device_flush() != 0) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+    return 0;
+}
+
+/* Schliesst die laufende Aenderung unumkehrbar ab: schreibt eine
+   geaenderte Bitmap journaliert, erhoeht die Generation, schreibt den
+   primaeren Superblock CLEAN (journaliert), konsumiert das Journal, und
+   schreibt zuletzt den Backup-Superblock (bewusst NICHT journalisiert,
+   siehe novafs_superblock_write_primary). 0 = Erfolg. */
+int novafs_change_commit(void) {
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    if (*(const uint32_t *)(sb + NFS_SB_STATE) != NOVAFS_STATE_DIRTY) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+
+    if (nfs_bitmap_dirty) {
+        uint32_t crc = 0xFFFFFFFFu;
+        for (uint32_t b = 0; b < nfs_bitmap_blocks_value; ++b) {
+            uint8_t *bmp = (uint8_t *)(uintptr_t)nfs_bitmap_pages[b];
+            if (novafs_write_block_logged(2u + b, bmp) != 0) {
+                nfs_txn_open = 0;
+                return -1;
+            }
+            crc = crc32c_update(crc, bmp, NOVAFS_BLOCK_SIZE);
+        }
+        *(uint32_t *)(sb + NFS_SB_BITMAP_CRC) = ~crc;
+        nfs_bitmap_dirty = 0;
+    }
+
+    if (novafs_device_flush() != 0) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+
+    uint32_t gen_lo = *(const uint32_t *)(sb + NFS_SB_GENERATION);
+    uint32_t gen_hi = *(const uint32_t *)(sb + NFS_SB_GENERATION + 4);
+    ++gen_lo;
+    if (gen_lo == 0u) ++gen_hi;
+    *(uint32_t *)(sb + NFS_SB_GENERATION) = gen_lo;
+    *(uint32_t *)(sb + NFS_SB_GENERATION + 4) = gen_hi;
+    *(uint32_t *)(sb + NFS_SB_STATE) = NOVAFS_STATE_CLEAN;
+
+    if (novafs_superblock_write_primary() != 0) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+    if (novafs_device_flush() != 0) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+
+    /* Ab hier ist die Transaktion unumkehrbar abgeschlossen; das Journal
+       wird nicht mehr benoetigt. */
+    nfs_txn_open = 0;
+    nfs_journal_count = 0;
+    if (novafs_journal_write_header() != 0) return -1;
+    if (novafs_device_flush() != 0) return -1;
+
+    uint32_t total = *(const uint32_t *)(sb + NFS_SB_TOTAL);
+    if (novafs_write_block(total - 1u, sb) != 0) return -1;
+    return novafs_device_flush();
+}
+
+/* Bricht die laufende Aenderung ab und stellt per novafs_journal_undo
+   exakt den Zustand vor ihrem Beginn wieder her (Port aus
+   novafs_change_abort). 0 = Erfolg (auch wenn gar keine Aenderung DIRTY
+   war - dann ein No-op), -1 wenn die Wiederherstellung selbst fehlschlaegt. */
+int novafs_change_abort(void) {
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    if (*(const uint32_t *)(sb + NFS_SB_STATE) != NOVAFS_STATE_DIRTY) {
+        nfs_txn_open = 0;
+        return 0;
+    }
+
+    if (novafs_journal_undo() != 0) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+
+    if (nfs_journal_slot_page == 0) {
+        uint32_t numa;
+        nfs_journal_slot_page = pmm_alloc_page(&numa);
+        if (nfs_journal_slot_page == 0) {
+            nfs_txn_open = 0;
+            return -1;
+        }
+    }
+    uint8_t *scratch = (uint8_t *)(uintptr_t)nfs_journal_slot_page;
+    if (novafs_read_block(1u, scratch) != 0) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+    if (novafs_validate_superblock(scratch, nfs_part_blocks_value) != 0) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+    if (*(const uint32_t *)(scratch + NFS_SB_STATE) != NOVAFS_STATE_CLEAN) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < NOVAFS_BLOCK_SIZE; ++i) sb[i] = scratch[i];
+    nfs_total_blocks_value = *(const uint32_t *)(sb + NFS_SB_TOTAL);
+    nfs_bitmap_blocks_value = *(const uint32_t *)(sb + NFS_SB_BITMAP_BLOCKS);
+
+    /* Die im Speicher gehaltene Bitmap-Kopie kann durch die abgebrochene
+       Operation veraendert worden sein - von der wiederhergestellten
+       Platte neu laden. */
+    uint32_t crc = 0xFFFFFFFFu;
+    for (uint32_t b = 0; b < nfs_bitmap_blocks_value; ++b) {
+        uint8_t *bmp = (uint8_t *)(uintptr_t)nfs_bitmap_pages[b];
+        if (novafs_read_block(2u + b, bmp) != 0) {
+            nfs_txn_open = 0;
+            return -1;
+        }
+        crc = crc32c_update(crc, bmp, NOVAFS_BLOCK_SIZE);
+    }
+    if (~crc != *(const uint32_t *)(sb + NFS_SB_BITMAP_CRC)) {
+        nfs_txn_open = 0;
+        return -1;
+    }
+
+    nfs_bitmap_dirty = 0;
+    nfs_txn_open = 0;
+    return 0;
 }
 
 /* EDI-Aequivalent: Seite fuer Pfadtiefe depth (allokiert lazy, bleibt wie
@@ -433,14 +835,19 @@ static int novafs_node_load(uint32_t block, uint8_t *buf, const novafs_tree_t *t
     return 0;
 }
 
-/* Versiegelt und schreibt den Knoten an seine eigene Blocknummer (Port aus
-   novafs_node_store - OHNE Generation-Fortschreibung/Journal-Eintrag, die
-   erst mit dem Write-Batch kommen, da es hier noch keine laufende
-   Aenderung/Transaktion gibt). */
+/* Setzt die Generation der laufenden Aenderung, versiegelt und schreibt
+   den Knoten journaliert an seine eigene Blocknummer (Port aus
+   novafs_node_store). Ausserhalb einer Transaktion (nfs_txn_open=0) ist
+   novafs_write_block_logged's Journal-Erfassung ein No-op - das Schreiben
+   selbst findet trotzdem statt (z.B. fuer die Selbsttest-Fixtures dieser
+   Datei, die Knoten direkt ueber die B+-Tree-Funktionen bauen). */
 static int novafs_node_store(uint8_t *buf) {
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    uint32_t gen = *(const uint32_t *)(sb + NFS_SB_GENERATION) + 1u;
+    *(uint32_t *)(buf + NFS_N_GENERATION) = gen;
     novafs_seal(buf, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
     uint32_t block = *(const uint32_t *)(buf + NFS_N_BLOCK);
-    return novafs_write_block(block, buf);
+    return novafs_write_block_logged(block, buf);
 }
 
 /* Initialisiert einen leeren Knoten (Port aus novafs_node_init). */
@@ -631,6 +1038,30 @@ int novafs_tree_insert_simple(const novafs_tree_t *tree, const uint8_t *item) {
     return novafs_node_store(leaf);
 }
 
+/* Entfernt das Item an der aktuellen Cursorposition (Port aus
+   novafs_cursor_remove - OHNE Blatt-Zusammenlegen/§125-Merge: das ist im
+   alten ASM bereits ausdruecklich "best-effort, Fehler werden ignoriert"
+   - ein unterlassenes Merge aendert nur die Baumform/Fuellstand, nie die
+   Korrektheit der verbleibenden Daten). 0 = Erfolg. */
+static int novafs_cursor_remove(const novafs_tree_t *tree) {
+    if (nfs_cur_tree != tree) return -1;
+    uint8_t *leaf = novafs_level_page(nfs_path_depth);
+    if (leaf == 0) return -1;
+
+    uint32_t count = *(const uint16_t *)(leaf + NFS_N_COUNT);
+    uint32_t index = nfs_cur_index;
+    if (index >= count) return -1;
+
+    uint32_t item_size = tree->item_size;
+    uint8_t *dst = leaf + NOVAFS_NODE_HEADER + index * item_size;
+    uint32_t moved = (count - index - 1u) * item_size;
+    for (uint32_t i = 0; i < moved; ++i) dst[i] = dst[i + item_size];
+    for (uint32_t i = 0; i < item_size; ++i) dst[moved + i] = 0;
+
+    *(uint16_t *)(leaf + NFS_N_COUNT) = (uint16_t)(count - 1u);
+    return novafs_node_store(leaf);
+}
+
 /* ===================================================================== */
 /* Verzeichnisse und Pfade (Batch 5): Object-Lookup + Namensaufloesung   */
 /* ueber den Directory-Baum + Pfadaufloesung (NUR Lesen - novafs_lookup  */
@@ -802,11 +1233,20 @@ int novafs_resolve_path(const char *path, uint32_t len, uint32_t *out_object_id,
 
 static uint32_t nfs_data_page = 0;
 
+/* nfs_prev_* beschreibt nach jedem novafs_extent_map()-Aufruf das letzte
+   untersuchte Extent des Objekts mit Start <= logical_block (Port aus
+   novafs32.inc's gleichnamigen Globalen) - novafs_extent_allocate() nutzt
+   das, um eine neue Allokation bevorzugt an ein bestehendes Extent
+   anzuhaengen statt immer einen neuen B+-Tree-Eintrag anzulegen. */
+static int nfs_prev_valid = 0;
+static uint32_t nfs_prev_logical = 0, nfs_prev_count = 0, nfs_prev_physical = 0;
+
 /* Bildet logical_block (0-basierter 4-KiB-Blockindex innerhalb der Datei)
    auf einen physischen Volume-Block ab (Port aus novafs_extent_map).
    0 = Erfolg (*out_physical_block gesetzt - 0 bedeutet ein Loch/
    Sparse-Bereich, kein Fehler), -1 bei einem beschaedigten Extent-Baum. */
 int novafs_extent_map(uint32_t object_id, uint32_t logical_block, uint32_t *out_physical_block) {
+    nfs_prev_valid = 0;
     novafs_key_set(object_id, 0u);
     if (novafs_cursor_seek(&novafs_tree_extent) != 0) return -1;
 
@@ -832,6 +1272,11 @@ int novafs_extent_map(uint32_t object_id, uint32_t logical_block, uint32_t *out_
         uint32_t physical = *(const uint32_t *)(item + NFS_E_PHYSICAL);
         if (*(const uint32_t *)(item + NFS_E_PHYSICAL + 4) != 0u) return -1;
 
+        nfs_prev_logical = logical;
+        nfs_prev_count = count;
+        nfs_prev_physical = physical;
+        nfs_prev_valid = 1;
+
         uint32_t within = logical_block - logical;
         if (within < count) {
             uint32_t phys = physical + within;
@@ -844,6 +1289,85 @@ int novafs_extent_map(uint32_t object_id, uint32_t logical_block, uint32_t *out_
     }
 
     *out_physical_block = result;
+    return 0;
+}
+
+/* Legt ein neues, bereits allozierte physische_block referenzierendes
+   Extent (count=1) im Extent-Baum an und aktualisiert nfs_prev_* fuer
+   eine eventuell direkt folgende Verlaengerung. Gibt physische_block bei
+   einem Fehlschlag NICHT automatisch frei - das macht der Aufrufer, da er
+   als einziger weiss, ob die Allokation ausserhalb dieser Funktion
+   erfolgte. 0 = Erfolg (*out_physical_block gesetzt). */
+static int novafs_extent_insert_new(uint32_t object_id, uint32_t logical_block,
+                                     uint32_t physical_block, uint32_t *out_physical_block) {
+    uint8_t item[72] = {0};
+    *(uint32_t *)(item + NFS_E_OBJECT) = object_id;
+    *(uint32_t *)(item + NFS_E_LOGICAL) = logical_block << 12;
+    *(uint32_t *)(item + NFS_E_PHYSICAL) = physical_block;
+    *(uint32_t *)(item + NFS_E_COUNT) = 1u;
+
+    novafs_key_set(object_id, logical_block << 12);
+    if (novafs_cursor_seek(&novafs_tree_extent) != 0) return -1;
+    if (novafs_tree_insert_simple(&novafs_tree_extent, item) != 0) return -1;
+
+    nfs_prev_logical = logical_block;
+    nfs_prev_count = 1u;
+    nfs_prev_physical = physical_block;
+    nfs_prev_valid = 1;
+    *out_physical_block = physical_block;
+    return 0;
+}
+
+/* Ordnet logical_block einen NEUEN physischen Block zu - bevorzugt durch
+   Verlaengern des Extents, das laut nfs_prev_* (aus dem letzten
+   novafs_extent_map()-Aufruf fuer DIESEN Block) unmittelbar davor endet,
+   sonst durch Anlegen eines neuen Extent-Eintrags (Port aus
+   novafs_extent_allocate - OHNE die §125-Kompressions-Buchhaltung
+   NFS_E_UNCOMPRESSED/STORED, die ohne Kompressions-Feature keinen Zweck
+   hat). 0 = Erfolg (*out_physical_block gesetzt), -1 wenn das Volume voll
+   ist oder der Extent-Baum nicht erweitert werden kann. */
+static int novafs_extent_allocate(uint32_t object_id, uint32_t logical_block,
+                                   uint32_t *out_physical_block) {
+    if (nfs_prev_valid && nfs_prev_logical + nfs_prev_count == logical_block) {
+        uint32_t candidate = nfs_prev_physical + nfs_prev_count;
+        if (novafs_alloc_specific(candidate) == 0) {
+            /* Vorhandenes Extent um einen Block verlaengern. */
+            novafs_key_set(object_id, nfs_prev_logical << 12);
+            if (novafs_cursor_seek(&novafs_tree_extent) != 0) {
+                novafs_free_block(candidate);
+                return -1;
+            }
+            uint8_t *item = novafs_cursor_item_ptr();
+            if (item == 0 || novafs_compare_item(item, novafs_tree_extent.key_size) != 0) {
+                novafs_free_block(candidate);
+                return -1;
+            }
+            uint32_t count = *(const uint32_t *)(item + NFS_E_COUNT);
+            *(uint32_t *)(item + NFS_E_COUNT) = count + 1u;
+            uint8_t *leaf = novafs_level_page(nfs_path_depth);
+            if (leaf == 0 || novafs_node_store(leaf) != 0) return -1;
+            ++nfs_prev_count;
+            *out_physical_block = candidate;
+            return 0;
+        }
+        /* Direkt anschliessender Block ist belegt - neuen, separaten
+           Extent anlegen, aber mit diesem Block als Suchhinweis. */
+        uint32_t hint = nfs_prev_physical + nfs_prev_count;
+        uint32_t block;
+        if (novafs_alloc_block(hint, &block) != 0) return -1;
+        if (novafs_extent_insert_new(object_id, logical_block, block, out_physical_block) != 0) {
+            novafs_free_block(block);
+            return -1;
+        }
+        return 0;
+    }
+
+    uint32_t block;
+    if (novafs_alloc_block(nfs_bitmap_blocks_value + 2u, &block) != 0) return -1;
+    if (novafs_extent_insert_new(object_id, logical_block, block, out_physical_block) != 0) {
+        novafs_free_block(block);
+        return -1;
+    }
     return 0;
 }
 
@@ -898,6 +1422,307 @@ int novafs_read(uint32_t object_id, uint32_t offset, uint32_t length, uint8_t *o
 
     *out_bytes_read = done;
     return 0;
+}
+
+#define NFS_O_GENERATION 112u
+
+/* Schreibt item (NFS_O_ITEM Byte, z.B. eine lokale Kopie eines per
+   novafs_object_find() geholten und veraenderten Objekts) an seine
+   Position im Object-Baum zurueck (Port aus novafs_object_store) - setzt
+   dabei die Objekt-Generation auf [sb.GENERATION]+1 und versiegelt neu.
+   JEDE Aenderung an einem Objekt-Item (Groesse, Zeitstempel, ...) MUSS
+   darueber laufen, niemals durch direktes Schreiben in einen per
+   novafs_cursor_item_ptr() erhaltenen Zeiger ausserhalb einer frischen
+   novafs_object_find()-Positionierung. 0 = Erfolg. */
+int novafs_object_store(uint32_t object_id, const uint8_t *item) {
+    uint8_t saved[NFS_O_ITEM];
+    for (uint32_t i = 0; i < NFS_O_ITEM; ++i) saved[i] = item[i];
+
+    uint8_t discard[NFS_O_ITEM];
+    if (novafs_object_find(object_id, discard) != 0) return -1;
+
+    uint8_t *leaf_item = novafs_cursor_item_ptr();
+    if (leaf_item == 0) return -1;
+    for (uint32_t i = 0; i < NFS_O_ITEM; ++i) leaf_item[i] = saved[i];
+
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    uint32_t gen = *(const uint32_t *)(sb + NFS_SB_GENERATION) + 1u;
+    *(uint32_t *)(leaf_item + NFS_O_GENERATION) = gen;
+    novafs_seal(leaf_item, NFS_O_ITEM, NFS_O_CHECKSUM);
+
+    uint8_t *leaf_node = novafs_level_page(nfs_path_depth);
+    if (leaf_node == 0) return -1;
+    return novafs_node_store(leaf_node);
+}
+
+/* Schreibt length Byte aus buffer ab offset in die Datei object_id (Port
+   aus novafs_write - OHNE Copy-on-Write/Snapshots, siehe Abschnittskopf
+   oben). Neue Bloecke (Loecher) werden vor dem Teilschreiben genullt,
+   bestehende Bloecke per Read-Modify-Write aktualisiert; die
+   Dateigroesse waechst monoton (ein Write, das bereits beschriebene
+   Bytes ueberschreibt, verkleinert sie nie). Erfordert eine laufende
+   Aenderung (novafs_change_begin) fuer echte Crash-Sicherheit, schreibt
+   aber auch ausserhalb einer solchen (dann unjournaliert, wie jedes
+   novafs_write_block_logged ausserhalb einer Transaktion). 0 = Erfolg,
+   -1 wenn das Volume read-only ist, object_id keine Datei ist, oder ein
+   Block nicht alloziert/geschrieben werden kann. */
+int novafs_write(uint32_t object_id, uint32_t offset, uint32_t length, const uint8_t *buffer) {
+    if (nfs_readonly) return -1;
+    uint32_t end = offset + length;
+    if (end < offset) return -1; /* Ueberlauf */
+
+    uint8_t obj[NFS_O_ITEM];
+    if (novafs_object_find(object_id, obj) != 0) return -1;
+    if (*(const uint32_t *)(obj + NFS_O_TYPE) != NOVAFS_TYPE_FILE) return -1;
+    if (*(const uint32_t *)(obj + NFS_O_SIZE + 4) != 0u) return -1;
+
+    if (nfs_data_page == 0) {
+        uint32_t numa;
+        nfs_data_page = pmm_alloc_page(&numa);
+        if (nfs_data_page == 0) return -1;
+    }
+    uint8_t *data = (uint8_t *)(uintptr_t)nfs_data_page;
+
+    uint32_t remaining = length;
+    while (remaining > 0u) {
+        uint32_t logical_block = offset >> 12;
+        uint32_t physical_block;
+        if (novafs_extent_map(object_id, logical_block, &physical_block) != 0) return -1;
+
+        uint32_t within = offset & 0xFFFu;
+        uint32_t chunk = NOVAFS_BLOCK_SIZE - within;
+        if (chunk > remaining) chunk = remaining;
+
+        if (physical_block == 0u) {
+            if (novafs_extent_allocate(object_id, logical_block, &physical_block) != 0) return -1;
+            for (uint32_t i = 0; i < NOVAFS_BLOCK_SIZE; ++i) data[i] = 0;
+        } else {
+            if (novafs_read_block(physical_block, data) != 0) return -1;
+        }
+
+        for (uint32_t i = 0; i < chunk; ++i) data[within + i] = buffer[i];
+        if (novafs_write_block_logged(physical_block, data) != 0) return -1;
+
+        buffer += chunk;
+        offset += chunk;
+        remaining -= chunk;
+    }
+
+    if (novafs_object_find(object_id, obj) != 0) return -1;
+    if (end > *(const uint32_t *)(obj + NFS_O_SIZE)) {
+        *(uint32_t *)(obj + NFS_O_SIZE) = end;
+    }
+    return novafs_object_store(object_id, obj);
+}
+
+/* ===================================================================== */
+/* Objekt-Lifecycle (Batch 9): Anlegen/Loeschen/Umbenennen. Erfordert     */
+/* eine laufende Aenderung (novafs_change_begin) fuer echte Crash-        */
+/* Sicherheit, wie novafs_write. Zeitstempel (NFS_O_CREATED/MODIFIED/     */
+/* ACCESSED/CHANGED) werden bewusst NICHT gesetzt - dieser Kernel hat     */
+/* noch keine RTC-Anbindung in novafs.c verdrahtet; die Felder bleiben 0  */
+/* ("unbekannt/Alt-Volume", ein nach novafs32.inc selbst gueltiger        */
+/* Zustand, siehe NFS_O_CREATED-Kommentar). */
+/* ===================================================================== */
+
+#define NFS_O_PERMISSIONS 80u
+#define NFS_O_LINKS       84u
+#define NOVAFS_PERM_FILE_DEFAULT 0644u
+#define NOVAFS_PERM_DIR_DEFAULT  0755u
+
+/* Namensregeln (Port aus novafs_name_check): 1..255 Byte, kein '/', kein
+   NUL-Byte, nicht "." oder "..". 0 = gueltig. */
+static int novafs_name_check(const char *name, uint32_t len) {
+    if (len == 0u || len > 255u) return -1;
+    for (uint32_t i = 0; i < len; ++i) {
+        if (name[i] == 0 || name[i] == '/') return -1;
+    }
+    if (name[0] == '.') {
+        if (len == 1u) return -1;
+        if (len == 2u && name[1] == '.') return -1;
+    }
+    return 0;
+}
+
+/* Legt eine neue Datei/ein neues Verzeichnis namens name unter parent_id
+   an (Port aus novafs_create). Die ObjectID wird monoton aus
+   NFS_SB_NEXT_OBJECT vergeben und NIE wiederverwendet (auch nicht nach
+   einem novafs_delete). 0 = Erfolg (*out_object_id gesetzt), -1 wenn
+   read-only, der Name ungueltig ist, parent_id kein Verzeichnis ist, der
+   Name bereits existiert, oder die ObjectID-/Baum-Kapazitaet erschoepft
+   ist. */
+int novafs_create(uint32_t parent_id, uint32_t type, const char *name, uint32_t len,
+                   uint32_t *out_object_id) {
+    if (nfs_readonly) return -1;
+    if (type != NOVAFS_TYPE_FILE && type != NOVAFS_TYPE_DIRECTORY) return -1;
+    if (novafs_name_check(name, len) != 0) return -1;
+
+    uint8_t parent_obj[NFS_O_ITEM];
+    if (novafs_object_find(parent_id, parent_obj) != 0) return -1;
+    if (*(const uint32_t *)(parent_obj + NFS_O_TYPE) != NOVAFS_TYPE_DIRECTORY) return -1;
+
+    uint32_t existing_id, existing_type;
+    if (novafs_lookup(parent_id, name, len, &existing_id, &existing_type) == 0) return -1;
+
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    uint32_t next_id = *(const uint32_t *)(sb + NFS_SB_NEXT_OBJECT);
+    if (next_id == 0xFFFFFFFFu) return -1;
+
+    uint8_t item[NFS_O_ITEM];
+    for (uint32_t i = 0; i < NFS_O_ITEM; ++i) item[i] = 0;
+    *(uint32_t *)(item + NFS_O_ID) = next_id;
+    *(uint32_t *)(item + NFS_O_PARENT) = parent_id;
+    *(uint32_t *)(item + NFS_O_TYPE) = type;
+    *(uint32_t *)(item + NFS_O_PERMISSIONS) =
+        (type == NOVAFS_TYPE_DIRECTORY) ? NOVAFS_PERM_DIR_DEFAULT : NOVAFS_PERM_FILE_DEFAULT;
+    *(uint32_t *)(item + NFS_O_LINKS) = 1u;
+    uint32_t gen = *(const uint32_t *)(sb + NFS_SB_GENERATION) + 1u;
+    *(uint32_t *)(item + NFS_O_GENERATION) = gen;
+    novafs_seal(item, NFS_O_ITEM, NFS_O_CHECKSUM);
+
+    novafs_key_set(next_id, 0u);
+    if (novafs_cursor_seek(&novafs_tree_object) != 0) return -1;
+    if (novafs_tree_insert_simple(&novafs_tree_object, item) != 0) return -1;
+
+    /* ObjectID erst NACH dem erfolgreichen Baum-Einfuegen fortschreiben -
+       bei einem Fehlschlag (z.B. Blatt voll) bleibt NEXT_OBJECT unberuehrt,
+       die ID wird dann beim naechsten Versuch erneut angeboten statt
+       folgenlos "verbrannt" zu werden. */
+    *(uint32_t *)(sb + NFS_SB_NEXT_OBJECT) = next_id + 1u;
+
+    uint8_t dirent[NFS_D_ITEM];
+    for (uint32_t i = 0; i < NFS_D_ITEM; ++i) dirent[i] = 0;
+    *(uint32_t *)(dirent + NFS_D_PARENT) = parent_id;
+    uint32_t hash = ~crc32c_update(0xFFFFFFFFu, (const uint8_t *)name, len);
+    *(uint32_t *)(dirent + NFS_D_HASH) = hash;
+    *(uint32_t *)(dirent + NFS_D_OBJECT) = next_id;
+    *(uint32_t *)(dirent + NFS_D_TYPE) = type;
+    *(uint16_t *)(dirent + NFS_D_NAME_LENGTH) = (uint16_t)len;
+    for (uint32_t i = 0; i < len; ++i) dirent[NFS_D_NAME + i] = (uint8_t)name[i];
+
+    novafs_key_set(parent_id, hash);
+    if (novafs_cursor_seek(&novafs_tree_directory) != 0) return -1;
+    if (novafs_tree_insert_simple(&novafs_tree_directory, dirent) != 0) return -1;
+
+    *(uint32_t *)(sb + NFS_SB_OBJECT_COUNT) = *(const uint32_t *)(sb + NFS_SB_OBJECT_COUNT) + 1u;
+
+    *out_object_id = next_id;
+    return 0;
+}
+
+/* Loescht den Verzeichniseintrag name unter parent_id samt Objekt und
+   (bei einer Datei) allen Extents/deren Bloecken (Port aus
+   novafs_delete). ObjectIDs < NOVAFS_FIRST_DYNAMIC_ID (die festen
+   Systemobjekte) sind geschuetzt. Ein Verzeichnis muss leer sein. 0 =
+   Erfolg. */
+int novafs_delete(uint32_t parent_id, const char *name, uint32_t len) {
+    if (nfs_readonly) return -1;
+
+    uint32_t object_id, type;
+    if (novafs_lookup(parent_id, name, len, &object_id, &type) != 0) return -1;
+    if (object_id < NOVAFS_FIRST_DYNAMIC_ID) return -1;
+
+    if (type == NOVAFS_TYPE_DIRECTORY) {
+        uint8_t tmp[NFS_D_ITEM];
+        if (novafs_dir_entry_at(object_id, 0u, tmp) == 0) return -1; /* nicht leer */
+    }
+
+    /* Alle Extents entfernen und ihre Bloecke freigeben - jede Iteration
+       sucht erneut ab (object_id,0), da nach einem erfolgreichen Entfernen
+       das naechste verbleibende Extent (falls vorhanden) an dieselbe
+       Position ruecken kann. */
+    for (;;) {
+        novafs_key_set(object_id, 0u);
+        if (novafs_cursor_seek(&novafs_tree_extent) != 0) return -1;
+        uint8_t *item = novafs_cursor_item_ptr();
+        if (item == 0) break;
+        if (*(const uint32_t *)(item + NFS_E_OBJECT) != object_id ||
+            *(const uint32_t *)(item + NFS_E_OBJECT + 4) != 0u) {
+            break;
+        }
+        if (*(const uint32_t *)(item + NFS_E_PHYSICAL + 4) != 0u) return -1;
+        if (*(const uint32_t *)(item + NFS_E_COUNT + 4) != 0u) return -1;
+        uint32_t physical = *(const uint32_t *)(item + NFS_E_PHYSICAL);
+        uint32_t count = *(const uint32_t *)(item + NFS_E_COUNT);
+        if (count == 0u) return -1;
+
+        if (novafs_cursor_remove(&novafs_tree_extent) != 0) return -1;
+        for (uint32_t i = 0; i < count; ++i) novafs_free_block(physical + i);
+    }
+
+    uint8_t obj[NFS_O_ITEM];
+    if (novafs_object_find(object_id, obj) != 0) return -1;
+    if (novafs_cursor_remove(&novafs_tree_object) != 0) return -1;
+
+    uint32_t found_id, found_type;
+    if (novafs_lookup(parent_id, name, len, &found_id, &found_type) != 0) return -1;
+    if (novafs_cursor_remove(&novafs_tree_directory) != 0) return -1;
+
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    *(uint32_t *)(sb + NFS_SB_OBJECT_COUNT) = *(const uint32_t *)(sb + NFS_SB_OBJECT_COUNT) - 1u;
+    return 0;
+}
+
+/* Benennt um bzw. verschiebt src_name unter src_parent zu dst_name unter
+   dst_parent (Port aus novafs_rename). Ein vorhandenes Ziel wird NICHT
+   ueberschrieben; Verzeichnisse duerfen nicht in sich selbst oder ihre
+   eigenen Nachfahren verschoben werden (Zyklusschutz per Eltern-
+   Aufstieg, Tiefenbegrenzung 64 gegen einen beschaedigten Baum). Der
+   neue Verzeichniseintrag wird VOR dem Entfernen des alten eingefuegt.
+   0 = Erfolg (auch wenn Quelle und Ziel identisch sind - dann ein No-op). */
+int novafs_rename(uint32_t src_parent, const char *src_name, uint32_t src_len, uint32_t dst_parent,
+                   const char *dst_name, uint32_t dst_len) {
+    if (nfs_readonly) return -1;
+    if (novafs_name_check(dst_name, dst_len) != 0) return -1;
+
+    uint32_t object_id, type;
+    if (novafs_lookup(src_parent, src_name, src_len, &object_id, &type) != 0) return -1;
+    if (object_id < NOVAFS_FIRST_DYNAMIC_ID) return -1;
+
+    uint8_t dst_dir_obj[NFS_O_ITEM];
+    if (novafs_object_find(dst_parent, dst_dir_obj) != 0) return -1;
+    if (*(const uint32_t *)(dst_dir_obj + NFS_O_TYPE) != NOVAFS_TYPE_DIRECTORY) return -1;
+
+    uint32_t walk = dst_parent;
+    for (uint32_t guard = 64u; guard > 0u; --guard) {
+        if (walk == object_id) return -1;
+        if (walk <= 1u) break;
+        uint8_t walk_obj[NFS_O_ITEM];
+        if (novafs_object_find(walk, walk_obj) != 0) return -1;
+        if (*(const uint32_t *)(walk_obj + NFS_O_PARENT + 4) != 0u) return -1;
+        walk = *(const uint32_t *)(walk_obj + NFS_O_PARENT);
+    }
+
+    uint32_t existing_id, existing_type;
+    if (novafs_lookup(dst_parent, dst_name, dst_len, &existing_id, &existing_type) == 0) {
+        return (existing_id == object_id) ? 0 : -1;
+    }
+
+    uint8_t dirent[NFS_D_ITEM];
+    for (uint32_t i = 0; i < NFS_D_ITEM; ++i) dirent[i] = 0;
+    *(uint32_t *)(dirent + NFS_D_PARENT) = dst_parent;
+    uint32_t hash = ~crc32c_update(0xFFFFFFFFu, (const uint8_t *)dst_name, dst_len);
+    *(uint32_t *)(dirent + NFS_D_HASH) = hash;
+    *(uint32_t *)(dirent + NFS_D_OBJECT) = object_id;
+    *(uint32_t *)(dirent + NFS_D_TYPE) = type;
+    *(uint16_t *)(dirent + NFS_D_NAME_LENGTH) = (uint16_t)dst_len;
+    for (uint32_t i = 0; i < dst_len; ++i) dirent[NFS_D_NAME + i] = (uint8_t)dst_name[i];
+
+    novafs_key_set(dst_parent, hash);
+    if (novafs_cursor_seek(&novafs_tree_directory) != 0) return -1;
+    if (novafs_tree_insert_simple(&novafs_tree_directory, dirent) != 0) return -1;
+
+    uint32_t check_id, check_type;
+    if (novafs_lookup(src_parent, src_name, src_len, &check_id, &check_type) != 0) return -1;
+    if (check_id != object_id) return -1;
+    if (novafs_cursor_remove(&novafs_tree_directory) != 0) return -1;
+
+    uint8_t obj[NFS_O_ITEM];
+    if (novafs_object_find(object_id, obj) != 0) return -1;
+    if (dst_parent != src_parent) {
+        *(uint32_t *)(obj + NFS_O_PARENT) = dst_parent;
+    }
+    return novafs_object_store(object_id, obj);
 }
 
 /* ===================================================================== */
@@ -1541,6 +2366,521 @@ int novafs_dir_self_test(void) {
 
     /* Ein Verzeichnis ohne jegliche Eintraege liefert sofort -1. */
     if (novafs_dir_entry_at(999u, 0u, item) == 0) return -1;
+
+    return 0;
+}
+
+/* ===================================================================== */
+/* Selbsttest Extents/Dateidaten (Batch 7) - eigenstaendiges Fixture:    */
+/* Datei (ObjectID 20, 5000 Byte) mit genau EINEM Extent fuer den        */
+/* ersten 4-KiB-Block (echte Daten); der zweite, teilweise Block ist     */
+/* ein Loch (kein Extent-Eintrag) und muss als Nullen gelesen werden.    */
+/* Verzeichnis (ObjectID 21) ohne Extents dient als Negativfall.         */
+/* ===================================================================== */
+
+#define NOVAFS_EXTENT_TEST_MAX_BLOCKS 6u
+
+static uint32_t nfs_extent_test_block_numbers[NOVAFS_EXTENT_TEST_MAX_BLOCKS];
+static uint8_t *nfs_extent_test_block_pages[NOVAFS_EXTENT_TEST_MAX_BLOCKS];
+static uint32_t nfs_extent_test_block_count = 0;
+
+static uint8_t *novafs_extent_test_block(uint32_t block) {
+    for (uint32_t i = 0; i < nfs_extent_test_block_count; ++i) {
+        if (nfs_extent_test_block_numbers[i] == block) return nfs_extent_test_block_pages[i];
+    }
+    if (nfs_extent_test_block_count >= NOVAFS_EXTENT_TEST_MAX_BLOCKS) return 0;
+    uint32_t numa;
+    uint32_t page = pmm_alloc_page(&numa);
+    if (page == 0) return 0;
+    uint8_t *buf = (uint8_t *)(uintptr_t)page;
+    for (uint32_t i = 0; i < NOVAFS_BLOCK_SIZE; ++i) buf[i] = 0;
+    nfs_extent_test_block_numbers[nfs_extent_test_block_count] = block;
+    nfs_extent_test_block_pages[nfs_extent_test_block_count] = buf;
+    ++nfs_extent_test_block_count;
+    return buf;
+}
+
+static int novafs_extent_test_read(void *record, uint32_t lba_lo, uint32_t lba_hi, uint32_t count,
+                                    void *buffer) {
+    (void)record;
+    (void)lba_hi;
+    (void)count;
+    uint32_t block = lba_lo / NOVAFS_SECTORS_PER_BLOCK;
+    for (uint32_t i = 0; i < nfs_extent_test_block_count; ++i) {
+        if (nfs_extent_test_block_numbers[i] == block) {
+            const uint8_t *src = nfs_extent_test_block_pages[i];
+            uint8_t *dst = (uint8_t *)buffer;
+            for (uint32_t j = 0; j < NOVAFS_BLOCK_SIZE; ++j) dst[j] = src[j];
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int novafs_extent_self_test(void) {
+    uint32_t total = 64u;
+
+    uint8_t *sb1 = novafs_extent_test_block(1u);
+    uint8_t *bitmap = novafs_extent_test_block(2u);
+    uint8_t *leaf_obj = novafs_extent_test_block(20u);
+    uint8_t *leaf_ext = novafs_extent_test_block(30u);
+    uint8_t *data_block = novafs_extent_test_block(40u);
+    if (!sb1 || !bitmap || !leaf_obj || !leaf_ext || !data_block) return -1;
+    (void)novafs_extent_test_block(63u);
+
+    static const uint32_t used_blocks[] = {1u, 63u, 20u, 30u, 40u};
+    for (uint32_t i = 0; i < sizeof(used_blocks) / sizeof(used_blocks[0]); ++i) {
+        uint32_t b = used_blocks[i];
+        bitmap[b >> 3] |= (uint8_t)(1u << (b & 7u));
+    }
+    uint32_t bitmap_crc = ~crc32c_update(0xFFFFFFFFu, bitmap, NOVAFS_BLOCK_SIZE);
+
+    novafs_build_test_superblock_ex(sb1, total, 1u, bitmap_crc, 20u, 20u, 30u);
+
+    for (uint32_t i = 0; i < NOVAFS_BLOCK_SIZE; ++i) data_block[i] = (uint8_t)i;
+
+    uint8_t obj_file[NFS_O_ITEM], obj_dir[NFS_O_ITEM];
+    for (uint32_t i = 0; i < NFS_O_ITEM; ++i) obj_file[i] = 0;
+    *(uint32_t *)(obj_file + NFS_O_ID) = 20u;
+    *(uint32_t *)(obj_file + NFS_O_TYPE) = NOVAFS_TYPE_FILE;
+    *(uint32_t *)(obj_file + NFS_O_SIZE) = 5000u;
+    novafs_seal(obj_file, NFS_O_ITEM, NFS_O_CHECKSUM);
+
+    for (uint32_t i = 0; i < NFS_O_ITEM; ++i) obj_dir[i] = 0;
+    *(uint32_t *)(obj_dir + NFS_O_ID) = 21u;
+    *(uint32_t *)(obj_dir + NFS_O_TYPE) = NOVAFS_TYPE_DIRECTORY;
+    novafs_seal(obj_dir, NFS_O_ITEM, NFS_O_CHECKSUM);
+
+    novafs_node_init(leaf_obj, &novafs_tree_object, 20u, 0u, 0u);
+    novafs_node_insert_at(leaf_obj, 0u, obj_file, NFS_O_ITEM);
+    novafs_node_insert_at(leaf_obj, 1u, obj_dir, NFS_O_ITEM);
+    novafs_seal(leaf_obj, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
+
+    uint8_t extent[72] = {0};
+    *(uint32_t *)(extent + NFS_E_OBJECT) = 20u;
+    *(uint32_t *)(extent + NFS_E_LOGICAL) = 0u;
+    *(uint32_t *)(extent + NFS_E_PHYSICAL) = 40u;
+    *(uint32_t *)(extent + NFS_E_COUNT) = 1u;
+    novafs_node_init(leaf_ext, &novafs_tree_extent, 30u, 0u, 0u);
+    novafs_node_insert_at(leaf_ext, 0u, extent, novafs_tree_extent.item_size);
+    novafs_seal(leaf_ext, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
+
+    block_register_params_t params = {
+        .id = 0x4E465035u, /* "NFE5" */
+        .flags = 0,
+        .block_size = 512u,
+        .block_count_lo = total * NOVAFS_SECTORS_PER_BLOCK,
+        .block_count_hi = 0,
+        .transport = BLOCK_TRANSPORT_VIRT,
+        .driver_handle = 0,
+    };
+    void *record = 0;
+    if (block_device_register(&params, novafs_extent_test_read, 0, 0, 0, &record) != 0) {
+        return -1;
+    }
+    if (novafs_probe_volume(record, 0u, total * NOVAFS_SECTORS_PER_BLOCK) != 0) return -1;
+
+    /* Vollstaendige Datei lesen: erste 4096 Byte = echte Daten, Rest
+       (Loch, kein Extent) = Nullen. */
+    static uint8_t buf[5000];
+    uint32_t bytes_read;
+    if (novafs_read(20u, 0u, 5000u, buf, &bytes_read) != 0) return -1;
+    if (bytes_read != 5000u) return -1;
+    for (uint32_t i = 0; i < 4096u; ++i) {
+        if (buf[i] != (uint8_t)i) return -1;
+    }
+    for (uint32_t i = 4096u; i < 5000u; ++i) {
+        if (buf[i] != 0u) return -1;
+    }
+
+    /* Lesen ueber die Extent-/Loch-Grenze hinweg. */
+    uint8_t boundary[20];
+    if (novafs_read(20u, 4090u, 20u, boundary, &bytes_read) != 0) return -1;
+    if (bytes_read != 20u) return -1;
+    for (uint32_t i = 0; i < 6u; ++i) {
+        if (boundary[i] != (uint8_t)(4090u + i)) return -1;
+    }
+    for (uint32_t i = 6u; i < 20u; ++i) {
+        if (boundary[i] != 0u) return -1;
+    }
+
+    /* Ueber das Dateiende hinaus lesen wird auf die tatsaechliche Groesse
+       gekuerzt. */
+    if (novafs_read(20u, 4990u, 100u, boundary, &bytes_read) != 0) return -1;
+    if (bytes_read != 10u) return -1;
+
+    /* Lesen ab/hinter dem Dateiende liefert 0 Byte, kein Fehler. */
+    if (novafs_read(20u, 6000u, 10u, boundary, &bytes_read) != 0) return -1;
+    if (bytes_read != 0u) return -1;
+
+    /* Ein Verzeichnis ist keine Datei - novafs_read muss ablehnen. */
+    if (novafs_read(21u, 0u, 10u, boundary, &bytes_read) == 0) return -1;
+
+    return 0;
+}
+
+/* ===================================================================== */
+/* Selbsttest Transaction Log + Writes (Batch 8) - eigenstaendiges       */
+/* Fixture: leere Datei (ObjectID 50) in einem frisch "formatierten"     */
+/* Volume (Object-Baum-Blatt + LEERES Extent-Baum-Blatt). Im Gegensatz   */
+/* zu den vorherigen, rein lesenden Selbsttests muss hier der GESAMTE    */
+/* Metadatenbereich (Superblock/Bitmap/Journal, Bloecke 0..first_free-1) */
+/* in der Bitmap als belegt markiert sein - sonst koennte der Allokator  */
+/* versehentlich einen Metadatenblock ueberschreiben.                    */
+/* ===================================================================== */
+
+#define NOVAFS_WRITE_TEST_MAX_BLOCKS 48u
+
+static uint32_t nfs_write_test_block_numbers[NOVAFS_WRITE_TEST_MAX_BLOCKS];
+static uint8_t *nfs_write_test_block_pages[NOVAFS_WRITE_TEST_MAX_BLOCKS];
+static uint32_t nfs_write_test_block_count = 0;
+
+static uint8_t *novafs_write_test_block(uint32_t block) {
+    for (uint32_t i = 0; i < nfs_write_test_block_count; ++i) {
+        if (nfs_write_test_block_numbers[i] == block) return nfs_write_test_block_pages[i];
+    }
+    if (nfs_write_test_block_count >= NOVAFS_WRITE_TEST_MAX_BLOCKS) return 0;
+    uint32_t numa;
+    uint32_t page = pmm_alloc_page(&numa);
+    if (page == 0) return 0;
+    uint8_t *buf = (uint8_t *)(uintptr_t)page;
+    for (uint32_t i = 0; i < NOVAFS_BLOCK_SIZE; ++i) buf[i] = 0;
+    nfs_write_test_block_numbers[nfs_write_test_block_count] = block;
+    nfs_write_test_block_pages[nfs_write_test_block_count] = buf;
+    ++nfs_write_test_block_count;
+    return buf;
+}
+
+static int novafs_write_test_read(void *record, uint32_t lba_lo, uint32_t lba_hi, uint32_t count,
+                                   void *buffer) {
+    (void)record;
+    (void)lba_hi;
+    (void)count;
+    uint32_t block = lba_lo / NOVAFS_SECTORS_PER_BLOCK;
+    uint8_t *page = novafs_write_test_block(block);
+    if (page == 0) return -1; /* unbekannter Block - im Selbsttest sollte das nie passieren */
+    for (uint32_t j = 0; j < NOVAFS_BLOCK_SIZE; ++j) ((uint8_t *)buffer)[j] = page[j];
+    return 0;
+}
+
+static int novafs_write_test_write(void *record, uint32_t lba_lo, uint32_t lba_hi, uint32_t count,
+                                    void *buffer) {
+    (void)record;
+    (void)lba_hi;
+    (void)count;
+    uint32_t block = lba_lo / NOVAFS_SECTORS_PER_BLOCK;
+    uint8_t *page = novafs_write_test_block(block);
+    if (page == 0) return -1; /* Fixture-Kapazitaet erschoepft */
+    const uint8_t *src = (const uint8_t *)buffer;
+    for (uint32_t j = 0; j < NOVAFS_BLOCK_SIZE; ++j) page[j] = src[j];
+    return 0;
+}
+
+static int novafs_write_test_flush(void *record) {
+    (void)record;
+    return 0;
+}
+
+int novafs_write_self_test(void) {
+    uint32_t total = 64u;
+    uint32_t bitmap_blocks = 1u;
+    uint32_t journal_block = bitmap_blocks + 2u;
+    uint32_t first_free = journal_block + NOVAFS_JOURNAL_BLOCKS;
+
+    uint8_t *sb1 = novafs_write_test_block(1u);
+    uint8_t *bitmap = novafs_write_test_block(2u);
+    /* Bewusst HOHE Blocknummern fuer die B+-Tree-Blaetter (60/61), damit
+       sie dem Allokator (der ab first_free aufsteigend sucht) nicht in
+       die Quere kommen - sonst koennte ein Datenblock dort hineingeraten. */
+    uint8_t *leaf_obj = novafs_write_test_block(60u);
+    uint8_t *leaf_ext = novafs_write_test_block(61u);
+    if (!sb1 || !bitmap || !leaf_obj || !leaf_ext) return -1;
+    (void)novafs_write_test_block(63u);
+
+    /* GESAMTEN Metadatenbereich (0..first_free-1) plus Backup-Block UND
+       die beiden B+-Tree-Blattbloecke (60/61, liegen im Datenbereich) als
+       belegt markieren - sonst koennte der Allokator einen davon fuer
+       Dateidaten vergeben und den Object-/Extent-Baum ueberschreiben. */
+    for (uint32_t b = 0; b < first_free; ++b) {
+        bitmap[b >> 3] |= (uint8_t)(1u << (b & 7u));
+    }
+    bitmap[63u >> 3] |= (uint8_t)(1u << (63u & 7u));
+    bitmap[60u >> 3] |= (uint8_t)(1u << (60u & 7u));
+    bitmap[61u >> 3] |= (uint8_t)(1u << (61u & 7u));
+    uint32_t bitmap_crc = ~crc32c_update(0xFFFFFFFFu, bitmap, NOVAFS_BLOCK_SIZE);
+
+    novafs_build_test_superblock_ex(sb1, total, 1u, bitmap_crc, 60u, 60u, 61u);
+
+    uint8_t obj_file[NFS_O_ITEM];
+    for (uint32_t i = 0; i < NFS_O_ITEM; ++i) obj_file[i] = 0;
+    *(uint32_t *)(obj_file + NFS_O_ID) = 50u;
+    *(uint32_t *)(obj_file + NFS_O_TYPE) = NOVAFS_TYPE_FILE;
+    *(uint32_t *)(obj_file + NFS_O_SIZE) = 0u;
+    novafs_seal(obj_file, NFS_O_ITEM, NFS_O_CHECKSUM);
+
+    novafs_node_init(leaf_obj, &novafs_tree_object, 60u, 0u, 0u);
+    novafs_node_insert_at(leaf_obj, 0u, obj_file, NFS_O_ITEM);
+    novafs_seal(leaf_obj, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
+
+    /* Leeres Extent-Baum-Blatt (noch keine Extents fuer ObjectID 50). */
+    novafs_node_init(leaf_ext, &novafs_tree_extent, 61u, 0u, 0u);
+    novafs_seal(leaf_ext, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
+
+    block_register_params_t params = {
+        .id = 0x4E465736u, /* "NFW6" */
+        .flags = 0,
+        .block_size = 512u,
+        .block_count_lo = total * NOVAFS_SECTORS_PER_BLOCK,
+        .block_count_hi = 0,
+        .transport = BLOCK_TRANSPORT_VIRT,
+        .driver_handle = 0,
+    };
+    void *record = 0;
+    if (block_device_register(&params, novafs_write_test_read, novafs_write_test_write,
+                               novafs_write_test_flush, 0, &record) != 0) {
+        return -1;
+    }
+    if (novafs_probe_volume(record, 0u, total * NOVAFS_SECTORS_PER_BLOCK) != 0) return -1;
+
+    /* Transaktion A: 3 zusammenhaengende Bloecke (12288 Byte) an eine
+       leere Datei schreiben und committen. */
+    static uint8_t pattern[12288];
+    for (uint32_t i = 0; i < 12288u; ++i) pattern[i] = (uint8_t)i;
+
+    if (novafs_change_begin() != 0) return -1;
+    if (novafs_write(50u, 0u, 12288u, pattern) != 0) return -1;
+    if (novafs_change_commit() != 0) return -1;
+
+    static uint8_t readback[12288];
+    uint32_t bytes_read;
+    if (novafs_read(50u, 0u, 12288u, readback, &bytes_read) != 0) return -1;
+    if (bytes_read != 12288u) return -1;
+    for (uint32_t i = 0; i < 12288u; ++i) {
+        if (readback[i] != (uint8_t)i) return -1;
+    }
+
+    /* Die drei logischen Bloecke muessen physisch zusammenhaengend sein -
+       das beweist, dass novafs_extent_allocate() das bestehende Extent
+       verlaengert hat statt drei getrennte Eintraege anzulegen. */
+    uint32_t p0, p1, p2;
+    if (novafs_extent_map(50u, 0u, &p0) != 0) return -1;
+    if (novafs_extent_map(50u, 1u, &p1) != 0) return -1;
+    if (novafs_extent_map(50u, 2u, &p2) != 0) return -1;
+    if (p0 == 0u || p1 != p0 + 1u || p2 != p0 + 2u) return -1;
+
+    /* Transaktion B: bestehende Daten (Byte 100..149) ueberschreiben, dann
+       VERWERFEN - novafs_change_abort() muss den Originalinhalt exakt
+       wiederherstellen (echter Beweis des Undo-Journals, nicht nur ein
+       Groessen-Rollback). */
+    uint8_t corruption[50];
+    for (uint32_t i = 0; i < 50u; ++i) corruption[i] = 0xFFu;
+
+    if (novafs_change_begin() != 0) return -1;
+    if (novafs_write(50u, 100u, 50u, corruption) != 0) return -1;
+    if (novafs_change_abort() != 0) return -1;
+
+    if (novafs_read(50u, 0u, 12288u, readback, &bytes_read) != 0) return -1;
+    if (bytes_read != 12288u) return -1;
+    for (uint32_t i = 0; i < 12288u; ++i) {
+        if (readback[i] != (uint8_t)i) return -1;
+    }
+
+    return 0;
+}
+
+/* ===================================================================== */
+/* Selbsttest Objekt-Lifecycle (Batch 9) - eigenstaendiges Fixture: nur   */
+/* die Wurzel (ObjectID 1, leeres Verzeichnis) existiert, alles andere    */
+/* wird waehrend des Tests selbst per novafs_create/_delete/_rename        */
+/* angelegt/entfernt - der realistischste Selbsttest bisher, da er        */
+/* tatsaechlich einen (Mini-)Dateisystembaum von Grund auf aufbaut.       */
+/* ===================================================================== */
+
+#define NOVAFS_LIFECYCLE_TEST_MAX_BLOCKS 48u
+
+static uint32_t nfs_lifecycle_test_block_numbers[NOVAFS_LIFECYCLE_TEST_MAX_BLOCKS];
+static uint8_t *nfs_lifecycle_test_block_pages[NOVAFS_LIFECYCLE_TEST_MAX_BLOCKS];
+static uint32_t nfs_lifecycle_test_block_count = 0;
+
+static uint8_t *novafs_lifecycle_test_block(uint32_t block) {
+    for (uint32_t i = 0; i < nfs_lifecycle_test_block_count; ++i) {
+        if (nfs_lifecycle_test_block_numbers[i] == block) return nfs_lifecycle_test_block_pages[i];
+    }
+    if (nfs_lifecycle_test_block_count >= NOVAFS_LIFECYCLE_TEST_MAX_BLOCKS) return 0;
+    uint32_t numa;
+    uint32_t page = pmm_alloc_page(&numa);
+    if (page == 0) return 0;
+    uint8_t *buf = (uint8_t *)(uintptr_t)page;
+    for (uint32_t i = 0; i < NOVAFS_BLOCK_SIZE; ++i) buf[i] = 0;
+    nfs_lifecycle_test_block_numbers[nfs_lifecycle_test_block_count] = block;
+    nfs_lifecycle_test_block_pages[nfs_lifecycle_test_block_count] = buf;
+    ++nfs_lifecycle_test_block_count;
+    return buf;
+}
+
+static int novafs_lifecycle_test_read(void *record, uint32_t lba_lo, uint32_t lba_hi,
+                                       uint32_t count, void *buffer) {
+    (void)record;
+    (void)lba_hi;
+    (void)count;
+    uint32_t block = lba_lo / NOVAFS_SECTORS_PER_BLOCK;
+    uint8_t *page = novafs_lifecycle_test_block(block);
+    if (page == 0) return -1;
+    for (uint32_t j = 0; j < NOVAFS_BLOCK_SIZE; ++j) ((uint8_t *)buffer)[j] = page[j];
+    return 0;
+}
+
+static int novafs_lifecycle_test_write(void *record, uint32_t lba_lo, uint32_t lba_hi,
+                                        uint32_t count, void *buffer) {
+    (void)record;
+    (void)lba_hi;
+    (void)count;
+    uint32_t block = lba_lo / NOVAFS_SECTORS_PER_BLOCK;
+    uint8_t *page = novafs_lifecycle_test_block(block);
+    if (page == 0) return -1;
+    const uint8_t *src = (const uint8_t *)buffer;
+    for (uint32_t j = 0; j < NOVAFS_BLOCK_SIZE; ++j) page[j] = src[j];
+    return 0;
+}
+
+static int novafs_lifecycle_test_flush(void *record) {
+    (void)record;
+    return 0;
+}
+
+int novafs_lifecycle_self_test(void) {
+    uint32_t total = 64u;
+    uint32_t bitmap_blocks = 1u;
+    uint32_t journal_block = bitmap_blocks + 2u;
+    uint32_t first_free = journal_block + NOVAFS_JOURNAL_BLOCKS;
+
+    uint8_t *sb1 = novafs_lifecycle_test_block(1u);
+    uint8_t *bitmap = novafs_lifecycle_test_block(2u);
+    uint8_t *leaf_obj = novafs_lifecycle_test_block(60u);
+    uint8_t *leaf_dir = novafs_lifecycle_test_block(61u);
+    uint8_t *leaf_ext = novafs_lifecycle_test_block(62u);
+    if (!sb1 || !bitmap || !leaf_obj || !leaf_dir || !leaf_ext) return -1;
+    (void)novafs_lifecycle_test_block(63u);
+
+    for (uint32_t b = 0; b < first_free; ++b) {
+        bitmap[b >> 3] |= (uint8_t)(1u << (b & 7u));
+    }
+    bitmap[63u >> 3] |= (uint8_t)(1u << (63u & 7u));
+    bitmap[60u >> 3] |= (uint8_t)(1u << (60u & 7u));
+    bitmap[61u >> 3] |= (uint8_t)(1u << (61u & 7u));
+    bitmap[62u >> 3] |= (uint8_t)(1u << (62u & 7u));
+    uint32_t bitmap_crc = ~crc32c_update(0xFFFFFFFFu, bitmap, NOVAFS_BLOCK_SIZE);
+
+    /* novafs_build_test_superblock_ex() setzt NEXT_OBJECT bereits auf
+       NOVAFS_FIRST_DYNAMIC_ID. */
+    novafs_build_test_superblock_ex(sb1, total, 1u, bitmap_crc, 60u, 61u, 62u);
+
+    uint8_t root_obj[NFS_O_ITEM];
+    for (uint32_t i = 0; i < NFS_O_ITEM; ++i) root_obj[i] = 0;
+    *(uint32_t *)(root_obj + NFS_O_ID) = 1u;
+    *(uint32_t *)(root_obj + NFS_O_TYPE) = NOVAFS_TYPE_DIRECTORY;
+    novafs_seal(root_obj, NFS_O_ITEM, NFS_O_CHECKSUM);
+
+    novafs_node_init(leaf_obj, &novafs_tree_object, 60u, 0u, 0u);
+    novafs_node_insert_at(leaf_obj, 0u, root_obj, NFS_O_ITEM);
+    novafs_seal(leaf_obj, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
+
+    /* Leere Verzeichnis-/Extent-Baeume - die Wurzel hat noch keine
+       Kinder. */
+    novafs_node_init(leaf_dir, &novafs_tree_directory, 61u, 0u, 0u);
+    novafs_seal(leaf_dir, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
+    novafs_node_init(leaf_ext, &novafs_tree_extent, 62u, 0u, 0u);
+    novafs_seal(leaf_ext, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
+
+    block_register_params_t params = {
+        .id = 0x4E464C37u, /* "NFL7" */
+        .flags = 0,
+        .block_size = 512u,
+        .block_count_lo = total * NOVAFS_SECTORS_PER_BLOCK,
+        .block_count_hi = 0,
+        .transport = BLOCK_TRANSPORT_VIRT,
+        .driver_handle = 0,
+    };
+    void *record = 0;
+    if (block_device_register(&params, novafs_lifecycle_test_read, novafs_lifecycle_test_write,
+                               novafs_lifecycle_test_flush, 0, &record) != 0) {
+        return -1;
+    }
+    if (novafs_probe_volume(record, 0u, total * NOVAFS_SECTORS_PER_BLOCK) != 0) return -1;
+
+    uint32_t id, type;
+
+    /* "docs"-Verzeichnis unter der Wurzel anlegen. */
+    uint32_t docs_id;
+    if (novafs_change_begin() != 0) return -1;
+    if (novafs_create(1u, NOVAFS_TYPE_DIRECTORY, "docs", 4u, &docs_id) != 0) return -1;
+    if (novafs_change_commit() != 0) return -1;
+    if (docs_id != NOVAFS_FIRST_DYNAMIC_ID) return -1;
+
+    if (novafs_resolve_path("/docs", 5u, &id, &type) != 0) return -1;
+    if (id != docs_id || type != NOVAFS_TYPE_DIRECTORY) return -1;
+
+    /* Datei "readme.txt" mit Inhalt unter der Wurzel anlegen. */
+    uint32_t file_id;
+    static const uint8_t content[5] = {'H', 'e', 'l', 'l', 'o'};
+    if (novafs_change_begin() != 0) return -1;
+    if (novafs_create(1u, NOVAFS_TYPE_FILE, "readme.txt", 10u, &file_id) != 0) return -1;
+    if (novafs_write(file_id, 0u, 5u, content) != 0) return -1;
+    if (novafs_change_commit() != 0) return -1;
+
+    if (novafs_resolve_path("/readme.txt", 11u, &id, &type) != 0) return -1;
+    if (id != file_id || type != NOVAFS_TYPE_FILE) return -1;
+    uint8_t readback[5];
+    uint32_t bytes_read;
+    if (novafs_read(file_id, 0u, 5u, readback, &bytes_read) != 0) return -1;
+    if (bytes_read != 5u) return -1;
+    for (uint32_t i = 0; i < 5u; ++i) {
+        if (readback[i] != content[i]) return -1;
+    }
+
+    /* Doppelt vergebener Name muss abgelehnt werden (kein Teilzustand
+       bleibt zurueck - die abgebrochene Transaktion stellt den Zustand
+       vor dem Versuch exakt wieder her). */
+    uint32_t dummy_id;
+    if (novafs_change_begin() != 0) return -1;
+    if (novafs_create(1u, NOVAFS_TYPE_FILE, "docs", 4u, &dummy_id) == 0) return -1;
+    if (novafs_change_abort() != 0) return -1;
+
+    /* Ein Kind in "docs" anlegen, dann muss das Loeschen von "docs" selbst
+       (nicht leer) sauber scheitern. */
+    uint32_t note_id;
+    if (novafs_change_begin() != 0) return -1;
+    if (novafs_create(docs_id, NOVAFS_TYPE_FILE, "note.txt", 8u, &note_id) != 0) return -1;
+    if (novafs_change_commit() != 0) return -1;
+
+    if (novafs_change_begin() != 0) return -1;
+    if (novafs_delete(1u, "docs", 4u) == 0) return -1;
+    if (novafs_change_abort() != 0) return -1;
+
+    /* Kind zuerst entfernen, dann ist "docs" leer und darf geloescht
+       werden. */
+    if (novafs_change_begin() != 0) return -1;
+    if (novafs_delete(docs_id, "note.txt", 8u) != 0) return -1;
+    if (novafs_change_commit() != 0) return -1;
+
+    if (novafs_change_begin() != 0) return -1;
+    if (novafs_delete(1u, "docs", 4u) != 0) return -1;
+    if (novafs_change_commit() != 0) return -1;
+
+    if (novafs_resolve_path("/docs", 5u, &id, &type) == 0) return -1;
+
+    /* "readme.txt" zu "README.txt" umbenennen (gleiches Verzeichnis). */
+    if (novafs_change_begin() != 0) return -1;
+    if (novafs_rename(1u, "readme.txt", 10u, 1u, "README.txt", 10u) != 0) return -1;
+    if (novafs_change_commit() != 0) return -1;
+
+    if (novafs_resolve_path("/readme.txt", 11u, &id, &type) == 0) return -1;
+    if (novafs_resolve_path("/README.txt", 11u, &id, &type) != 0) return -1;
+    if (id != file_id) return -1;
+    if (novafs_read(file_id, 0u, 5u, readback, &bytes_read) != 0) return -1;
+    for (uint32_t i = 0; i < 5u; ++i) {
+        if (readback[i] != content[i]) return -1;
+    }
 
     return 0;
 }
