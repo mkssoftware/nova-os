@@ -1,19 +1,35 @@
 /* NovaOS C-Kernel - Nova Compositor (reduzierter In-Kernel-Port der
    Layer-/Alpha-Komposition aus docs/NPSPEC/sysarchitecture/049-GUI/
-   002-Compositor/NPSPEC-COMPOSITOR-RENDER-0002.md (Layer Composition) und
-   NPSPEC-COMPOSITOR-EFFECTS-0001.md (Transparency and Alpha Composition).
+   002-Compositor/NPSPEC-COMPOSITOR-RENDER-0002.md (Layer Composition),
+   NPSPEC-COMPOSITOR-EFFECTS-0001.md (Transparency and Alpha Composition)
+   und NPSPEC-COMPOSITOR-DAMAGE-0001.md (Damage Tracking and Partial
+   Redraw).
 
    WICHTIG (Nutzer-Entscheidung 2026-10-26): Die vollen NPSPECs beschreiben
    einen eigenstaendigen GPU-beschleunigten Compositor mit Zero-Copy-Buffern,
-   Fences, Occlusion Culling, Damage Tracking, Blur/Acrylic usw. Dieses
-   Modul bildet nur den Kern nach, der ohne GPU-Treiber und Taskwechsel
-   sinnvoll moeglich ist: eine feste, kleine Layer-Liste (Hintergrund +
-   rechteckige "Fenster" + Cursor), Software-Alpha-Blending nach dem
-   Porter-Duff-Verfahren Source-Over aus EFFECTS-0001 (Abschnitt 6), sowie
-   ein einfacher, nicht weichgezeichneter Schatten-Platzhalter (statt
-   echtem Blur aus EFFECTS-0002/0003). Kein Double/Triple-Buffering, kein
-   Damage-Tracking, keine Hardware-Overlays - jeder compositor_composite()
-   Aufruf zeichnet den kompletten Frame neu direkt in den Framebuffer. */
+   Fences, Occlusion Culling, Blur/Acrylic usw. Dieses Modul bildet nur den
+   Kern nach, der ohne GPU-Treiber und Taskwechsel sinnvoll moeglich ist:
+   eine feste, kleine Layer-Liste (Hintergrund + rechteckige "Fenster" +
+   Cursor), Software-Alpha-Blending nach dem Porter-Duff-Verfahren
+   Source-Over aus EFFECTS-0001 (Abschnitt 6), sowie ein einfacher, nicht
+   weichgezeichneter Schatten-Platzhalter (statt echtem Blur aus
+   EFFECTS-0002/0003). Kein Double/Triple-Buffering, keine Hardware-
+   Overlays, keine Effekt-abhaengige Damage-Erweiterung (DAMAGE-0001
+   Abschnitt 7, BLOCKED - es gibt nur den festen Schatten-Offset, der
+   bereits in jede Schatten-Damage-Region eingerechnet wird), kein
+   Multi-Display (Abschnitt 10, BLOCKED - nur ein realer Framebuffer).
+
+   DAMAGE-0001 (Abschnitt 2-6/8/11/13) IST umgesetzt: eine kleine, feste
+   Liste von Schadens-Rechtecken (Damage Region Manager) wird aus
+   kompositor-eigenen Aenderungen (Fenster/Schatten/Cursor/Hintergrund) und
+   aus surface.c's Pro-Surface-Damage (SURFACE-0005, surface_damage_rect)
+   gespeist; compositor_composite() fuehrt bei vorhandenem Damage nur einen
+   Partial Redraw der betroffenen Rechtecke aus, bei unbekanntem/initialem
+   Zustand einen Full Redraw, und bei GAR KEINER Aenderung ueberhaupt
+   keinen Redraw (ereignisgesteuertes Rendering, Abschnitt 8). Eine volle
+   Mehrfach-Region-Verschmelzung (Abschnitt 5) ist auf "ein Merge-Versuch
+   pro add()" reduziert; bei Tabellenueberlauf wird konservativ auf Full
+   Redraw eskaliert (Abschnitt 11/13) statt Damage zu verlieren. */
 #ifndef NOVA_COMPOSITOR_H
 #define NOVA_COMPOSITOR_H
 
@@ -75,5 +91,28 @@ void compositor_thread_body(void);
    scheduler_thread1/2). 0 = Erfolg (Zustand -> RUNNING), -1 wenn kein
    freier Scheduler-Slot mehr verfuegbar ist. */
 int compositor_thread_start(void);
+
+/* NPSPEC-COMPOSITOR-PERF-0005 (Diagnostics), reduziert auf eine einzige
+   Kennzahl: Dauer (in Timer-Ticks, siehe interrupt.h timer_get_ticks) des
+   zuletzt abgeschlossenen compositor_composite()-Aufrufs. Keine Historie/
+   Mittelwertbildung - fuer ein einzelnes CPU-Software-Rendering ohne
+   GPU/VSync reicht der jeweils letzte Wert als Diagnosewert. Bleibt bei
+   einem uebersprungenen Aufruf (siehe compositor_last_damage_region_count)
+   auf dem Wert des zuletzt tatsaechlich ausgefuehrten Redraws stehen. */
+uint32_t compositor_last_frame_ticks(void);
+
+/* NPSPEC-COMPOSITOR-DAMAGE-0001 Diagnose/Selbsttest: Anzahl der beim
+   letzten compositor_composite()-Aufruf tatsaechlich neu gezeichneten
+   Damage-Regionen. 0 = der Aufruf wurde komplett uebersprungen (keine
+   Aenderung seit dem letzten Redraw, Abschnitt 8/COMPOSITOR-011); bei
+   einem Full Redraw wird der gesamte Bildschirm als genau 1 Region
+   gezaehlt (siehe compositor_last_redraw_was_full zur Unterscheidung). */
+uint32_t compositor_last_damage_region_count(void);
+
+/* 1 = der letzte tatsaechlich ausgefuehrte compositor_composite()-Aufruf
+   war ein vollstaendiger Redraw (unbekannter/initialer Bufferzustand,
+   Hintergrundwechsel, oder Damage-Tabellenueberlauf - Abschnitt 11/13),
+   0 = Partial Redraw ODER der Aufruf wurde uebersprungen. */
+int compositor_last_redraw_was_full(void);
 
 #endif

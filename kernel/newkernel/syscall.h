@@ -53,6 +53,18 @@
 #define GUI_OP_COMMIT             3u
 #define GUI_OP_DESTROY            4u
 
+/* NPSPEC-WINDOW-MANAGEMENT-0004 (Min/Maximize) + -0009 (Fullscreen), ueber
+   denselben SYSCALL_SERVICE_GUI-Namespace statt eines eigenen Services
+   (konsistent mit der window.c-Architekturentscheidung: ein Window ist nur
+   Surface+Metadaten, kein eigenstaendiges Objekt mit eigenem Protokoll).
+   EDX = Window-Handle (wie bei ATTACH/COMMIT/DESTROY), ESI = eine der
+   GUI_WINDOW_STATE_*-Konstanten. */
+#define GUI_OP_WINDOW_SET_STATE    5u
+#define GUI_WINDOW_STATE_MINIMIZE   1u
+#define GUI_WINDOW_STATE_MAXIMIZE   2u
+#define GUI_WINDOW_STATE_FULLSCREEN 3u
+#define GUI_WINDOW_STATE_RESTORE    4u
+
 void syscall_manager_initialize(void);
 int syscall_manager_self_test(void); /* 0 = ok */
 

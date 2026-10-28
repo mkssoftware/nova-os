@@ -68,18 +68,26 @@
 #include "time.h"
 #include "ipc.h"
 #include "nvme.h"
+#include "ahci.h"
 #include "scheduler.h"
 #include "hal.h"
 #include "usb.h"
 #include "kog.h"
 #include "evbus.h"
+#include "observability.h"
 #include "uobj.h"
 #include "cap.h"
+#include "cap_integration.h"
+#include "vsvc.h"
+#include "resilience.h"
 #include "security.h"
 #include "audit.h"
 #include "mac.h"
 #include "dac.h"
 #include "rbac.h"
+#include "integration.h"
+#include "readiness.h"
+#include "state.h"
 #include "powermgr.h"
 #include "exception.h"
 #include "syscall.h"
@@ -182,6 +190,11 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     logging_initialize();
     report("NOVA: Logging Selftest", logging_self_test() == 0);
 
+    state_manager_initialize();
+    report("NOVA: Global State Bootstrap Selftest", state_manager_self_test() == 0);
+    transaction_manager_initialize();
+    report("NOVA: Transaction Bootstrap Selftest", transaction_manager_self_test() == 0);
+
     boot_phase_current = BOOT_PHASE_KERNEL_ENTRY;
     boot_phase_last_success = BOOT_PHASE_NONE;
     boot_phase_log();
@@ -190,6 +203,23 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     report("NOVA: Panic Manager Selftest", panic_manager_self_test() == 0);
     crash_dump_initialize();
     report("NOVA: Crash Dump Selftest", crash_dump_self_test() == 0);
+
+    watchdog_manager_initialize();
+    report("NOVA: Watchdog Selftest", watchdog_self_test() == 0);
+    circuitbreaker_manager_initialize();
+    report("NOVA: Circuit Breaker Selftest", circuitbreaker_self_test() == 0);
+    detection_initialize();
+    report("NOVA: Fault Detection Selftest", detection_self_test() == 0);
+    restart_manager_initialize();
+    report("NOVA: Supervised Restart Selftest", restart_self_test() == 0);
+    resource_accounting_initialize();
+    report("NOVA: Resource Accounting Selftest", resource_accounting_self_test() == 0);
+    failover_manager_initialize();
+    report("NOVA: Failover Manager Selftest", failover_self_test() == 0);
+    containment_initialize();
+    report("NOVA: Fault Containment Selftest", containment_self_test() == 0);
+    checkpoint_initialize();
+    report("NOVA: Checkpoint/Restore Selftest", checkpoint_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_KERNEL_ENTRY;
     boot_phase_current = BOOT_PHASE_HANDOFF;
@@ -437,6 +467,13 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     report("NOVA: NVMe Controller Selftest", nvme_initialize() == 0 && nvme_self_test() == 0);
 
+    report("NOVA: AHCI Storage Selftest", ahci_initialize() == 0 && ahci_self_test() == 0);
+    serial_puts("NOVA: AHCI Datentraeger=");
+    serial_put_hex32(ahci_disk_count_value());
+    serial_puts(" Sektoren[0]=");
+    serial_put_hex32(ahci_disk_sectors_lo(0));
+    serial_puts("\r\n");
+
     scheduler_initialize();
     report("NOVA: Scheduler Frame Selftest", scheduler_self_test() == 0);
 
@@ -465,10 +502,29 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     evbus_initialize();
     report("NOVA: Event Bus Selftest", evbus_self_test() == 0);
 
+    diag_manager_initialize();
+    report("NOVA: Diagnostics Framework Selftest", diag_self_test() == 0);
+    trace_initialize();
+    report("NOVA: Trace Ring Selftest", trace_self_test() == 0);
+    metrics_initialize();
+    report("NOVA: Performance Counters Selftest", metrics_self_test() == 0);
+    obslog_initialize();
+    report("NOVA: Structured Log Ring Selftest", obslog_self_test() == 0);
+    intro_manager_initialize();
+    report("NOVA: Introspection Registry Selftest", intro_self_test() == 0);
+    prof_initialize();
+    report("NOVA: Sampling Profiler Selftest", prof_self_test() == 0);
+
     uobj_initialize();
     report("NOVA: Unified Object API Selftest", uobj_self_test() == 0);
 
     report("NOVA: Capability Framework Selftest", cap_initialize() == 0 && cap_self_test() == 0);
+
+    cap_integration_initialize();
+    report("NOVA: CAP-Integration Selftest", cap_integration_self_test() == 0);
+
+    vsvc_manager_initialize();
+    report("NOVA: Versioned Kernel Service ABI Selftest", vsvc_self_test() == 0);
 
     security_initialize();
     report("NOVA: Security Capability Manager Selftest", security_self_test() == 0);
@@ -485,8 +541,14 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     rbac_initialize();
     report("NOVA: Role-Based Access Control Selftest", rbac_self_test() == 0);
 
+    integration_pipelines_initialize();
+    report("NOVA: Integration Pipelines Selftest", integration_pipelines_self_test() == 0);
+
     power_manager_initialize();
     report("NOVA: Power Manager ABI Selftest", power_manager_self_test() == 0);
+
+    readiness_initialize();
+    report("NOVA: Progressive Readiness Selftest", readiness_self_test() == 0);
 
     exception_manager_initialize();
     report("NOVA: Exception Manager Selftest", exception_manager_self_test() == 0);
@@ -742,6 +804,20 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
        Ordnungs-Invariante. */
     report("NOVA: Compositor Thread Start",
            thread_mgr_ok && compositor_thread_start() == 0);
+
+    /* Registriert den echten Progressive-Readiness-Hintergrund-Thread
+       (siehe readiness.h) - sitzt ebenso inaktiv bis scheduler_enable(),
+       dann initialisiert er Netzwerk/Power-Management asynchron parallel
+       zum Rest des Systems. readiness_trigger() gibt ihn sofort frei (kein
+       Grund zum Verzoegern in diesem vereinfachten Modell - das Original
+       wartet auf BOOT_PHASE_GRAPHICS_READY, das hier durch desktop_show()
+       bereits laengst erreicht ist). readiness_sync_fallback() (siehe
+       syscall.c's syscall_userspace_exit) garantiert den Abschluss, auch
+       falls der Thread bis dahin nicht zum Zug kam. */
+    readiness_initialize();
+    int readiness_ok = readiness_start_background_init() == 0;
+    report("NOVA: Progressive Readiness Thread Start", readiness_ok);
+    if (readiness_ok) readiness_trigger();
 
     int smp_ok = smp_initialize() == 0;
     report("NOVA: SMP/AP-Aktivierung Initialize", smp_ok);

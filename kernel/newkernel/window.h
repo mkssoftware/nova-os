@@ -26,6 +26,16 @@
 
 #define WINDOW_CAPACITY 8u
 
+/* NPSPEC-WINDOW-MANAGEMENT-0004 (Min/Maximize) + -0009 (Fullscreen),
+   Darstellungsmodus getrennt vom Surface-Lifecycle (NPSPEC-WINDOW-ARCH-
+   0003: "State Model getrennt von Lifecycle"). Reiner Datenmodell-/
+   Geometrie-Mechanismus - interaktives Ausloesen per Maus-Doppelklick auf
+   die Titelleiste ist BLOCKED (kein Input-Subsystem, siehe window.c). */
+#define WINDOW_MODE_NORMAL     0u
+#define WINDOW_MODE_MINIMIZED  1u
+#define WINDOW_MODE_MAXIMIZED  2u
+#define WINDOW_MODE_FULLSCREEN 3u
+
 void window_manager_initialize(void);
 int window_self_test(void); /* 0 = ok */
 
@@ -70,6 +80,37 @@ uint32_t window_z_order(uint32_t handle); /* 0 wenn unbekannt */
    bestehenden Fokus auf. 0 = Erfolg, -1 wenn handle != 0 und unbekannt. */
 int window_focus(uint32_t handle);
 uint32_t window_focused_handle(void); /* 0 wenn keines fokussiert */
+
+/* WINDOW_MODE_NORMAL wird auch fuer ein unbekanntes Handle zurueckgegeben
+   (vereinfachte Fehlerbehandlung - Aufrufer, denen das unterscheiden
+   wichtig ist, pruefen zusaetzlich window_find in surface_state()). */
+uint32_t window_mode(uint32_t handle);
+
+/* Minimiert ein sichtbares Fenster (surface_hide darunter) und merkt sich
+   erstmalig dessen aktuelles Rechteck fuer window_restore(). 0 = Erfolg,
+   -1 wenn Handle unbekannt oder die Surface nicht ACTIVE war. Idempotent
+   (bereits minimiert -> weiterhin 0). */
+int window_minimize(uint32_t handle);
+
+/* Maximiert auf die volle Displaygroesse (display_width()/height()) via
+   surface_resize() - funktioniert auch auf einer bereits ACTIVE Surface.
+   Merkt sich (beim ersten Aufruf aus NORMAL) das aktuelle Rechteck fuer
+   window_restore(). 0 = Erfolg, -1 wenn Handle unbekannt, kein Display
+   verfuegbar, oder das Fenster aktuell minimiert ist (zuerst
+   window_restore aufrufen). Idempotent. */
+int window_maximize(uint32_t handle);
+
+/* Wie window_maximize, aber zusaetzlich markiert als FULLSCREEN - der
+   Compositor unterdrueckt in diesem Modus die Titelleiste auch bei
+   decorated!=0 (NPSPEC-WINDOW-MANAGEMENT-0009: Vollbild ohne Chrome). */
+int window_set_fullscreen(uint32_t handle);
+
+/* Stellt NORMAL wieder her: aus MINIMIZED per surface_commit (kein
+   Geometrie-Wechsel), aus MAXIMIZED/FULLSCREEN per surface_resize auf das
+   beim ersten Maximize/Fullscreen gemerkte Rechteck. 0 = Erfolg, -1 wenn
+   Handle unbekannt oder der zugrundeliegende surface_commit/resize
+   fehlschlaegt. Idempotent (bereits NORMAL -> weiterhin 0). */
+int window_restore(uint32_t handle);
 
 uint32_t window_count_in_use(void);
 

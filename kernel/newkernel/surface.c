@@ -151,6 +151,22 @@ int surface_destroy(uint32_t handle) {
     return 0;
 }
 
+int surface_resize(uint32_t handle, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    int i = surface_find_slot(handle);
+    if (i < 0) return -1;
+    uint32_t state = surface_slots[i].state;
+    if (state == SURFACE_STATE_FREE || state == SURFACE_STATE_DESTROYING) return -1;
+
+    surface_damage_union(&surface_slots[i], surface_slots[i].x, surface_slots[i].y,
+                         surface_slots[i].w, surface_slots[i].h);
+    surface_slots[i].x = x;
+    surface_slots[i].y = y;
+    surface_slots[i].w = w;
+    surface_slots[i].h = h;
+    surface_damage_union(&surface_slots[i], x, y, w, h);
+    return 0;
+}
+
 uint32_t surface_state(uint32_t handle) {
     int i = surface_find_slot(handle);
     if (i < 0) return SURFACE_STATE_FREE;
@@ -301,6 +317,14 @@ int surface_self_test(void) {
        geschaltet wird). */
     if (surface_commit(h1) != 0) return -1;
     if (surface_state(h1) != SURFACE_STATE_ACTIVE) return -1;
+
+    /* surface_resize() muss (im Gegensatz zu surface_configure()) auch auf
+       einer ACTIVE Surface funktionieren, ohne deren Zustand zu aendern -
+       Grundlage fuer Runtime-Resize (window.c Maximize/Restore). */
+    if (surface_resize(h1, 0u, 0u, 200u, 100u) != 0) return -1;
+    if (surface_state(h1) != SURFACE_STATE_ACTIVE) return -1;
+    if (surface_rect(h1, &x, &y, &w, &h) != 0) return -1;
+    if (x != 0u || y != 0u || w != 200u || h != 100u) return -1;
 
     /* Zweite, unabhaengige Surface parallel offen halten. */
     if (surface_create(2u, 0u, 0u, 10u, 10u, &h2) != 0) return -1;

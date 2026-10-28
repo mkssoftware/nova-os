@@ -69,6 +69,16 @@ uint32_t surface_commit_seq(uint32_t handle); /* 0 wenn Handle unbekannt */
    Composite-Durchlauf aufzurufen. */
 int surface_consume_if_dirty(uint32_t handle);
 
+/* Aendert die Geometrie einer bereits bestehenden Surface JEDERZEIT (ausser
+   im Zustand FREE/DESTROYING) - im Gegensatz zu surface_configure(), das
+   nur VOR dem ersten Attach gilt. Fuer Runtime-Resize (z.B. Maximize/
+   Restore eines bereits sichtbaren Fensters, siehe window.c). Der
+   Lifecycle-Zustand selbst bleibt unveraendert (eine ACTIVE Surface bleibt
+   ACTIVE), nur Position/Groesse aendern sich; markiert die Vereinigung aus
+   altem und neuem Rechteck als Damage. 0 = Erfolg, -1 wenn Handle
+   unbekannt oder Zustand FREE/DESTROYING. */
+int surface_resize(uint32_t handle, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+
 /* Gesamtkapazitaet der Tabelle (fuer Iteration durch alle Slots von
    aussen, z.B. durch den Compositor). */
 uint32_t surface_capacity(void);

@@ -46,6 +46,14 @@ int uobj_register_type(uint32_t type_id, uint32_t abi_version, uint32_t flags,
    vollem Pool oder fehlgeschlagenem init_fn. */
 int uobj_create(uint32_t type_id, uint32_t capabilities, uint32_t *out_handle_id, uint32_t *out_obj_id);
 
+/* Erzeugt ein ZUSAETZLICHES Handle fuer ein bereits bestehendes Objekt
+   (im Gegensatz zu uobj_create, das ein neues Objekt anlegt) - genutzt
+   von cap_integration.c's Bruecke zwischen §103 Capability Framework und
+   §102 Unified Object API (NPSPEC cap_integration32.inc). 0 = Erfolg
+   (*out_handle_id gesetzt), -1 wenn obj_id unbekannt oder die
+   Handle-Tabelle voll ist. */
+int uobj_create_handle_for_object(uint32_t obj_id, uint32_t capabilities, uint32_t *out_handle_id);
+
 /* 0 = Erfolg (*out_obj_ptr gesetzt), -1 bei fehlenden Rechten/ungueltigem
    Handle/veralteter Generation/sterbendem Objekt. required_capabilities=0
    ueberspringt die Capability-Pruefung (fuer interne Bridges). */

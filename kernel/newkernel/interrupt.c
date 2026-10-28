@@ -5,6 +5,7 @@
 #include "syscall.h"
 #include "scheduler.h"
 #include "taskdeadline.h"
+#include "resilience.h"
 
 typedef struct {
     uint16_t offset_low;
@@ -68,6 +69,7 @@ uint32_t interrupt_dispatch_c(uint32_t vector, uint32_t frame_ptr) {
         ++timer_ticks_value;
         outb(PIC1_COMMAND, PIC_EOI);
         task_deadline_poll();
+        resilience_tick();
         return scheduler_on_tick(frame_ptr);
     }
     if (vector == 33) {

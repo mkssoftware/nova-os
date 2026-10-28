@@ -6,6 +6,8 @@
 #include "scheduler.h"
 #include "surface.h"
 #include "ring3.h"
+#include "window.h"
+#include "readiness.h"
 
 static int syscall_mgr_initialized = 0;
 static int syscall_sysenter_available = 0;
@@ -45,6 +47,18 @@ static inline void frame_write(uint32_t frame_ptr, uint32_t byte_offset, uint32_
    scheduler_thread1/2 verdraengt. */
 static void syscall_userspace_exit(void) {
     serial_puts("NOVA: Ring 3 -> Ring 0 per SYSCALL_CORE_EXIT zurueckgekehrt\r\n");
+    /* VOR scheduler_enable() aufrufen, nicht danach: Slot 0 (dieser
+       Kontext) wird beim ersten Tick nach scheduler_enable() permanent
+       verdraengt (siehe scheduler.h) und laeuft womoeglich nie wieder -
+       ein Aufruf danach koennte durch einen Tick mitten in der Ausfuehrung
+       unterbrochen werden und nie fertig laufen. Hier, noch vor
+       scheduler_enable(), ist der Aufruf garantiert unterbrechungsfrei. */
+    readiness_sync_fallback();
+    serial_puts("NOVA: Progressive Readiness abgeschlossen - Netzwerk=");
+    serial_put_hex32(readiness_network_state());
+    serial_puts(" Power=");
+    serial_put_hex32(readiness_power_state());
+    serial_puts("\r\n");
     scheduler_enable();
     for (;;) {
         __asm__ volatile ("hlt");
@@ -97,9 +111,16 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
         uint32_t w = esi & 0xFFFFu;
         uint32_t h = (esi >> 16) & 0xFFFFu;
 
+        /* window_create() ruft intern surface_create()+surface_configure()
+           auf und registriert zusaetzlich die window.c-Metadaten (Z-Order/
+           Parent/Modus) - jede ueber den Syscall-Pfad erzeugte Surface ist
+           damit automatisch ein vollwertiges window.c-Fenster, auf dem
+           GUI_OP_WINDOW_SET_STATE (Minimize/Maximize/Fullscreen/Restore)
+           arbeiten kann. decorated=0, da das Wire-Protokoll (EDX/ESI schon
+           voll mit x/y/w/h) kein Dekorations-Bit hat - ein Client kann
+           vorerst keine Titelleiste ueber den Syscall-Pfad anfordern. */
         uint32_t handle = 0;
-        if (surface_create(GUI_SINGLE_CLIENT_PID, x, y, w, h, &handle) != 0 ||
-            surface_configure(handle, x, y, w, h) != 0) {
+        if (window_create(GUI_SINGLE_CLIENT_PID, x, y, w, h, 0, &handle) != 0) {
             ++syscall_stats_failed;
             frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_SURFACE);
             return frame_ptr;
@@ -128,7 +149,27 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     }
 
     if (operation == GUI_OP_DESTROY) {
-        int ok = (surface_destroy(edx) == 0);
+        int ok = (window_destroy(edx) == 0); /* raeumt auch die Surface auf */
+        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX,
+                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
+        return frame_ptr;
+    }
+
+    if (operation == GUI_OP_WINDOW_SET_STATE) {
+        uint32_t esi = frame_read(frame_ptr, FRAME_OFF_ESI);
+        int ok;
+        if (esi == GUI_WINDOW_STATE_MINIMIZE) {
+            ok = (window_minimize(edx) == 0);
+        } else if (esi == GUI_WINDOW_STATE_MAXIMIZE) {
+            ok = (window_maximize(edx) == 0);
+        } else if (esi == GUI_WINDOW_STATE_FULLSCREEN) {
+            ok = (window_set_fullscreen(edx) == 0);
+        } else if (esi == GUI_WINDOW_STATE_RESTORE) {
+            ok = (window_restore(edx) == 0);
+        } else {
+            ok = 0;
+        }
         if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
         frame_write(frame_ptr, FRAME_OFF_EAX,
                     (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
@@ -208,6 +249,7 @@ int syscall_manager_self_test(void) {
        sonst liest der naechste Dispatch den vorherigen Status-Code als
        Service und schlaegt mit SYSCALL_STATUS_SERVICE fehl. */
     surface_manager_initialize();
+    window_manager_initialize();
     uint8_t fake_frame[72] = {0};
     uint32_t frame_addr = (uint32_t)(uintptr_t)fake_frame;
 
@@ -250,6 +292,51 @@ int syscall_manager_self_test(void) {
     frame_write(frame_addr, FRAME_OFF_EBX, 0xFFu);
     syscall_dispatch(frame_addr);
     if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OPERATION) return -1;
+
+    /* GUI_OP_WINDOW_SET_STATE: Minimize->Restore->Maximize->Restore ueber
+       denselben Dispatch-Pfad (EDX=Handle, ESI=GUI_WINDOW_STATE_*). */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_WINDOW_SET_STATE);
+    frame_write(frame_addr, FRAME_OFF_EDX, gui_handle);
+    frame_write(frame_addr, FRAME_OFF_ESI, GUI_WINDOW_STATE_MINIMIZE);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (window_mode(gui_handle) != WINDOW_MODE_MINIMIZED) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_WINDOW_SET_STATE);
+    frame_write(frame_addr, FRAME_OFF_ESI, GUI_WINDOW_STATE_MAXIMIZE);
+    syscall_dispatch(frame_addr); /* MAXIMIZE waehrend minimiert -> Fehler */
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_SURFACE) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_WINDOW_SET_STATE);
+    frame_write(frame_addr, FRAME_OFF_ESI, GUI_WINDOW_STATE_RESTORE);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (window_mode(gui_handle) != WINDOW_MODE_NORMAL) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_WINDOW_SET_STATE);
+    frame_write(frame_addr, FRAME_OFF_ESI, GUI_WINDOW_STATE_MAXIMIZE);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (window_mode(gui_handle) != WINDOW_MODE_MAXIMIZED) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_WINDOW_SET_STATE);
+    frame_write(frame_addr, FRAME_OFF_ESI, GUI_WINDOW_STATE_RESTORE);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (window_mode(gui_handle) != WINDOW_MODE_NORMAL) return -1;
+
+    /* Unbekannte GUI_WINDOW_STATE_*-Konstante muss SYSCALL_STATUS_SURFACE
+       liefern (wie ein unbekanntes Handle), nicht abstuerzen. */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_WINDOW_SET_STATE);
+    frame_write(frame_addr, FRAME_OFF_ESI, 0xFFu);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_SURFACE) return -1;
 
     frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
     frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_DESTROY);

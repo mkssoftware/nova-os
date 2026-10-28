@@ -1,12 +1,15 @@
 /* NovaOS C-Kernel - Nova Window Manager (siehe window.h fuer Scope). */
 #include "window.h"
 #include "surface.h"
+#include "display.h"
 
 typedef struct {
     uint32_t handle; /* == Surface-Handle; 0 = Slot frei */
     uint32_t parent_handle;
     uint32_t z_order;
     int decorated;
+    uint32_t mode;
+    uint32_t restore_x, restore_y, restore_w, restore_h;
 } window_record_t;
 
 static window_record_t window_table[WINDOW_CAPACITY];
@@ -46,8 +49,89 @@ int window_create(uint32_t owner_pid, uint32_t x, uint32_t y, uint32_t w,
     window_table[slot].parent_handle = 0;
     window_table[slot].z_order = window_next_z++;
     window_table[slot].decorated = decorated ? 1 : 0;
+    window_table[slot].mode = WINDOW_MODE_NORMAL;
+    window_table[slot].restore_x = x;
+    window_table[slot].restore_y = y;
+    window_table[slot].restore_w = w;
+    window_table[slot].restore_h = h;
 
     *out_handle = handle;
+    return 0;
+}
+
+uint32_t window_mode(uint32_t handle) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return WINDOW_MODE_NORMAL;
+    return window_table[slot].mode;
+}
+
+int window_minimize(uint32_t handle) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return -1;
+    if (window_table[slot].mode == WINDOW_MODE_MINIMIZED) return 0;
+
+    uint32_t x, y, w, h;
+    if (surface_rect(handle, &x, &y, &w, &h) != 0) return -1;
+    if (surface_hide(handle) != 0) return -1;
+
+    window_table[slot].restore_x = x;
+    window_table[slot].restore_y = y;
+    window_table[slot].restore_w = w;
+    window_table[slot].restore_h = h;
+    window_table[slot].mode = WINDOW_MODE_MINIMIZED;
+    return 0;
+}
+
+static int window_maximize_like(uint32_t handle, uint32_t target_mode) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return -1;
+    if (window_table[slot].mode == WINDOW_MODE_MINIMIZED) return -1; /* zuerst restore() */
+    if (window_table[slot].mode == target_mode) return 0;
+
+    uint32_t display_w = display_width();
+    uint32_t display_h = display_height();
+    if (display_w == 0 || display_h == 0) return -1;
+
+    if (window_table[slot].mode == WINDOW_MODE_NORMAL) {
+        uint32_t x, y, w, h;
+        if (surface_rect(handle, &x, &y, &w, &h) != 0) return -1;
+        window_table[slot].restore_x = x;
+        window_table[slot].restore_y = y;
+        window_table[slot].restore_w = w;
+        window_table[slot].restore_h = h;
+    }
+
+    if (surface_resize(handle, 0u, 0u, display_w, display_h) != 0) return -1;
+    window_table[slot].mode = target_mode;
+    return 0;
+}
+
+int window_maximize(uint32_t handle) {
+    return window_maximize_like(handle, WINDOW_MODE_MAXIMIZED);
+}
+
+int window_set_fullscreen(uint32_t handle) {
+    return window_maximize_like(handle, WINDOW_MODE_FULLSCREEN);
+}
+
+int window_restore(uint32_t handle) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return -1;
+
+    if (window_table[slot].mode == WINDOW_MODE_NORMAL) return 0;
+
+    if (window_table[slot].mode == WINDOW_MODE_MINIMIZED) {
+        if (surface_commit(handle) != 0) return -1;
+        window_table[slot].mode = WINDOW_MODE_NORMAL;
+        return 0;
+    }
+
+    /* MAXIMIZED oder FULLSCREEN -> urspruengliches Rechteck wiederherstellen. */
+    if (surface_resize(handle, window_table[slot].restore_x, window_table[slot].restore_y,
+                       window_table[slot].restore_w, window_table[slot].restore_h) != 0) {
+        return -1;
+    }
+    window_table[slot].mode = WINDOW_MODE_NORMAL;
     return 0;
 }
 
@@ -188,6 +272,56 @@ int window_self_test(void) {
     if (window_focused_handle() != w2) return -1;
     if (window_focus(0xFFFFu) == 0) return -1; /* unbekannt */
     if (window_focused_handle() != w2) return -1; /* unveraendert nach Fehlversuch */
+
+    /* Minimize/Maximize/Fullscreen/Restore (NPSPEC-WINDOW-MANAGEMENT-
+       0004/-0009) - braucht eine ACTIVE Surface (Attach+Commit). */
+    static uint32_t w1_pixels[100];
+    for (uint32_t i = 0; i < 100u; ++i) w1_pixels[i] = 0x808080u;
+    if (surface_attach_buffer(w1, (uint32_t)(uintptr_t)w1_pixels) != 0) return -1;
+    if (surface_commit(w1) != 0) return -1;
+    if (!window_is_visible(w1)) return -1;
+    if (window_mode(w1) != WINDOW_MODE_NORMAL) return -1;
+
+    if (window_minimize(w1) != 0) return -1;
+    if (window_mode(w1) != WINDOW_MODE_MINIMIZED) return -1;
+    if (window_is_visible(w1)) return -1; /* HIDDEN */
+    if (window_minimize(w1) != 0) return -1; /* idempotent */
+
+    /* Maximize waehrend minimiert ist unzulaessig - zuerst restore(). */
+    if (window_maximize(w1) == 0) return -1;
+
+    if (window_restore(w1) != 0) return -1;
+    if (window_mode(w1) != WINDOW_MODE_NORMAL) return -1;
+    if (!window_is_visible(w1)) return -1; /* wieder ACTIVE, kein erneutes Attach noetig */
+
+    uint32_t rx, ry, rw, rh;
+    if (surface_rect(w1, &rx, &ry, &rw, &rh) != 0) return -1;
+    if (rx != 0u || ry != 0u || rw != 10u || rh != 10u) return -1; /* unveraendert */
+
+    if (window_maximize(w1) != 0) return -1;
+    if (window_mode(w1) != WINDOW_MODE_MAXIMIZED) return -1;
+    if (surface_rect(w1, &rx, &ry, &rw, &rh) != 0) return -1;
+    if (rx != 0u || ry != 0u || rw != display_width() || rh != display_height()) return -1;
+    if (!window_is_visible(w1)) return -1; /* ACTIVE bleibt ACTIVE, nur Geometrie aendert sich */
+
+    if (window_restore(w1) != 0) return -1;
+    if (window_mode(w1) != WINDOW_MODE_NORMAL) return -1;
+    if (surface_rect(w1, &rx, &ry, &rw, &rh) != 0) return -1;
+    if (rx != 0u || ry != 0u || rw != 10u || rh != 10u) return -1; /* urspr. Rechteck zurueck */
+
+    if (window_set_fullscreen(w1) != 0) return -1;
+    if (window_mode(w1) != WINDOW_MODE_FULLSCREEN) return -1;
+    if (surface_rect(w1, &rx, &ry, &rw, &rh) != 0) return -1;
+    if (rx != 0u || ry != 0u || rw != display_width() || rh != display_height()) return -1;
+
+    if (window_restore(w1) != 0) return -1;
+    if (window_mode(w1) != WINDOW_MODE_NORMAL) return -1;
+
+    /* Unbekanntes Handle muss bei allen vier Operationen fehlschlagen. */
+    if (window_minimize(0xFFFFu) == 0) return -1;
+    if (window_maximize(0xFFFFu) == 0) return -1;
+    if (window_set_fullscreen(0xFFFFu) == 0) return -1;
+    if (window_restore(0xFFFFu) == 0) return -1;
 
     /* Zerstoeren von w1: w3 (Kind) muss seine Parent-Referenz verlieren,
        Fokus auf w2 bleibt unberuehrt. */

@@ -93,12 +93,15 @@ int driver_pci_scan(void) {
             uint32_t vendor_id = vendor_device & 0xFFFFu;
             uint32_t device_id = vendor_device >> 16;
 
-            if (class24 == PCI_CLASS_NVME || class24 == PCI_CLASS_XHCI) {
+            if (class24 == PCI_CLASS_NVME || class24 == PCI_CLASS_XHCI || class24 == PCI_CLASS_AHCI) {
                 uint32_t slot = 0;
                 if (disc_register_device(DISC_SRC_PCI, bus_addr, vendor_id, device_id,
                                           class24, &slot) == 0) {
                     disc_record_t *rec = &disc_records[slot];
-                    uint32_t bar0 = pci_config_read32(rec->pci_bus_addr | 0x10u) & 0xFFFFF000u;
+                    /* AHCI meldet sein MMIO-Register-Set als ABAR in BAR5
+                       (Offset 0x24), nicht in BAR0 wie NVMe/xHCI. */
+                    uint32_t bar_offset = (class24 == PCI_CLASS_AHCI) ? 0x24u : 0x10u;
+                    uint32_t bar0 = pci_config_read32(rec->pci_bus_addr | bar_offset) & 0xFFFFF000u;
                     rec->bar0 = bar0;
                     rec->flags |= DISC_FLAG_MMIO;
                     rec->state = DRV_LC_MATCHED;

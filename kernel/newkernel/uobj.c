@@ -149,6 +149,12 @@ int uobj_create(uint32_t type_id, uint32_t capabilities, uint32_t *out_handle_id
     return 0;
 }
 
+int uobj_create_handle_for_object(uint32_t obj_id, uint32_t capabilities, uint32_t *out_handle_id) {
+    uobj_object_t *obj = uobj_find_object(obj_id);
+    if (!obj) return -1;
+    return uobj_alloc_handle(obj_id, obj->generation, capabilities, out_handle_id);
+}
+
 int uobj_from_handle(uint32_t handle_id, uint32_t required_capabilities, void **out_obj_ptr) {
     uobj_handle_t *hdl = uobj_find_handle(handle_id);
     if (!hdl) return -1;
