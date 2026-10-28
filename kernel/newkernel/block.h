@@ -22,7 +22,12 @@
 #define BLOCK_HEALTH_FAIL    2u
 #define BLOCK_HEALTH_UNKNOWN 3u
 
-#define BLOCK_CAPACITY 8u
+/* War urspruenglich 8 - angehoben, weil jeder NovaFS-Selbsttest (ab
+   novafs.c Batch 3) dauerhaft ein eigenes synthetisches BLOCK_TRANSPORT_
+   VIRT-Geraet registriert (block.c kennt kein "unregister") und reale
+   Geraete (AHCI/NVMe) zusaetzlich kommen - mit immer mehr Batches reicht
+   8 nicht mehr aus. 32 gibt reichlich Spielraum fuer weitere Batches. */
+#define BLOCK_CAPACITY 32u
 
 #define BLK_EVT_ADDED         1u
 #define BLK_EVT_REMOVED       2u
