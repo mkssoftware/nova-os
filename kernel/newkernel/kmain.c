@@ -70,6 +70,7 @@
 #include "nvme.h"
 #include "ahci.h"
 #include "gpt.h"
+#include "novafs.h"
 #include "scheduler.h"
 #include "hal.h"
 #include "usb.h"
@@ -489,7 +490,22 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
             serial_put_hex32(gpt_sectors);
         }
         serial_puts("\r\n");
+
+        if (gpt_rc == 0) {
+            int nfs_rc = novafs_probe_volume(gpt_disk_record, gpt_first_lba, gpt_sectors);
+            serial_puts("NOVA: NovaFS Superblock-Sondierung=");
+            serial_put_hex32((uint32_t)nfs_rc);
+            if (nfs_rc == 0) {
+                serial_puts(" Bloecke=");
+                serial_put_hex32(novafs_total_blocks());
+                serial_puts(" Generation=");
+                serial_put_hex32(novafs_generation_lo());
+            }
+            serial_puts("\r\n");
+        }
     }
+
+    report("NOVA: NovaFS Superblock+Bitmap Selftest", novafs_self_test() == 0);
 
     scheduler_initialize();
     report("NOVA: Scheduler Frame Selftest", scheduler_self_test() == 0);
