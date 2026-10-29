@@ -8,6 +8,10 @@
 #include "ring3.h"
 #include "window.h"
 #include "readiness.h"
+#include "vfsapi.h"
+#include "novafs.h"
+#include "input.h"
+#include "interrupt.h"
 
 static int syscall_mgr_initialized = 0;
 static int syscall_sysenter_available = 0;
@@ -96,11 +100,6 @@ void syscall_manager_initialize(void) {
     syscall_mgr_initialized = 1;
 }
 
-/* Einziger bisher existierender Client (ring3.c) - echte Mehr-Client-PID-
-   Aufloesung (z.B. ueber den aktuell laufenden Scheduler-Slot) ist bewusst
-   nicht in dieser Sitzung geloest, siehe syscall.h. */
-#define GUI_SINGLE_CLIENT_PID 1u
-
 static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     uint32_t edx = frame_read(frame_ptr, FRAME_OFF_EDX);
 
@@ -120,7 +119,7 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
            voll mit x/y/w/h) kein Dekorations-Bit hat - ein Client kann
            vorerst keine Titelleiste ueber den Syscall-Pfad anfordern. */
         uint32_t handle = 0;
-        if (window_create(GUI_SINGLE_CLIENT_PID, x, y, w, h, 0, &handle) != 0) {
+        if (window_create(SYSCALL_SINGLE_CLIENT_PID, x, y, w, h, 0, &handle) != 0) {
             ++syscall_stats_failed;
             frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_SURFACE);
             return frame_ptr;
@@ -181,6 +180,195 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     return frame_ptr;
 }
 
+/* Schreibt result ins EAX und zaehlt die Statistik - result==0 gilt als
+   Erfolg, jeder andere Wert (ein negativer VFSAPI_STATUS_*-Code oder ein
+   SYSCALL_STATUS_*-Dispatch-Fehler) als Fehlschlag. */
+static uint32_t syscall_vfs_finish(uint32_t frame_ptr, int result) {
+    if (result == 0) ++syscall_stats_successful; else ++syscall_stats_failed;
+    frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)result);
+    return frame_ptr;
+}
+
+static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation) {
+    uint32_t args_addr = frame_read(frame_ptr, FRAME_OFF_EDX);
+
+    if (operation == VFS_OP_LOOKUP) {
+        if (syscall_validate_user_range(args_addr, sizeof(syscall_vfs_lookup_args_t)) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        syscall_vfs_lookup_args_t *args = (syscall_vfs_lookup_args_t *)(uintptr_t)args_addr;
+        if (syscall_validate_user_range(args->path_addr, args->path_len) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        uint32_t result_handle = 0;
+        int rc = vfsapi_lookup(SYSCALL_SINGLE_CLIENT_PID, args->dir_handle,
+                                (const char *)(uintptr_t)args->path_addr, args->path_len,
+                                args->flags, &result_handle);
+        if (rc == 0) args->result_handle = result_handle;
+        return syscall_vfs_finish(frame_ptr, rc);
+    }
+
+    if (operation == VFS_OP_READ || operation == VFS_OP_WRITE) {
+        if (syscall_validate_user_range(args_addr, sizeof(syscall_vfs_io_args_t)) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        syscall_vfs_io_args_t *args = (syscall_vfs_io_args_t *)(uintptr_t)args_addr;
+        if (syscall_validate_user_range(args->buffer_addr, args->length) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        uint32_t transferred = 0;
+        int rc;
+        if (operation == VFS_OP_READ) {
+            rc = vfsapi_read(SYSCALL_SINGLE_CLIENT_PID, args->handle, args->offset,
+                              (uint8_t *)(uintptr_t)args->buffer_addr, args->length, &transferred);
+        } else {
+            rc = vfsapi_write(SYSCALL_SINGLE_CLIENT_PID, args->handle, args->offset,
+                               (const uint8_t *)(uintptr_t)args->buffer_addr, args->length,
+                               &transferred);
+        }
+        if (rc == 0) args->transferred = transferred;
+        return syscall_vfs_finish(frame_ptr, rc);
+    }
+
+    if (operation == VFS_OP_CREATE) {
+        if (syscall_validate_user_range(args_addr, sizeof(syscall_vfs_create_args_t)) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        syscall_vfs_create_args_t *args = (syscall_vfs_create_args_t *)(uintptr_t)args_addr;
+        if (syscall_validate_user_range(args->name_addr, args->name_len) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        uint32_t result_handle = 0;
+        int rc = vfsapi_create(SYSCALL_SINGLE_CLIENT_PID, args->dir_handle,
+                                (const char *)(uintptr_t)args->name_addr, args->name_len,
+                                args->object_type, &result_handle);
+        if (rc == 0) args->result_handle = result_handle;
+        return syscall_vfs_finish(frame_ptr, rc);
+    }
+
+    if (operation == VFS_OP_READ_DIRECTORY) {
+        if (syscall_validate_user_range(args_addr, sizeof(syscall_vfs_read_dir_args_t)) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        syscall_vfs_read_dir_args_t *args = (syscall_vfs_read_dir_args_t *)(uintptr_t)args_addr;
+        if (syscall_validate_user_range(args->entry_addr, sizeof(vfsapi_dir_entry_t)) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        int rc = vfsapi_read_directory(SYSCALL_SINGLE_CLIENT_PID, args->dir_handle, args->index,
+                                        (vfsapi_dir_entry_t *)(uintptr_t)args->entry_addr);
+        return syscall_vfs_finish(frame_ptr, rc);
+    }
+
+    if (operation == VFS_OP_QUERY) {
+        if (syscall_validate_user_range(args_addr, sizeof(syscall_vfs_query_args_t)) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        syscall_vfs_query_args_t *args = (syscall_vfs_query_args_t *)(uintptr_t)args_addr;
+        if (syscall_validate_user_range(args->info_addr, sizeof(vfsapi_info_t)) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        int rc = vfsapi_query(SYSCALL_SINGLE_CLIENT_PID, args->handle,
+                               (vfsapi_info_t *)(uintptr_t)args->info_addr);
+        return syscall_vfs_finish(frame_ptr, rc);
+    }
+
+    if (operation == VFS_OP_DELETE) {
+        if (syscall_validate_user_range(args_addr, sizeof(syscall_vfs_delete_args_t)) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        syscall_vfs_delete_args_t *args = (syscall_vfs_delete_args_t *)(uintptr_t)args_addr;
+        if (syscall_validate_user_range(args->name_addr, args->name_len) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        int rc = vfsapi_delete(SYSCALL_SINGLE_CLIENT_PID, args->dir_handle,
+                                (const char *)(uintptr_t)args->name_addr, args->name_len);
+        return syscall_vfs_finish(frame_ptr, rc);
+    }
+
+    if (operation == VFS_OP_RENAME) {
+        if (syscall_validate_user_range(args_addr, sizeof(syscall_vfs_rename_args_t)) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        syscall_vfs_rename_args_t *args = (syscall_vfs_rename_args_t *)(uintptr_t)args_addr;
+        if (syscall_validate_user_range(args->src_name_addr, args->src_name_len) != 0 ||
+            syscall_validate_user_range(args->dst_name_addr, args->dst_name_len) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        int rc = vfsapi_rename(SYSCALL_SINGLE_CLIENT_PID, args->src_dir_handle,
+                                (const char *)(uintptr_t)args->src_name_addr, args->src_name_len,
+                                args->dst_dir_handle,
+                                (const char *)(uintptr_t)args->dst_name_addr, args->dst_name_len);
+        return syscall_vfs_finish(frame_ptr, rc);
+    }
+
+    if (operation == VFS_OP_CLOSE) {
+        if (syscall_validate_user_range(args_addr, sizeof(syscall_vfs_close_args_t)) != 0) {
+            return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
+        }
+        syscall_vfs_close_args_t *args = (syscall_vfs_close_args_t *)(uintptr_t)args_addr;
+        int rc = vfsapi_close(SYSCALL_SINGLE_CLIENT_PID, args->handle);
+        return syscall_vfs_finish(frame_ptr, rc);
+    }
+
+    return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_OPERATION);
+}
+
+/* "Scharf geschaltet" von syscall_manager_self_test() nach dessen eigenem,
+   garantiert leerem Abschluss (siehe dort) - verhindert, dass der
+   Selbsttest-eigene synthetische Event-Durchlauf als Beweis durchgeht.
+   Danach loggt syscall_dispatch_input() EINMALIG das erste echte, an
+   einen Ring-3-Client zugestellte Event - exakt das gleiche "erstes-
+   echtes-Ergebnis"-Muster wie compositor.c's Framebuffer-Pixel-Beweis
+   fuer GUI_OP_COMMIT (siehe dort compositor_log_client_proof_once). */
+static int syscall_input_proof_armed = 0;
+static int syscall_input_proof_logged = 0;
+
+static uint32_t syscall_dispatch_input(uint32_t frame_ptr, uint32_t operation) {
+    uint32_t args_addr = frame_read(frame_ptr, FRAME_OFF_EDX);
+
+    if (operation != INPUT_OP_POLL) {
+        ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OPERATION);
+        return frame_ptr;
+    }
+
+    if (syscall_validate_user_range(args_addr, sizeof(syscall_input_poll_args_t)) != 0) {
+        ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_POINTER);
+        return frame_ptr;
+    }
+    syscall_input_poll_args_t *args = (syscall_input_poll_args_t *)(uintptr_t)args_addr;
+
+    input_event_t evt;
+    if (input_client_poll(&evt) == 0) {
+        args->has_event = 1u;
+        args->type = (uint32_t)evt.type;
+        args->timestamp_ticks = evt.timestamp_ticks;
+        args->key_vkey = evt.key_vkey;
+        args->modifiers = evt.modifiers;
+        args->mouse_dx = evt.mouse_dx;
+        args->mouse_dy = evt.mouse_dy;
+        args->mouse_buttons = evt.mouse_buttons;
+
+        if (syscall_input_proof_armed && !syscall_input_proof_logged) {
+            syscall_input_proof_logged = 1;
+            serial_puts("NOVA: GUI-Input-Syscall liefert echtes Event an Ring-3-Client - Typ=");
+            serial_put_hex32(args->type);
+            serial_puts(" Vkey=");
+            serial_put_hex32(args->key_vkey);
+            serial_puts("\r\n");
+        }
+    } else {
+        args->has_event = 0u;
+    }
+    args->cursor_x = input_cursor_x();
+    args->cursor_y = input_cursor_y();
+
+    ++syscall_stats_successful;
+    frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+    return frame_ptr;
+}
+
 uint32_t syscall_dispatch(uint32_t frame_ptr) {
     uint32_t service = frame_read(frame_ptr, FRAME_OFF_EAX);
     uint32_t operation = frame_read(frame_ptr, FRAME_OFF_EBX);
@@ -194,6 +382,14 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
 
     if (service == SYSCALL_SERVICE_GUI) {
         return syscall_dispatch_gui(frame_ptr, operation);
+    }
+
+    if (service == SYSCALL_SERVICE_VFS) {
+        return syscall_dispatch_vfs(frame_ptr, operation);
+    }
+
+    if (service == SYSCALL_SERVICE_INPUT) {
+        return syscall_dispatch_input(frame_ptr, operation);
     }
 
     if (service != SYSCALL_SERVICE_CORE) {
@@ -344,6 +540,206 @@ int syscall_manager_self_test(void) {
     syscall_dispatch(frame_addr);
     if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
     if (surface_state(gui_handle) != SURFACE_STATE_FREE) return -1;
+
+    /* SYSCALL_SERVICE_VFS-Dispatch (syscall_dispatch_vfs): anders als der
+       obige synthetische GUI-Frame-Test genuegt hier nicht nur ein
+       Fake-Frame - die Args-Struktur selbst muss an einer echten,
+       per syscall_validate_user_range() gueltigen Adresse liegen (siehe
+       syscall.h). USER_ADDRESS_MIN (4 MiB) ist von paging.c identity-
+       gemappt und damit aus Ring 0 direkt beschreibbar - genau wie bei
+       jedem echten Ring-3-Client, der dort seine Args-Struktur ablegt,
+       OHNE dass hierfuer ring3_initialize() (laeuft noch gar nicht)
+       gebraucht wird. Baut auf dem bereits von vfsapi_self_test()
+       gemounteten Testvolume auf (siehe kmain.c - "/Benutzer" existiert
+       dort bereits), statt ein drittes eigenes NovaFS-Testvolume
+       anzulegen. */
+    uint8_t *user_base = (uint8_t *)(uintptr_t)USER_ADDRESS_MIN;
+    syscall_vfs_lookup_args_t *lookup_args = (syscall_vfs_lookup_args_t *)(user_base + 0);
+    char *path_buf = (char *)(user_base + 64);
+    syscall_vfs_create_args_t *create_args = (syscall_vfs_create_args_t *)(user_base + 128);
+    char *name_buf = (char *)(user_base + 192);
+    syscall_vfs_io_args_t *io_args = (syscall_vfs_io_args_t *)(user_base + 256);
+    uint8_t *data_buf = user_base + 320;
+    syscall_vfs_close_args_t *close_args = (syscall_vfs_close_args_t *)(user_base + 384);
+
+    const char benutzer_path[9] = {'/', 'B', 'e', 'n', 'u', 't', 'z', 'e', 'r'};
+    for (uint32_t i = 0; i < 9u; ++i) path_buf[i] = benutzer_path[i];
+
+    lookup_args->dir_handle = 0u;
+    lookup_args->path_addr = (uint32_t)(uintptr_t)path_buf;
+    lookup_args->path_len = 9u;
+    lookup_args->flags = VFSAPI_LOOKUP_FLAG_WRITE;
+    lookup_args->result_handle = 0u;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_VFS);
+    frame_write(frame_addr, FRAME_OFF_EBX, VFS_OP_LOOKUP);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    frame_write(frame_addr, FRAME_OFF_EDX, (uint32_t)(uintptr_t)lookup_args);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != 0u) return -1;
+    uint32_t benutzer_handle = lookup_args->result_handle;
+    if (benutzer_handle == 0u) return -1;
+
+    const char file_name[12] = {'d', 'i', 's', 'p', 'a', 't', 'c', 'h', '.', 't', 'x', 't'};
+    for (uint32_t i = 0; i < 12u; ++i) name_buf[i] = file_name[i];
+
+    create_args->dir_handle = benutzer_handle;
+    create_args->name_addr = (uint32_t)(uintptr_t)name_buf;
+    create_args->name_len = 12u;
+    create_args->object_type = NOVAFS_TYPE_FILE;
+    create_args->result_handle = 0u;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_VFS);
+    frame_write(frame_addr, FRAME_OFF_EBX, VFS_OP_CREATE);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    frame_write(frame_addr, FRAME_OFF_EDX, (uint32_t)(uintptr_t)create_args);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != 0u) return -1;
+    uint32_t file_handle = create_args->result_handle;
+    if (file_handle == 0u) return -1;
+
+    data_buf[0] = 'O'; data_buf[1] = 'K'; data_buf[2] = '!'; data_buf[3] = '!';
+    io_args->handle = file_handle;
+    io_args->buffer_addr = (uint32_t)(uintptr_t)data_buf;
+    io_args->offset = 0u;
+    io_args->length = 4u;
+    io_args->transferred = 0u;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_VFS);
+    frame_write(frame_addr, FRAME_OFF_EBX, VFS_OP_WRITE);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    frame_write(frame_addr, FRAME_OFF_EDX, (uint32_t)(uintptr_t)io_args);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != 0u) return -1;
+    if (io_args->transferred != 4u) return -1;
+
+    data_buf[0] = 0; data_buf[1] = 0; data_buf[2] = 0; data_buf[3] = 0;
+    io_args->transferred = 0u;
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_VFS);
+    frame_write(frame_addr, FRAME_OFF_EBX, VFS_OP_READ);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    frame_write(frame_addr, FRAME_OFF_EDX, (uint32_t)(uintptr_t)io_args);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != 0u) return -1;
+    if (io_args->transferred != 4u) return -1;
+    if (data_buf[0] != 'O' || data_buf[1] != 'K' || data_buf[2] != '!' || data_buf[3] != '!') {
+        return -1;
+    }
+
+    /* Unbekannte Operation -> SYSCALL_STATUS_OPERATION, ungueltiger
+       Args-Zeiger (ausserhalb [USER_ADDRESS_MIN, USER_ADDRESS_MAX)) ->
+       SYSCALL_STATUS_POINTER - beide Fehlerpfade duerfen die bereits
+       offenen Handles nicht beeinflussen. */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_VFS);
+    frame_write(frame_addr, FRAME_OFF_EBX, 0xFFu);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OPERATION) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_VFS);
+    frame_write(frame_addr, FRAME_OFF_EBX, VFS_OP_LOOKUP);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    frame_write(frame_addr, FRAME_OFF_EDX, 0xC0001000u); /* Kernel-Adresse */
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_POINTER) return -1;
+
+    close_args->handle = file_handle;
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_VFS);
+    frame_write(frame_addr, FRAME_OFF_EBX, VFS_OP_CLOSE);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    frame_write(frame_addr, FRAME_OFF_EDX, (uint32_t)(uintptr_t)close_args);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != 0u) return -1;
+
+    close_args->handle = benutzer_handle;
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_VFS);
+    frame_write(frame_addr, FRAME_OFF_EBX, VFS_OP_CLOSE);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    frame_write(frame_addr, FRAME_OFF_EDX, (uint32_t)(uintptr_t)close_args);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != 0u) return -1;
+
+    /* Aufraeumen: die eben erzeugte Testdatei nicht dauerhaft im
+       gemeinsam genutzten Testvolume zuruecklassen. */
+    uint32_t cleanup_handle;
+    if (vfsapi_lookup(SYSCALL_SINGLE_CLIENT_PID, 0u, benutzer_path, 9u,
+                       VFSAPI_LOOKUP_FLAG_WRITE, &cleanup_handle) == 0) {
+        vfsapi_delete(SYSCALL_SINGLE_CLIENT_PID, cleanup_handle, file_name, 12u);
+        vfsapi_close(SYSCALL_SINGLE_CLIENT_PID, cleanup_handle);
+    }
+
+    /* SYSCALL_SERVICE_INPUT-Dispatch (syscall_dispatch_input): ein
+       synthetisches Event direkt in input.c's rohen ISR-Ringpuffer
+       geben (input_push_event), per input_drain_pending() deterministisch
+       in die Client-Warteschlange ueberfuehren (ohne auf den echten,
+       bereits laufenden Input-Thread warten zu muessen), dann ueber den
+       echten Syscall-Dispatch abholen. */
+    syscall_input_poll_args_t *poll_args = (syscall_input_poll_args_t *)(user_base + 448);
+
+    /* Echte IRQ1/IRQ12-Handler laufen seit dem Input-System tatsaechlich
+       asynchron im Hintergrund (siehe ps2.c's gleichnamige Lektion zu
+       ps2_mouse_cycle) und koennen jederzeit ein echtes Event in
+       input.c's Warteschlangen legen (z.B. ein Rausch-Paket, falls IRQ12
+       ohne tatsaechlich streamende Maus feuert). Ohne Schutz koennte ein
+       solches Event VOR dem gleich gepushten synthetischen Event landen
+       und von input_client_poll() zuerst ausgeliefert werden - der Test
+       wuerde dann faelschlich am Event-Inhalt scheitern, nicht an der
+       Dispatch-Logik selbst. Fix: Interrupts kurz sperren, beide
+       Warteschlangen (roher Ring + Client-Warteschlange) leeren, DANN
+       erst das synthetische Event einspeisen - exakt das gleiche Muster
+       wie ps2_controller_self_test's Absicherung. */
+    interrupt_disable();
+
+    input_event_t drain_tmp;
+    while (input_pop_event(&drain_tmp) == 0) { }
+    while (input_client_poll(&drain_tmp) == 0) { }
+
+    input_event_t synth_evt = {0};
+    synth_evt.type = INPUT_EVENT_KEY_DOWN;
+    synth_evt.key_vkey = 'Q';
+    synth_evt.modifiers = INPUT_MOD_LSHIFT;
+    input_push_event(&synth_evt);
+    input_drain_pending();
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_INPUT);
+    frame_write(frame_addr, FRAME_OFF_EBX, INPUT_OP_POLL);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    frame_write(frame_addr, FRAME_OFF_EDX, (uint32_t)(uintptr_t)poll_args);
+    syscall_dispatch(frame_addr);
+    int input_ok = 1;
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != 0u) input_ok = 0;
+    if (input_ok && poll_args->has_event != 1u) input_ok = 0;
+    if (input_ok && poll_args->type != (uint32_t)INPUT_EVENT_KEY_DOWN) input_ok = 0;
+    if (input_ok && poll_args->key_vkey != (uint32_t)'Q') input_ok = 0;
+    if (input_ok && poll_args->modifiers != INPUT_MOD_LSHIFT) input_ok = 0;
+
+    /* Erneutes Poll ohne neues Event: has_event==0, aber EAX bleibt OK
+       (eine leere Warteschlange ist kein Fehler, siehe syscall.h). */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_INPUT);
+    frame_write(frame_addr, FRAME_OFF_EBX, INPUT_OP_POLL);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    frame_write(frame_addr, FRAME_OFF_EDX, (uint32_t)(uintptr_t)poll_args);
+    syscall_dispatch(frame_addr);
+    if (input_ok && frame_read(frame_addr, FRAME_OFF_EAX) != 0u) input_ok = 0;
+    if (input_ok && poll_args->has_event != 0u) input_ok = 0;
+
+    interrupt_enable();
+
+    if (!input_ok) return -1;
+
+    /* Unbekannte Operation -> SYSCALL_STATUS_OPERATION. */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_INPUT);
+    frame_write(frame_addr, FRAME_OFF_EBX, 0xFFu);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OPERATION) return -1;
+
+    /* Ab hier sind beide Input-Warteschlangen wieder garantiert leer
+       (siehe oben) - ein spaeteres has_event!=0 in syscall_dispatch_input
+       kann also nur noch von einem echten, nach diesem Selbsttest
+       eingetroffenen Event stammen. Siehe ring3.c fuer den Ring-3-Client,
+       der als erster davon profitiert. */
+    syscall_input_proof_armed = 1;
 
     serial_puts("NOVA: System Call Interface Selbsttest OK (7/7)\r\n");
     return 0;

@@ -22,11 +22,14 @@
 
 /* NPSPEC-WINDOW-DECORATION-0001..0003 (Rahmen/Titelleiste/Controls),
    reduziert auf eine feste Titelleisten-Hoehe + Fuellfarbe (kein Theme-
-   System, keine Minimize/Maximize/Close-Buttons - die bräuchten Klick-
-   Erkennung, die ohne Input-Subsystem (siehe window.h) ohnehin wirkungslos
-   waere). Nur window.c-Fenster mit decorated!=0 bekommen eine Titelleiste;
-   compositor_windows (Desktop-Chrome wie die Taskbar) bleiben unberuehrt. */
-#define COMPOSITOR_TITLEBAR_HEIGHT     20u
+   System, keine Minimize/Maximize/Close-Buttons als eigene Klickziele -
+   Fenster-Drag per Titelleiste UND Klick-Fokuswechsel sind seit dem
+   Input-System dagegen echt verdrahtet, siehe window.h/input.c). Nur
+   window.c-Fenster mit decorated!=0 bekommen eine Titelleiste;
+   compositor_windows (Desktop-Chrome wie die Taskbar) bleiben unberuehrt.
+   Hoehe kommt aus window.h (WINDOW_TITLEBAR_HEIGHT), da window.c/input.c
+   dieselbe Geometrie fuer das Titelleisten-Hit-Testing kennen muessen. */
+#define COMPOSITOR_TITLEBAR_HEIGHT     WINDOW_TITLEBAR_HEIGHT
 #define COMPOSITOR_TITLEBAR_RGB        0x30343Cu
 #define COMPOSITOR_TITLEBAR_FOCUS_RGB  0x2D5FA0u
 

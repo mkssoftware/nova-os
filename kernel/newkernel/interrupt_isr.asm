@@ -12,6 +12,7 @@ extern interrupt_dispatch_c
 global isr_unexpected
 global irq0_stub
 global irq1_stub
+global irq12_stub
 global syscall_stub
 global exception_stub_table
 
@@ -99,6 +100,10 @@ irq0_stub:
 irq1_stub:
     push dword 0
     push dword 33
+    jmp isr_common
+irq12_stub:
+    push dword 0
+    push dword 44
     jmp isr_common
 syscall_stub:
     push dword 0

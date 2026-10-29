@@ -34,13 +34,36 @@ extern uint8_t stack_top[] __asm__("stack_top");
    Draw-Syscall pro Pixel); (4) GUI_OP_ATTACH_BUFFER (Handle aus EDI nach
    EDX uebernommen); (5) GUI_OP_COMMIT (macht die Surface fuer den
    Compositor-Thread sichtbar - siehe compositor_thread_body); (6)
-   SYSCALL_CORE_EXIT (Beweis, dass der Frame-Rewrite den Ruecksprung nach
-   Ring 0 tatsaechlich auslöst). Der abschliessende jmp-$ ist nur ein
-   Sicherheitsnetz, falls der EXIT-Rueckweg (noch) nicht greift.
+   SYSCALL_SERVICE_INPUT/INPUT_OP_POLL (EDX=0x00402020, eine freie Stelle
+   weit genug hinter den vier oben geschriebenen Pixeln innerhalb
+   derselben bereits gemappten GUI-Pufferseite - spart eine eigene
+   Seitenzuteilung nur fuer eine 36-Byte-Struktur, siehe syscall.h
+   syscall_input_poll_args_t); (7) ECHTE Tastatur-Reaktion: `cmp dword
+   [0x00402020], 0` (has_event, erstes Feld der Struktur) + `je` ueber
+   den folgenden Block - liegt ein Event vor, faerbt das Testprogramm
+   seine vier Pixel auf Cyan um und haengt den (unveraenderten) Puffer
+   per GUI_OP_ATTACH_BUFFER/GUI_OP_COMMIT erneut an (EDX=EDI, das Handle
+   aus Schritt 2 steht dort immer noch - weder syscall_dispatch_gui noch
+   syscall_dispatch_input schreiben EDI). Das ist der erste Fall, in dem
+   ein echtes Tastatur-/Maus-Event sichtbares Verhalten eines Ring-3-
+   Clients ausloest, nicht nur eine Dispatch-Statusabfrage. Ohne
+   anstehendes Event (im automatisierten Boot-Test der Normalfall, da
+   niemand real tippt) wird der Block uebersprungen - das Programm laeuft
+   dann identisch zu vorher weiter; (8) SYSCALL_CORE_EXIT (Beweis, dass
+   der Frame-Rewrite den Ruecksprung nach Ring 0 tatsaechlich auslöst).
+   Der abschliessende jmp-$ ist nur ein Sicherheitsnetz, falls der
+   EXIT-Rueckweg (noch) nicht greift.
+
+   Kernel-seitiger Beweis fuer Schritt 7: syscall.c's syscall_dispatch_
+   input loggt einmalig (ueber ein von syscall_manager_self_test nach
+   dessen eigenem, garantiert leerem Abschluss "scharf geschaltetes"
+   Flag, siehe dort) die Vkey/Typ-Werte des ERSTEN danach wirklich
+   zugestellten Events - exakt das gleiche "erstes-echtes-Ergebnis"-
+   Muster wie compositor.c's Framebuffer-Pixel-Beweis fuer GUI_OP_COMMIT.
 
    WICHTIG: syscall_dispatch() ueberschreibt EAX IMMER mit dem Status-Code
-   (siehe syscall.c) - EAX muss daher vor JEDEM der fuenf int-0x80-Aufrufe
-   neu gesetzt werden, exakt wie schon beim urspruenglichen READY->EXIT-
+   (siehe syscall.c) - EAX muss daher vor JEDEM int-0x80-Aufruf neu
+   gesetzt werden, exakt wie schon beim urspruenglichen READY->EXIT-
    Uebergang (siehe auch syscall_manager_self_test's gleichnamiger Bug-
    Fix in dieser Sitzung).
 
@@ -73,6 +96,29 @@ extern uint8_t stack_top[] __asm__("stack_top");
    BB 03 00 00 00   mov ebx, 3          ; GUI_OP_COMMIT
    B9 01 00 00 00   mov ecx, 1          ; SYSCALL_ABI_VERSION (EDX=Handle unveraendert)
    CD 80            int 0x80
+   ; --- SYSCALL_SERVICE_INPUT/INPUT_OP_POLL ---
+   B8 04 00 00 00   mov eax, 4          ; SYSCALL_SERVICE_INPUT
+   BB 01 00 00 00   mov ebx, 1          ; INPUT_OP_POLL
+   B9 01 00 00 00   mov ecx, 1          ; SYSCALL_ABI_VERSION
+   BA 20 20 40 00   mov edx, 0x00402020 ; syscall_input_poll_args_t-Adresse
+   CD 80            int 0x80
+   ; --- bei has_event!=0: Pixel auf Cyan, erneut anhaengen+committen ---
+   83 3D 20 20 40 00 00   cmp dword [0x00402020], 0   ; has_event
+   74 4C                  je weiter (+0x4C = 76 Byte, ueberspringt den Block)
+   C7 05 00 20 40 00 FF FF 00 00   mov dword [0x00402000], 0x0000FFFF (cyan)
+   C7 05 04 20 40 00 FF FF 00 00   mov dword [0x00402004], 0x0000FFFF
+   C7 05 08 20 40 00 FF FF 00 00   mov dword [0x00402008], 0x0000FFFF
+   C7 05 0C 20 40 00 FF FF 00 00   mov dword [0x0040200C], 0x0000FFFF
+   89 FA                   mov edx, edi        ; Handle aus Schritt 2, unveraendert
+   B8 02 00 00 00          mov eax, 2          ; SYSCALL_SERVICE_GUI
+   BB 02 00 00 00          mov ebx, 2          ; GUI_OP_ATTACH_BUFFER
+   B9 01 00 00 00          mov ecx, 1          ; SYSCALL_ABI_VERSION
+   CD 80                   int 0x80
+   B8 02 00 00 00          mov eax, 2          ; SYSCALL_SERVICE_GUI
+   BB 03 00 00 00          mov ebx, 3          ; GUI_OP_COMMIT
+   B9 01 00 00 00          mov ecx, 1          ; SYSCALL_ABI_VERSION
+   CD 80                   int 0x80
+   ; weiter:
    ; --- SYSCALL_CORE_EXIT ---
    B8 01 00 00 00   mov eax, 1          ; SYSCALL_SERVICE_CORE
    BB 01 00 00 00   mov ebx, 1          ; SYSCALL_CORE_EXIT
@@ -104,6 +150,28 @@ static const uint8_t ring3_program[] = {
     0xB9, 0x01, 0x00, 0x00, 0x00,
     0xCD, 0x80,
     /* GUI_OP_COMMIT */
+    0xB8, 0x02, 0x00, 0x00, 0x00,
+    0xBB, 0x03, 0x00, 0x00, 0x00,
+    0xB9, 0x01, 0x00, 0x00, 0x00,
+    0xCD, 0x80,
+    /* SYSCALL_SERVICE_INPUT / INPUT_OP_POLL */
+    0xB8, 0x04, 0x00, 0x00, 0x00,
+    0xBB, 0x01, 0x00, 0x00, 0x00,
+    0xB9, 0x01, 0x00, 0x00, 0x00,
+    0xBA, 0x20, 0x20, 0x40, 0x00,
+    0xCD, 0x80,
+    /* bei has_event!=0: Pixel auf Cyan, erneut anhaengen+committen */
+    0x83, 0x3D, 0x20, 0x20, 0x40, 0x00, 0x00,
+    0x74, 0x4C,
+    0xC7, 0x05, 0x00, 0x20, 0x40, 0x00, 0xFF, 0xFF, 0x00, 0x00,
+    0xC7, 0x05, 0x04, 0x20, 0x40, 0x00, 0xFF, 0xFF, 0x00, 0x00,
+    0xC7, 0x05, 0x08, 0x20, 0x40, 0x00, 0xFF, 0xFF, 0x00, 0x00,
+    0xC7, 0x05, 0x0C, 0x20, 0x40, 0x00, 0xFF, 0xFF, 0x00, 0x00,
+    0x89, 0xFA,
+    0xB8, 0x02, 0x00, 0x00, 0x00,
+    0xBB, 0x02, 0x00, 0x00, 0x00,
+    0xB9, 0x01, 0x00, 0x00, 0x00,
+    0xCD, 0x80,
     0xB8, 0x02, 0x00, 0x00, 0x00,
     0xBB, 0x03, 0x00, 0x00, 0x00,
     0xB9, 0x01, 0x00, 0x00, 0x00,

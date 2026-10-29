@@ -13,12 +13,16 @@
    Surface-Handle (keine eigene Handle-Vergabe) - vereinfacht die API,
    ohne Information zu verlieren, da jedes Window exakt eine Surface
    besitzt. Lifecycle/Sichtbarkeit wird NICHT dupliziert, sondern ueber
-   surface_state() abgeleitet (window_is_visible). Interaktive Teile
-   (Maus-Drag/Resize/Fokus-Wechsel per Klick) sind BLOCKED, da kein
-   Input-Subsystem existiert (IRQ1/Tastatur wird in interrupt.c nur
-   quittiert, keine Maus-IRQ verdrahtet) - diese API bietet nur die
-   PROGRAMMATISCHEN Operationen (window_raise/window_focus/...), die ein
-   kuenftiger Input-Handler oder ein Client direkt aufrufen koennte. */
+   surface_state() abgeleitet (window_is_visible). Fokus-Wechsel per
+   Linksklick UND Fenster-Verschieben per Titelleiste sind seit dem
+   Input-System (ps2.h/input.h) echt verdrahtet (window_hit_test()/
+   window_titlebar_hit_test() + window_focus()/window_raise()/
+   window_move(), aufgerufen aus input.c's input_dispatch_one, das dort
+   auch den Drag-Zustandsautomaten ueber mehrere MOUSE_MOVE-Events hinweg
+   fuehrt) - NICHT mehr BLOCKED. Rahmen-Resize per Ziehen bleibt weiterhin
+   BLOCKED (kein Resize-Handle-Hit-Testing in dieser Sitzung umgesetzt) -
+   diese API bietet dafuer weiterhin nur die PROGRAMMATISCHE Operation
+   window_resize-aequivalent ueber surface_resize direkt. */
 #ifndef NOVA_WINDOW_H
 #define NOVA_WINDOW_H
 
@@ -27,6 +31,13 @@
 /* An SURFACE_CAPACITY gekoppelt (1 Window = 1 Surface) - siehe deren
    Kommentar in surface.h fuer den Grund der Anhebung von 8 auf 16. */
 #define WINDOW_CAPACITY 16u
+
+/* NPSPEC-WINDOW-DECORATION-0002 (Titelleisten-Hoehe) - vom Window Manager
+   (nicht vom Compositor) als Geometrie-Konstante vorgegeben, da sowohl
+   compositor.c (zeichnet die Titelleiste) als auch window.c/input.c (Hit-
+   Testing fuer Fenster-Drag per Titelleiste, siehe window_titlebar_hit_
+   test) dieselbe Hoehe kennen muessen. */
+#define WINDOW_TITLEBAR_HEIGHT 20u
 
 /* NPSPEC-WINDOW-MANAGEMENT-0004 (Min/Maximize) + -0009 (Fullscreen),
    Darstellungsmodus getrennt vom Surface-Lifecycle (NPSPEC-WINDOW-ARCH-
@@ -115,6 +126,27 @@ int window_set_fullscreen(uint32_t handle);
 int window_restore(uint32_t handle);
 
 uint32_t window_count_in_use(void);
+
+/* NPSPEC-WINDOW-MANAGEMENT-0005 Hit-Testing: liefert das oberste (per
+   Z-Order) sichtbare Fenster, dessen Rechteck den Punkt (x,y) enthaelt,
+   oder 0 wenn keines passt. Erstmals genutzt von input.c's echtem Maus-
+   Klick-Routing (siehe dort) - das war bis zum Input-System (siehe
+   ps2.h/input.h) der Grund, warum Klick-Fokuswechsel oben als BLOCKED
+   dokumentiert war; das gilt jetzt nicht mehr. */
+uint32_t window_hit_test(uint32_t x, uint32_t y);
+
+/* Wie window_hit_test, aber prueft das TITELLEISTEN-Rechteck (x, y -
+   WINDOW_TITLEBAR_HEIGHT, w, WINDOW_TITLEBAR_HEIGHT) statt des Fenster-
+   Rechtecks selbst - nur dekorierte, sichtbare Fenster kommen in Frage
+   (undekorierte haben keine Titelleiste, siehe window_is_decorated). Von
+   input.c genutzt, um einen Fenster-Drag per Titelleiste auszuloesen
+   (NPSPEC-WINDOW-DECORATION-0002). 0 wenn kein Treffer. */
+uint32_t window_titlebar_hit_test(uint32_t x, uint32_t y);
+
+/* Verschiebt ein Fenster an eine neue Position OHNE seine Groesse zu
+   aendern (duenne Hilfsfunktion ueber surface_resize, siehe surface.h) -
+   fuer input.c's Fenster-Drag. 0 = Erfolg, -1 wenn handle unbekannt. */
+int window_move(uint32_t handle, uint32_t x, uint32_t y);
 
 /* Iteration ueber alle Slots (fuer den Compositor, analog zu
    surface_capacity()/surface_handle_at_slot()). */

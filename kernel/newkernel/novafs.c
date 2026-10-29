@@ -1072,6 +1072,7 @@ static int novafs_cursor_remove(const novafs_tree_t *tree) {
 #define NFS_O_ID       0u
 #define NFS_O_PARENT   8u
 #define NFS_O_TYPE     16u
+#define NFS_O_SIZE     24u
 #define NFS_O_CHECKSUM 120u
 #define NFS_O_ITEM     152u
 
@@ -1098,6 +1099,31 @@ int novafs_object_find(uint32_t object_id, uint8_t *out_item) {
 
     for (uint32_t i = 0; i < NFS_O_ITEM; ++i) out_item[i] = item[i];
     return 0;
+}
+
+int novafs_object_info(uint32_t object_id, uint32_t *out_type, uint32_t *out_size_lo,
+                        uint32_t *out_size_hi) {
+    uint8_t obj[NFS_O_ITEM];
+    if (novafs_object_find(object_id, obj) != 0) return -1;
+    if (out_type != 0) *out_type = *(const uint32_t *)(obj + NFS_O_TYPE);
+    if (out_size_lo != 0) *out_size_lo = *(const uint32_t *)(obj + NFS_O_SIZE);
+    if (out_size_hi != 0) *out_size_hi = *(const uint32_t *)(obj + NFS_O_SIZE + 4);
+    return 0;
+}
+
+int novafs_object_parent(uint32_t object_id, uint32_t *out_parent_id) {
+    uint8_t obj[NFS_O_ITEM];
+    if (novafs_object_find(object_id, obj) != 0) return -1;
+    *out_parent_id = *(const uint32_t *)(obj + NFS_O_PARENT);
+    return 0;
+}
+
+int novafs_is_mounted(void) {
+    return nfs_mounted;
+}
+
+void novafs_force_readonly(void) {
+    nfs_readonly = 1;
 }
 
 /* Sucht einen Verzeichniseintrag mit Namen name (len Byte, KEIN
@@ -1160,6 +1186,17 @@ int novafs_dir_entry_at(uint32_t dir_id, uint32_t index, uint8_t *out_item) {
         }
         --index;
         if (novafs_cursor_advance() != 0) return -1;
+    }
+}
+
+void novafs_dir_entry_decode(const uint8_t *item, uint32_t *out_object_id,
+                              uint32_t *out_type, char *out_name, uint32_t *out_name_len) {
+    if (out_object_id != 0) *out_object_id = *(const uint32_t *)(item + NFS_D_OBJECT);
+    if (out_type != 0) *out_type = *(const uint32_t *)(item + NFS_D_TYPE);
+    uint32_t name_len = *(const uint16_t *)(item + NFS_D_NAME_LENGTH);
+    if (out_name_len != 0) *out_name_len = name_len;
+    if (out_name != 0) {
+        for (uint32_t i = 0; i < name_len; ++i) out_name[i] = (char)item[NFS_D_NAME + i];
     }
 }
 
@@ -1228,8 +1265,6 @@ int novafs_resolve_path(const char *path, uint32_t len, uint32_t *out_object_id,
 #define NFS_E_LOGICAL  8u
 #define NFS_E_PHYSICAL 16u
 #define NFS_E_COUNT    24u
-
-#define NFS_O_SIZE 24u
 
 static uint32_t nfs_data_page = 0;
 
@@ -2748,32 +2783,41 @@ static int novafs_lifecycle_test_flush(void *record) {
     return 0;
 }
 
-int novafs_lifecycle_self_test(void) {
-    uint32_t total = 64u;
+/* Siehe novafs.h fuer den Zweck (fuer Selbsttests AUSSERHALB von
+   novafs.c, z.B. vfsapi.c) - faktorisiert aus dieser Funktion's eigener,
+   urspruenglich hier inline gebauter Fixture heraus. */
+int novafs_build_test_volume(uint8_t *(*accessor)(uint32_t block_number),
+                              uint32_t total_blocks, uint32_t obj_leaf,
+                              uint32_t dir_leaf, uint32_t ext_leaf) {
     uint32_t bitmap_blocks = 1u;
     uint32_t journal_block = bitmap_blocks + 2u;
     uint32_t first_free = journal_block + NOVAFS_JOURNAL_BLOCKS;
 
-    uint8_t *sb1 = novafs_lifecycle_test_block(1u);
-    uint8_t *bitmap = novafs_lifecycle_test_block(2u);
-    uint8_t *leaf_obj = novafs_lifecycle_test_block(60u);
-    uint8_t *leaf_dir = novafs_lifecycle_test_block(61u);
-    uint8_t *leaf_ext = novafs_lifecycle_test_block(62u);
-    if (!sb1 || !bitmap || !leaf_obj || !leaf_dir || !leaf_ext) return -1;
-    (void)novafs_lifecycle_test_block(63u);
+    uint8_t *sb1 = accessor(1u);
+    uint8_t *bitmap = accessor(2u);
+    uint8_t *leaf_obj = accessor(obj_leaf);
+    uint8_t *leaf_dir = accessor(dir_leaf);
+    uint8_t *leaf_ext = accessor(ext_leaf);
+    /* Backup-Superblock-Block vorab allozieren (wird erst viel spaeter,
+       beim ersten novafs_change_commit(), tatsaechlich beschrieben) -
+       sonst schlaegt dieser Schreibzugriff fehl, weil der sparse-
+       allozierte Seitenzugriff ausserhalb dieser Fixture-Funktion
+       stattfindet. */
+    uint8_t *backup_sb = accessor(total_blocks - 1u);
+    if (!sb1 || !bitmap || !leaf_obj || !leaf_dir || !leaf_ext || !backup_sb) return -1;
 
     for (uint32_t b = 0; b < first_free; ++b) {
         bitmap[b >> 3] |= (uint8_t)(1u << (b & 7u));
     }
-    bitmap[63u >> 3] |= (uint8_t)(1u << (63u & 7u));
-    bitmap[60u >> 3] |= (uint8_t)(1u << (60u & 7u));
-    bitmap[61u >> 3] |= (uint8_t)(1u << (61u & 7u));
-    bitmap[62u >> 3] |= (uint8_t)(1u << (62u & 7u));
+    bitmap[(total_blocks - 1u) >> 3] |= (uint8_t)(1u << ((total_blocks - 1u) & 7u));
+    bitmap[obj_leaf >> 3] |= (uint8_t)(1u << (obj_leaf & 7u));
+    bitmap[dir_leaf >> 3] |= (uint8_t)(1u << (dir_leaf & 7u));
+    bitmap[ext_leaf >> 3] |= (uint8_t)(1u << (ext_leaf & 7u));
     uint32_t bitmap_crc = ~crc32c_update(0xFFFFFFFFu, bitmap, NOVAFS_BLOCK_SIZE);
 
     /* novafs_build_test_superblock_ex() setzt NEXT_OBJECT bereits auf
        NOVAFS_FIRST_DYNAMIC_ID. */
-    novafs_build_test_superblock_ex(sb1, total, 1u, bitmap_crc, 60u, 61u, 62u);
+    novafs_build_test_superblock_ex(sb1, total_blocks, 1u, bitmap_crc, obj_leaf, dir_leaf, ext_leaf);
 
     uint8_t root_obj[NFS_O_ITEM];
     for (uint32_t i = 0; i < NFS_O_ITEM; ++i) root_obj[i] = 0;
@@ -2781,16 +2825,26 @@ int novafs_lifecycle_self_test(void) {
     *(uint32_t *)(root_obj + NFS_O_TYPE) = NOVAFS_TYPE_DIRECTORY;
     novafs_seal(root_obj, NFS_O_ITEM, NFS_O_CHECKSUM);
 
-    novafs_node_init(leaf_obj, &novafs_tree_object, 60u, 0u, 0u);
+    novafs_node_init(leaf_obj, &novafs_tree_object, obj_leaf, 0u, 0u);
     novafs_node_insert_at(leaf_obj, 0u, root_obj, NFS_O_ITEM);
     novafs_seal(leaf_obj, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
 
     /* Leere Verzeichnis-/Extent-Baeume - die Wurzel hat noch keine
        Kinder. */
-    novafs_node_init(leaf_dir, &novafs_tree_directory, 61u, 0u, 0u);
+    novafs_node_init(leaf_dir, &novafs_tree_directory, dir_leaf, 0u, 0u);
     novafs_seal(leaf_dir, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
-    novafs_node_init(leaf_ext, &novafs_tree_extent, 62u, 0u, 0u);
+    novafs_node_init(leaf_ext, &novafs_tree_extent, ext_leaf, 0u, 0u);
     novafs_seal(leaf_ext, NOVAFS_BLOCK_SIZE, NFS_N_CHECKSUM);
+
+    return 0;
+}
+
+int novafs_lifecycle_self_test(void) {
+    uint32_t total = 64u;
+
+    if (novafs_build_test_volume(novafs_lifecycle_test_block, total, 60u, 61u, 62u) != 0) {
+        return -1;
+    }
 
     block_register_params_t params = {
         .id = 0x4E464C37u, /* "NFL7" */

@@ -1,8 +1,8 @@
 /* NovaOS C-Kernel - Interrupt- und Timer-Architektur (Port aus
-   interrupt32.inc, nur IDT/PIC-Setup + Selbsttest + PIT-Timer; der volle
-   Dispatch (Scheduler/Keyboard/Syscall-Routing) folgt, sobald Scheduler,
-   Exception-Manager und Display-Server portiert sind - siehe
-   interrupt_dispatch_c in interrupt.c fuer den aktuellen Minimal-Stub). */
+   interrupt32.inc: IDT/PIC-Setup + Selbsttest + PIT-Timer + echtes
+   Tastatur-/Maus-IRQ-Dispatching an ps2.h/input.h. Syscall-Dispatch siehe
+   syscall.c; ein eigenstaendiger Exception-Manager fuer Vektoren <32 ist
+   weiterhin nicht portiert - siehe interrupt_dispatch_c in interrupt.c). */
 #ifndef NOVA_INTERRUPT_H
 #define NOVA_INTERRUPT_H
 
@@ -19,8 +19,11 @@
 #define PIT_CHANNEL0    0x40u
 #define PIT_DIVISOR     11932u /* ungefaehr 100 Hz */
 
-/* Programmiert IDT (Exceptions, IRQ0/1, Syscall-Gate) und remapt den 8259
-   PIC auf Vektoren 32..47 (nur Timer + Tastatur unmaskiert), dann lidt. */
+/* Programmiert IDT (Exceptions, IRQ0/1/12, Syscall-Gate) und remapt den
+   8259 PIC auf Vektoren 32..47 (Timer, Tastatur und PS/2-Maus/IRQ12 -
+   inkl. der dafuer am Master noetigen Kaskade/IRQ2 - unmaskiert), dann
+   lidt. Siehe ps2.h/input.h fuer die eigentliche Tastatur-/Maus-
+   Dekodierung. */
 void interrupt_initialize(void);
 int interrupt_self_test(void); /* 0 = ok */
 

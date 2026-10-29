@@ -19,6 +19,11 @@
 #include <stdint.h>
 
 #define NOVAFS_BLOCK_SIZE 4096u
+/* 4096 / 512 - fuer Aufrufer AUSSERHALB von novafs.c, die ein eigenes
+   BLOCK_TRANSPORT_VIRT-Testgeraet registrieren (siehe block.h) und dessen
+   LBA (Sektor) in einen Block umrechnen muessen (z.B. vfsapi.c's
+   Selbsttest-Fixture, siehe novafs_build_test_volume unten). */
+#define NOVAFS_SECTORS_PER_BLOCK 8u
 
 /* Liest Superblock (primaer, Block 1, UND Backup, letzter Partitionsblock)
    eines Datentraegers, waehlt die gueltige Kopie mit der hoechsten
@@ -120,6 +125,34 @@ int novafs_tree_self_test(void); /* 0 = ok */
    0 = Erfolg, -1 = nicht gefunden/beschaedigt. */
 int novafs_object_find(uint32_t object_id, uint8_t *out_item);
 
+/* Liest Typ und Groesse (64-Bit als lo/hi) eines Objekts, ohne dessen
+   internes Rohitem-Layout (NFS_O_*-Offsets) nach aussen zu exponieren -
+   fuer den VFS-Syscall-Layer (vfs_api.c, VFS.Query). out_*-Parameter sind
+   einzeln optional (0 = ignorieren). 0 = Erfolg, -1 = object_id unbekannt. */
+int novafs_object_info(uint32_t object_id, uint32_t *out_type, uint32_t *out_size_lo,
+                        uint32_t *out_size_hi);
+
+/* Liest den Parent-ObjectID eines Objekts - fuer Ahnen-Pruefungen wie
+   novafs_rename's Zyklen-Schutz (intern) oder vfs_api.c's Systembereichs-
+   Policy (NPSPEC-POLICY-SYSTEMWRITE-0001). 0 = Erfolg (*out_parent_id
+   gesetzt, ObjectID 1 = Wurzel hat sich selbst als Parent), -1 wenn
+   object_id unbekannt. */
+int novafs_object_parent(uint32_t object_id, uint32_t *out_parent_id);
+
+/* 1 = ein Volume ist aktuell gemountet (novafs_probe_volume erfolgreich),
+   0 sonst - fuer Aufrufer ausserhalb von novafs.c, die vor jeder Operation
+   pruefen muessen (vfs_api.c), ohne auf novafs_total_blocks()!=0 als
+   impliziten Proxy angewiesen zu sein. */
+int novafs_is_mounted(void);
+
+/* Erzwingt Read-only fuer den Rest des Starts (NPSPEC-NOVAFS-ONDISK-0001
+   §9 Fallback: wenn selbst ein Rollback per novafs_change_abort nach einem
+   gescheiterten Commit fehlschlaegt, siehe vfs_api.c's vfs_change_end).
+   Es gibt bewusst keinen Weg zurueck (kein novafs_force_readwrite) -
+   dieser Zustand ist erst mit einem Neustart wieder aufloesbar, genauso
+   wie im alten ASM (nfs_readonly blieb dort ebenfalls dauerhaft 1). */
+void novafs_force_readonly(void);
+
 /* Sucht einen Verzeichniseintrag mit Namen name (len Byte, KEIN
    Nullterminator) unter parent_id. 0 = Erfolg (*out_object_id und *out_type
    gesetzt), -1 wenn nicht vorhanden/beschaedigt. */
@@ -135,6 +168,15 @@ int novafs_lookup(uint32_t parent_id, const char *name, uint32_t len, uint32_t *
    oder Erstellungsreihenfolge (sortiert nach internem Namens-Hash). 0 =
    Erfolg, -1 = Index >= Anzahl der Eintraege (oder dir_id hat gar keine). */
 int novafs_dir_entry_at(uint32_t dir_id, uint32_t index, uint8_t *out_item);
+
+/* Zerlegt ein per novafs_dir_entry_at() geholtes Rohitem in die fuer
+   Aufrufer relevanten Felder - fuer den VFS-Syscall-Layer (vfsapi.c,
+   VFS.ReadDirectory), ohne das interne NFS_D_*-Layout nach aussen zu
+   exponieren. out_name muss mindestens 255 Byte Platz bieten und wird
+   NICHT nullterminiert (siehe *out_name_len fuer die echte Laenge).
+   out_*-Parameter sind einzeln optional (0 = ignorieren). */
+void novafs_dir_entry_decode(const uint8_t *item, uint32_t *out_object_id,
+                              uint32_t *out_type, char *out_name, uint32_t *out_name_len);
 
 /* Loest path relativ zu start_dir auf - ein fuehrendes '/' im Pfad
    beginnt bei der Wurzel (ObjectID 1) und ignoriert start_dir. 0 = Erfolg
@@ -247,5 +289,33 @@ int novafs_rename(uint32_t src_parent, const char *src_name, uint32_t src_len,
                    uint32_t dst_parent, const char *dst_name, uint32_t dst_len);
 
 int novafs_lifecycle_self_test(void); /* 0 = ok */
+
+/* Baut ein minimales, leeres NovaFS-Testvolume (Superblock+Bitmap+leere
+   Object-/Directory-/Extent-Baum-Blaetter mit nur der Wurzel ObjectID=1,
+   DIRECTORY) - faktorisiert aus novafs_lifecycle_self_test()'s eigener
+   Fixture heraus, fuer Selbsttests AUSSERHALB von novafs.c, die ein
+   echtes, gemountetes Volume brauchen (z.B. vfsapi.c), ohne das interne
+   B+-Tree-Bootstrap-Rohformat (novafs_node_init/_seal, die privaten
+   novafs_tree_*-Deskriptoren) selbst nachzubauen.
+
+   accessor(block_number) muss einen Zeiger auf einen genullten,
+   NOVAFS_BLOCK_SIZE Byte grossen, dauerhaft gueltigen Puffer fuer diesen
+   Block liefern (0 bei Fehler/Tabelle voll) - exakt die Rolle, die die
+   BLOCK_TRANSPORT_VIRT-Testgeraete-Callbacks des Aufrufers ebenfalls
+   brauchen (siehe novafs_lifecycle_self_test's eigene
+   novafs_lifecycle_test_block() als Vorbild). Diese Funktion schreibt NUR
+   in den per accessor() zurueckgegebenen Speicher - kein echter
+   Block-I/O (passiert erst spaeter durch novafs_probe_volume() ueber das
+   vom Aufrufer registrierte Geraet).
+
+   total_blocks: Gesamtgroesse des Volumes. obj_leaf/dir_leaf/ext_leaf:
+   Blocknummern fuer die drei leeren B+-Tree-Wurzelblaetter (muessen > dem
+   intern berechneten "erster freier Block" liegen, siehe
+   novafs_lifecycle_self_test fuer ein funktionierendes Beispiel: 60/61/62
+   bei total=64). 0 = Erfolg, -1 wenn accessor() fuer einen benoetigten
+   Block 0 liefert. */
+int novafs_build_test_volume(uint8_t *(*accessor)(uint32_t block_number),
+                              uint32_t total_blocks, uint32_t obj_leaf,
+                              uint32_t dir_leaf, uint32_t ext_leaf);
 
 #endif

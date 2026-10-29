@@ -105,6 +105,27 @@ int start_menu_hide(void);
 int start_menu_toggle(void);
 int start_menu_is_visible(void); /* 1/0, 0 auch wenn unbekannt */
 
+/* Fuer input.c's Klick-Routing (window_hit_test() liefert nur EIN Fenster-
+   Handle - diese Funktion erkennt, ob es sich dabei um die Taskbar
+   handelt, um einen Klick auf den Start-Button (lokale Koordinaten
+   innerhalb des Taskbar-Rechtecks) von einem Klick auf die restliche
+   Taskbar-Flaeche zu unterscheiden). 0 wenn die Taskbar noch nicht
+   angelegt wurde. */
+uint32_t desktop_shell_taskbar_handle(void);
+
+/* Von input.c nach einem erfolgreichen window_hit_test() fuer JEDEN
+   Linksklick aufgerufen - window_handle ist das getroffene Fenster,
+   local_x/local_y die Klickposition relativ zu dessen Ursprung (x,y).
+   1 = window_handle IST die Taskbar (die Shell "beansprucht" den Klick
+   komplett, egal wo innerhalb der Taskbar - reines Chrome soll nie
+   fokussiert werden, siehe input.c); liegt die Position zusaetzlich
+   innerhalb des Start-Buttons, wird dabei das Startmenue umgeschaltet
+   (start_menu_toggle). Alles andere (Desktop-Icons, Fensterinhalt,
+   Systemablage) bleibt bewusst nicht interaktiv (kein Hit-Testing auf
+   Icon-/Steuerelement-Ebene in dieser Sitzung). 0 = window_handle ist
+   nicht die Taskbar - input.c faehrt mit der normalen Fokus-Logik fort. */
+int desktop_shell_handle_click(uint32_t window_handle, uint32_t local_x, uint32_t local_y);
+
 /* NPSPEC-SHELL-DESKTOP-0002 (Icon Grid), statische Registrierung vor dem
    naechsten desktop_shell_show()-Aufruf - das Icon-Layer-Fenster wird dort
    einmalig mit allen bis dahin registrierten Icons gezeichnet (kein

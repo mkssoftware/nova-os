@@ -6,6 +6,7 @@
 #include "scheduler.h"
 #include "taskdeadline.h"
 #include "resilience.h"
+#include "ps2.h"
 
 typedef struct {
     uint16_t offset_low;
@@ -25,6 +26,7 @@ static volatile uint32_t timer_ticks_value = 0;
 extern uint32_t exception_stub_table[32] __asm__("exception_stub_table");
 extern void irq0_stub(void) __asm__("irq0_stub");
 extern void irq1_stub(void) __asm__("irq1_stub");
+extern void irq12_stub(void) __asm__("irq12_stub");
 extern void syscall_stub(void) __asm__("syscall_stub");
 extern void isr_unexpected(void) __asm__("isr_unexpected");
 
@@ -61,8 +63,9 @@ static void idt_set_gate(uint32_t vector, uint32_t handler_addr) {
    initialize() noch nicht gelaufen ist. `io_request_poll_deadlines`/
    `io_cancel_for_requested_tasks` (io32.inc) werden weiterhin NICHT
    aufgerufen - das I/O-Request-Subsystem ist nicht portiert (siehe
-   task.h). Keyboard-Routing folgt, sobald das jeweilige Subsystem
-   portiert ist. */
+   task.h). Tastatur/Maus (IRQ1/IRQ12) werden seit dem Input-System (siehe
+   ps2.h/input.h) an echte Scancode-/Mauspaket-Decoder weitergereicht,
+   nicht mehr nur quittiert. */
 uint32_t interrupt_dispatch_c(uint32_t vector, uint32_t frame_ptr) __asm__("interrupt_dispatch_c");
 uint32_t interrupt_dispatch_c(uint32_t vector, uint32_t frame_ptr) {
     if (vector == 32) {
@@ -73,12 +76,25 @@ uint32_t interrupt_dispatch_c(uint32_t vector, uint32_t frame_ptr) {
         return scheduler_on_tick(frame_ptr);
     }
     if (vector == 33) {
-        (void)inb(0x60); /* Scancode quittieren, noch kein Input-Router */
+        /* IRQ1 (Tastatur): echter Scancode-Decoder+Ringpuffer seit dem
+           Input-System (siehe ps2.h/input.h) - ps2_keyboard_isr_byte
+           verwaltet den 0xE0-Praefix-Zustand selbst und pusht bei einem
+           vollstaendigen Ergebnis ein input_event_t. */
+        ps2_keyboard_isr_byte(inb(0x60));
+        outb(PIC1_COMMAND, PIC_EOI);
+        return frame_ptr;
+    }
+    if (vector == 44) {
+        /* IRQ12 (PS/2-Maus, am Slave-PIC kaskadiert): EOI-Reihenfolge wie
+           beim generischen Slave-Fallback unten - zuerst Slave (PIC2),
+           dann Master (PIC1), da IRQ12 ueber die Kaskade (IRQ2) laeuft. */
+        ps2_mouse_isr_byte(inb(0x60));
+        outb(PIC2_COMMAND, PIC_EOI);
         outb(PIC1_COMMAND, PIC_EOI);
         return frame_ptr;
     }
     if (vector >= 32 && vector < 48) {
-        /* Slave-IRQs (34..47): minimaler EOI-Fallback. */
+        /* Slave-IRQs (34..47, ausser 44 oben): minimaler EOI-Fallback. */
         outb(PIC2_COMMAND, PIC_EOI);
         outb(PIC1_COMMAND, PIC_EOI);
         return frame_ptr;
@@ -114,6 +130,7 @@ void interrupt_initialize(void) {
     }
     idt_set_gate(32, (uint32_t)irq0_stub);
     idt_set_gate(33, (uint32_t)irq1_stub);
+    idt_set_gate(44, (uint32_t)irq12_stub);
     idt_set_gate(0x80, (uint32_t)syscall_stub);
     idt_table[0x80].flags = 0xEE; /* present, Ring-3, Interrupt-Gate */
 
@@ -157,8 +174,12 @@ void interrupt_initialize(void) {
     io_wait();
     outb(PIC2_DATA, 0x01);
     io_wait();
-    outb(PIC1_DATA, 0xFC); /* nur Timer und Tastatur freigeben */
-    outb(PIC2_DATA, 0xFF);
+    /* Timer+Tastatur+Kaskade (IRQ2, fuer die am Slave-PIC haengende Maus)
+       freigeben. IRQ12 (PS/2-Maus) wird NUR auf dem Slave-PIC freigegeben
+       - ohne die Kaskade auf dem Master waere IRQ12 trotzdem maskiert,
+       da der Slave-PIC komplett ueber IRQ2 am Master haengt. */
+    outb(PIC1_DATA, 0xF8);
+    outb(PIC2_DATA, 0xEFu); /* nur IRQ12 (Bit 4) freigeben */
 }
 
 int interrupt_self_test(void) {
@@ -178,6 +199,9 @@ int interrupt_self_test(void) {
 
     uint32_t vec32 = idt_table[32].offset_low | ((uint32_t)idt_table[32].offset_high << 16);
     if (vec32 != (uint32_t)irq0_stub) ++errors;
+
+    uint32_t vec44 = idt_table[44].offset_low | ((uint32_t)idt_table[44].offset_high << 16);
+    if (vec44 != (uint32_t)irq12_stub) ++errors;
 
     uint32_t vec80 = idt_table[0x80].offset_low | ((uint32_t)idt_table[0x80].offset_high << 16);
     if (vec80 != (uint32_t)syscall_stub) ++errors;

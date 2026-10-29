@@ -374,6 +374,18 @@ int start_menu_is_visible(void) {
     return window_is_visible(shell_start_menu_handle);
 }
 
+uint32_t desktop_shell_taskbar_handle(void) {
+    return shell_taskbar_handle;
+}
+
+int desktop_shell_handle_click(uint32_t window_handle, uint32_t local_x, uint32_t local_y) {
+    if (window_handle == 0 || window_handle != shell_taskbar_handle) return 0;
+    if (local_x < TASKBAR_START_W && local_y < TASKBAR_HEIGHT) {
+        start_menu_toggle();
+    }
+    return 1;
+}
+
 static void notify_draw(uint32_t slot) {
     uint32_t bg;
     switch (notify_queue[slot].type) {
@@ -518,6 +530,24 @@ int desktop_shell_self_test(void) {
     if (start_menu_is_visible() != 1) return -1;
     if (start_menu_toggle() != 0) return -1;
     if (start_menu_is_visible() != 0) return -1;
+
+    /* desktop_shell_handle_click() (input.c's Klick-Routing-Hook): ein
+       Klick auf den Start-Button (lokale Koordinaten innerhalb von
+       TASKBAR_START_W x TASKBAR_HEIGHT) muss das Startmenue umschalten
+       UND als "von der Shell beansprucht" gemeldet werden; ein Klick auf
+       die restliche Taskbar-Flaeche ebenfalls beansprucht, aber OHNE das
+       Startmenue zu beruehren; ein Klick auf ein fremdes Fenster-Handle
+       (0) ist nicht Sache der Shell. */
+    if (desktop_shell_taskbar_handle() != shell_taskbar_handle) return -1;
+    if (desktop_shell_handle_click(shell_taskbar_handle, 10u, 10u) != 1) return -1;
+    if (start_menu_is_visible() != 1) return -1;
+    if (desktop_shell_handle_click(shell_taskbar_handle, TASKBAR_START_W + 20u, 10u) != 1) {
+        return -1;
+    }
+    if (start_menu_is_visible() != 1) return -1; /* Klick ausserhalb des Buttons aendert nichts */
+    if (desktop_shell_handle_click(0u, 10u, 10u) != 0) return -1;
+    if (desktop_shell_handle_click(shell_taskbar_handle, 10u, 10u) != 1) return -1;
+    if (start_menu_is_visible() != 0) return -1; /* zurueck auf verborgen */
 
     /* Ein per window_create() erzeugtes, der Shell unbekanntes Fenster
        ("echte Anwendung") muss in der naechsten Taskbar-Neuzeichnung

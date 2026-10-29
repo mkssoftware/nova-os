@@ -65,6 +65,122 @@
 #define GUI_WINDOW_STATE_FULLSCREEN 3u
 #define GUI_WINDOW_STATE_RESTORE    4u
 
+/* Einziger bisher existierender Client (ring3.c) - echte Mehr-Client-PID-
+   Aufloesung (z.B. ueber den aktuell laufenden Scheduler-Slot) ist bewusst
+   nicht in dieser Sitzung geloest. Von SYSCALL_SERVICE_GUI UND
+   SYSCALL_SERVICE_VFS gemeinsam genutzt (war vorher GUI-lokal als
+   GUI_SINGLE_CLIENT_PID definiert). */
+#define SYSCALL_SINGLE_CLIENT_PID 1u
+
+/* NPSPEC-FILESYSTEM-NAMESPACE-0002/-PERMISSION-0001/NPSPEC-POLICY-
+   SYSTEMWRITE-0001 (Port aus vfs32.inc), ueber vfsapi.c (siehe dort fuer
+   den Scope-Hinweis zur Fehlercode-Reduktion). Wire-Protokoll: EDX =
+   Zeiger auf eine der syscall_vfs_*_args_t-Strukturen im Bootstrap-
+   Userspace-Fenster [USER_ADDRESS_MIN, USER_ADDRESS_MAX) - anders als
+   SYSCALL_SERVICE_GUI's reinen Register-Parametern, da VFS-Operationen
+   variable Pfad-/Puffer-Adressen UND -Laengen gleichzeitig brauchen, die
+   nicht mehr in die verbleibenden Trap-Frame-Register passen. Es gibt
+   KEIN separates Bounce-Page/copy-from-user (siehe vfsapi.h) - Zeiger
+   werden nach syscall_validate_user_range() direkt dereferenziert.
+   Rueckgabe: EAX = 0 oder ein negativer VFSAPI_STATUS_*-Code (direkt
+   durchgereicht, siehe vfsapi.h) bzw. SYSCALL_STATUS_POINTER/_OPERATION
+   fuer Dispatch-eigene Fehler (ungueltiger Args-/Puffer-Zeiger,
+   unbekannte Operation). *-Felder mit Out-Parametern (z.B.
+   result_handle) werden direkt in der User-Struktur aktualisiert - kein
+   zusaetzlicher Rueckkopier-Schritt noetig, da keine echte Bounce-Kopie
+   existiert. */
+#define SYSCALL_SERVICE_VFS       3u
+#define VFS_OP_LOOKUP             1u
+#define VFS_OP_READ               2u
+#define VFS_OP_WRITE              3u
+#define VFS_OP_CREATE             4u
+#define VFS_OP_READ_DIRECTORY     5u
+#define VFS_OP_QUERY              6u
+#define VFS_OP_DELETE             7u
+#define VFS_OP_RENAME             8u
+#define VFS_OP_CLOSE              9u
+
+typedef struct {
+    uint32_t dir_handle;
+    uint32_t path_addr;
+    uint32_t path_len;
+    uint32_t flags;
+    uint32_t result_handle; /* out */
+} syscall_vfs_lookup_args_t;
+
+typedef struct {
+    uint32_t handle;
+    uint32_t buffer_addr;
+    uint32_t offset;
+    uint32_t length;
+    uint32_t transferred; /* out */
+} syscall_vfs_io_args_t;
+
+typedef struct {
+    uint32_t dir_handle;
+    uint32_t name_addr;
+    uint32_t name_len;
+    uint32_t object_type;
+    uint32_t result_handle; /* out */
+} syscall_vfs_create_args_t;
+
+typedef struct {
+    uint32_t dir_handle;
+    uint32_t index;
+    uint32_t entry_addr; /* vfsapi_dir_entry_t* */
+} syscall_vfs_read_dir_args_t;
+
+typedef struct {
+    uint32_t handle;
+    uint32_t info_addr; /* vfsapi_info_t* */
+} syscall_vfs_query_args_t;
+
+typedef struct {
+    uint32_t dir_handle;
+    uint32_t name_addr;
+    uint32_t name_len;
+} syscall_vfs_delete_args_t;
+
+typedef struct {
+    uint32_t src_dir_handle;
+    uint32_t src_name_addr;
+    uint32_t src_name_len;
+    uint32_t dst_dir_handle;
+    uint32_t dst_name_addr;
+    uint32_t dst_name_len;
+} syscall_vfs_rename_args_t;
+
+typedef struct {
+    uint32_t handle;
+} syscall_vfs_close_args_t;
+
+/* NPSPEC-INPUT-EVENT-0001..0004 (Port aus input.h ueber eine duenne
+   Dispatch-Schicht, analog zu SYSCALL_SERVICE_VFS -> vfsapi.c). EDX
+   zeigt wie bei VFS auf eine Args-Struktur im Bootstrap-Userspace-Fenster
+   [USER_ADDRESS_MIN, USER_ADDRESS_MAX). Es gibt nur eine Operation -
+   Polling statt eines Push-Modells, da dieser Kernel keinen Mechanismus
+   hat, um einen schlafenden Ring-3-Client aktiv aufzuwecken (kein
+   Wait/Notify-Syscall-Aequivalent portiert) - ein Client fragt also in
+   einer eigenen Schleife wiederholt ab, ob ein neues Event vorliegt.
+   has_event==0 bedeutet "Warteschlange aktuell leer", nicht ein Fehler -
+   EAX bleibt in diesem Fall trotzdem SYSCALL_STATUS_OK. cursor_x/y
+   werden bei JEDEM Poll-Aufruf aktualisiert (auch ohne neues Event), da
+   ein Client die aktuelle Zeigerposition unabhaengig von einzelnen
+   MOUSE_MOVE-Deltas kennen muss. */
+#define SYSCALL_SERVICE_INPUT 4u
+#define INPUT_OP_POLL         1u
+
+typedef struct {
+    uint32_t has_event; /* out: 1 = Event vorhanden, 0 = Warteschlange leer */
+    uint32_t type;      /* out: input_event_type_t, nur gueltig wenn has_event!=0 */
+    uint32_t timestamp_ticks;
+    uint32_t key_vkey;
+    uint32_t modifiers;
+    int32_t mouse_dx, mouse_dy;
+    uint32_t mouse_buttons;
+    uint32_t cursor_x, cursor_y; /* out: immer gueltig, siehe oben */
+} syscall_input_poll_args_t;
+
 void syscall_manager_initialize(void);
 int syscall_manager_self_test(void); /* 0 = ok */
 

@@ -235,6 +235,57 @@ uint32_t window_count_in_use(void) {
     return count;
 }
 
+uint32_t window_hit_test(uint32_t x, uint32_t y) {
+    uint32_t best_handle = 0;
+    uint32_t best_z = 0;
+    for (uint32_t i = 0; i < WINDOW_CAPACITY; ++i) {
+        uint32_t handle = window_table[i].handle;
+        if (handle == 0) continue;
+        if (!window_is_visible(handle)) continue;
+
+        uint32_t wx, wy, ww, wh;
+        if (surface_rect(handle, &wx, &wy, &ww, &wh) != 0) continue;
+        if (x < wx || x >= wx + ww || y < wy || y >= wy + wh) continue;
+
+        if (best_handle == 0 || window_table[i].z_order > best_z) {
+            best_handle = handle;
+            best_z = window_table[i].z_order;
+        }
+    }
+    return best_handle;
+}
+
+uint32_t window_titlebar_hit_test(uint32_t x, uint32_t y) {
+    uint32_t best_handle = 0;
+    uint32_t best_z = 0;
+    for (uint32_t i = 0; i < WINDOW_CAPACITY; ++i) {
+        uint32_t handle = window_table[i].handle;
+        if (handle == 0) continue;
+        if (!window_table[i].decorated) continue;
+        if (!window_is_visible(handle)) continue;
+
+        uint32_t wx, wy, ww, wh;
+        if (surface_rect(handle, &wx, &wy, &ww, &wh) != 0) continue;
+        if (wy < WINDOW_TITLEBAR_HEIGHT) continue; /* kein Platz oberhalb, siehe compositor.c */
+        uint32_t bar_y = wy - WINDOW_TITLEBAR_HEIGHT;
+
+        if (x < wx || x >= wx + ww || y < bar_y || y >= wy) continue;
+
+        if (best_handle == 0 || window_table[i].z_order > best_z) {
+            best_handle = handle;
+            best_z = window_table[i].z_order;
+        }
+    }
+    return best_handle;
+}
+
+int window_move(uint32_t handle, uint32_t x, uint32_t y) {
+    if (window_find_slot(handle) < 0) return -1;
+    uint32_t cx, cy, cw, ch;
+    if (surface_rect(handle, &cx, &cy, &cw, &ch) != 0) return -1;
+    return surface_resize(handle, x, y, cw, ch);
+}
+
 int window_self_test(void) {
     surface_manager_initialize();
     window_manager_initialize();
@@ -316,6 +367,51 @@ int window_self_test(void) {
 
     if (window_restore(w1) != 0) return -1;
     if (window_mode(w1) != WINDOW_MODE_NORMAL) return -1;
+
+    /* Hit-Testing (NPSPEC-WINDOW-MANAGEMENT-0005): w1 ist wieder bei
+       (0,0,10,10) und ACTIVE. Ein Punkt innerhalb trifft w1, ausserhalb
+       trifft nichts (w2/w3 sind an dieser Stelle nicht ACTIVE). */
+    if (window_hit_test(5u, 5u) != w1) return -1;
+    if (window_hit_test(20u, 20u) != 0u) return -1;
+
+    /* Ueberlappende, beide sichtbare Fenster: das topmost (hoeherer
+       Z-Order) muss gewinnen. */
+    uint32_t hit_a, hit_b;
+    if (window_create(1u, 0u, 0u, 20u, 20u, 0, &hit_a) != 0) return -1;
+    if (window_create(1u, 5u, 5u, 20u, 20u, 0, &hit_b) != 0) return -1;
+    static uint32_t hit_pixels[400];
+    if (surface_attach_buffer(hit_a, (uint32_t)(uintptr_t)hit_pixels) != 0) return -1;
+    if (surface_commit(hit_a) != 0) return -1;
+    if (surface_attach_buffer(hit_b, (uint32_t)(uintptr_t)hit_pixels) != 0) return -1;
+    if (surface_commit(hit_b) != 0) return -1;
+    /* (10,10) liegt in beiden Rechtecken - hit_b (zuletzt erzeugt, hoeherer
+       Z-Order) muss gewinnen. */
+    if (window_hit_test(10u, 10u) != hit_b) return -1;
+    if (window_raise(hit_a) != 0) return -1; /* jetzt gewinnt hit_a */
+    if (window_hit_test(10u, 10u) != hit_a) return -1;
+    window_destroy(hit_a);
+    window_destroy(hit_b);
+
+    /* Titelleisten-Hit-Test (NPSPEC-WINDOW-DECORATION-0002) + window_move
+       (Grundlage fuer input.c's Fenster-Drag per Titelleiste). */
+    uint32_t drag_win;
+    if (window_create(1u, 30u, 40u, 50u, 30u, 1, &drag_win) != 0) return -1; /* decorated */
+    static uint32_t drag_pixels[50 * 30];
+    if (surface_attach_buffer(drag_win, (uint32_t)(uintptr_t)drag_pixels) != 0) return -1;
+    if (surface_commit(drag_win) != 0) return -1;
+
+    /* Punkt in der Titelleiste (oberhalb des Fensterrechtecks) trifft. */
+    if (window_titlebar_hit_test(40u, 25u) != drag_win) return -1;
+    /* Punkt im Fensterinhalt selbst ist KEIN Titelleisten-Treffer. */
+    if (window_titlebar_hit_test(40u, 50u) != 0u) return -1;
+
+    if (window_move(drag_win, 60u, 70u) != 0) return -1;
+    uint32_t mx, my, mw, mh;
+    if (surface_rect(drag_win, &mx, &my, &mw, &mh) != 0) return -1;
+    if (mx != 60u || my != 70u || mw != 50u || mh != 30u) return -1; /* Groesse unveraendert */
+    if (window_move(0xFFFFu, 0u, 0u) == 0) return -1; /* unbekanntes Handle */
+
+    window_destroy(drag_win);
 
     /* Unbekanntes Handle muss bei allen vier Operationen fehlschlagen. */
     if (window_minimize(0xFFFFu) == 0) return -1;

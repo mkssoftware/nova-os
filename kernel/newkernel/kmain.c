@@ -66,12 +66,15 @@
 #include "network.h"
 #include "program.h"
 #include "interrupt.h"
+#include "ps2.h"
+#include "input.h"
 #include "time.h"
 #include "ipc.h"
 #include "nvme.h"
 #include "ahci.h"
 #include "gpt.h"
 #include "novafs.h"
+#include "vfsapi.h"
 #include "scheduler.h"
 #include "hal.h"
 #include "usb.h"
@@ -447,6 +450,15 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     interrupt_enable();
     report("NOVA: Timer Subsystem Selftest", timer_self_test() == 0);
 
+    /* Nova Input System (siehe input.h/ps2.h fuer Scope): braucht bereits
+       aktive Interrupts (IRQ1/IRQ12 werden hier real unmaskiert) UND ein
+       bereits initialisiertes display.c (fuer die Cursor-Grenzen) - beides
+       ist an dieser Stelle der Fall (Desktop-First-Phase lief laengst,
+       siehe oben). Laeuft bewusst VOR dem Thread-Start (siehe unten) -
+       input_initialize() selbst startet noch keinen Thread. */
+    input_initialize();
+    report("NOVA: Input System Selftest", input_self_test() == 0);
+
     time_subsystem_initialize();
     report("NOVA: Time Subsystem Selftest", time_subsystem_self_test() == 0);
 
@@ -568,6 +580,14 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     security_initialize();
     report("NOVA: Security Capability Manager Selftest", security_self_test() == 0);
+
+    /* VFS-Syscall-Layer (siehe vfsapi.h): braucht sowohl ein bereits
+       gemountetes NovaFS (Batches 1-9 oben) als auch security.c (gerade
+       initialisiert) fuer die Capability-/Systembereichs-Policy-Pruefung
+       - laeuft deshalb bewusst erst HIER, nicht direkt nach dem NovaFS-
+       Objekt-Lifecycle-Selbsttest weiter oben. */
+    vfsapi_initialize();
+    report("NOVA: VFS-Syscall-Layer Selftest", vfsapi_self_test() == 0);
 
     security_audit_initialize();
     report("NOVA: Security Audit Log Selftest", security_audit_self_test() == 0);
@@ -844,6 +864,13 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
        Ordnungs-Invariante. */
     report("NOVA: Compositor Thread Start",
            thread_mgr_ok && compositor_thread_start() == 0);
+
+    /* Registriert den echten, dauerhaft laufenden Input-Thread (siehe
+       input.h) - drained den von den IRQ1/IRQ12-Handlern gefuellten
+       Ringpuffer (ISR-Kontext darf nicht blockieren). Kein neues
+       Hardware-Risiko hier - IRQ1/IRQ12 sind bereits seit
+       input_initialize() oben aktiv, dieser Thread holt nur ab. */
+    report("NOVA: Input Thread Start", thread_mgr_ok && input_thread_start() == 0);
 
     /* Desktop Shell (siehe desktop_shell.h fuer Scope/NPSPEC-Bezug): echte
        window.c/surface.c-Fenster fuer Taskbar/Desktop-Icons/Startmenue, die
