@@ -6,6 +6,8 @@
 #include "render2d.h"
 #include "interrupt.h"
 #include "threadmgr.h"
+#include "svgicon.h"
+#include "svgicon_assets.h"
 
 /* Bewusst 0, NICHT 1 (= GUI_SINGLE_CLIENT_PID in syscall.c, die echte
    Ring-3-Demo-Anwendung) - sonst wuerde compositor.c's einmaliger
@@ -296,6 +298,26 @@ static void start_menu_draw(void) {
     }
 }
 
+/* Ordnet einem Desktop-Icon-Label (siehe desktop_icon_register_static) den
+   passenden eingebetteten SVG-Quellcode zu (svgicon_assets.h) - 0/0, falls
+   kein Icon fuer dieses Label existiert (dann bleibt die bisherige
+   Farbbox+Textlabel-Darstellung die einzige Darstellung, siehe
+   desktop_icon_draw). cache_key ist willkuerlich, aber pro Label STABIL
+   gewaehlt (siehe svgicon_render_cached) - muss nur innerhalb dieses
+   Moduls eindeutig sein. */
+static int svg_source_for_label(const char *label, const char **out_src, uint32_t *out_len, uint32_t *out_cache_key) {
+    if (label[0] == 'E' && label[1] == 'x') { /* "Explorer" */
+        *out_src = SVGICON_ASSET_FOLDER; *out_len = sizeof(SVGICON_ASSET_FOLDER) - 1; *out_cache_key = 1u; return 1;
+    }
+    if (label[0] == 'T' && label[1] == 'e') { /* "Terminal" */
+        *out_src = SVGICON_ASSET_TERMINAL; *out_len = sizeof(SVGICON_ASSET_TERMINAL) - 1; *out_cache_key = 2u; return 1;
+    }
+    if (label[0] == 'S' && label[1] == 'e') { /* "Settings" */
+        *out_src = SVGICON_ASSET_SETTINGS; *out_len = sizeof(SVGICON_ASSET_SETTINGS) - 1; *out_cache_key = 3u; return 1;
+    }
+    return 0;
+}
+
 static void desktop_icon_draw(uint32_t slot) {
     render2d_surface_t surf;
     render2d_init_surface(&surf, icon_pixels[slot], ICON_CELL_W, ICON_CELL_H, ICON_CELL_W);
@@ -303,6 +325,20 @@ static void desktop_icon_draw(uint32_t slot) {
     render2d_fill_rect(&surf, 0u, 0u, ICON_CELL_W, ICON_CELL_H, DESKTOP_SHELL_BG_RGB);
     uint32_t box_x = (ICON_CELL_W - ICON_BOX_SIZE) / 2u;
     render2d_fill_rect(&surf, box_x, 2u, ICON_BOX_SIZE, ICON_BOX_SIZE, ICON_BOX_RGB);
+
+    /* Echtes SVG-Icon (siehe svgicon.h) ueber die Farbbox blenden, falls
+       fuer dieses Label eines hinterlegt ist - sonst bleibt die Farbbox
+       mit Text-Label die Darstellung (unveraendertes Fallback-Verhalten,
+       z.B. fuer vom Nutzer spaeter registrierte Icons ohne SVG-Quelle). */
+    const char *svg_src; uint32_t svg_len; uint32_t cache_key;
+    if (svg_source_for_label(desktop_icons[slot].label, &svg_src, &svg_len, &cache_key)) {
+        svgicon_bitmap_t *icon;
+        if (svgicon_render_cached(cache_key, svg_src, svg_len, ICON_BOX_SIZE,
+                                   SVGICON_NO_THEME_OVERRIDE, &icon) == 0) {
+            svgicon_blit_blend(&surf, box_x, 2u, icon);
+        }
+    }
+
     render2d_draw_text(&surf, 2u, ICON_BOX_SIZE + 6u, desktop_icons[slot].label, ICON_FG_RGB,
                         DESKTOP_SHELL_BG_RGB, 0);
 }

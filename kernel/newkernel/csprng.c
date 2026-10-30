@@ -1,17 +1,12 @@
 /* NovaOS C-Kernel - Nova Cryptographic RNG / Entropy Pool (Port aus
    adaptive32.inc). */
 #include "csprng.h"
+#include "resilience.h"
 
 static uint32_t csprng_pool[CSPRNG_POOL_WORDS];
 static int csprng_ready = 0;
 static uint32_t csprng_state = 0;
 static uint32_t csprng_calls = 0;
-
-/* TODO: durch wd_global_tick ersetzen, sobald das Watchdog-Subsystem
-   portiert ist (wie in aslr.c). */
-static uint32_t wd_global_tick_stub(void) {
-    return 0;
-}
 
 static inline uint64_t rdtsc_now(void) {
     uint32_t lo, hi;
@@ -20,7 +15,7 @@ static inline uint64_t rdtsc_now(void) {
 }
 
 void csprng_initialize(void) {
-    uint32_t tick = wd_global_tick_stub();
+    uint32_t tick = resilience_global_tick();
     for (uint32_t i = 0; i < CSPRNG_POOL_WORDS; ++i) {
         uint32_t lo = (uint32_t)rdtsc_now();
         csprng_pool[i] = lo ^ tick ^ i;

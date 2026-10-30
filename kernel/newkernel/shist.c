@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Nova State History Ring (Port aus adaptive32.inc). */
 #include "shist.h"
+#include "resilience.h"
 
 typedef struct {
     uint32_t obj_id;
@@ -12,10 +13,6 @@ static shist_rec_t shist_ring[SHIST_CAPACITY];
 static int shist_ready = 0;
 static uint32_t shist_head = 0;
 static uint32_t shist_count = 0;
-
-static uint32_t wd_global_tick_stub(void) {
-    return 0;
-}
 
 void shist_initialize(void) {
     if (shist_ready == 1) return;
@@ -32,7 +29,7 @@ void shist_record(uint32_t obj_id, uint32_t old_state, uint32_t new_state) {
     shist_ring[shist_head].obj_id = obj_id;
     shist_ring[shist_head].old_state = old_state;
     shist_ring[shist_head].new_state = new_state;
-    shist_ring[shist_head].tick = wd_global_tick_stub();
+    shist_ring[shist_head].tick = resilience_global_tick();
 
     shist_head = (shist_head + 1 >= SHIST_CAPACITY) ? 0 : shist_head + 1;
     if (shist_count < SHIST_CAPACITY) ++shist_count;

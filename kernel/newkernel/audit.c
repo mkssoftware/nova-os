@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Nova Security Audit Log (Port aus security32.inc). */
 #include "audit.h"
+#include "resilience.h"
 
 typedef struct {
     uint32_t seq;
@@ -18,12 +19,6 @@ static uint32_t audit_total = 0;
 static uint32_t audit_violations = 0;
 static int audit_ready = 0;
 
-/* TODO: durch wd_global_tick ersetzen, sobald das Watchdog-Subsystem
-   portiert ist (wie in aslr.c). */
-static uint32_t wd_global_tick_stub(void) {
-    return 0;
-}
-
 void security_audit_initialize(void) {
     for (uint32_t i = 0; i < AUDIT_CAPACITY; ++i) audit_log_buf[i] = (audit_event_t){0};
     audit_write_pos = 0;
@@ -36,7 +31,7 @@ void security_audit_initialize(void) {
 int security_audit_log(uint32_t type, uint32_t subject, uint32_t object, uint32_t result) {
     audit_event_t *entry = &audit_log_buf[audit_write_pos];
     entry->seq = audit_seq++;
-    entry->tick = wd_global_tick_stub();
+    entry->tick = resilience_global_tick();
     entry->type = type;
     entry->subject = subject;
     entry->object = object;

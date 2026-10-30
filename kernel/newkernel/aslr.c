@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Address Space Layout Randomization (Port aus memory32.inc). */
 #include "aslr.h"
+#include "resilience.h"
 
 typedef struct {
     uint32_t type;
@@ -19,14 +20,8 @@ static inline uint64_t read_tsc(void) {
     return ((uint64_t)hi << 32) | lo;
 }
 
-/* TODO: durch echten Wert ersetzen, sobald das Watchdog-Subsystem portiert ist
-   (ASM: wd_global_tick). */
-static uint32_t watchdog_global_tick(void) {
-    return 0;
-}
-
 void aslr_initialize(void) {
-    aslr_seed = (uint32_t)read_tsc() ^ watchdog_global_tick();
+    aslr_seed = (uint32_t)read_tsc() ^ resilience_global_tick();
     for (uint32_t i = 0; i < ASLR_REGION_COUNT; ++i) {
         aslr_regions[i] = (aslr_record_t){0};
     }

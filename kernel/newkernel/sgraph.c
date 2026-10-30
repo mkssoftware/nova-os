@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Nova System State Graph (Port aus adaptive32.inc). */
 #include "sgraph.h"
+#include "resilience.h"
 
 typedef struct {
     uint32_t obj_id; /* 0 = frei (0 ist keine gueltige Objekt-ID) */
@@ -12,10 +13,6 @@ typedef struct {
 static sgraph_rec_t sgraph_nodes[SGRAPH_CAPACITY];
 static int sgraph_ready = 0;
 static uint32_t sgraph_transitions = 0;
-
-static uint32_t wd_global_tick_stub(void) {
-    return 0;
-}
 
 void sgraph_initialize(void) {
     for (uint32_t i = 0; i < SGRAPH_CAPACITY; ++i) sgraph_nodes[i] = (sgraph_rec_t){0};
@@ -30,7 +27,7 @@ int sgraph_register(uint32_t obj_id, uint32_t initial_state, uint32_t parent_obj
             sgraph_nodes[i].state = initial_state;
             sgraph_nodes[i].prev_state = 0;
             sgraph_nodes[i].parent_obj_id = parent_obj_id;
-            sgraph_nodes[i].tick = wd_global_tick_stub();
+            sgraph_nodes[i].tick = resilience_global_tick();
             return 0;
         }
     }
@@ -42,7 +39,7 @@ int sgraph_transition(uint32_t obj_id, uint32_t new_state) {
         if (sgraph_nodes[i].obj_id == obj_id) {
             sgraph_nodes[i].prev_state = sgraph_nodes[i].state;
             sgraph_nodes[i].state = new_state;
-            sgraph_nodes[i].tick = wd_global_tick_stub();
+            sgraph_nodes[i].tick = resilience_global_tick();
             ++sgraph_transitions;
             return 0;
         }

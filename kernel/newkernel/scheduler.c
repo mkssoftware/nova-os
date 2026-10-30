@@ -5,6 +5,7 @@
 #include "pmm.h"
 #include "ipc.h"
 #include "serial.h"
+#include "resilience.h"
 
 #define CODE_SEGMENT 0x08u
 #define DATA_SEGMENT 0x10u
@@ -456,12 +457,6 @@ static cfs_record_t cfs_table[CFS_CAPACITY];
 static uint32_t cfs_next_id = 0;
 static int cfs_ready = 0;
 
-/* TODO: durch wd_global_tick ersetzen, sobald das Watchdog-Subsystem
-   portiert ist (wie in aslr.c). */
-static uint32_t wd_global_tick_stub(void) {
-    return 0;
-}
-
 void cfs_initialize(void) {
     for (uint32_t i = 0; i < CFS_CAPACITY; ++i) {
         cfs_table[i] = (cfs_record_t){0};
@@ -510,7 +505,7 @@ void cfs_update_vruntime(uint32_t slot, uint32_t elapsed_ticks) {
     uint32_t weight = cfs_table[slot].weight;
     uint32_t delta = (weight != 0) ? (elapsed_ticks / weight) : elapsed_ticks;
     cfs_table[slot].vruntime += delta;
-    cfs_table[slot].last_run = wd_global_tick_stub();
+    cfs_table[slot].last_run = resilience_global_tick();
 }
 
 int cfs_self_test(void) {
@@ -612,7 +607,7 @@ int qos_self_test(void) {
 
 int scheduler_admit_task(uint32_t owner, uint32_t priority, uint32_t qos_class, uint32_t *out_slot) {
     if (priority >= SCHED_RT_THRESHOLD) {
-        uint32_t deadline = wd_global_tick_stub() + 500u;
+        uint32_t deadline = resilience_global_tick() + 500u;
         return rt_task_register(owner, deadline, priority, RT_POLICY_EDF, out_slot);
     }
 

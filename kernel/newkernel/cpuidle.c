@@ -1,6 +1,7 @@
 /* NovaOS C-Kernel - Nova CPU Idle State Management (Port aus
    adaptive32.inc). */
 #include "cpuidle.h"
+#include "resilience.h"
 
 typedef struct {
     uint32_t state;
@@ -13,12 +14,6 @@ static cpuidle_record_t cpuidle_stats[4];
 static int cpuidle_ready = 0;
 static uint32_t cpuidle_current = CPUIDLE_STATE_C0;
 static uint32_t cpuidle_total_halts = 0;
-
-/* TODO: durch wd_global_tick ersetzen, sobald das Watchdog-Subsystem
-   portiert ist (wie in aslr.c). */
-static uint32_t wd_global_tick_stub(void) {
-    return 0;
-}
 
 void cpuidle_initialize(void) {
     for (uint32_t i = 0; i < 4; ++i) cpuidle_stats[i] = (cpuidle_record_t){0};
@@ -34,7 +29,7 @@ int cpuidle_enter(uint32_t state) {
     cpuidle_current = state;
     cpuidle_record_t *rec = &cpuidle_stats[state];
     rec->state = state;
-    rec->enter_tick = wd_global_tick_stub();
+    rec->enter_tick = resilience_global_tick();
     ++rec->count;
     ++cpuidle_total_halts;
 
@@ -48,7 +43,7 @@ void cpuidle_exit(void) {
     if (cpuidle_ready != 1) return;
 
     cpuidle_record_t *rec = &cpuidle_stats[cpuidle_current];
-    uint32_t now = wd_global_tick_stub();
+    uint32_t now = resilience_global_tick();
     rec->residency += now - rec->enter_tick;
     cpuidle_current = CPUIDLE_STATE_C0;
 }

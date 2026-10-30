@@ -1,6 +1,7 @@
 /* NovaOS C-Kernel - Nova Execution Contract (Port aus adaptive32.inc). */
 #include "excon.h"
 #include "scheduler.h"
+#include "resilience.h"
 
 typedef struct {
     uint32_t id; /* 0 = frei */
@@ -15,10 +16,6 @@ static excon_rec_t excon_table[EXCON_CAPACITY];
 static int excon_ready = 0;
 static uint32_t excon_next_id = 1;
 static uint32_t excon_violations = 0;
-
-static uint32_t wd_global_tick_stub(void) {
-    return 0;
-}
 
 void excon_initialize(void) {
     for (uint32_t i = 0; i < EXCON_CAPACITY; ++i) excon_table[i] = (excon_rec_t){0};
@@ -37,7 +34,7 @@ int excon_create(uint32_t type, uint32_t cpu_budget, uint32_t priority, uint32_t
             excon_table[i].type = type;
             excon_table[i].state = EXCON_STATE_CREATED;
             excon_table[i].cpu_budget = cpu_budget;
-            excon_table[i].deadline = wd_global_tick_stub() + 1000u;
+            excon_table[i].deadline = resilience_global_tick() + 1000u;
             excon_table[i].priority = priority;
             *out_slot = i;
             return 0;

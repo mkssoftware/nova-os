@@ -34,6 +34,7 @@
 #include "bootmgr.h"
 #include "abi.h"
 #include "semantic.h"
+#include "semantic_core.h"
 #include "execution.h"
 #include "privacy.h"
 #include "verify.h"
@@ -63,6 +64,7 @@
 #include "fs.h"
 #include "font.h"
 #include "render2d.h"
+#include "svgicon.h"
 #include "network.h"
 #include "program.h"
 #include "interrupt.h"
@@ -92,6 +94,7 @@
 #include "dac.h"
 #include "rbac.h"
 #include "integration.h"
+#include "selfheal.h"
 #include "readiness.h"
 #include "state.h"
 #include "powermgr.h"
@@ -328,6 +331,14 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     report("NOVA: Semantic Manager Register + Query + Validate",
            sem_rc == 0 && sem_rec != 0 && validate_rc == 0 && sem_result == SVAL_OK);
 
+    /* Nova Semantic Core Bootstrap (siehe semantic_core.h, Port aus
+       semantic_core32.inc) - VIERTES eigenstaendiges Objekt-/Capability-
+       Konzept im Kernel (siehe semantic_core.h-Kommentar), eigene
+       Registry/Namespace/Projection/Capability/Handle-Tabellen, teilt
+       sich nichts mit semmgr_, object.c, handle.c, cap.c oder program.c. */
+    semantic_core_initialize();
+    report("NOVA: Semantic Core Bootstrap Selftest", semantic_core_self_test() == 0);
+
     execution_initialize();
     report("NOVA: Execution Selftest", execution_self_test() == 0);
     uint32_t contract_id = 0;
@@ -436,6 +447,15 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     font_manager_initialize();
     report("NOVA: Font Manager Selftest", font_manager_self_test() == 0);
     report("NOVA: Render2D Selftest", render2d_self_test() == 0);
+
+    /* Nova SVG Icon Renderer (siehe svgicon.h, Analogon zu NPSPEC-
+       BOOTRESOURCE-0008 fuer den Hauptkernel) - braucht nur render2d.h's
+       Surface-Layout (fuer svgicon_blit_blend), keine weiteren
+       Abhaengigkeiten. Laeuft bewusst noch VOR desktop_shell_initialize()
+       (siehe unten), damit dessen Icon-Zeichnung bereits echte SVG-Icons
+       nutzen kann (siehe desktop_shell.c desktop_icon_draw). */
+    svgicon_initialize();
+    report("NOVA: SVG Icon Renderer Selftest", svgicon_self_test() == 0);
 
     network_stack_initialize();
     report("NOVA: Network Stack Selftest", network_stack_self_test() == 0);
@@ -653,6 +673,14 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     rtv_initialize();
     report("NOVA: Runtime Verification Monitor Selftest", rtv_self_test() == 0);
+
+    /* Nova Autonomous Self-Healing (siehe selfheal.h) - war bewusst
+       uebersprungen, bis resilience_fault_pipeline()/containment_check()
+       verfuegbar waren (integration.c/resilience.c, beide inzwischen
+       portiert). Laeuft nach containment_initialize() (siehe oben),
+       keine neue Hardware-Abhaengigkeit. */
+    selfheal_initialize();
+    report("NOVA: Self-Healing Selftest", selfheal_self_test() == 0);
 
     sgraph_initialize();
     report("NOVA: System State Graph Selftest", sgraph_self_test() == 0);

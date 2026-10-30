@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Nova State Actual Store (Port aus adaptive32.inc). */
 #include "sactual.h"
+#include "resilience.h"
 
 typedef struct {
     uint32_t obj_id; /* 0 = frei */
@@ -10,10 +11,6 @@ typedef struct {
 
 static sactual_rec_t sactual_table[SACTUAL_CAPACITY];
 static int sactual_ready = 0;
-
-static uint32_t wd_global_tick_stub(void) {
-    return 0;
-}
 
 void sactual_initialize(void) {
     if (sactual_ready == 1) return;
@@ -29,7 +26,7 @@ int sactual_write(uint32_t obj_id, uint32_t actual_value) {
         if (sactual_table[i].obj_id == 0 || sactual_table[i].obj_id == obj_id) {
             sactual_table[i].obj_id = obj_id;
             sactual_table[i].value = actual_value;
-            sactual_table[i].tick = wd_global_tick_stub();
+            sactual_table[i].tick = resilience_global_tick();
             ++sactual_table[i].writes;
             return 0;
         }
