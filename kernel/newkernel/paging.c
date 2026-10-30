@@ -7,6 +7,7 @@
 #define PAGING_LOW_LIMIT 0x01000000u
 
 static uint32_t *paging_directory = 0;
+static uint32_t paging_directory_phys = 0;
 static int paging_enabled = 0;
 
 int paging_map_page(uint32_t virtual_page, uint32_t physical_page, uint32_t flags) {
@@ -41,6 +42,73 @@ int paging_map_page(uint32_t virtual_page, uint32_t physical_page, uint32_t flag
     return 0;
 }
 
+int paging_unmap_page(uint32_t virtual_page) {
+    if (!paging_enabled) {
+        return -1;
+    }
+    uint32_t pd_index = virtual_page >> 22;
+    uint32_t pt_index = (virtual_page >> 12) & 0x3FFu;
+
+    uint32_t *pde = &paging_directory[pd_index];
+    if (!(*pde & PAGING_PAGE_PRESENT)) {
+        return -1;
+    }
+    uint32_t *page_table = (uint32_t *)(uintptr_t)(*pde & 0xFFFFF000u);
+    page_table[pt_index] = 0;
+    __asm__ volatile ("invlpg (%0)" : : "r"(virtual_page) : "memory");
+    return 0;
+}
+
+int paging_query_page(uint32_t virtual_page, uint32_t *out_physical, uint32_t *out_flags) {
+    if (!paging_enabled) {
+        return -1;
+    }
+    uint32_t pd_index = virtual_page >> 22;
+    uint32_t pt_index = (virtual_page >> 12) & 0x3FFu;
+
+    uint32_t *pde = &paging_directory[pd_index];
+    if (!(*pde & PAGING_PAGE_PRESENT)) {
+        return -1;
+    }
+    uint32_t *page_table = (uint32_t *)(uintptr_t)(*pde & 0xFFFFF000u);
+    uint32_t pte = page_table[pt_index];
+    if (!(pte & PAGING_PAGE_PRESENT)) {
+        return -1;
+    }
+    if (out_physical) *out_physical = pte & 0xFFFFF000u;
+    if (out_flags) *out_flags = pte & 0x00000FFFu;
+    return 0;
+}
+
+int paging_protect_page(uint32_t virtual_page, uint32_t new_flags) {
+    if (!paging_enabled) {
+        return -1;
+    }
+    uint32_t pd_index = virtual_page >> 22;
+    uint32_t pt_index = (virtual_page >> 12) & 0x3FFu;
+
+    uint32_t *pde = &paging_directory[pd_index];
+    if (!(*pde & PAGING_PAGE_PRESENT)) {
+        return -1;
+    }
+    uint32_t *page_table = (uint32_t *)(uintptr_t)(*pde & 0xFFFFF000u);
+    uint32_t pte = page_table[pt_index];
+    if (!(pte & PAGING_PAGE_PRESENT)) {
+        return -1;
+    }
+    uint32_t physical = pte & 0xFFFFF000u;
+    page_table[pt_index] = physical | new_flags;
+    if (new_flags & PAGING_PAGE_USER) {
+        *pde |= PAGING_PAGE_USER;
+    }
+    __asm__ volatile ("invlpg (%0)" : : "r"(virtual_page) : "memory");
+    return 0;
+}
+
+uint32_t paging_root_physical(void) {
+    return paging_directory_phys;
+}
+
 int paging_initialize(void) {
     uint32_t numa_node;
     uint32_t dir_phys = pmm_alloc_page(&numa_node);
@@ -48,6 +116,7 @@ int paging_initialize(void) {
         return -1;
     }
     paging_directory = (uint32_t *)(uintptr_t)dir_phys;
+    paging_directory_phys = dir_phys;
     for (uint32_t i = 0; i < PMM_PAGE_SIZE / 4; ++i) {
         paging_directory[i] = 0;
     }

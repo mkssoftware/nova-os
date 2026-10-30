@@ -1,12 +1,32 @@
 param(
     [Parameter(Mandatory = $true)] [string]$InputFile,
-    [Parameter(Mandatory = $true)] [string]$OutputFile
+    [Parameter(Mandatory = $true)] [string]$OutputFile,
+    # BUGFIX (2026-10-30): $InputFile ist die per `objcopy -O binary` erzeugte
+    # flache Binary - OHNE .bss (SHT_NOBITS hat keinen Dateiinhalt, objcopy
+    # laesst die Sektion komplett weg). Ohne $BssSize wurden p_filesz UND
+    # p_memsz bisher IDENTISCH auf die Dateigroesse gesetzt, wodurch der
+    # Bootloader (kernel_loader.c, load_elf32) `image_size = highest-lowest`
+    # (aus p_memsz) um die GESAMTE .bss-Groesse UNTERSCHAETZTE - pmm.c's
+    # `pmm_reserved_end` lag dadurch WEIT innerhalb des echten, noch lebenden
+    # .bss-Bereichs des Kernels, und der PMM vergab Frames, die tatsaechlich
+    # noch von Kernel-eigenen statischen Variablen belegt waren (reale, durch
+    # Boot-Crash gefundene Korruption, siehe project_c_kernel_migration_
+    # status.md "Echter Boot-Bug" zum 010-MEMORY SWAP/COMPRESSION/DEDUP-
+    # Batch). $BssSize (Bytes) wird auf p_memsz AUFGESCHLAGEN, p_filesz bleibt
+    # unveraendert die reale Dateigroesse - der Bootloader zero-fillt den
+    # Differenzbereich bereits korrekt (bytes_zero auf ph->memsz, bytes_copy
+    # nur ph->filesz). 0 = alter Default (nur fuer Abwaertskompatibilitaet,
+    # ergibt wieder das alte, fehlerhafte Verhalten - IMMER die echte
+    # .bss-Groesse des gelinkten .exe uebergeben, z.B. per
+    # `objdump -h newkernel.exe` Sektion .bss "Size"-Spalte).
+    [uint32]$BssSize = 0
 )
 
 $ErrorActionPreference = 'Stop'
 $loadAddress = [uint32]0x00100000
 $payloadOffset = [uint32]0x00001000
 $payload = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $InputFile))
+$totalMemSize = [uint32]($payload.Length + $BssSize)
 $sha256 = [Security.Cryptography.SHA256]::Create()
 try {
     $buildId = $sha256.ComputeHash($payload)[0..19]
@@ -15,10 +35,10 @@ try {
 }
 $noteOffset = [uint32]116
 $noteSize = [uint32]72
-$maximumPayloadSize = [uint32]1048576
+$maximumPayloadSize = [uint32]16777216
 $maximumElfSize = [uint32]($payloadOffset + $maximumPayloadSize)
-if ($payload.Length -eq 0 -or ($payloadOffset + $payload.Length) -gt $maximumElfSize) {
-    throw "ELF32-Image überschreitet das 1-MiB-Kernelpayload-Limit."
+if ($payload.Length -eq 0 -or ($payloadOffset + $totalMemSize) -gt $maximumElfSize) {
+    throw "ELF32-Image (inkl. .bss) ueberschreitet das 16-MiB-Kernelpayload-Limit."
 }
 
 $outputDirectory = Split-Path -Parent $OutputFile
@@ -54,7 +74,7 @@ try {
     $writer.Write($loadAddress)                     # p_vaddr
     $writer.Write($loadAddress)                     # p_paddr
     $writer.Write([uint32]$payload.Length)          # p_filesz
-    $writer.Write([uint32]$payload.Length)          # p_memsz
+    $writer.Write($totalMemSize)                    # p_memsz (inkl. .bss, siehe $BssSize)
     $writer.Write([uint32]5)                        # PF_R | PF_X
     $writer.Write([uint32]0x1000)                   # p_align
 
@@ -90,4 +110,4 @@ try {
 }
 
 $buildIdText = [BitConverter]::ToString($buildId).Replace('-', '')
-Write-Host ("ELF32: {0} Bytes, PT_LOAD 0x{1:X8}, Entry 0x{2:X8}, Build-ID {3}" -f ($payloadOffset + $payload.Length), $loadAddress, $loadAddress, $buildIdText)
+Write-Host ("ELF32: {0} Bytes (p_filesz), p_memsz=0x{1:X8} (inkl. {2} Bytes .bss), PT_LOAD 0x{3:X8}, Entry 0x{4:X8}, Build-ID {5}" -f ($payloadOffset + $payload.Length), $totalMemSize, $BssSize, $loadAddress, $loadAddress, $buildIdText)

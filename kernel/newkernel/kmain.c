@@ -29,6 +29,21 @@
 #include "window.h"
 #include "pmm.h"
 #include "paging.h"
+#include "framealloc.h"
+#include "pagetable.h"
+#include "vas.h"
+#include "tlb.h"
+#include "protect.h"
+#include "mapping.h"
+#include "demandpage.h"
+#include "pool.h"
+#include "pressure.h"
+#include "reclaim.h"
+#include "shared.h"
+#include "swap.h"
+#include "compress.h"
+#include "dedup.h"
+#include "numa.h"
 #include "process.h"
 #include "arch.h"
 #include "bootmgr.h"
@@ -282,6 +297,37 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     int paging_ok = pmm_ok && paging_initialize() == 0;
     report("NOVA: Paging Initialize", paging_ok);
     report("NOVA: Paging Selftest", paging_ok && paging_self_test() == 0);
+
+    framealloc_initialize();
+    report("NOVA: Frame Allocator Selftest", paging_ok && framealloc_self_test() == 0);
+    pagetable_initialize();
+    report("NOVA: Page Table Manager Selftest", paging_ok && pagetable_self_test() == 0);
+    vas_initialize();
+    report("NOVA: Virtual Address Space Selftest", paging_ok && vas_self_test() == 0);
+    tlb_initialize();
+    report("NOVA: TLB Management Selftest", paging_ok && tlb_self_test() == 0);
+    protect_initialize();
+    report("NOVA: Memory Protection Selftest", paging_ok && protect_self_test() == 0);
+    mapping_initialize();
+    report("NOVA: Memory Mapping Selftest", paging_ok && mapping_self_test() == 0);
+    demandpage_initialize();
+    report("NOVA: Demand Paging Selftest", paging_ok && demandpage_self_test() == 0);
+    pool_initialize();
+    report("NOVA: Memory Pool Selftest", paging_ok && pool_self_test() == 0);
+    pressure_initialize();
+    report("NOVA: Memory Pressure Selftest", paging_ok && pressure_self_test() == 0);
+    reclaim_initialize();
+    report("NOVA: Memory Reclaim Selftest", reclaim_self_test() == 0);
+    shared_initialize();
+    report("NOVA: Shared Memory Selftest", paging_ok && shared_self_test() == 0);
+    swap_initialize();
+    report("NOVA: Swap Selftest", paging_ok && swap_self_test() == 0);
+    compress_initialize();
+    report("NOVA: Memory Compression Selftest", paging_ok && compress_self_test() == 0);
+    dedup_initialize();
+    report("NOVA: Memory Deduplication Selftest", paging_ok && dedup_self_test() == 0);
+    numa_initialize();
+    report("NOVA: NUMA Topology Selftest", paging_ok && numa_self_test() == 0);
 
     oom_initialize();
     report("NOVA: Out-of-Memory Selftest", oom_self_test() == 0);
