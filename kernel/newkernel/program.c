@@ -49,6 +49,16 @@ static uint32_t prog_cap_count = 0;
 static uint32_t prog_next_cap_id = 1;
 static int prog_manager_ready = 0;
 
+/* 023-CAPABILITY-Konsolidierung: cap_register()/cap_check_permission()/
+   pkg_cap_revoke() haben nachweislich keine Aufrufer ausserhalb dieser
+   Datei (prog_manager_initialize() ruft cap_register() selbst zweimal
+   auf, aber nichts fragt die so angelegten Capabilities je ab) - toter
+   Code, der schon im alten ASM (program32.inc) nicht mit cap.c
+   verbunden war. cap_core.c (siehe dessen Header) ist jetzt die
+   kanonische Rechte-Pruef-Engine fuer kuenftigen echten Bedarf; diese
+   eigene kleine Registry bleibt bewusst unveraendert bestehen, statt sie
+   risikolos ungenutzt zu entfernen oder aufwendig auf cap_core.c
+   umzustellen, ohne dass irgendein Aufrufer davon profitieren wuerde. */
 int cap_register(uint32_t category, uint32_t flags, uint32_t program_id, uint32_t *out_cap_id) {
     if (prog_cap_count >= CAP_REGISTRY_CAPACITY) {
         return -1;

@@ -1,5 +1,14 @@
-/* NovaOS C-Kernel - §102 Unified Object API (Port aus security32.inc). */
+/* NovaOS C-Kernel - §102 Unified Object API (Port aus security32.inc).
+   023-CAPABILITY-Konsolidierung (siehe cap_core.h fuer die vollstaendige
+   Scope-Begruendung): die Rechte-Pruefung pro Handle lief bisher ueber
+   einen rein lokalen `caps`-Bitmask-Vergleich direkt im Handle-Eintrag -
+   das ist GENAU der Mechanismus, den cap_core.c jetzt kanonisch
+   bereitstellt. uobj.c's eigene Objekt-/Typ-Verwaltung (uobj_objects/
+   uobj_types) bleibt unveraendert (eigenstaendige §102-Lifecycle-Logik,
+   keine Rechte-Pruefung) - nur das `caps`-Feld im Handle-Eintrag wird
+   durch einen cap_core-Capability-Deskriptor ersetzt. */
 #include "uobj.h"
+#include "cap_core.h"
 #include "kog.h"
 #include "evbus.h"
 
@@ -27,7 +36,7 @@ typedef struct {
     uint32_t handle_id;
     uint32_t obj_id;
     uint32_t generation;
-    uint16_t caps;
+    uint32_t cap_id; /* cap_core.c-Deskriptor, ersetzt das frühere lokale caps-Bitmask-Feld */
     int present;
 } uobj_handle_t;
 
@@ -96,11 +105,14 @@ static uobj_object_t *uobj_alloc_object(uint32_t *out_obj_id) {
 static int uobj_alloc_handle(uint32_t obj_id, uint32_t generation, uint32_t caps, uint32_t *out_handle_id) {
     for (uint32_t i = 0; i < UOBJ_MAX_HANDLES; ++i) {
         if (!uobj_handles[i].present) {
+            uint32_t cap_id;
+            if (cap_core_create(obj_id, caps, caps, 0u, &cap_id) != 0) return -1;
+
             uint32_t id = ++uobj_next_hdl;
             uobj_handles[i].handle_id = id;
             uobj_handles[i].obj_id = obj_id;
             uobj_handles[i].generation = generation;
-            uobj_handles[i].caps = (uint16_t)caps;
+            uobj_handles[i].cap_id = cap_id;
             uobj_handles[i].present = 1;
             *out_handle_id = id;
             return 0;
@@ -160,7 +172,7 @@ int uobj_from_handle(uint32_t handle_id, uint32_t required_capabilities, void **
     if (!hdl) return -1;
 
     if (required_capabilities != 0) {
-        if ((hdl->caps & required_capabilities) != required_capabilities) return -1;
+        if (cap_core_check(hdl->cap_id, required_capabilities) != 0) return -1;
     }
 
     uobj_object_t *obj = uobj_find_object(hdl->obj_id);

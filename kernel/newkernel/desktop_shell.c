@@ -12,6 +12,7 @@
 #include "materialtypes.h"
 #include "matfx.h"
 #include "powermgr.h"
+#include "time.h"
 
 /* Bewusst 0, NICHT 1 (= GUI_SINGLE_CLIENT_PID in syscall.c, die echte
    Ring-3-Demo-Anwendung) - sonst wuerde compositor.c's einmaliger
@@ -170,6 +171,17 @@ static void desktop_shell_uint_to_str(uint32_t value, char *out, uint32_t out_ca
         out[i++] = tmp[--n];
     }
     out[i] = '\0';
+}
+
+/* Formatiert value (0..99) als genau zwei Ziffern mit fuehrender Null nach
+   out[0..1] (KEIN Nullterminator - der Aufrufer schreibt direkt in ein
+   groesseres "HH:MM"-Zielpuffer-Layout). Werte >99 werden auf 99 gekappt
+   (kann bei einer echten Uhrzeit/CMOS-RTC-Minute/Stunde nicht vorkommen,
+   schuetzt aber vor unsinniger Ausgabe statt UB bei einem defekten Chip). */
+static void desktop_shell_two_digits(uint32_t value, char *out) {
+    if (value > 99u) value = 99u;
+    out[0] = (char)('0' + (value / 10u));
+    out[1] = (char)('0' + (value % 10u));
 }
 
 /* Haengt den (unveraenderten) Pufferzeiger erneut an und committet - der
@@ -349,10 +361,15 @@ int taskbar_redraw(void) {
         tray_x += 16u;
     }
 
-    /* Uhr (NPSPEC-SHELL-TASKBAR-0001 Clock Display), reduziert auf die
-       Laufzeit in Timer-Ticks - keine RTC-Anbindung an dieser Stelle. */
-    char clock_label[12];
-    desktop_shell_uint_to_str(timer_get_ticks(), clock_label, sizeof(clock_label));
+    /* Uhr (NPSPEC-SHELL-TASKBAR-0001 Clock Display): echte Uhrzeit aus der
+       CMOS-RTC (time_read_rtc(), Register 0x70/0x71 - dieselbe Hardware-
+       Uhr, die auch UEFI/BIOS anzeigt), nicht mehr die reine Laufzeit in
+       Timer-Ticks. */
+    time_civil_t clock_civil;
+    time_read_rtc(&clock_civil);
+    char clock_label[6] = "00:00";
+    desktop_shell_two_digits(clock_civil.hour, &clock_label[0]);
+    desktop_shell_two_digits(clock_civil.minute, &clock_label[3]);
     uint32_t clock_x = (shell_taskbar_width > TASKBAR_CLOCK_W) ? shell_taskbar_width - TASKBAR_CLOCK_W
                                                                 : 0u;
     render2d_draw_text(&surf, clock_x, (TASKBAR_HEIGHT - 16u) / 2u, clock_label, TASKBAR_FG_RGB,

@@ -55,6 +55,17 @@ uint32_t compositor_state(void);
 
 void compositor_set_background(uint32_t rgb);
 
+/* Ersetzt die einfarbige Hintergrundflaeche durch ein Bild (siehe
+   wallpaper.h: RGB888, Byte 0=Rot, Zeilen zu je width*3 Byte ohne
+   Padding) - rgb888 MUSS fuer die gesamte restliche Laufzeit gueltig
+   bleiben (wallpaper.c haelt dafuer einen eigenen statischen Puffer). Hat
+   das Bild nicht die Framebuffer-Aufloesung, wird beim Zeichnen pro Pixel
+   naechster-Nachbar-skaliert (keine Gleitkommaarithmetik, nur Ganzzahl-
+   Multiplikation/Division - siehe compositor.c). rgb888==0 oder
+   width/height==0 schaltet zurueck auf die zuletzt per
+   compositor_set_background() gesetzte Flaechenfarbe. */
+void compositor_set_background_image(const uint8_t *rgb888, uint32_t width, uint32_t height);
+
 /* 0 = Erfolg (*out_window_id gesetzt), -1 wenn Tabelle voll.
    alpha: 0 = vollstaendig transparent, 255 = vollstaendig deckend. */
 int compositor_window_create(uint32_t x, uint32_t y, uint32_t w, uint32_t h,

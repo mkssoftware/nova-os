@@ -99,12 +99,14 @@
 #include "gpt.h"
 #include "novafs.h"
 #include "vfsapi.h"
+#include "wallpaper.h"
 #include "scheduler.h"
 #include "hal.h"
 #include "usb.h"
 #include "kog.h"
 #include "evbus.h"
 #include "observability.h"
+#include "cap_core.h"
 #include "uobj.h"
 #include "cap.h"
 #include "cap_integration.h"
@@ -589,6 +591,17 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     serial_puts("\r\n");
 
     report("NOVA: GPT Partition Scanner Selftest", gpt_self_test() == 0);
+    /* real_novafs_* bleiben nach dem Block unten absichtlich in Reichweite
+       (siehe wallpaper_rc-Kommentar weiter unten): die nachfolgenden
+       NovaFS-Selbsttests mounten jeder sein eigenes synthetisches
+       Testvolume und ueberschreiben damit den hier gesetzten echten
+       Mount-Zustand wieder - das Wallpaper darf deshalb erst NACH allen
+       Selbsttests aus der echten Platte geladen werden, wofuer der echte
+       Datentraeger dann einfach erneut (billig: nur Superblock+Bitmap)
+       gemountet wird. */
+    void *real_novafs_disk_record = 0;
+    uint32_t real_novafs_first_lba = 0, real_novafs_sectors = 0;
+    int real_novafs_found = 0;
     if (ahci_disk_count_value() > 0) {
         void *gpt_disk_record = ahci_disk_block_record(0);
         uint32_t gpt_first_lba = 0, gpt_sectors = 0;
@@ -614,6 +627,13 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
                 serial_put_hex32(novafs_generation_lo());
             }
             serial_puts("\r\n");
+
+            if (nfs_rc == 0) {
+                real_novafs_disk_record = gpt_disk_record;
+                real_novafs_first_lba = gpt_first_lba;
+                real_novafs_sectors = gpt_sectors;
+                real_novafs_found = 1;
+            }
         }
     }
 
@@ -624,6 +644,25 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     report("NOVA: NovaFS Extent/Read Selftest", novafs_extent_self_test() == 0);
     report("NOVA: NovaFS Journal+Write Selftest", novafs_write_self_test() == 0);
     report("NOVA: NovaFS Objekt-Lifecycle Selftest", novafs_lifecycle_self_test() == 0);
+    report("NOVA: Desktop-Wallpaper Selftest", wallpaper_self_test() == 0);
+
+    /* Jetzt, nach allen Selbsttests (die ihrerseits jeweils ihr eigenes
+       synthetisches Testvolume mounten), den ECHTEN Datentraeger erneut
+       mounten (billig - nur Superblock+Bitmap) und das Desktop-Wallpaper
+       daraus laden. wallpaper_load_from_novafs() kopiert die Pixel in
+       seinen eigenen statischen Puffer - das Ergebnis bleibt danach
+       gueltig, auch wenn novafs.c's globaler Mount-Zustand spaeter erneut
+       veraendert wird. */
+    if (real_novafs_found) {
+        int nfs_remount_rc = novafs_probe_volume(real_novafs_disk_record, real_novafs_first_lba,
+                                                   real_novafs_sectors);
+        int wallpaper_rc = (nfs_remount_rc == 0)
+                                ? wallpaper_load_from_novafs("/wallpaper.nbs", 14u)
+                                : -1;
+        serial_puts("NOVA: Desktop-Wallpaper aus NovaFS geladen=");
+        serial_put_hex32((uint32_t)wallpaper_rc);
+        serial_puts("\r\n");
+    }
 
     scheduler_initialize();
     report("NOVA: Scheduler Frame Selftest", scheduler_self_test() == 0);
@@ -665,6 +704,13 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     report("NOVA: Introspection Registry Selftest", intro_self_test() == 0);
     prof_initialize();
     report("NOVA: Sampling Profiler Selftest", prof_self_test() == 0);
+
+    /* 023-CAPABILITY-Konsolidierung: cap_core.c ist die kanonische Rechte-
+       Pruef-Engine, auf der cap.c und uobj.c jetzt als duenne Wrapper
+       aufsetzen (siehe cap_core.h fuer die vollstaendige Begruendung).
+       Muss vor uobj_initialize() laufen, da uobj_create() jetzt intern
+       cap_core_create() aufruft. */
+    report("NOVA: Capability Core Selftest", cap_core_self_test() == 0);
 
     uobj_initialize();
     report("NOVA: Unified Object API Selftest", uobj_self_test() == 0);
@@ -971,6 +1017,19 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
        Ordnungs-Invariante. */
     report("NOVA: Compositor Thread Start",
            thread_mgr_ok && compositor_thread_start() == 0);
+
+    /* Desktop-Wallpaper (siehe wallpaper.h) auf den bereits laufenden
+       Compositor anwenden, falls weiter oben erfolgreich aus NovaFS
+       geladen - ersetzt die einfarbige Flaeche aus desktop_show() oben.
+       Der Compositor-Thread sitzt bis zum spaeteren scheduler_enable()
+       noch inaktiv (siehe Kommentar oben), markiert hier aber bereits
+       Full Redraw (compositor_set_background_image), sodass das Bild beim
+       allerersten echten Redraw sofort erscheint - kein zusaetzlicher
+       compositor_composite()-Aufruf noetig. */
+    if (wallpaper_available()) {
+        compositor_set_background_image(wallpaper_pixels_rgb888(), wallpaper_width(),
+                                         wallpaper_height());
+    }
 
     /* Registriert den echten, dauerhaft laufenden Input-Thread (siehe
        input.h) - drained den von den IRQ1/IRQ12-Handlern gefuellten

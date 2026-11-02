@@ -1,162 +1,55 @@
 /* NovaOS C-Kernel - §103 Capability Framework 1.0 (Port aus
-   security32.inc). */
+   security32.inc). DUENNER WRAPPER UEBER cap_core.c (023-CAPABILITY-
+   Konsolidierung, siehe cap_core.h fuer die vollstaendige Scope-
+   Begruendung) - die eigentliche Rechte-Tabelle/-Pruefung lebt jetzt in
+   cap_core.c; dieses Modul behaelt nur noch seine eigene Policy-Schicht
+   (evbus-Events, Bootstrap-Capabilities fuer Kernel-Root/Boot-Kontext)
+   und die §103-spezifische Fehlercode-/Konstanten-Fassade (cap.h bleibt
+   fuer cap_integration.c UNVERAENDERT - diese Aenderung ist fuer dessen
+   Aufrufer vollstaendig transparent). */
 #include "cap.h"
+#include "cap_core.h"
 #include "evbus.h"
 
 #define NP_EVENT_CAP_CREATED 9u
 #define NP_EVENT_CAP_REVOKED 10u
 #define NP_EVENT_CAP_DENIED  11u
 
-typedef struct {
-    uint32_t id;
-    uint32_t obj_id;
-    uint32_t rights;
-    uint32_t delegable;
-    uint32_t domain;
-    uint32_t expiration;
-    uint32_t generation;
-    uint32_t flags;
-    uint32_t policy_id;
-    uint8_t state;
-    int present;
-} cap_record_t;
-
-static cap_record_t cap_table[CAP_MAX_CAPS];
-static uint32_t cap_next_id = 0;
-static uint32_t cap_next_gen = 0;
-static uint32_t cap_stat_created = 0;
-static uint32_t cap_stat_revoked = 0;
-static uint32_t cap_stat_denied = 0;
 static uint32_t cap_boot_kernel_id = 0;
 static uint32_t cap_boot_id = 0;
 
-static cap_record_t *cap_find(uint32_t cap_id) {
-    for (uint32_t i = 0; i < CAP_MAX_CAPS; ++i) {
-        if (cap_table[i].present && cap_table[i].id == cap_id) return &cap_table[i];
-    }
-    return 0;
-}
-
-static cap_record_t *cap_alloc(uint32_t *out_cap_id) {
-    for (uint32_t i = 0; i < CAP_MAX_CAPS; ++i) {
-        if (!cap_table[i].present) {
-            uint32_t id = cap_next_id++;
-            *out_cap_id = id;
-            return &cap_table[i];
-        }
-    }
-    return 0;
-}
-
 int cap_create(uint32_t obj_id, uint32_t rights, uint32_t delegable_rights, uint32_t domain,
                uint32_t *out_cap_id) {
-    if (delegable_rights & ~rights) return NP_ERR_CAP_RIGHTS; /* delegable muss Teilmenge sein */
-
-    uint32_t cap_id;
-    cap_record_t *rec = cap_alloc(&cap_id);
-    if (!rec) return NP_ERR_CAP_LIMIT;
-
-    rec->id = cap_id;
-    rec->obj_id = obj_id;
-    rec->rights = rights;
-    rec->delegable = delegable_rights;
-    rec->domain = domain;
-    rec->expiration = 0;
-    rec->generation = cap_next_gen++;
-    rec->flags = 0;
-    rec->policy_id = 0;
-    rec->state = CAP_STATE_VALID;
-    rec->present = 1;
-
-    ++cap_stat_created;
-
-    evbus_publish(NP_EVENT_CAP_CREATED, cap_id, 0, 0, 0);
-
-    *out_cap_id = cap_id;
+    int rc = cap_core_create(obj_id, rights, delegable_rights, domain, out_cap_id);
+    if (rc != 0) return rc;
+    evbus_publish(NP_EVENT_CAP_CREATED, *out_cap_id, 0, 0, 0);
     return 0;
 }
 
 int cap_check(uint32_t cap_id, uint32_t required_rights) {
-    cap_record_t *rec = cap_find(cap_id);
-    if (!rec) {
-        ++cap_stat_denied;
-        return NP_ERR_CAP_INVALID;
-    }
-
-    if (rec->state == CAP_STATE_REVOKED) {
-        ++cap_stat_denied;
-        return NP_ERR_CAP_REVOKED;
-    }
-    if (rec->state == CAP_STATE_EXPIRED) {
-        ++cap_stat_denied;
-        return NP_ERR_CAP_EXPIRED;
-    }
-    if (rec->state != CAP_STATE_VALID) {
-        ++cap_stat_denied;
-        return NP_ERR_CAP_INVALID;
-    }
-
-    if ((rec->rights & required_rights) != required_rights) {
-        ++cap_stat_denied;
+    int rc = cap_core_check(cap_id, required_rights);
+    if (rc == CAP_CORE_ERR_RIGHTS) {
         evbus_publish(NP_EVENT_CAP_DENIED, 0, 0, 0, 0);
-        return NP_ERR_CAP_RIGHTS;
     }
-
-    return 0;
+    return rc;
 }
 
 int cap_derive(uint32_t src_cap_id, uint32_t new_rights, uint32_t new_delegable, uint32_t *out_cap_id) {
-    cap_record_t *src = cap_find(src_cap_id);
-    if (!src) return NP_ERR_CAP_INVALID;
-    if (src->state != CAP_STATE_VALID) return NP_ERR_CAP_REVOKED;
-
-    if (new_rights & ~src->rights) return NP_ERR_CAP_RIGHTS;
-    if (new_delegable & ~src->delegable) return NP_ERR_CAP_DELEGATE;
-    if (new_delegable & ~new_rights) return NP_ERR_CAP_RIGHTS;
-
-    uint32_t cap_id;
-    cap_record_t *rec = cap_alloc(&cap_id);
-    if (!rec) return NP_ERR_CAP_LIMIT;
-
-    rec->id = cap_id;
-    rec->obj_id = src->obj_id;
-    rec->rights = new_rights;
-    rec->delegable = new_delegable;
-    rec->domain = src->domain;
-    rec->expiration = src->expiration;
-    rec->generation = cap_next_gen++;
-    rec->flags = 0;
-    rec->policy_id = 0;
-    rec->state = CAP_STATE_VALID;
-    rec->present = 1;
-
-    ++cap_stat_created;
-
-    evbus_publish(NP_EVENT_CAP_CREATED, cap_id, 0, 0, 0);
-
-    *out_cap_id = cap_id;
+    int rc = cap_core_derive(src_cap_id, new_rights, new_delegable, out_cap_id);
+    if (rc != 0) return rc;
+    evbus_publish(NP_EVENT_CAP_CREATED, *out_cap_id, 0, 0, 0);
     return 0;
 }
 
 int cap_revoke(uint32_t cap_id) {
-    cap_record_t *rec = cap_find(cap_id);
-    if (!rec) return NP_ERR_CAP_INVALID;
-    if (rec->state == CAP_STATE_REVOKED) return NP_ERR_CAP_REVOKED;
-
-    rec->state = CAP_STATE_REVOKED;
-    ++cap_stat_revoked;
-
+    int rc = cap_core_revoke(cap_id);
+    if (rc != 0) return rc;
     evbus_publish(NP_EVENT_CAP_REVOKED, cap_id, 0, 0, 0);
     return 0;
 }
 
 int cap_initialize(void) {
-    for (uint32_t i = 0; i < CAP_MAX_CAPS; ++i) cap_table[i] = (cap_record_t){0};
-    cap_next_id = 0;
-    cap_next_gen = 0;
-    cap_stat_created = 0;
-    cap_stat_revoked = 0;
-    cap_stat_denied = 0;
+    cap_core_initialize();
     cap_boot_kernel_id = 0;
     cap_boot_id = 0;
 

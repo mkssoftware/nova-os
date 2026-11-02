@@ -47,6 +47,13 @@ typedef struct {
 static compositor_window_t compositor_windows[COMPOSITOR_WINDOW_CAPACITY];
 static uint32_t compositor_next_id = 1;
 static uint32_t compositor_background_rgb = 0x000000u;
+/* Optionales Wallpaper-Bild (siehe compositor_set_background_image in
+   compositor.h) - 0 = kein Bild gesetzt, es gilt weiter die einfarbige
+   Flaeche aus compositor_background_rgb. Der Zeiger wird NICHT kopiert,
+   der Aufrufer (wallpaper.c) haelt den eigentlichen Pixelspeicher. */
+static const uint8_t *compositor_background_image = 0;
+static uint32_t compositor_background_image_w = 0;
+static uint32_t compositor_background_image_h = 0;
 static uint32_t compositor_cursor_x = 0;
 static uint32_t compositor_cursor_y = 0;
 static uint32_t compositor_cursor_rgb = 0xFFFFFFu;
@@ -192,6 +199,9 @@ void compositor_initialize(void) {
     for (uint32_t i = 0; i < COMPOSITOR_WINDOW_CAPACITY; ++i) compositor_windows[i] = (compositor_window_t){0};
     compositor_next_id = 1;
     compositor_background_rgb = 0x000000u;
+    compositor_background_image = 0;
+    compositor_background_image_w = 0;
+    compositor_background_image_h = 0;
     compositor_cursor_visible = 0;
     if (compositor_state_value == COMPOSITOR_STATE_UNINITIALIZED) {
         compositor_state_value = COMPOSITOR_STATE_READY;
@@ -216,6 +226,19 @@ void compositor_set_background(uint32_t rgb) {
        komplette Flaeche (Abschnitt 13: "entsprechend dem tatsaechlichen
        Einflussbereich" - das ist hier der ganze Schirm). */
     compositor_background_rgb = rgb;
+    compositor_damage_mark_full();
+}
+
+void compositor_set_background_image(const uint8_t *rgb888, uint32_t width, uint32_t height) {
+    if (rgb888 == 0 || width == 0 || height == 0) {
+        compositor_background_image = 0;
+        compositor_background_image_w = 0;
+        compositor_background_image_h = 0;
+    } else {
+        compositor_background_image = rgb888;
+        compositor_background_image_w = width;
+        compositor_background_image_h = height;
+    }
     compositor_damage_mark_full();
 }
 
@@ -480,6 +503,40 @@ static void compositor_draw_decorations_clip(uint32_t cx0, uint32_t cy0, uint32_
     }
 }
 
+/* Zeichnet die Hintergrundregion [cx0,cx1) x [cy0,cy1): entweder die
+   einfarbige Flaeche (Normalfall, unveraendertes Verhalten) oder, falls per
+   compositor_set_background_image() gesetzt, das Wallpaper-Bild. Hat das
+   Bild nicht die Framebuffer-Aufloesung, wird pro Zielpixel die naechst-
+   gelegene Quellzeile/-spalte per Ganzzahl-Multiplikation/Division
+   abgebildet (kein Blending noetig - das Bild bedeckt immer vollstaendig,
+   genau wie die bisherige alpha=255 Flaechenfuellung). */
+static void compositor_draw_background_clip(uint32_t cx0, uint32_t cy0, uint32_t cx1, uint32_t cy1) {
+    if (compositor_background_image == 0 || compositor_background_image_w == 0 ||
+        compositor_background_image_h == 0) {
+        compositor_blend_rect_clip(cx0, cy0, cx1 - cx0, cy1 - cy0, compositor_background_rgb, 255u,
+                                    cx0, cy0, cx1, cy1);
+        return;
+    }
+
+    uint32_t fb_w = framebuffer_width();
+    uint32_t fb_h = framebuffer_height();
+    if (fb_w == 0 || fb_h == 0) return;
+
+    for (uint32_t y = cy0; y < cy1; ++y) {
+        uint32_t src_y = (y * compositor_background_image_h) / fb_h;
+        if (src_y >= compositor_background_image_h) src_y = compositor_background_image_h - 1u;
+        const uint8_t *row = compositor_background_image +
+                              (uint32_t)src_y * compositor_background_image_w * 3u;
+        for (uint32_t x = cx0; x < cx1; ++x) {
+            uint32_t src_x = (x * compositor_background_image_w) / fb_w;
+            if (src_x >= compositor_background_image_w) src_x = compositor_background_image_w - 1u;
+            const uint8_t *px = row + (uint32_t)src_x * 3u;
+            uint32_t rgb = ((uint32_t)px[0] << 16) | ((uint32_t)px[1] << 8) | (uint32_t)px[2];
+            framebuffer_set_pixel(x, y, rgb);
+        }
+    }
+}
+
 /* NPSPEC-COMPOSITOR-DAMAGE-0001 Abschnitt 6 (Partial Redraw Controller):
    zeichnet Hintergrund, Schatten, Fenster, Surfaces, Dekorationen und
    Cursor neu, aber ausschliesslich innerhalb von [cx0,cx1) x [cy0,cy1) -
@@ -488,8 +545,7 @@ static void compositor_draw_decorations_clip(uint32_t cx0, uint32_t cy0, uint32_
 static void compositor_redraw_region(uint32_t cx0, uint32_t cy0, uint32_t cx1, uint32_t cy1) {
     if (cx0 >= cx1 || cy0 >= cy1) return;
 
-    compositor_blend_rect_clip(cx0, cy0, cx1 - cx0, cy1 - cy0, compositor_background_rgb, 255u,
-                                cx0, cy0, cx1, cy1);
+    compositor_draw_background_clip(cx0, cy0, cx1, cy1);
 
     for (uint32_t i = 0; i < COMPOSITOR_WINDOW_CAPACITY; ++i) {
         compositor_window_t *win = &compositor_windows[i];
