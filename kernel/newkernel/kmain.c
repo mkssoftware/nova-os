@@ -192,6 +192,7 @@
 #include "vcapsafe.h"
 #include "vmemsafe.h"
 #include "ring3.h"
+#include "ushell_process.h"
 #include "sync.h"
 #include "syncext.h"
 #include "futex.h"
@@ -1086,6 +1087,17 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     int ring3_ok = ring3_initialize() == 0;
     report("NOVA: Ring-3-Bootstrap (GDT/TSS/User-Pages) Initialize", ring3_ok);
     report("NOVA: Ring-3-Bootstrap Selftest", ring3_ok && ring3_self_test() == 0);
+
+    /* Userspace-Taskbar (siehe ushell_process.h): registriert einen ECHTEN,
+       praeemptiv geplanten Scheduler-Slot mit eigenem Adressraum - laeuft
+       automatisch nebenlaeufig mit, sobald scheduler_enable() (unten, aus
+       syscall.c's syscall_userspace_exit, NACH dem Ring-3-Demo-Rundweg)
+       den echten Taskwechsel scharf schaltet. MUSS vor ring3_enter()
+       passieren: danach kehrt die Boot-Sequenz nicht mehr normal zu C
+       zurueck (siehe ring3.h). */
+    int ushell_ok = ushell_process_initialize() == 0;
+    report("NOVA: Userspace-Taskbar Prozess Initialize", ushell_ok);
+    report("NOVA: Userspace-Taskbar Prozess Selftest", ushell_ok && ushell_process_self_test() == 0);
 
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;

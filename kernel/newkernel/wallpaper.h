@@ -21,8 +21,8 @@
 
 #include <stdint.h>
 
-#define WALLPAPER_MAX_WIDTH  640u
-#define WALLPAPER_MAX_HEIGHT 400u
+#define WALLPAPER_MAX_WIDTH  1280u
+#define WALLPAPER_MAX_HEIGHT 800u
 
 /* Liest path (len Byte, KEIN Nullterminator, MUSS mit '/' beginnen - siehe
    novafs_resolve_path) aus dem aktuell gemounteten NovaFS-Volume, prueft

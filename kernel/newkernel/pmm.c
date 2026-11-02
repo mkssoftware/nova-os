@@ -59,6 +59,11 @@ int pmm_initialize(void) {
         } else {
             end = (uint32_t)end64 & 0xFFFFF000u;
         }
+        /* Niemals Rahmen ausserhalb der von paging_initialize() identisch
+           abgebildeten Region sammeln (siehe PMM_BOOTSTRAP_IDENTITY_LIMIT in
+           pmm.h) - unabhaengig davon, in welcher Reihenfolge die UEFI-
+           Memory-Map ihre Eintraege liefert. */
+        if (end > PMM_BOOTSTRAP_IDENTITY_LIMIT) end = PMM_BOOTSTRAP_IDENTITY_LIMIT;
 
         for (uint32_t page = start; page < end; ) {
             if (pmm_frame_count_value >= PMM_MAX_FRAMES) {
@@ -155,6 +160,17 @@ int pmm_self_test(void) {
     if (pmm_free_page(page_a) != 0) return -1;
     if (pmm_frame_count_value != initial_count) return -1;
 
+    /* pmm_alloc_contiguous(): vier Rahmen muessen als EIN zusammenhaengender
+       Lauf (aufsteigend, je PMM_PAGE_SIZE auseinander) zurueckkommen, und
+       die Tabelle muss danach um genau 4 geschrumpft sein. */
+    uint32_t contiguous_base;
+    if (pmm_alloc_contiguous(4u, &contiguous_base) != 0) return -1;
+    if (pmm_frame_count_value != initial_count - 4u) return -1;
+    for (uint32_t k = 0; k < 4u; ++k) {
+        if (pmm_free_page(contiguous_base + k * PMM_PAGE_SIZE) != 0) return -1;
+    }
+    if (pmm_frame_count_value != initial_count) return -1;
+
     /* Falls eine bekannte NUMA-Lokalitaet existiert: Strict/Preferred muessen
        deterministisch funktionieren (identisch zur ASM-Logik). */
     for (uint32_t i = 0; i < pmm_frame_count_value; ++i) {
@@ -189,4 +205,40 @@ int pmm_self_test(void) {
     }
 
     return 0;
+}
+
+int pmm_alloc_contiguous(uint32_t count, uint32_t *out_first_page) {
+    if (count == 0 || count > PMM_MAX_FRAMES) return -1;
+
+    for (uint32_t i = 0; i < pmm_frame_count_value; ++i) {
+        uint32_t base = pmm_frames[i];
+        int all_found = 1;
+        for (uint32_t k = 1; k < count; ++k) {
+            uint32_t want = base + k * PMM_PAGE_SIZE;
+            int found = 0;
+            for (uint32_t j = 0; j < pmm_frame_count_value; ++j) {
+                if (pmm_frames[j] == want) { found = 1; break; }
+            }
+            if (!found) { all_found = 0; break; }
+        }
+        if (!all_found) continue;
+
+        /* Lauf gefunden - alle `count` Rahmen aus der Tabelle entfernen
+           (Swap-mit-letztem-Element, Reihenfolge der verbleibenden
+           Eintraege ist fuer einen LIFO-Stack ohnehin irrelevant). */
+        for (uint32_t k = 0; k < count; ++k) {
+            uint32_t want = base + k * PMM_PAGE_SIZE;
+            for (uint32_t j = 0; j < pmm_frame_count_value; ++j) {
+                if (pmm_frames[j] == want) {
+                    --pmm_frame_count_value;
+                    pmm_frames[j] = pmm_frames[pmm_frame_count_value];
+                    pmm_frame_numa_nodes[j] = pmm_frame_numa_nodes[pmm_frame_count_value];
+                    break;
+                }
+            }
+        }
+        *out_first_page = base;
+        return 0;
+    }
+    return -1;
 }

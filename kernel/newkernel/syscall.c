@@ -12,6 +12,10 @@
 #include "novafs.h"
 #include "input.h"
 #include "interrupt.h"
+#include "paging.h"
+#include "time.h"
+#include "desktop_shell.h"
+#include "display.h"
 
 static int syscall_mgr_initialized = 0;
 static int syscall_sysenter_available = 0;
@@ -132,7 +136,28 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     }
 
     if (operation == GUI_OP_ATTACH_BUFFER) {
-        int ok = (surface_attach_buffer(edx, RING3_GUI_BUFFER_VADDR) == 0);
+        /* RING3_GUI_BUFFER_VADDR ist dieselbe virtuelle Adresse in JEDEM
+           Prozess-Adressraum (jeder Client mappt seinen eigenen Puffer
+           privat dorthin, siehe ring3.c/ushell_process.c - kein Konflikt,
+           da jeder Prozess seit paging_create_address_space() einen
+           eigenen Adressraum hat). Der Compositor dereferenziert
+           surface_buffer_addr() aber als rohen Zeiger, UNABHAENGIG vom
+           gerade aktiven CR3 (siehe compositor.c). Deshalb wird hier,
+           waehrend noch das CR3 des AUFRUFENDEN Prozesses aktiv ist (ein
+           Syscall wechselt das CR3 nicht), einmalig auf die physische
+           Adresse aufgeloest - die bleibt unter JEDEM CR3 gueltig, da der
+           komplette Bootstrap-Speicherbereich in jedem Adressraum
+           identisch (geklont) abgebildet ist. Schlaegt die Aufloesung
+           fehl (z.B. im synthetischen Dispatch-Selbsttest ohne echtes
+           Mapping), faellt dies bewusst auf die rohe virtuelle Adresse
+           zurueck - identisch zum fruheren, immer-hartcodierten
+           Verhalten. */
+        uint32_t resolved_addr = RING3_GUI_BUFFER_VADDR;
+        uint32_t phys, phys_flags;
+        if (paging_query_page(RING3_GUI_BUFFER_VADDR, &phys, &phys_flags) == 0) {
+            resolved_addr = phys;
+        }
+        int ok = (surface_attach_buffer(edx, resolved_addr) == 0);
         if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
         frame_write(frame_ptr, FRAME_OFF_EAX,
                     (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
@@ -405,6 +430,32 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
             syscall_ready_heartbeat_logged = 1;
             serial_puts("NOVA: Ring 3 Userspace aktiv - SYSCALL_CORE_READY empfangen\r\n");
         }
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_GET_DISPLAY_INFO) {
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EDI, display_width());
+        frame_write(frame_ptr, FRAME_OFF_ESI, display_height());
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_GET_TIME) {
+        time_civil_t civil;
+        time_read_rtc(&civil);
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EDI, civil.hour);
+        frame_write(frame_ptr, FRAME_OFF_ESI, civil.minute);
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_TOGGLE_START_MENU) {
+        int ok = (start_menu_toggle() == 0);
+        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX,
+                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_OPERATION));
         return frame_ptr;
     }
 
@@ -740,6 +791,42 @@ int syscall_manager_self_test(void) {
        eingetroffenen Event stammen. Siehe ring3.c fuer den Ring-3-Client,
        der als erster davon profitiert. */
     syscall_input_proof_armed = 1;
+
+    /* SYSCALL_CORE_GET_DISPLAY_INFO/_GET_TIME (ushell/shell_main.c's
+       Ersatz fuer den in Ring 3 verbotenen direkten display.c-/RTC-Port-
+       Zugriff): beide muessen SYSCALL_STATUS_OK liefern und plausible
+       Werte in EDI/ESI schreiben - exakt dieselben Werte, die display.c/
+       time_read_rtc() auch direkt lieferten (kein neuer Wert entsteht,
+       nur ein neuer Zugriffsweg). */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_GET_DISPLAY_INFO);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (frame_read(frame_addr, FRAME_OFF_EDI) != display_width()) return -1;
+    if (frame_read(frame_addr, FRAME_OFF_ESI) != display_height()) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_GET_TIME);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (frame_read(frame_addr, FRAME_OFF_EDI) > 23u) return -1; /* Stunde */
+    if (frame_read(frame_addr, FRAME_OFF_ESI) > 59u) return -1; /* Minute */
+
+    /* SYSCALL_CORE_TOGGLE_START_MENU: desktop_shell.c ist an dieser Stelle
+       im Boot noch nicht zwingend initialisiert (laeuft erst deutlich
+       spaeter) - nur pruefen, dass der Dispatch-Pfad selbst funktioniert
+       (OK oder OPERATION, nie SERVICE/ABI), nicht dass start_menu_toggle()
+       hier zwangslaeufig erfolgreich ist. */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_TOGGLE_START_MENU);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    uint32_t toggle_status = frame_read(frame_addr, FRAME_OFF_EAX);
+    if (toggle_status != (uint32_t)SYSCALL_STATUS_OK && toggle_status != (uint32_t)SYSCALL_STATUS_OPERATION) {
+        return -1;
+    }
 
     serial_puts("NOVA: System Call Interface Selbsttest OK (7/7)\r\n");
     return 0;

@@ -7,9 +7,9 @@
 extern uint8_t stack_top[] __asm__("stack_top");
 
 #define RING0_DATA_SELECTOR 0x10
-#define RING3_CODE_SELECTOR 0x1B
-#define RING3_DATA_SELECTOR 0x23
 #define TSS_SELECTOR        0x28
+/* RING3_CODE_SELECTOR/RING3_DATA_SELECTOR kommen jetzt aus ring3.h (dort
+   oeffentlich, da auch von anderen Ring-3-Prozessen gebraucht). */
 
 #define RING3_CODE_VADDR  0x00400000
 #define RING3_STACK_VADDR 0x00401000
@@ -188,12 +188,6 @@ static uint8_t kernel_tss[104];
 static int ring3_ready = 0;
 static uint32_t ring3_pid = 0;
 
-static inline uint32_t read_cr3(void) {
-    uint32_t value;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(value));
-    return value;
-}
-
 int ring3_initialize(void) {
     for (uint32_t i = 0; i < sizeof(kernel_tss); ++i) kernel_tss[i] = 0;
     *(uint32_t *)&kernel_tss[4] = (uint32_t)stack_top;   /* ESP0 */
@@ -230,26 +224,16 @@ int ring3_initialize(void) {
     __asm__ volatile ("ltr %0" : : "m"(tss_selector));
 
     uint32_t numa;
-    uint32_t code_page = pmm_alloc_page(&numa);
-    if (code_page == 0) return -1;
-    uint8_t *code_dst = (uint8_t *)code_page;
-    for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) code_dst[i] = 0;
-    for (uint32_t i = 0; i < sizeof(ring3_program); ++i) code_dst[i] = ring3_program[i];
 
-    if (paging_map_page(RING3_CODE_VADDR, code_page, PAGING_PAGE_PRESENT | PAGING_PAGE_USER) != 0) {
-        return -1;
-    }
-
-    uint32_t stack_page = pmm_alloc_page(&numa);
-    if (stack_page == 0) return -1;
-    uint8_t *stack_dst = (uint8_t *)stack_page;
-    for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) stack_dst[i] = 0;
-
-    if (paging_map_page(RING3_STACK_VADDR, stack_page,
-                         PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
-        return -1;
-    }
-
+    /* Die GUI-Pufferseite bleibt bewusst ZUSAETZLICH im Kernel-Basis-
+       Adressraum gemappt (unten erneut via paging_map_page_into() auch in
+       den neuen, prozesseigenen Adressraum) - Client (Ring 3, schreibt
+       seine Pixel direkt) und Compositor-Thread (Ring 0, liest sie ueber
+       surface.c) muessen dieselbe physische Seite unabhaengig vom gerade
+       aktiven CR3 erreichen koennen, siehe render2d.h-Architekturentscheidung
+       oben im ring3_program-Kommentar. Das ist eine bewusste, gemeinsame
+       Abbildung - Code/Stack (unten) sind dagegen NUR im neuen Adressraum
+       sichtbar, das ist die eigentliche Isolation. */
     uint32_t gui_buffer_page = pmm_alloc_page(&numa);
     if (gui_buffer_page == 0) return -1;
     uint8_t *gui_buffer_dst = (uint8_t *)gui_buffer_page;
@@ -260,16 +244,47 @@ int ring3_initialize(void) {
         return -1;
     }
 
-    /* TLB-Eintraege der zuvor (ohne User-Bit) identisch gemappten Seiten
-       verwerfen - sonst greift die CPU weiter auf die alten Supervisor-
-       Only-Uebersetzungen zu. */
+    /* TLB-Eintrag der zuvor (ohne User-Bit) identisch gemappten Seite im
+       Kernel-Basis-Adressraum verwerfen - sonst greift die CPU dort
+       weiter auf die alte Supervisor-Only-Uebersetzung zu. */
     __asm__ volatile ("mov %%cr3, %%eax\n\t mov %%eax, %%cr3" ::: "eax");
 
-    /* Teilt vorerst den Kernel-Adressraum (kein eigenes Page-Directory -
-       echte Prozessisolation braucht einen Page-Directory-Kopierer, der
-       noch nicht portiert ist). */
+    /* Echter, eigenstaendiger Hardware-Adressraum fuer diesen Prozess
+       (siehe paging_create_address_space in paging.h) - ab hier KEIN
+       geteiltes Kernel-Page-Directory mehr fuer Code/Stack. */
+    uint32_t process_dir_phys;
+    if (paging_create_address_space(&process_dir_phys) != 0) return -1;
+
+    uint32_t code_page = pmm_alloc_page(&numa);
+    if (code_page == 0) return -1;
+    uint8_t *code_dst = (uint8_t *)code_page;
+    for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) code_dst[i] = 0;
+    for (uint32_t i = 0; i < sizeof(ring3_program); ++i) code_dst[i] = ring3_program[i];
+
+    if (paging_map_page_into(process_dir_phys, RING3_CODE_VADDR, code_page,
+                              PAGING_PAGE_PRESENT | PAGING_PAGE_USER) != 0) {
+        return -1;
+    }
+
+    uint32_t stack_page = pmm_alloc_page(&numa);
+    if (stack_page == 0) return -1;
+    uint8_t *stack_dst = (uint8_t *)stack_page;
+    for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) stack_dst[i] = 0;
+
+    if (paging_map_page_into(process_dir_phys, RING3_STACK_VADDR, stack_page,
+                              PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
+        return -1;
+    }
+
+    /* Dieselbe physische GUI-Pufferseite zusaetzlich in den neuen,
+       prozesseigenen Adressraum einhaengen (siehe Kommentar oben). */
+    if (paging_map_page_into(process_dir_phys, RING3_GUI_BUFFER_VADDR, gui_buffer_page,
+                              PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
+        return -1;
+    }
+
     uint32_t pid = process_create(0x4 /* PROCESS_FLAG_USERSPACE (lokal, siehe io_qos32.inc) */,
-                                   read_cr3());
+                                   process_dir_phys);
     if (pid == 0) return -1;
     ring3_pid = pid;
 
@@ -308,6 +323,16 @@ int ring3_self_test(void) {
 }
 
 void ring3_enter(void) {
+    /* Echter Hardware-Adressraumwechsel VOR dem Sprung nach Ring 3 - ab
+       hier laeuft (bis zu einem kuenftigen Wechsel zurueck) der gesamte
+       Kernel, inklusive aller Interrupt-/Syscall-Handler, unter dem
+       eigenstaendigen, in ring3_initialize() angelegten Page-Directory
+       dieses Prozesses (ein um Code-/Stack-Seiten erweiterter Klon des
+       Kernel-Basis-Adressraums, siehe paging_create_address_space) -
+       Kernel-Code/-Daten bleiben dadurch unveraendert erreichbar, der
+       Ring-3-Code sieht aber NUR seine eigenen, privaten Seiten. */
+    paging_switch_address_space(process_get_cr3(ring3_pid));
+
     __asm__ volatile (
         "cli\n\t"
         "mov $" STR(RING3_DATA_SELECTOR) ", %%ax\n\t"

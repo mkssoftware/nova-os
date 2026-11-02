@@ -23,14 +23,51 @@
    Interrupt-Gate deaktiviert IF schon automatisch) und die
    Thread-Manager-Synchronisation (`thread_manager_ready`-Zweige, da der
    Thread Manager aus sync32.inc weiterhin nicht portiert ist - siehe
-   project_c_kernel_migration_status). */
+   project_c_kernel_migration_status).
+
+   WICHTIG (2026-11-02): `scheduler_on_tick` wechselt jetzt beim
+   Slot-Wechsel zusaetzlich das echte Hardware-CR3 (siehe paging.h
+   paging_switch_address_space), falls sich der neu eingelastete Slot und
+   der zuvor aktive Adressraum unterscheiden - jeder Slot traegt dafuer
+   einen eigenen Adressraum (siehe scheduler_set_slot_directory unten,
+   Default fuer alle Slots: der Kernel-Basis-Adressraum). Das ist der
+   fehlende Baustein fuer echte Mehrprozess-Nebenlaeufigkeit (siehe
+   paging.h/ring3.c fuer den dort bereits vorhandenen Adressraum-pro-
+   Prozess-Mechanismus): ein Prozess muss dafuer lediglich per
+   scheduler_claim_dynamic_slot() einen Slot belegen und per
+   scheduler_set_slot_directory(slot, process_get_cr3(pid)) seinen
+   eigenen Adressraum eintragen - scheduler_on_tick() wechselt dann bei
+   jedem Tick automatisch mit. Ein unnoetiger CR3-Reload (und damit TLB-
+   Flush) zwischen zwei Slots mit DEMSELBEN Adressraum (der Normalfall
+   fuer alle bisherigen, rein kernelseitigen Threads) wird dabei vermieden -
+   der zuletzt geladene Adressraum wird separat gemerkt. */
 #ifndef NOVA_SCHEDULER_H
 #define NOVA_SCHEDULER_H
 
 #include <stdint.h>
 
-#define SCHEDULER_THREAD_COUNT 8u
+/* War 8, seit der Userspace-Taskbar (ushell_process.c) auf 9 angehoben:
+   Slot 0 reserviert, 1/2 = scheduler_thread1/2, 3-7 waren bereits durch
+   thread_manager_self_test()s eigenen (bewusst nie wieder freigegebenen,
+   siehe dortigen Kommentar "Laufzeit: einen zusaetzlichen Thread...")
+   Testthread sowie Compositor-/Desktop-Shell-/Input-/Readiness-Thread
+   voll belegt - fuer einen weiteren, DAUERHAFTEN Ring-3-Prozess blieb
+   kein Slot mehr frei (siehe feedback_bss_paging_limit.md-Stil: durch
+   echten Boot-Test gefunden, nicht theoretisch). threadmgr.h's
+   THREAD_CAPACITY bleibt bewusst bei 8 - der neue Slot 8 wird NICHT ueber
+   thread_create_dynamic()/thread_table[] verwaltet (siehe scheduler_claim_
+   dynamic_user_slot(), direkt von ushell_process.c aufgerufen), braucht
+   dort also keinen Platz. */
+#define SCHEDULER_THREAD_COUNT 9u
 #define SCHEDULER_FRAME_SIZE   68u
+/* Wie SCHEDULER_FRAME_SIZE, aber fuer einen Slot, der NACH Ring 3 wechselt
+   (siehe scheduler_claim_dynamic_user_slot) - 8 Byte groesser, weil ein
+   privilegstufenaendernder `iretd` zusaetzlich ESP und SS vom Stack liest
+   (x86-Hardwareverhalten: iretd zieht automatisch 5 statt 3 Dwords, sobald
+   die gerade gelesene CS einen hoeheren RPL als die aktuelle CPL traegt -
+   interrupt_isr.asm's Epilog muss dafuer NICHT geaendert werden, er
+   positioniert ESP nur auf den Rahmenanfang und ueberlaesst iretd den Rest). */
+#define SCHEDULER_USER_FRAME_SIZE 76u
 
 /* Erzeugt zwei synthetische Thread-Kontexte (scheduler_thread1/2). */
 void scheduler_initialize(void);
@@ -75,6 +112,18 @@ void scheduler_dynamic_thread(void);
    dauerhaft reserviert (siehe scheduler_initialize) und wird nie
    vergeben. */
 int scheduler_claim_dynamic_slot(uint32_t entry_point, int32_t cpu_affinity, uint32_t *out_slot);
+/* Wie scheduler_claim_dynamic_slot(), baut aber einen SCHEDULER_USER_
+   FRAME_SIZE-grossen Rahmen fuer einen Sprung nach Ring 3 (CS/SS =
+   code_selector/data_selector - beide MIT gesetztem RPL=3, siehe
+   ring3.h), startet mit Stack user_stack_top und ordnet den Slot
+   sofort directory_phys zu (scheduler_set_slot_directory) - der naechste
+   scheduler_on_tick(), der diesen Slot einlastet, laedt dieses CR3 also
+   automatisch mit. 0 = Erfolg (*out_slot gesetzt), -1 wenn kein freier
+   Slot mehr frei ist oder die Rahmenallokation fehlschlaegt. */
+int scheduler_claim_dynamic_user_slot(uint32_t entry_point, uint32_t user_stack_top,
+                                       uint32_t code_selector, uint32_t data_selector,
+                                       int32_t cpu_affinity, uint32_t directory_phys,
+                                       uint32_t *out_slot);
 /* Gibt einen per scheduler_claim_dynamic_slot belegten Slot wieder frei
    (Fehlerpfad in thread_create_dynamic). */
 void scheduler_release_dynamic_slot(uint32_t slot);
@@ -84,6 +133,16 @@ void scheduler_release_dynamic_slot(uint32_t slot);
 uint32_t scheduler_context_at(uint32_t slot);
 int32_t scheduler_affinity_at(uint32_t slot);
 int32_t scheduler_running_on_at(uint32_t slot);
+
+/* Ordnet Slot den Hardware-Adressraum directory_phys zu (physische
+   Page-Directory-Adresse, siehe paging_create_address_space/
+   process_get_cr3) - scheduler_on_tick() laedt ihn automatisch, sobald
+   dieser Slot eingelastet wird. Slot >= SCHEDULER_THREAD_COUNT ist ein
+   No-Op. Jeder Slot startet (scheduler_initialize()/
+   scheduler_claim_dynamic_slot()) mit dem Kernel-Basis-Adressraum. */
+void scheduler_set_slot_directory(uint32_t slot, uint32_t directory_phys);
+/* 0 wenn slot ausserhalb des gueltigen Bereichs liegt. */
+uint32_t scheduler_slot_directory(uint32_t slot);
 
 #define WS_SLOT_COUNT      SCHEDULER_THREAD_COUNT
 #define WS_QUEUE_DEPTH     4u

@@ -19,7 +19,13 @@
 
 #include <stdint.h>
 
-#define THREAD_CAPACITY 8u /* == SCHEDULER_THREAD_COUNT, siehe scheduler.h */
+/* NICHT mehr == SCHEDULER_THREAD_COUNT (die ist seit der Userspace-
+   Taskbar 9, siehe dortigen Kommentar) - bewusst bei 8 belassen, da
+   threadmgr.c (thread_create_dynamic/thread_table) nie mehr als die
+   urspruenglichen 8 Scheduler-Slots braucht; der zusaetzliche 9. Slot
+   wird direkt ueber scheduler_claim_dynamic_user_slot() verwaltet, ohne
+   threadmgr.c zu durchlaufen. */
+#define THREAD_CAPACITY 8u
 
 #define THREAD_STATE_READY 1u
 

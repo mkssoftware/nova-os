@@ -6,6 +6,7 @@
 #include "ipc.h"
 #include "serial.h"
 #include "resilience.h"
+#include "paging.h"
 
 #define CODE_SEGMENT 0x08u
 #define DATA_SEGMENT 0x10u
@@ -17,6 +18,8 @@
 static uint32_t scheduler_contexts[SCHEDULER_THREAD_COUNT];
 static int32_t thread_cpu_affinity[SCHEDULER_THREAD_COUNT]; /* -1 = beliebige CPU */
 static int32_t thread_running_on[SCHEDULER_THREAD_COUNT];   /* -1 = frei, 0 = CPU0 */
+static uint32_t thread_directory_phys[SCHEDULER_THREAD_COUNT]; /* CR3 je Slot, siehe scheduler.h */
+static uint32_t scheduler_active_directory_phys = 0; /* zuletzt per CR3 geladener Adressraum */
 static int32_t scheduler_current_thread = -1; /* Pendant zu per_cpu_current_thread[0] - nur 1 CPU */
 static int scheduler_frames_ready = 0; /* Frames gueltig aufgebaut (fuer scheduler_self_test) */
 static int scheduler_enabled = 0;      /* echter Taskwechsel aktiv (siehe scheduler_enable) */
@@ -121,14 +124,73 @@ uint32_t scheduler_create_frame(uint32_t entry_point) {
     return frame;
 }
 
+/* Wie scheduler_create_frame(), aber fuer einen Rahmen, der per `iretd`
+   NACH RING 3 wechselt (SCHEDULER_USER_FRAME_SIZE statt SCHEDULER_
+   FRAME_SIZE - siehe scheduler.h fuer die x86-Hardware-Begruendung: ein
+   privilegstufenaendernder iretd liest zusaetzlich ESP/SS vom Stack).
+   DS/ES/FS/GS werden bewusst bereits hier auf data_selector (Ring 3)
+   gesetzt - isr_common's Epilog laedt sie NOCH BEI CPL=0, bevor iretd
+   tatsaechlich nach Ring 3 wechselt (exakt das bereits bewiesene Muster
+   aus ring3.c's eigenem direktem iret). */
+static uint32_t scheduler_create_user_frame(uint32_t entry_point, uint32_t user_stack_top,
+                                             uint32_t code_selector, uint32_t data_selector) {
+    uint32_t numa;
+    uint32_t page = pmm_alloc_page(&numa);
+    if (page == 0) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) {
+        ((uint8_t *)page)[i] = 0;
+    }
+
+    uint32_t frame = page + PMM_PAGE_SIZE - SCHEDULER_USER_FRAME_SIZE;
+    uint32_t *f = (uint32_t *)frame;
+    f[0] = data_selector; /* DS */
+    f[1] = data_selector; /* ES */
+    f[2] = data_selector; /* FS */
+    f[3] = data_selector; /* GS */
+    f[4] = 0;  /* EDI */
+    f[5] = 0;  /* ESI */
+    f[6] = 0;  /* EBP */
+    f[7] = 0;  /* ESP-Platzhalter von PUSHAD */
+    f[8] = 0;  /* EBX */
+    f[9] = 0;  /* EDX */
+    f[10] = 0; /* ECX */
+    f[11] = 0; /* EAX */
+    f[12] = 32; /* normalisierter Vektor */
+    f[13] = 0;  /* Fehlercode */
+    f[14] = entry_point;  /* EIP */
+    f[15] = code_selector; /* CS (RPL=3) */
+    f[16] = 0x00000202u;  /* EFLAGS, IF gesetzt */
+    f[17] = user_stack_top; /* ESP (nur von iretd bei Privilegwechsel gelesen) */
+    f[18] = data_selector;  /* SS (RPL=3) */
+
+    return frame;
+}
+
 void scheduler_initialize(void) {
     scheduler_enabled = 0;
     scheduler_frames_ready = 0;
     scheduler_current_thread = -1;
+
+    /* Jeder Slot startet im Kernel-Basis-Adressraum (siehe scheduler.h) -
+       und das echte CR3 wird hier synchron dazu gesetzt, falls es (z.B.
+       durch einen vorangegangenen Selbsttest, der zwischen Adressraeumen
+       hin- und herschaltet) gerade woanders steht. paging_kernel_
+       directory_physical() liefert 0, falls Paging noch nie erfolgreich
+       initialisiert wurde (siehe fb_ok/paging_ok-Gating in kmain.c) - ein
+       CR3-Load mit 0 waere ein sofortiger Tripelfehler, daher der Guard. */
+    uint32_t kernel_dir = paging_kernel_directory_physical();
+    if (kernel_dir != 0) {
+        paging_switch_address_space(kernel_dir);
+    }
+    scheduler_active_directory_phys = kernel_dir;
+
     for (uint32_t i = 0; i < SCHEDULER_THREAD_COUNT; ++i) {
         scheduler_contexts[i] = 0;
         thread_cpu_affinity[i] = -1;
         thread_running_on[i] = -1;
+        thread_directory_phys[i] = kernel_dir;
     }
     /* §133: Slot 0 (BSP-Idle/Kernel-Thread) auf CPU 0 pinnen - belegt
        reserviert diesen Slot permanent, scheduler_on_tick wird ihn daher
@@ -191,6 +253,18 @@ uint32_t scheduler_on_tick(uint32_t frame_ptr) {
     if (selected != -1) {
         scheduler_current_thread = selected;
         thread_running_on[selected] = 0;
+
+        /* Echter Adressraumwechsel (siehe scheduler.h-Hinweis): nur
+           tatsaechlich reloaden, wenn sich der Adressraum des neu
+           eingelasteten Slots vom zuletzt aktiven unterscheidet - erspart
+           einen unnoetigen TLB-Flush beim Wechsel zwischen zwei Slots mit
+           demselben (meist: Kernel-Basis-)Adressraum. */
+        uint32_t target_dir = thread_directory_phys[selected];
+        if (target_dir != 0 && target_dir != scheduler_active_directory_phys) {
+            paging_switch_address_space(target_dir);
+            scheduler_active_directory_phys = target_dir;
+        }
+
         return scheduler_contexts[selected];
     }
 
@@ -213,6 +287,33 @@ int scheduler_claim_dynamic_slot(uint32_t entry_point, int32_t cpu_affinity, uin
         scheduler_contexts[slot] = context;
         thread_cpu_affinity[slot] = cpu_affinity;
         thread_running_on[slot] = -1;
+        /* Startet im Kernel-Basis-Adressraum, nicht im Adressraum eines
+           etwaigen fruheren Belegers dieses Slots (siehe
+           scheduler_release_dynamic_slot) - ein Prozess, der einen
+           eigenen Adressraum braucht, ruft danach explizit
+           scheduler_set_slot_directory() auf. */
+        thread_directory_phys[slot] = paging_kernel_directory_physical();
+        *out_slot = slot;
+        return 0;
+    }
+    return -1;
+}
+
+int scheduler_claim_dynamic_user_slot(uint32_t entry_point, uint32_t user_stack_top,
+                                       uint32_t code_selector, uint32_t data_selector,
+                                       int32_t cpu_affinity, uint32_t directory_phys,
+                                       uint32_t *out_slot) {
+    for (uint32_t slot = 1; slot < SCHEDULER_THREAD_COUNT; ++slot) {
+        if (scheduler_contexts[slot] != 0) continue;
+
+        uint32_t context = scheduler_create_user_frame(entry_point, user_stack_top,
+                                                         code_selector, data_selector);
+        if (context == 0) return -1;
+
+        scheduler_contexts[slot] = context;
+        thread_cpu_affinity[slot] = cpu_affinity;
+        thread_running_on[slot] = -1;
+        thread_directory_phys[slot] = directory_phys;
         *out_slot = slot;
         return 0;
     }
@@ -224,6 +325,7 @@ void scheduler_release_dynamic_slot(uint32_t slot) {
     scheduler_contexts[slot] = 0;
     thread_cpu_affinity[slot] = -1;
     thread_running_on[slot] = -1;
+    thread_directory_phys[slot] = paging_kernel_directory_physical();
 }
 
 uint32_t scheduler_context_at(uint32_t slot) {
@@ -241,6 +343,16 @@ int32_t scheduler_running_on_at(uint32_t slot) {
     return thread_running_on[slot];
 }
 
+void scheduler_set_slot_directory(uint32_t slot, uint32_t directory_phys) {
+    if (slot >= SCHEDULER_THREAD_COUNT) return;
+    thread_directory_phys[slot] = directory_phys;
+}
+
+uint32_t scheduler_slot_directory(uint32_t slot) {
+    if (slot >= SCHEDULER_THREAD_COUNT) return 0;
+    return thread_directory_phys[slot];
+}
+
 int scheduler_self_test(void) {
     if (scheduler_frames_ready != 1) return -1;
     if (scheduler_contexts[1] == 0 || scheduler_contexts[2] == 0) return -1;
@@ -250,6 +362,41 @@ int scheduler_self_test(void) {
     if (f1[14] != (uint32_t)scheduler_thread1) return -1;
     if (f1[15] != CODE_SEGMENT) return -1;
     if (f1[16] != 0x00000202u) return -1;
+
+    /* Beweis, dass scheduler_on_tick() beim Slot-Wechsel wirklich das
+       Hardware-CR3 mitwechselt (siehe scheduler.h-Hinweis oben): Slot 1
+       und Slot 2 bekommen zwei frische, unabhaengige Adressraeume
+       zugewiesen, dann wird zweimal direkt getickt. scheduler_on_tick()
+       selbst ist bis zum echten scheduler_enable() ein No-Op (eigene
+       fruehe Sperre, siehe dort) - fuer DIESEN gezielten Test wird sie
+       kurzzeitig scharf geschaltet und am Ende, zusammen mit allem
+       anderen, per scheduler_initialize() wieder auf 0 zurueckgesetzt,
+       BEVOR der Rest des Boots fortfaehrt (echter Taskwechsel bleibt bis
+       zum spaeteren, eigentlichen scheduler_enable()-Aufruf inaktiv). Nach
+       jedem Wechsel MUSS paging_root_physical() exakt den Adressraum des
+       gerade eingelasteten Slots widerspiegeln. */
+    uint32_t kernel_dir = paging_kernel_directory_physical();
+    uint32_t dir_a, dir_b;
+    if (paging_create_address_space(&dir_a) != 0) return -1;
+    if (paging_create_address_space(&dir_b) != 0) return -1;
+    scheduler_set_slot_directory(1, dir_a);
+    scheduler_set_slot_directory(2, dir_b);
+    scheduler_current_thread = -1;
+    thread_running_on[1] = -1;
+    thread_running_on[2] = -1;
+    scheduler_enabled = 1;
+
+    uint32_t frame_a = scheduler_on_tick(0);
+    if (frame_a != scheduler_contexts[1]) { scheduler_initialize(); return -1; }
+    if (paging_root_physical() != dir_a) { scheduler_initialize(); return -1; }
+
+    uint32_t frame_b = scheduler_on_tick(frame_a);
+    if (frame_b != scheduler_contexts[2]) { scheduler_initialize(); return -1; }
+    if (paging_root_physical() != dir_b) { scheduler_initialize(); return -1; }
+
+    scheduler_initialize(); /* setzt scheduler_enabled auch wieder auf 0 */
+    if (paging_root_physical() != kernel_dir) return -1;
+    if (scheduler_slot_directory(1) != kernel_dir || scheduler_slot_directory(2) != kernel_dir) return -1;
 
     return 0;
 }

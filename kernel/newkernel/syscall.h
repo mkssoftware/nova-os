@@ -35,6 +35,18 @@
 #define SYSCALL_SERVICE_CORE  1u
 #define SYSCALL_CORE_EXIT     1u
 #define SYSCALL_CORE_READY    2u
+/* Fuer Ring-3-Code ohne eigenen Zugriff auf display.c/time.c/
+   desktop_shell.c (siehe ushell/shell_main.c): EDI/ESI liefern bei
+   GET_DISPLAY_INFO Breite/Hoehe, bei GET_TIME Stunde/Minute (aus der
+   CMOS-RTC - ein Ring-3-Prozess hat keine IOPB-Freigabe fuer die noetigen
+   in/out-Befehle, siehe ring3.c's TSS-Setup "keine IOPB"). TOGGLE_START_
+   MENU ruft das weiterhin kernelseitige start_menu_toggle() auf (siehe
+   desktop_shell.c) - der erste Schritt einer schrittweisen Userspace-
+   Shell-Portierung nutzt diese drei Operationen, um ohne direkten
+   Kernel-Funktionsaufruf auszukommen. */
+#define SYSCALL_CORE_GET_DISPLAY_INFO 3u
+#define SYSCALL_CORE_GET_TIME         4u
+#define SYSCALL_CORE_TOGGLE_START_MENU 5u
 
 /* NPSPEC-DISPLAY-ARCH-0003/0004 (Display-Protokoll/Client-Kommunikation),
    reduziert auf einen festen Satz Operationen ueber denselben int-0x80-
@@ -45,8 +57,13 @@
    syscall.c): EDX = x|(y<<16), ESI = w|(h<<16) fuer CREATE_SURFACE; EDX =
    Handle fuer ATTACH_BUFFER/COMMIT/DESTROY. Rueckgabe: EAX = Status, EDI =
    neues Handle (nur bei CREATE_SURFACE). Der Pixel-Puffer liegt IMMER an
-   der festen Adresse RING3_GUI_BUFFER_VADDR (ring3.h) - es existiert
-   bisher nur ein Client, daher keine dynamische Pufferzuteilung. */
+   der festen virtuellen Adresse RING3_GUI_BUFFER_VADDR (ring3.h) - OHNE
+   Konflikt zwischen mehreren Clients, da jeder Prozess seit
+   paging_create_address_space() einen eigenen Adressraum hat (dieselbe
+   virtuelle Adresse meint dort jeweils eine eigene physische Seite). Der
+   Dispatch loest sie EINMALIG auf die physische Adresse auf, noch
+   waehrend das CR3 des Aufrufers aktiv ist - die bleibt danach unter
+   JEDEM CR3 gueltig (siehe syscall.c). */
 #define SYSCALL_SERVICE_GUI       2u
 #define GUI_OP_CREATE_SURFACE     1u
 #define GUI_OP_ATTACH_BUFFER      2u

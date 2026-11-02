@@ -33,6 +33,18 @@
    Seitenzuteilung pro Client, bewusst nicht in dieser Sitzung geloest. */
 #define RING3_GUI_BUFFER_VADDR 0x00402000u
 
+/* GDT-Selektoren der von ring3_initialize() einmalig aufgebauten GDT-
+   Erweiterung (RPL=3 bereits in den unteren 2 Bits enthalten) - oeffentlich,
+   da JEDER kuenftige Ring-3-Prozess (nicht nur ring3.c's eigenes
+   Testprogramm) dieselbe GDT/TSS wiederverwendet, um nach Ring 3 zu
+   springen (siehe scheduler_claim_dynamic_user_slot in scheduler.h und
+   ushell_process.c fuer den ersten weiteren Verwender). */
+/* KEIN 'u'-Suffix - ring3.c's STR()-Makro stringifiziert diese Werte
+   direkt in Inline-Assembler-Operanden ("push $" STR(...)), wo ein
+   C-Suffix den Assembler-Parser bricht. */
+#define RING3_CODE_SELECTOR 0x1B
+#define RING3_DATA_SELECTOR 0x23
+
 /* 0 = Erfolg (GDT/TSS geladen, Code+Stack-Seite user-gemappt, Prozess
    registriert), -1 wenn eine Seite/der Prozess-Slot nicht verfuegbar ist. */
 int ring3_initialize(void);

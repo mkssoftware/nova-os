@@ -74,6 +74,11 @@ uint32_t process_create(uint32_t flags, uint32_t page_directory_cr3) {
     return pid;
 }
 
+uint32_t process_get_cr3(uint32_t pid) {
+    process_record_t *rec = (process_record_t *)process_lookup(pid);
+    return rec ? rec->cr3 : 0u;
+}
+
 static inline uint32_t read_cr3(void) {
     uint32_t value;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(value));

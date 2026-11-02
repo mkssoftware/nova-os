@@ -19,4 +19,12 @@ void *process_lookup(uint32_t pid);
 
 uint32_t process_count(void);
 
+/* Liefert das bei process_create() hinterlegte Page-Directory (physische
+   Adresse, siehe paging.h) eines Prozesses, oder 0 wenn pid unbekannt ist.
+   process_lookup() gibt bewusst keinen typisierten Zeiger auf den
+   internen Datensatz heraus (process_record_t ist privat in process.c) -
+   dieser Getter ist der oeffentliche Zugriffsweg fuer Aufrufer, die vor
+   einem Taskwechsel das richtige CR3 laden muessen (siehe ring3.c). */
+uint32_t process_get_cr3(uint32_t pid);
+
 #endif

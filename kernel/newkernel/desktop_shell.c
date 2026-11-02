@@ -464,13 +464,16 @@ int desktop_shell_show(void) {
     uint32_t height = display_height();
     if (width == 0 || height == 0 || height <= TASKBAR_HEIGHT) return -1;
 
-    shell_taskbar_width = (width > TASKBAR_MAX_WIDTH) ? TASKBAR_MAX_WIDTH : width;
-    if (window_create(SHELL_OWNER_PID, 0u, height - TASKBAR_HEIGHT, shell_taskbar_width,
-                       TASKBAR_HEIGHT, 0, &shell_taskbar_handle) != 0) {
-        return -1;
-    }
-    if (taskbar_redraw() != 0) return -1;
-
+    /* Die Taskbar selbst wird NICHT mehr hier im Kernel angelegt/gezeichnet
+       - seit ushell_process.c laeuft sie als echter, eigenstaendiger
+       Ring-3-Prozess (siehe ushell/shell_main.c), der seine eigene Surface
+       per Syscall erzeugt. shell_taskbar_handle bleibt bewusst 0 (siehe
+       taskbar_redraw()/desktop_shell_handle_click(): beide behandeln das
+       bereits als "keine eigene Taskbar" und werden dadurch automatisch zu
+       No-Ops) - desktop_icon_used_count-Plazierung und die Start-Menue-
+       Positionierung reservieren den Platz (height-TASKBAR_HEIGHT) aber
+       unveraendert weiter, da der Ring-3-Prozess exakt denselben Bereich
+       belegt. */
     for (uint32_t i = 0; i < desktop_icon_used_count; ++i) {
         uint32_t x = ICON_MARGIN + desktop_icons[i].grid_x * ICON_CELL_W;
         uint32_t y = ICON_MARGIN + desktop_icons[i].grid_y * ICON_CELL_H;
@@ -641,7 +644,8 @@ void desktop_shell_thread_body(void) {
         uint32_t now = timer_get_ticks();
         if ((now - shell_last_thread_tick) >= SHELL_THREAD_INTERVAL_TICKS) {
             shell_last_thread_tick = now;
-            taskbar_redraw();
+            /* taskbar_redraw() nicht mehr hier - die Taskbar zeichnet sich
+               jetzt selbst neu (Ring-3-Prozess, siehe desktop_shell_show()). */
             notify_tick();
         }
         __asm__ volatile ("pause");
@@ -692,8 +696,18 @@ int desktop_shell_self_test(void) {
 
     if (desktop_shell_show() != 0) return -1;
     if (desktop_shell_state() != SHELL_STATE_READY) return -1;
-    if (shell_taskbar_handle == 0) return -1;
-    if (!window_is_visible(shell_taskbar_handle)) return -1;
+    /* shell_taskbar_handle bleibt bewusst 0 - die Taskbar ist seit
+       ushell_process.c ein eigenstaendiger Ring-3-Prozess, keine mehr vom
+       Kernel selbst angelegte window.c-Surface (siehe desktop_shell_show()
+       Scope-Hinweis). Entsprechend entfaellt hier auch der fruehere Test
+       von desktop_shell_handle_click() auf shell_taskbar_handle (der Klick
+       auf den Start-Button wird jetzt client-seitig in ushell/shell_main.c
+       per cursor-Polling erkannt und ueber SYSCALL_CORE_TOGGLE_START_MENU
+       ausgeloest - bereits in syscall.c's eigenem Selbsttest abgedeckt)
+       sowie NPSPEC-SHELL-TASKBAR-0002s "laufende Anwendungen auflisten"
+       (war Teil von taskbar_redraw(), das nicht mehr produktiv aufgerufen
+       wird - noch nicht in der Userspace-Taskbar nachgebildet, siehe
+       project_c_kernel_migration_status.md fuer den Portierungsstand). */
 
     /* Beide Desktop-Icons muessen als eigene, sichtbare window.c-Fenster
        an den erwarteten Rasterpositionen angelegt worden sein. */
@@ -704,7 +718,11 @@ int desktop_shell_self_test(void) {
     if (ix != ICON_MARGIN + ICON_CELL_W || iy != ICON_MARGIN) return -1;
 
     /* Startmenue existiert, ist aber anfangs verborgen (NPSPEC-SHELL-
-       START-0001 Lifecycle: nicht dauerhaft sichtbar). */
+       START-0001 Lifecycle: nicht dauerhaft sichtbar). start_menu_toggle()
+       selbst ist eine direkte API (kein Klick-Routing noetig) und bleibt
+       unveraendert testbar - es ist exakt diese Funktion, die jetzt auch
+       SYSCALL_CORE_TOGGLE_START_MENU (syscall.c) im Namen der Userspace-
+       Taskbar aufruft. */
     if (shell_start_menu_handle == 0) return -1;
     if (start_menu_is_visible() != 0) return -1;
     if (start_menu_toggle() != 0) return -1;
@@ -712,34 +730,13 @@ int desktop_shell_self_test(void) {
     if (start_menu_toggle() != 0) return -1;
     if (start_menu_is_visible() != 0) return -1;
 
-    /* desktop_shell_handle_click() (input.c's Klick-Routing-Hook): ein
-       Klick auf den Start-Button (lokale Koordinaten innerhalb von
-       TASKBAR_START_W x TASKBAR_HEIGHT) muss das Startmenue umschalten
-       UND als "von der Shell beansprucht" gemeldet werden; ein Klick auf
-       die restliche Taskbar-Flaeche ebenfalls beansprucht, aber OHNE das
-       Startmenue zu beruehren; ein Klick auf ein fremdes Fenster-Handle
-       (0) ist nicht Sache der Shell. */
-    if (desktop_shell_taskbar_handle() != shell_taskbar_handle) return -1;
-    if (desktop_shell_handle_click(shell_taskbar_handle, 10u, 10u) != 1) return -1;
-    if (start_menu_is_visible() != 1) return -1;
-    if (desktop_shell_handle_click(shell_taskbar_handle, TASKBAR_START_W + 20u, 10u) != 1) {
-        return -1;
-    }
-    if (start_menu_is_visible() != 1) return -1; /* Klick ausserhalb des Buttons aendert nichts */
-    if (desktop_shell_handle_click(0u, 10u, 10u) != 0) return -1;
-    if (desktop_shell_handle_click(shell_taskbar_handle, 10u, 10u) != 1) return -1;
-    if (start_menu_is_visible() != 0) return -1; /* zurueck auf verborgen */
-
     /* Ein per window_create() erzeugtes, der Shell unbekanntes Fenster
-       ("echte Anwendung") muss in der naechsten Taskbar-Neuzeichnung
-       auftauchen (NPSPEC-SHELL-TASKBAR-0002), ein Shell-eigenes Fenster
-       (Icon) hingegen nicht erneut als eigener Running-Task. */
+       ("echte Anwendung") darf nicht als shell-eigen (Chrome) gelten. */
     uint32_t app_handle;
     static uint32_t app_pixels[8 * 8];
     if (window_create(2u, 100u, 100u, 8u, 8u, 0, &app_handle) != 0) return -1;
     if (shell_window_mark_dirty(app_handle, app_pixels) != 0) return -1;
     if (shell_handle_is_internal(app_handle)) return -1;
-    if (taskbar_redraw() != 0) return -1;
     window_destroy(app_handle);
 
     /* NPSPEC-SHELL-NOTIFY-0001/0002: Queue, Toast-Fenster, automatischer
