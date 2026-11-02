@@ -11,6 +11,7 @@
 #include "material.h"
 #include "materialtypes.h"
 #include "matfx.h"
+#include "powermgr.h"
 
 /* Bewusst 0, NICHT 1 (= GUI_SINGLE_CLIENT_PID in syscall.c, die echte
    Ring-3-Demo-Anwendung) - sonst wuerde compositor.c's einmaliger
@@ -119,6 +120,15 @@ static uint32_t shell_start_menu_handle = 0;
 #define START_MENU_MAX_HEIGHT (START_MENU_ITEM_H * (START_MENU_CAPACITY + 1u))
 static uint32_t start_menu_pixels[START_MENU_WIDTH * START_MENU_MAX_HEIGHT];
 
+/* Start-Menue als Nova Acrylic (statt Liquid Glass wie die Taskbar) - ein
+   Flyout/Kontextmenue entspricht eher ACRYLIC-0001s "dezente
+   Lichtreflexionen"-Charakter als LIQUID-0001s ausgepraegter
+   Lichtbrechung/Verformung, die fuer ein kleines, textlastiges Menue zu
+   aufdringlich waere. Gleiches Muster wie die Taskbar: eigene Instanz,
+   synthetischer Backdrop in der bekannten Desktop-Hintergrundfarbe. */
+static uint32_t start_menu_material_instance = 0;
+static uint32_t start_menu_backdrop_pixels[START_MENU_WIDTH * START_MENU_MAX_HEIGHT];
+
 typedef struct {
     const char *label;
 } systray_entry_t;
@@ -216,6 +226,16 @@ void desktop_shell_initialize(void) {
         material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_HIGHLIGHT, 90u);
         material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_DISTORTION, 20u);
         material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_REFRACTION, 40u);
+    }
+
+    start_menu_material_instance = material_instance_create(MATERIAL_ID_ACRYLIC);
+    if (start_menu_material_instance != 0) {
+        material_instance_set_property_u32(start_menu_material_instance, MATERIAL_FIELD_TINT_RGB, START_MENU_BG_RGB);
+        material_instance_set_property_u32(start_menu_material_instance, MATERIAL_FIELD_TINT_STRENGTH, 160u);
+        material_instance_set_property_u32(start_menu_material_instance, MATERIAL_FIELD_OPACITY, 225u);
+        material_instance_set_property_u32(start_menu_material_instance, MATERIAL_FIELD_BLUR, 5u);
+        material_instance_set_property_u32(start_menu_material_instance, MATERIAL_FIELD_REFLECTION, 15u);
+        material_instance_set_property_u32(start_menu_material_instance, MATERIAL_FIELD_HIGHLIGHT, 10u);
     }
 }
 
@@ -346,13 +366,32 @@ static void start_menu_draw(void) {
     render2d_surface_t surf;
     render2d_init_surface(&surf, start_menu_pixels, START_MENU_WIDTH, h, START_MENU_WIDTH);
 
+    /* Nova Acrylic (siehe Scope-Hinweis bei start_menu_material_instance):
+       der Menuekoerper (unterhalb der opaken Kopfzeile) wird als
+       Glasflaeche gerendert - Eintrag-Text sitzt wie bei der Taskbar
+       direkt (draw_bg=0) auf dem Glaseffekt, statt in einem voll
+       deckenden Farbbalken. Faellt ehrlich auf die alte, voll deckende
+       Fuellung zurueck, falls keine Instanz verfuegbar ist. */
+    material_properties_t menu_glass;
+    int have_glass = (start_menu_material_instance != 0 &&
+                       material_instance_resolve(start_menu_material_instance, &menu_glass) == 0);
+    if (have_glass && h > START_MENU_ITEM_H) {
+        render2d_surface_t backdrop;
+        render2d_init_surface(&backdrop, start_menu_backdrop_pixels, START_MENU_WIDTH, h, START_MENU_WIDTH);
+        render2d_fill_rect(&backdrop, 0u, 0u, START_MENU_WIDTH, h, DESKTOP_SHELL_BG_RGB);
+        matfx_apply(&surf, 0u, START_MENU_ITEM_H, START_MENU_WIDTH, h - START_MENU_ITEM_H,
+                    &backdrop, 0u, START_MENU_ITEM_H, &menu_glass, MATFX_BLEND_NORMAL);
+    } else {
+        render2d_fill_rect(&surf, 0u, START_MENU_ITEM_H, START_MENU_WIDTH, h - START_MENU_ITEM_H,
+                            START_MENU_ITEM_RGB);
+    }
+
     render2d_fill_rect(&surf, 0u, 0u, START_MENU_WIDTH, START_MENU_ITEM_H, START_MENU_HEADER_RGB);
     render2d_draw_text(&surf, 6u, (START_MENU_ITEM_H - 16u) / 2u, "Start Menu", START_MENU_FG_RGB,
                         START_MENU_HEADER_RGB, 0);
 
     for (uint32_t i = 0; i < start_menu_entry_used; ++i) {
         uint32_t y = (i + 1u) * START_MENU_ITEM_H;
-        render2d_fill_rect(&surf, 0u, y, START_MENU_WIDTH, START_MENU_ITEM_H, START_MENU_ITEM_RGB);
         render2d_draw_text(&surf, 6u, y + (START_MENU_ITEM_H - 16u) / 2u,
                             start_menu_entries[i].label, START_MENU_FG_RGB, START_MENU_ITEM_RGB, 0);
     }
@@ -475,11 +514,40 @@ uint32_t desktop_shell_taskbar_handle(void) {
 }
 
 int desktop_shell_handle_click(uint32_t window_handle, uint32_t local_x, uint32_t local_y) {
-    if (window_handle == 0 || window_handle != shell_taskbar_handle) return 0;
-    if (local_x < TASKBAR_START_W && local_y < TASKBAR_HEIGHT) {
-        start_menu_toggle();
+    if (window_handle == 0) return 0;
+
+    if (window_handle == shell_taskbar_handle) {
+        if (local_x < TASKBAR_START_W && local_y < TASKBAR_HEIGHT) {
+            start_menu_toggle();
+        }
+        return 1;
     }
-    return 1;
+
+    if (window_handle == shell_start_menu_handle) {
+        /* Zeile 0 ist die Kopfzeile ("Start Menu"), Eintraege beginnen bei
+           Zeile 1 (siehe start_menu_draw()). */
+        if (local_x < START_MENU_WIDTH && local_y >= START_MENU_ITEM_H) {
+            uint32_t idx = (local_y / START_MENU_ITEM_H) - 1u;
+            if (idx < start_menu_entry_used) {
+                const char *label = start_menu_entries[idx].label;
+                if (label[0] == 'S' && label[1] == 'h') { /* "Shutdown" */
+                    /* Sicheres Herunterfahren: erst die geordnete
+                       Uebergangssequenz (Userspace einfrieren, Storage
+                       synchronisieren, Geraete stoppen - siehe powermgr.c
+                       power_manager_request_shutdown()), danach der
+                       tatsaechliche Poweroff ueber die ACPI-Ports. Ein
+                       bereits laufender Uebergang (-1) wird bewusst
+                       ignoriert - power_manager_platform_off() schaltet
+                       auch dann sicher ab. */
+                    power_manager_request_shutdown();
+                    power_manager_platform_off();
+                }
+            }
+        }
+        return 1;
+    }
+
+    return 0;
 }
 
 static void notify_draw(uint32_t slot) {
