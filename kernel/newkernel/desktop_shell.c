@@ -8,6 +8,9 @@
 #include "threadmgr.h"
 #include "svgicon.h"
 #include "svgicon_assets.h"
+#include "material.h"
+#include "materialtypes.h"
+#include "matfx.h"
 
 /* Bewusst 0, NICHT 1 (= GUI_SINGLE_CLIENT_PID in syscall.c, die echte
    Ring-3-Demo-Anwendung) - sonst wuerde compositor.c's einmaliger
@@ -72,6 +75,28 @@ static uint32_t shell_state_value = SHELL_STATE_UNINITIALIZED;
 static uint32_t shell_taskbar_handle = 0;
 static uint32_t shell_taskbar_width = 0;
 static uint32_t taskbar_pixels[TASKBAR_MAX_WIDTH * TASKBAR_HEIGHT];
+
+/* Nova Material Engine (docs/NPSPEC/sysarchitecture/049-GUI/
+   010-Material_Engine/) - die Taskbar wird als Nova Liquid Glass
+   dargestellt: eine eigene Materialinstanz (nicht die geteilte
+   MATERIAL_ID_LIQUID-Definition selbst, siehe SYSTEM-0001 Abschnitt 5
+   "Aenderungen einer Instanz duerfen andere Instanzen nicht
+   beeinflussen") mit auf ein dunkles System-Chrome abgestimmten
+   Eigenschafts-Overrides (dunklerer Tint/hoehere Deckkraft als das
+   Standard-Liquid-Glass-Preset, damit Start-Button/Taskliste/Uhr lesbar
+   bleiben - ACCESS-0001 "dekorative Reflexionen und Glanzlichter duerfen
+   die Lesbarkeit nicht beeintraechtigen"). BACKDROP-0001 verlangt die
+   Bereitstellung des Hintergrunds ausschliesslich durch den Compositor;
+   da dieser Kernel aber weder eine Bildtapete noch ueberlappende Fenster
+   unterhalb der Taskbar kennt (feste Grid-Icons oben links, Taskbar ganz
+   unten, siehe desktop_shell_show()), ist der tatsaechliche Hintergrund
+   an dieser Stelle immer die bekannte Desktop-Hintergrundfarbe - ein
+   synthetischer, aus genau dieser Farbe aufgebauter Backdrop-Puffer
+   erfuellt BACKDROP-0001 strukturell korrekt (kein Selbst-Sampling des
+   eigenen, vorherigen Taskbar-Renderings), ohne eine riskante direkte
+   Framebuffer-Rueckleseoperation einzufuehren. */
+static uint32_t taskbar_material_instance = 0;
+static uint32_t taskbar_backdrop_pixels[TASKBAR_MAX_WIDTH * TASKBAR_HEIGHT];
 
 typedef struct {
     int used;
@@ -174,6 +199,24 @@ void desktop_shell_initialize(void) {
     systray_entry_used = 0;
     for (uint32_t i = 0; i < NOTIFY_QUEUE_CAPACITY; ++i) notify_queue[i] = (notify_slot_t){0};
     shell_last_thread_tick = 0;
+
+    /* Taskbar-Materialinstanz (siehe Scope-Hinweis bei taskbar_material_instance).
+       material_instance_create() faellt bei ungueltiger/fehlender
+       MATERIAL_ID_LIQUID-Definition automatisch auf das Solid-Fallback
+       zurueck (SYSTEM-0001 Abschnitt 8) - taskbar_redraw() bleibt dadurch
+       auch dann funktionsfaehig, wenn die Material Engine aus irgendeinem
+       Grund noch nicht initialisiert wurde. */
+    taskbar_material_instance = material_instance_create(MATERIAL_ID_LIQUID);
+    if (taskbar_material_instance != 0) {
+        material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_TINT_RGB, TASKBAR_BG_RGB);
+        material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_TINT_STRENGTH, 150u);
+        material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_OPACITY, 215u);
+        material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_BLUR, 4u);
+        material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_REFLECTION, 60u);
+        material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_HIGHLIGHT, 90u);
+        material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_DISTORTION, 20u);
+        material_instance_set_property_u32(taskbar_material_instance, MATERIAL_FIELD_REFRACTION, 40u);
+    }
 }
 
 uint32_t desktop_shell_state(void) {
@@ -227,7 +270,24 @@ int taskbar_redraw(void) {
     render2d_init_surface(&surf, taskbar_pixels, shell_taskbar_width, TASKBAR_HEIGHT,
                            shell_taskbar_width);
 
-    render2d_fill_rect(&surf, 0u, 0u, shell_taskbar_width, TASKBAR_HEIGHT, TASKBAR_BG_RGB);
+    /* Nova Liquid Glass (siehe Scope-Hinweis bei taskbar_material_instance):
+       ersetzt die bisherige einfarbige Fuellung durch die Material-
+       Engine-Effekt-Pipeline (matfx.c). Bei fehlender Instanz (sollte nur
+       vor desktop_shell_initialize() auftreten) faellt dies ehrlich auf
+       die alte einfarbige Fuellung zurueck. */
+    material_properties_t taskbar_glass;
+    int have_glass = (taskbar_material_instance != 0 &&
+                       material_instance_resolve(taskbar_material_instance, &taskbar_glass) == 0);
+    if (have_glass) {
+        render2d_surface_t backdrop;
+        render2d_init_surface(&backdrop, taskbar_backdrop_pixels, shell_taskbar_width, TASKBAR_HEIGHT,
+                               shell_taskbar_width);
+        render2d_fill_rect(&backdrop, 0u, 0u, shell_taskbar_width, TASKBAR_HEIGHT, DESKTOP_SHELL_BG_RGB);
+        matfx_apply(&surf, 0u, 0u, shell_taskbar_width, TASKBAR_HEIGHT, &backdrop, 0u, 0u,
+                    &taskbar_glass, MATFX_BLEND_NORMAL);
+    } else {
+        render2d_fill_rect(&surf, 0u, 0u, shell_taskbar_width, TASKBAR_HEIGHT, TASKBAR_BG_RGB);
+    }
     render2d_fill_rect(&surf, 0u, 0u, TASKBAR_START_W, TASKBAR_HEIGHT, TASKBAR_START_RGB);
     render2d_draw_text(&surf, 8u, (TASKBAR_HEIGHT - 16u) / 2u, "Start", TASKBAR_FG_RGB,
                         TASKBAR_START_RGB, 0);

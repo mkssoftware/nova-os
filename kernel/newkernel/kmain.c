@@ -80,6 +80,13 @@
 #include "font.h"
 #include "render2d.h"
 #include "svgicon.h"
+#include "material.h"
+#include "materialtypes.h"
+#include "matfx.h"
+#include "matanim.h"
+#include "matintegrate.h"
+#include "matperf.h"
+#include "matext.h"
 #include "network.h"
 #include "program.h"
 #include "interrupt.h"
@@ -502,6 +509,32 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
        nutzen kann (siehe desktop_shell.c desktop_icon_draw). */
     svgicon_initialize();
     report("NOVA: SVG Icon Renderer Selftest", svgicon_self_test() == 0);
+
+    /* Nova Material Engine (docs/NPSPEC/sysarchitecture/049-GUI/
+       010-Material_Engine/) - Registry/Instanzen, die fuenf
+       Standardmaterialien, die Optical-Effects-Pipeline, Animation/
+       Transition/Interaction/Deformation sowie Layer/Style/Theme/UI-
+       Integration. Reihenfolge: Kern vor den Standardtypen (die den Kern
+       mit festen IDs befuellen) vor allem, das darauf aufbaut. */
+    report("NOVA: Material System Selftest", material_self_test() == 0);
+    report("NOVA: Material-Standardtypen Selftest", materialtypes_self_test() == 0);
+    report("NOVA: Material-Effekt-Pipeline Selftest", matfx_self_test() == 0);
+    report("NOVA: Material-Animation Selftest", matanim_self_test() == 0);
+    report("NOVA: Material-Integration Selftest", matintegrate_self_test() == 0);
+    report("NOVA: Material-Performance Selftest", matperf_self_test() == 0);
+    report("NOVA: Material-Erweiterbarkeit Selftest", matext_self_test() == 0);
+    /* Produktions-Initialisierung ERST NACH allen Selbsttests: jeder der
+       obigen Selbsttests ruft intern material_initialize() auf (isolierte
+       Tests gegen die gemeinsame Registry) und wuerde die Standardtypen
+       eines vorherigen Schritts sonst wieder loeschen. */
+    material_initialize();
+    materialtypes_initialize();
+    matanim_initialize();
+    matintegrate_initialize();
+    matperf_initialize();
+    matperf_quality_initialize();
+    matext_initialize();
+    matext_presets_register_standard();
 
     network_stack_initialize();
     report("NOVA: Network Stack Selftest", network_stack_self_test() == 0);

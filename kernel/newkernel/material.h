@@ -155,4 +155,13 @@ int material_instance_rebind(uint32_t instance_id, uint32_t new_definition_id);
    eine Eigenschaft des Typs, nicht ueberschreibbar). 0 = Erfolg. */
 int material_instance_resolve(uint32_t instance_id, material_properties_t *out);
 
+/* Monoton steigender Zaehler, der bei JEDER aendernden Operation auf diese
+   Instanz (Property-/Ext-/State-Aenderung, Clear, Rebind) erhoeht wird -
+   fuer matperf.c's Cache-Invalidierung (CACHE-0001: "Aenderungen
+   relevanter Eingaben muessen betroffene Eintraege invalidieren", "nicht
+   relevante Aenderungen duerfen keine Invalidierung ausloesen" - erfuellt,
+   da der Zaehler strikt pro Instanz gefuehrt wird). 0xFFFFFFFF wenn
+   instance_id ungueltig. */
+uint32_t material_instance_generation(uint32_t instance_id);
+
 #endif

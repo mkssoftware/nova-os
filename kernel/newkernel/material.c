@@ -16,6 +16,7 @@ typedef struct {
     uint32_t state;
     uint32_t override_mask;
     material_properties_t override;
+    uint32_t generation;
 } material_instance_t;
 
 static material_definition_t g_defs[MATERIAL_MAX_DEFINITIONS];
@@ -114,6 +115,7 @@ uint32_t material_instance_create(uint32_t definition_id) {
             g_inst[i].definition_id = definition_id;
             g_inst[i].state = MATERIAL_STATE_NORMAL;
             g_inst[i].override_mask = 0;
+            g_inst[i].generation = 0;
             zero_properties(&g_inst[i].override);
             return i + 1u;
         }
@@ -156,6 +158,7 @@ int material_instance_set_property_u32(uint32_t instance_id, uint32_t field, uin
         default: return -1;
     }
     in->override_mask |= field;
+    ++in->generation;
     return 0;
 }
 
@@ -164,6 +167,7 @@ int material_instance_set_ext_u32(uint32_t instance_id, uint32_t ext_key, uint32
     if (!in || ext_key >= MATERIAL_EXT_COUNT) return -1;
     in->override.ext[ext_key] = value;
     in->override.ext_present_mask |= (1u << ext_key);
+    ++in->generation;
     return 0;
 }
 
@@ -172,6 +176,7 @@ int material_instance_clear_overrides(uint32_t instance_id) {
     if (!in) return -1;
     in->override_mask = 0;
     zero_properties(&in->override);
+    ++in->generation;
     return 0;
 }
 
@@ -179,6 +184,7 @@ int material_instance_clear_property(uint32_t instance_id, uint32_t field) {
     material_instance_t *in = inst_at(instance_id);
     if (!in) return -1;
     in->override_mask &= ~field;
+    ++in->generation;
     return 0;
 }
 
@@ -186,6 +192,7 @@ int material_instance_set_state(uint32_t instance_id, uint32_t state) {
     material_instance_t *in = inst_at(instance_id);
     if (!in || state >= MATERIAL_STATE_COUNT) return -1;
     in->state = state;
+    ++in->generation;
     return 0;
 }
 
@@ -199,10 +206,16 @@ uint32_t material_instance_definition(uint32_t instance_id) {
     return in ? in->definition_id : 0;
 }
 
+uint32_t material_instance_generation(uint32_t instance_id) {
+    material_instance_t *in = inst_at(instance_id);
+    return in ? in->generation : 0xFFFFFFFFu;
+}
+
 int material_instance_rebind(uint32_t instance_id, uint32_t new_definition_id) {
     material_instance_t *in = inst_at(instance_id);
     if (!in || !material_definition_exists(new_definition_id)) return -1;
     in->definition_id = new_definition_id;
+    ++in->generation;
     return 0;
 }
 
@@ -277,6 +290,14 @@ int material_self_test(void) {
     if (material_instance_definition(bad_inst) != material_fallback_id()) return -1;
     material_properties_t dummy;
     if (material_instance_resolve(bad_inst, &dummy) != 0) return -1;
+
+    /* Generation steigt bei aendernden Operationen, bleibt bei lesenden
+       Zugriffen unveraendert (CACHE-0001-Grundlage). */
+    uint32_t gen_before = material_instance_generation(inst_id);
+    material_instance_resolve(inst_id, &resolved);
+    if (material_instance_generation(inst_id) != gen_before) return -1;
+    material_instance_set_property_u32(inst_id, MATERIAL_FIELD_ROUGHNESS, 5u);
+    if (material_instance_generation(inst_id) == gen_before) return -1;
 
     if (material_instance_destroy(inst_id) != 0) return -1;
     if (material_instance_exists(inst_id)) return -1;
