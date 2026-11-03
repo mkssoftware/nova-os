@@ -5,7 +5,15 @@
 
 #include <stdint.h>
 
-#define PROCESS_CAPACITY 4u
+/* War 4, per echtem Boot-Test (ushell_process.c's zweiter Prozess,
+   Startmenue) als zu knapp entlarvt: process.c bietet keine Freigabe-
+   Funktion (Eintraege sind dauerhaft), und `process_manager_self_test()`,
+   `vfsapi_self_test()` sowie `ring3_initialize()`s Demoprozess belegen
+   zusammen bereits 3 der 4 Slots dauerhaft, BEVOR ueberhaupt ein
+   Userspace-Shell-Prozess entsteht - fuer zwei davon (Taskbar+Startmenue)
+   reichte das nicht mehr. Auf 6 angehoben (3 bestehende + 2 Shell-
+   Prozesse + 1 Reserve). */
+#define PROCESS_CAPACITY 6u
 #define OBJECT_TYPE_PROCESS 4u
 
 void process_manager_initialize(void);

@@ -57,8 +57,10 @@
    THREAD_CAPACITY bleibt bewusst bei 8 - der neue Slot 8 wird NICHT ueber
    thread_create_dynamic()/thread_table[] verwaltet (siehe scheduler_claim_
    dynamic_user_slot(), direkt von ushell_process.c aufgerufen), braucht
-   dort also keinen Platz. */
-#define SCHEDULER_THREAD_COUNT 9u
+   dort also keinen Platz. Nochmals auf 10 angehoben fuer den zweiten
+   Userspace-Prozess (Startmenue, siehe ushell/startmenu_main.c) - jeder
+   weitere dauerhafte Ring-3-Prozess braucht einen eigenen Slot. */
+#define SCHEDULER_THREAD_COUNT 10u
 #define SCHEDULER_FRAME_SIZE   68u
 /* Wie SCHEDULER_FRAME_SIZE, aber fuer einen Slot, der NACH Ring 3 wechselt
    (siehe scheduler_claim_dynamic_user_slot) - 8 Byte groesser, weil ein
@@ -120,10 +122,16 @@ int scheduler_claim_dynamic_slot(uint32_t entry_point, int32_t cpu_affinity, uin
    scheduler_on_tick(), der diesen Slot einlastet, laedt dieses CR3 also
    automatisch mit. 0 = Erfolg (*out_slot gesetzt), -1 wenn kein freier
    Slot mehr frei ist oder die Rahmenallokation fehlschlaegt. */
+/* kernel_stack_top: ESP0, das beim Einlasten dieses Slots per
+   ring3_set_kernel_stack() in die (einzige, geteilte) TSS geschrieben
+   wird - MUSS ein eigener, nur fuer diesen Slot reservierter Kernel-
+   Stack sein (siehe ring3.h fuer die volle Begruendung: ohne eigenes
+   ESP0 teilen sich mehrere gleichzeitig laufende Ring-3-Slots denselben
+   Interrupt-Landeplatz und ueberschreiben sich gegenseitig). */
 int scheduler_claim_dynamic_user_slot(uint32_t entry_point, uint32_t user_stack_top,
                                        uint32_t code_selector, uint32_t data_selector,
                                        int32_t cpu_affinity, uint32_t directory_phys,
-                                       uint32_t *out_slot);
+                                       uint32_t kernel_stack_top, uint32_t *out_slot);
 /* Gibt einen per scheduler_claim_dynamic_slot belegten Slot wieder frei
    (Fehlerpfad in thread_create_dynamic). */
 void scheduler_release_dynamic_slot(uint32_t slot);

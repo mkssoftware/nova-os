@@ -491,17 +491,13 @@ int desktop_shell_show(void) {
         desktop_icons[i].handle = handle;
     }
 
-    if (start_menu_entry_used > 0u) {
-        uint32_t menu_h = (start_menu_entry_used + 1u) * START_MENU_ITEM_H;
-        uint32_t menu_y = (menu_h < height - TASKBAR_HEIGHT) ? (height - TASKBAR_HEIGHT - menu_h) : 0u;
-        if (window_create(SHELL_OWNER_PID, 0u, menu_y, START_MENU_WIDTH, menu_h, 0,
-                           &shell_start_menu_handle) == 0) {
-            start_menu_draw();
-            if (shell_window_mark_dirty(shell_start_menu_handle, start_menu_pixels) == 0) {
-                surface_hide(shell_start_menu_handle);
-            }
-        }
-    }
+    /* Das Startmenue wird NICHT mehr hier im Kernel angelegt/gezeichnet -
+       seit ushell_process.c laeuft es als eigener Ring-3-Prozess (siehe
+       ushell/startmenu_main.c), der SYSCALL_CORE_GET_START_MENU_VISIBLE
+       abfragt und seine eigene Surface per Syscall zeigt/verbirgt.
+       shell_start_menu_handle bleibt bewusst 0 (siehe start_menu_show()/
+       _hide()/_toggle()/_is_visible(): alle werden dadurch automatisch zu
+       No-Ops, exakt dasselbe Muster wie bei der Taskbar). */
 
     shell_state_value = SHELL_STATE_READY;
     return 0;
@@ -717,18 +713,13 @@ int desktop_shell_self_test(void) {
     if (surface_rect(desktop_icons[1].handle, &ix, &iy, &iw, &ih) != 0) return -1;
     if (ix != ICON_MARGIN + ICON_CELL_W || iy != ICON_MARGIN) return -1;
 
-    /* Startmenue existiert, ist aber anfangs verborgen (NPSPEC-SHELL-
-       START-0001 Lifecycle: nicht dauerhaft sichtbar). start_menu_toggle()
-       selbst ist eine direkte API (kein Klick-Routing noetig) und bleibt
-       unveraendert testbar - es ist exakt diese Funktion, die jetzt auch
-       SYSCALL_CORE_TOGGLE_START_MENU (syscall.c) im Namen der Userspace-
-       Taskbar aufruft. */
-    if (shell_start_menu_handle == 0) return -1;
-    if (start_menu_is_visible() != 0) return -1;
-    if (start_menu_toggle() != 0) return -1;
-    if (start_menu_is_visible() != 1) return -1;
-    if (start_menu_toggle() != 0) return -1;
-    if (start_menu_is_visible() != 0) return -1;
+    /* Das Startmenue ist seit ushell/startmenu_main.c kein kernelseitiges
+       Fenster mehr (siehe desktop_shell_show() Scope-Hinweis) -
+       start_menu_show()/_hide()/_toggle()/_is_visible() bleiben als
+       No-Op-faehige API bestehen (shell_start_menu_handle==0), werden
+       aber produktiv nicht mehr benutzt. Das Sichtbarkeits-Flag selbst
+       (SYSCALL_CORE_TOGGLE_START_MENU/_GET_START_MENU_VISIBLE) wird in
+       syscall.c's eigenem Selbsttest geprueft. */
 
     /* Ein per window_create() erzeugtes, der Shell unbekanntes Fenster
        ("echte Anwendung") darf nicht als shell-eigen (Chrome) gelten. */

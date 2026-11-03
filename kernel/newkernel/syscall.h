@@ -35,18 +35,25 @@
 #define SYSCALL_SERVICE_CORE  1u
 #define SYSCALL_CORE_EXIT     1u
 #define SYSCALL_CORE_READY    2u
-/* Fuer Ring-3-Code ohne eigenen Zugriff auf display.c/time.c/
-   desktop_shell.c (siehe ushell/shell_main.c): EDI/ESI liefern bei
-   GET_DISPLAY_INFO Breite/Hoehe, bei GET_TIME Stunde/Minute (aus der
+/* Fuer Ring-3-Code ohne eigenen Zugriff auf display.c/time.c/powermgr.c
+   (siehe ushell/shell_main.c, ushell/startmenu_main.c): EDI/ESI liefern
+   bei GET_DISPLAY_INFO Breite/Hoehe, bei GET_TIME Stunde/Minute (aus der
    CMOS-RTC - ein Ring-3-Prozess hat keine IOPB-Freigabe fuer die noetigen
    in/out-Befehle, siehe ring3.c's TSS-Setup "keine IOPB"). TOGGLE_START_
-   MENU ruft das weiterhin kernelseitige start_menu_toggle() auf (siehe
-   desktop_shell.c) - der erste Schritt einer schrittweisen Userspace-
-   Shell-Portierung nutzt diese drei Operationen, um ohne direkten
-   Kernel-Funktionsaufruf auszukommen. */
-#define SYSCALL_CORE_GET_DISPLAY_INFO 3u
-#define SYSCALL_CORE_GET_TIME         4u
-#define SYSCALL_CORE_TOGGLE_START_MENU 5u
+   MENU/GET_START_MENU_VISIBLE bilden zusammen ein winziges, rein
+   kernelseitiges Sichtbarkeits-Flag (KEIN Fenster mehr, siehe
+   syscall.c) - die Taskbar (Start-Klick) schaltet es um, der separate
+   Startmenue-Prozess fragt es jeden Umlauf ab und zeigt/verbirgt seine
+   EIGENE Surface entsprechend (GUI_OP_COMMIT/_HIDE) - echte, minimale
+   Zwei-Prozess-Koordination ohne eine volle IPC-Anbindung fuer Ring 3
+   zu brauchen. SHUTDOWN ruft powermgr.c's bereits vorhandene, geordnete
+   Abschaltsequenz auf (siehe desktop_shell.c's fruehere, jetzt entfernte
+   Shutdown-Klick-Behandlung). */
+#define SYSCALL_CORE_GET_DISPLAY_INFO      3u
+#define SYSCALL_CORE_GET_TIME              4u
+#define SYSCALL_CORE_TOGGLE_START_MENU     5u
+#define SYSCALL_CORE_GET_START_MENU_VISIBLE 6u
+#define SYSCALL_CORE_SHUTDOWN              7u
 
 /* NPSPEC-DISPLAY-ARCH-0003/0004 (Display-Protokoll/Client-Kommunikation),
    reduziert auf einen festen Satz Operationen ueber denselben int-0x80-
@@ -69,6 +76,13 @@
 #define GUI_OP_ATTACH_BUFFER      2u
 #define GUI_OP_COMMIT             3u
 #define GUI_OP_DESTROY            4u
+/* Wie surface.h's surface_hide(): Surface bleibt bestehen (Inhalt/Handle
+   gueltig), wird aber vom Compositor uebersprungen, bis GUI_OP_COMMIT sie
+   erneut sichtbar macht - billiger als GUI_OP_DESTROY+erneutes
+   GUI_OP_CREATE_SURFACE/_ATTACH_BUFFER fuer haeufig ein-/ausgeblendete
+   Fenster wie das Startmenue (siehe ushell/startmenu_main.c). EDX =
+   Handle. */
+#define GUI_OP_HIDE               6u
 
 /* NPSPEC-WINDOW-MANAGEMENT-0004 (Min/Maximize) + -0009 (Fullscreen), ueber
    denselben SYSCALL_SERVICE_GUI-Namespace statt eines eigenen Services

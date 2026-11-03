@@ -14,10 +14,16 @@
 #include "interrupt.h"
 #include "paging.h"
 #include "time.h"
-#include "desktop_shell.h"
+#include "powermgr.h"
 #include "display.h"
 
 static int syscall_mgr_initialized = 0;
+/* Sichtbarkeits-Flag fuer das Startmenue (siehe SYSCALL_CORE_TOGGLE_
+   START_MENU/_GET_START_MENU_VISIBLE in syscall.h) - KEIN Fenster mehr,
+   nur noch dieses eine Bit, das von zwei getrennten Ring-3-Prozessen
+   (Taskbar schaltet um, Startmenue-Prozess fragt ab) gemeinsam genutzt
+   wird. */
+static int syscall_start_menu_visible = 0;
 static int syscall_sysenter_available = 0;
 static uint32_t syscall_stats_successful = 0;
 static uint32_t syscall_stats_failed = 0;
@@ -174,6 +180,14 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
 
     if (operation == GUI_OP_DESTROY) {
         int ok = (window_destroy(edx) == 0); /* raeumt auch die Surface auf */
+        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX,
+                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
+        return frame_ptr;
+    }
+
+    if (operation == GUI_OP_HIDE) {
+        int ok = (surface_hide(edx) == 0);
         if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
         frame_write(frame_ptr, FRAME_OFF_EAX,
                     (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
@@ -452,10 +466,29 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
     }
 
     if (operation == SYSCALL_CORE_TOGGLE_START_MENU) {
-        int ok = (start_menu_toggle() == 0);
-        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
-        frame_write(frame_ptr, FRAME_OFF_EAX,
-                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_OPERATION));
+        syscall_start_menu_visible = !syscall_start_menu_visible;
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_GET_START_MENU_VISIBLE) {
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EDI, (uint32_t)syscall_start_menu_visible);
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_SHUTDOWN) {
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        /* Sicheres Herunterfahren: erst die geordnete Uebergangssequenz
+           (Userspace einfrieren, Storage synchronisieren, Geraete
+           stoppen), danach der tatsaechliche ACPI-Poweroff - identisch
+           zur fruheren, jetzt entfernten Shutdown-Klick-Behandlung in
+           desktop_shell.c. Kehrt im Erfolgsfall nicht zurueck. */
+        power_manager_request_shutdown();
+        power_manager_platform_off();
         return frame_ptr;
     }
 
@@ -522,6 +555,23 @@ int syscall_manager_self_test(void) {
 
     frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
     frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_COMMIT);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (surface_state(gui_handle) != SURFACE_STATE_ACTIVE) return -1;
+
+    /* GUI_OP_HIDE: Surface bleibt bestehen, wird aber HIDDEN statt
+       ACTIVE - und per erneutem COMMIT wieder sichtbar (siehe
+       ushell/startmenu_main.c's Zeig/Verbirg-Zyklus). */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_HIDE);
+    frame_write(frame_addr, FRAME_OFF_EDX, gui_handle);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (surface_state(gui_handle) != SURFACE_STATE_HIDDEN) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_COMMIT);
+    frame_write(frame_addr, FRAME_OFF_EDX, gui_handle);
     syscall_dispatch(frame_addr);
     if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
     if (surface_state(gui_handle) != SURFACE_STATE_ACTIVE) return -1;
@@ -814,19 +864,50 @@ int syscall_manager_self_test(void) {
     if (frame_read(frame_addr, FRAME_OFF_EDI) > 23u) return -1; /* Stunde */
     if (frame_read(frame_addr, FRAME_OFF_ESI) > 59u) return -1; /* Minute */
 
-    /* SYSCALL_CORE_TOGGLE_START_MENU: desktop_shell.c ist an dieser Stelle
-       im Boot noch nicht zwingend initialisiert (laeuft erst deutlich
-       spaeter) - nur pruefen, dass der Dispatch-Pfad selbst funktioniert
-       (OK oder OPERATION, nie SERVICE/ABI), nicht dass start_menu_toggle()
-       hier zwangslaeufig erfolgreich ist. */
+    /* SYSCALL_CORE_TOGGLE_START_MENU/_GET_START_MENU_VISIBLE: reines
+       Kernel-Flag (kein Fenster mehr noetig) - zweimal umschalten muss
+       exakt zum Ausgangszustand zurueckfuehren, GET muss den jeweils
+       aktuellen Wert widerspiegeln. */
+    uint32_t visible_before;
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_GET_START_MENU_VISIBLE);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    visible_before = frame_read(frame_addr, FRAME_OFF_EDI);
+
     frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
     frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_TOGGLE_START_MENU);
     frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
     syscall_dispatch(frame_addr);
-    uint32_t toggle_status = frame_read(frame_addr, FRAME_OFF_EAX);
-    if (toggle_status != (uint32_t)SYSCALL_STATUS_OK && toggle_status != (uint32_t)SYSCALL_STATUS_OPERATION) {
-        return -1;
-    }
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_GET_START_MENU_VISIBLE);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (frame_read(frame_addr, FRAME_OFF_EDI) == visible_before) return -1; /* muss gekippt sein */
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_TOGGLE_START_MENU);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_GET_START_MENU_VISIBLE);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (frame_read(frame_addr, FRAME_OFF_EDI) != visible_before) return -1; /* zurueck auf Ausgangszustand */
+
+    /* SYSCALL_CORE_SHUTDOWN wird BEWUSST NICHT hier aufgerufen (gleiche
+       Konvention wie powermgr.c's eigener Kommentar zu power_manager_
+       platform_off() - ein echter Aufruf wuerde QEMU sofort per ACPI-
+       Poweroff beenden). Nur die Konstante selbst wird indirekt dadurch
+       geprueft, dass GUI_OP_HIDE (unten) denselben Dispatch-Pfad ueber
+       eine andere, gefahrlose Operation durchlaeuft. */
 
     serial_puts("NOVA: System Call Interface Selbsttest OK (7/7)\r\n");
     return 0;

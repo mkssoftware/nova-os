@@ -7,6 +7,9 @@
 #include "serial.h"
 #include "resilience.h"
 #include "paging.h"
+#include "ring3.h"
+
+extern uint8_t stack_top[] __asm__("stack_top");
 
 #define CODE_SEGMENT 0x08u
 #define DATA_SEGMENT 0x10u
@@ -20,6 +23,8 @@ static int32_t thread_cpu_affinity[SCHEDULER_THREAD_COUNT]; /* -1 = beliebige CP
 static int32_t thread_running_on[SCHEDULER_THREAD_COUNT];   /* -1 = frei, 0 = CPU0 */
 static uint32_t thread_directory_phys[SCHEDULER_THREAD_COUNT]; /* CR3 je Slot, siehe scheduler.h */
 static uint32_t scheduler_active_directory_phys = 0; /* zuletzt per CR3 geladener Adressraum */
+static uint32_t thread_kernel_stack_top[SCHEDULER_THREAD_COUNT]; /* ESP0 je Slot, siehe scheduler.h */
+static uint32_t scheduler_active_kernel_stack_top = 0; /* zuletzt in die TSS geschriebenes ESP0 */
 static int32_t scheduler_current_thread = -1; /* Pendant zu per_cpu_current_thread[0] - nur 1 CPU */
 static int scheduler_frames_ready = 0; /* Frames gueltig aufgebaut (fuer scheduler_self_test) */
 static int scheduler_enabled = 0;      /* echter Taskwechsel aktiv (siehe scheduler_enable) */
@@ -186,11 +191,22 @@ void scheduler_initialize(void) {
     }
     scheduler_active_directory_phys = kernel_dir;
 
+    /* Jeder Slot startet mit dem EINEN globalen Boot-Kernel-Stack
+       (stack_top, boot.asm) als ESP0 - der echte Wert in der TSS wird
+       hier synchron dazu gesetzt (siehe CR3-Kommentar oben: gleiches
+       Muster, inkl. Wiederherstellung nach einem Selbsttest, der
+       zwischenzeitlich auf einen Ring-3-Slot mit eigenem ESP0
+       umgeschaltet hatte). */
+    uint32_t default_kernel_stack = (uint32_t)(uintptr_t)stack_top;
+    ring3_set_kernel_stack(default_kernel_stack);
+    scheduler_active_kernel_stack_top = default_kernel_stack;
+
     for (uint32_t i = 0; i < SCHEDULER_THREAD_COUNT; ++i) {
         scheduler_contexts[i] = 0;
         thread_cpu_affinity[i] = -1;
         thread_running_on[i] = -1;
         thread_directory_phys[i] = kernel_dir;
+        thread_kernel_stack_top[i] = default_kernel_stack;
     }
     /* §133: Slot 0 (BSP-Idle/Kernel-Thread) auf CPU 0 pinnen - belegt
        reserviert diesen Slot permanent, scheduler_on_tick wird ihn daher
@@ -265,6 +281,21 @@ uint32_t scheduler_on_tick(uint32_t frame_ptr) {
             scheduler_active_directory_phys = target_dir;
         }
 
+        /* Eigenes ESP0 fuer diesen Slot in die TSS schreiben (siehe
+           ring3.h fuer die volle Begruendung) - unverzichtbar, sobald
+           MEHR ALS EIN Ring-3-Slot gleichzeitig laeuft: ein aus Ring 3
+           kommender Interrupt laedt IMMER SS0:ESP0 aus der (einzigen)
+           TSS, bevor der Trap-Frame gesichert wird - ohne slot-eigenes
+           ESP0 wuerden zwei nacheinander unterbrochene Ring-3-Prozesse
+           denselben Landeplatz teilen und sich gegenseitig
+           ueberschreiben. Fuer Ring-0-Slots wirkungslos (ESP0 wird dort
+           nie gelesen), daher keine Fallunterscheidung noetig. */
+        uint32_t target_stack = thread_kernel_stack_top[selected];
+        if (target_stack != 0 && target_stack != scheduler_active_kernel_stack_top) {
+            ring3_set_kernel_stack(target_stack);
+            scheduler_active_kernel_stack_top = target_stack;
+        }
+
         return scheduler_contexts[selected];
     }
 
@@ -293,6 +324,11 @@ int scheduler_claim_dynamic_slot(uint32_t entry_point, int32_t cpu_affinity, uin
            eigenen Adressraum braucht, ruft danach explizit
            scheduler_set_slot_directory() auf. */
         thread_directory_phys[slot] = paging_kernel_directory_physical();
+        /* Ring-0-Slot: braucht kein eigenes ESP0 (kein Privilegwechsel
+           beim Interrupt), bleibt aber konsistent auf dem globalen
+           Boot-Kernel-Stack, nicht auf einem etwaigen fruheren ESP0-Wert
+           dieses Slots (analog zur CR3-Zuruecksetzung oben). */
+        thread_kernel_stack_top[slot] = (uint32_t)(uintptr_t)stack_top;
         *out_slot = slot;
         return 0;
     }
@@ -302,7 +338,7 @@ int scheduler_claim_dynamic_slot(uint32_t entry_point, int32_t cpu_affinity, uin
 int scheduler_claim_dynamic_user_slot(uint32_t entry_point, uint32_t user_stack_top,
                                        uint32_t code_selector, uint32_t data_selector,
                                        int32_t cpu_affinity, uint32_t directory_phys,
-                                       uint32_t *out_slot) {
+                                       uint32_t kernel_stack_top, uint32_t *out_slot) {
     for (uint32_t slot = 1; slot < SCHEDULER_THREAD_COUNT; ++slot) {
         if (scheduler_contexts[slot] != 0) continue;
 
@@ -314,6 +350,7 @@ int scheduler_claim_dynamic_user_slot(uint32_t entry_point, uint32_t user_stack_
         thread_cpu_affinity[slot] = cpu_affinity;
         thread_running_on[slot] = -1;
         thread_directory_phys[slot] = directory_phys;
+        thread_kernel_stack_top[slot] = kernel_stack_top;
         *out_slot = slot;
         return 0;
     }
@@ -326,6 +363,7 @@ void scheduler_release_dynamic_slot(uint32_t slot) {
     thread_cpu_affinity[slot] = -1;
     thread_running_on[slot] = -1;
     thread_directory_phys[slot] = paging_kernel_directory_physical();
+    thread_kernel_stack_top[slot] = (uint32_t)(uintptr_t)stack_top;
 }
 
 uint32_t scheduler_context_at(uint32_t slot) {

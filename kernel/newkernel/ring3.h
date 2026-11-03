@@ -58,4 +58,21 @@ int ring3_self_test(void);
    Testprogramm. Kehrt nicht zurueck. */
 void ring3_enter(void) __attribute__((noreturn));
 
+/* Setzt ESP0 der von ring3_initialize() aufgebauten, einzigen TSS - MUSS
+   bei jedem Scheduler-Wechsel AUF einen Ring-3-Slot mit dessen eigenem,
+   vorreservierten Kernel-Stack aufgerufen werden (siehe
+   scheduler_claim_dynamic_user_slot in scheduler.h). Grund: ein aus Ring
+   3 kommender Interrupt (z.B. der naechste Timer-Tick) laedt IMMER
+   SS0:ESP0 aus genau dieser EINEN TSS, bevor der Trap-Frame gesichert
+   wird (x86-Hardwarepflicht bei Privilegstufenwechsel) - OHNE diesen
+   Wechsel wuerden ZWEI GLEICHZEITIG laufende Ring-3-Prozesse denselben
+   Kernel-Stack-Landeplatz teilen und sich bei abwechselnder Unterbrechung
+   gegenseitig den gesicherten Registerzustand ueberschreiben (real durch
+   einen Boot-Test mit zwei Userspace-Shell-Prozessen aufgedeckt - siehe
+   project_c_kernel_migration_status.md). Ring-0-Slots (kein
+   Privilegwechsel beim Interrupt) sind davon nicht betroffen, duerfen
+   aber denselben Aufruf unveraendert vertragen (ESP0 wird fuer sie
+   schlicht nie gelesen). */
+void ring3_set_kernel_stack(uint32_t esp0);
+
 #endif

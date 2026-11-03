@@ -292,6 +292,10 @@ int ring3_initialize(void) {
     return 0;
 }
 
+void ring3_set_kernel_stack(uint32_t esp0) {
+    *(uint32_t *)&kernel_tss[4] = esp0;
+}
+
 int ring3_self_test(void) {
     if (!ring3_ready) return -1;
     if (ring3_pid == 0) return -1;
