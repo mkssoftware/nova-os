@@ -13,10 +13,18 @@
    nebenlaeufig neben allen anderen Kernel-Threads laufen, um Uhrzeit/
    Eingaben fortlaufend abzufragen.
 
-   Scope-Grenze: nur die Taskbar (dieser erste Schritt) - Startmenue/
-   Icons/Notifications bleiben vorerst im Kernel (desktop_shell.c), die
-   Taskbar-eigene Erzeugung/Neuzeichnung dort wurde entsprechend entfernt
-   (siehe desktop_shell.c Scope-Hinweis). */
+   Inzwischen (Stufe 2+3 des "Vollständiger Port"-Auftrags) spawnt
+   dieselbe Infrastruktur zusaetzlich das Startmenue (ushell/
+   startmenu_main.c) und die Desktop-Icons (ushell/icons_main.c) als
+   jeweils eigene, unabhaengige Ring-3-Prozesse - alle drei teilen sich
+   die generische ushell_spawn()-Hilfsfunktion in ushell_process.c.
+
+   Scope-Grenze: Notifications bleiben vorerst im Kernel (desktop_shell.c
+   notify_push/_tick) - sie werden kernelintern durch Systemereignisse
+   ausgeloest (nicht durch einen eigenen Ring-3-Eingabe-/Redraw-Loop wie
+   Taskbar/Startmenue/Icons), eine Portierung bräuchte zunächst einen
+   Syscall, über den der Kernel selbst einen Toast bei einem Userspace-
+   Prozess anfordern könnte - bewusst nicht Teil dieser Session. */
 #ifndef NOVA_USHELL_PROCESS_H
 #define NOVA_USHELL_PROCESS_H
 

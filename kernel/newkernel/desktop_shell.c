@@ -474,22 +474,16 @@ int desktop_shell_show(void) {
        Positionierung reservieren den Platz (height-TASKBAR_HEIGHT) aber
        unveraendert weiter, da der Ring-3-Prozess exakt denselben Bereich
        belegt. */
-    for (uint32_t i = 0; i < desktop_icon_used_count; ++i) {
-        uint32_t x = ICON_MARGIN + desktop_icons[i].grid_x * ICON_CELL_W;
-        uint32_t y = ICON_MARGIN + desktop_icons[i].grid_y * ICON_CELL_H;
-        if (x + ICON_CELL_W > width || y + ICON_CELL_H > height - TASKBAR_HEIGHT) continue;
-
-        uint32_t handle;
-        if (window_create(SHELL_OWNER_PID, x, y, ICON_CELL_W, ICON_CELL_H, 0, &handle) != 0) {
-            continue;
-        }
-        desktop_icon_draw(i);
-        if (shell_window_mark_dirty(handle, icon_pixels[i]) != 0) {
-            window_destroy(handle);
-            continue;
-        }
-        desktop_icons[i].handle = handle;
-    }
+    /* Die Desktop-Icons werden NICHT mehr hier im Kernel als eigene
+       window.c-Fenster angelegt/gezeichnet - seit ushell_process.c laeuft
+       die gesamte Icon-Flaeche (Explorer+Terminal) als eigenstaendiger
+       Ring-3-Prozess mit eigener Surface (siehe ushell/icons_main.c), der
+       dieselbe Rasterposition (ICON_MARGIN,ICON_MARGIN) belegt.
+       desktop_icon_register_static()/desktop_icon_count() bleiben als
+       Buchfuehrungs-API bestehen (siehe Selbsttest), desktop_icons[i].handle
+       bleibt dadurch bewusst immer 0 - desktop_icon_draw() ist entsprechend
+       eine ungenutzte statische Funktion (reine Compiler-Warnung, kein
+       Fehler, gleiches Muster wie start_menu_draw()). */
 
     /* Das Startmenue wird NICHT mehr hier im Kernel angelegt/gezeichnet -
        seit ushell_process.c laeuft es als eigener Ring-3-Prozess (siehe
@@ -705,13 +699,12 @@ int desktop_shell_self_test(void) {
        wird - noch nicht in der Userspace-Taskbar nachgebildet, siehe
        project_c_kernel_migration_status.md fuer den Portierungsstand). */
 
-    /* Beide Desktop-Icons muessen als eigene, sichtbare window.c-Fenster
-       an den erwarteten Rasterpositionen angelegt worden sein. */
-    if (desktop_icons[0].handle == 0 || !window_is_visible(desktop_icons[0].handle)) return -1;
-    if (desktop_icons[1].handle == 0 || !window_is_visible(desktop_icons[1].handle)) return -1;
-    uint32_t ix, iy, iw, ih;
-    if (surface_rect(desktop_icons[1].handle, &ix, &iy, &iw, &ih) != 0) return -1;
-    if (ix != ICON_MARGIN + ICON_CELL_W || iy != ICON_MARGIN) return -1;
+    /* Die Desktop-Icons sind seit ushell/icons_main.c kein kernelseitiges
+       Fenster mehr (siehe desktop_shell_show() Scope-Hinweis) -
+       desktop_icons[i].handle bleibt dadurch immer 0. Die Rasterposition
+       selbst wird nicht mehr hier, sondern per echtem Boot-Test der
+       Ring-3-Icons-Surface geprueft (siehe
+       project_c_kernel_migration_status.md). */
 
     /* Das Startmenue ist seit ushell/startmenu_main.c kein kernelseitiges
        Fenster mehr (siehe desktop_shell_show() Scope-Hinweis) -

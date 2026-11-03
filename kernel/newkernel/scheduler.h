@@ -58,9 +58,10 @@
    thread_create_dynamic()/thread_table[] verwaltet (siehe scheduler_claim_
    dynamic_user_slot(), direkt von ushell_process.c aufgerufen), braucht
    dort also keinen Platz. Nochmals auf 10 angehoben fuer den zweiten
-   Userspace-Prozess (Startmenue, siehe ushell/startmenu_main.c) - jeder
+   Userspace-Prozess (Startmenue, siehe ushell/startmenu_main.c), und auf
+   11 fuer den dritten (Desktop-Icons, siehe ushell/icons_main.c) - jeder
    weitere dauerhafte Ring-3-Prozess braucht einen eigenen Slot. */
-#define SCHEDULER_THREAD_COUNT 10u
+#define SCHEDULER_THREAD_COUNT 11u
 #define SCHEDULER_FRAME_SIZE   68u
 /* Wie SCHEDULER_FRAME_SIZE, aber fuer einen Slot, der NACH Ring 3 wechselt
    (siehe scheduler_claim_dynamic_user_slot) - 8 Byte groesser, weil ein

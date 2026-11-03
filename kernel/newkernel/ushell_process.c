@@ -1,12 +1,16 @@
 /* NovaOS C-Kernel - Userspace-Shell-Prozess-Lader (siehe
-   ushell_process.h fuer Scope/Architektur). Spawnt zwei unabhaengige
-   Ring-3-Prozesse (Taskbar, Startmenue) ueber eine gemeinsame, generische
-   ushell_spawn()-Hilfsfunktion - beide haben ihren eigenen Adressraum,
-   eigenen Scheduler-Slot und eigenen GUI-Puffer, koordinieren sich aber
-   nur ueber das winzige Sichtbarkeits-Flag in syscall.c (siehe dort). */
+   ushell_process.h fuer Scope/Architektur). Spawnt drei unabhaengige
+   Ring-3-Prozesse (Taskbar, Startmenue, Desktop-Icons) ueber eine
+   gemeinsame, generische ushell_spawn()-Hilfsfunktion - alle drei haben
+   ihren eigenen Adressraum, eigenen Scheduler-Slot (eigenem Kernel-Stack,
+   siehe ring3_set_kernel_stack) und eigenen GUI-Puffer. Taskbar und
+   Startmenue koordinieren sich ueber das winzige Sichtbarkeits-Flag in
+   syscall.c (siehe dort) - die Icons sind rein statisch und brauchen
+   keine laufende Koordination mit den anderen beiden. */
 #include "ushell_process.h"
 #include "ushell_blob.h"
 #include "startmenu_blob.h"
+#include "icons_blob.h"
 #include "pmm.h"
 #include "paging.h"
 #include "process.h"
@@ -15,16 +19,26 @@
 #include "display.h"
 #include "desktop_shell.h"
 
-/* Layout BEIDER Prozesse - MUSS mit ushell/shell_main.c UND
-   ushell/startmenu_main.c uebereinstimmen (dort als eigenstaendige
-   Konstanten dupliziert, da dieser Baum unabhaengig vom Kernel kompiliert
-   wird). Beide Prozesse nutzen DIESELBEN virtuellen Adressen - kein
-   Konflikt, da jeder Prozess seit paging_create_address_space() einen
-   eigenen Adressraum hat. */
+/* Layout ALLER DREI Prozesse - MUSS mit ushell/shell_main.c,
+   ushell/startmenu_main.c UND ushell/icons_main.c uebereinstimmen (dort
+   als eigenstaendige Konstanten dupliziert, da dieser Baum unabhaengig
+   vom Kernel kompiliert wird). Alle drei Prozesse nutzen DIESELBEN
+   virtuellen Adressen - kein Konflikt, da jeder Prozess seit
+   paging_create_address_space() einen eigenen Adressraum hat. */
 #define USHELL_CODE_VADDR  0x00500000u
-#define USHELL_CODE_PAGES  4u /* 16 KiB, deckt .text+.rdata+.data+.bss mit Marge */
-#define USHELL_STACK_VADDR 0x00506000u /* bewusst NACH dem Code-Bereich (0x504000), keine Ueberlappung */
-#define USHELL_STACK_TOP   0x00506FF0u
+/* 64 KiB, deckt .text+.rdata+.data+.bss mit Marge fuer ALLE drei
+   Prozesse ab (gemeinsame Konstante, siehe ushell_spawn). Der groesste
+   bisherige Verwender ist icons_main.c (svgicon.c mitkompiliert) mit
+   56320 Bytes realer Blob-Groesse (14 Seiten) - mingw/PE legt bei
+   -fdata-sections uninitialisierte Statics ($-Subsection ".data$name")
+   als ECHTE Nullbytes statt platzsparendem .bss ab (siehe icons_main.c-
+   Kommentar zu icons-link.ld), daher ist der reale Platzbedarf hier
+   hoeher als die reine Codegroesse vermuten liesse. */
+#define USHELL_CODE_PAGES  16u
+/* bewusst NACH dem Code-Bereich (endet bei USHELL_CODE_VADDR +
+   USHELL_CODE_PAGES*4096 = 0x510000), keine Ueberlappung. */
+#define USHELL_STACK_VADDR 0x00512000u
+#define USHELL_STACK_TOP   0x00512FF0u
 #define USHELL_ARGS_VADDR  0x00400000u /* Bootstrap-Userspace-Fenster, siehe syscall.h */
 /* Dieselbe feste virtuelle Adresse wie ring3.c's Demoprozess (RING3_GUI_
    BUFFER_VADDR, siehe ring3.h) - syscall.c's GUI_OP_ATTACH_BUFFER loest
@@ -48,6 +62,13 @@ typedef struct {
 
 static ushell_instance_t taskbar_instance;
 static ushell_instance_t startmenu_instance;
+static ushell_instance_t icons_instance;
+
+#define ICONS_COUNT       2u
+#define ICONS_CELL_W      64u
+#define ICONS_CELL_H      56u
+#define ICONS_GRID_WIDTH  (ICONS_COUNT * ICONS_CELL_W)
+#define ICONS_GRID_HEIGHT ICONS_CELL_H
 
 static void ushell_instance_reset(ushell_instance_t *inst, const uint8_t *blob,
                                    uint32_t blob_size, uint32_t entry_offset) {
@@ -82,8 +103,20 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes) {
             uint32_t src_index = blob_offset + b;
             dst[b] = (src_index < inst->blob_size) ? inst->blob[src_index] : 0u;
         }
+        /* PAGING_PAGE_WRITE noetig (nicht nur PRESENT|USER): der Compiler
+           legt .text/.rdata UND .data/.bss desselben Blobs gemeinsam in
+           diesen Code-Seiten ab (siehe ushell-link.ld/startmenu-link.ld/
+           icons-link.ld - EIN gemeinsamer Adressbereich, keine separate
+           .data-Seite). icons_main.c ist der erste Verwender mit einer
+           tatsaechlich zur Laufzeit BESCHRIEBENEN statischen Variable in
+           diesem Bereich (icon_bitmap, von svgicon_render() gefuellt) -
+           Taskbar/Startmenue hatten dort bislang nur Code+konstante
+           Daten, daher blieb diese fehlende Schreibrechte-Vergabe bisher
+           folgenlos. Ohne dieses Flag faultet der erste Schreibzugriff
+           (Ring-3-Seitenfehler auf eine PRESENT-aber-nicht-WRITE-Seite) -
+           real durch einen Boot-Test mit dem Icons-Prozess aufgedeckt. */
         if (paging_map_page_into(dir_phys, USHELL_CODE_VADDR + blob_offset, page,
-                                  PAGING_PAGE_PRESENT | PAGING_PAGE_USER) != 0) {
+                                  PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
             return -1;
         }
     }
@@ -183,6 +216,7 @@ static int ushell_instance_self_test(const ushell_instance_t *inst) {
 int ushell_process_initialize(void) {
     ushell_instance_reset(&taskbar_instance, ushell_blob, USHELL_BLOB_SIZE, USHELL_ENTRY_OFFSET);
     ushell_instance_reset(&startmenu_instance, startmenu_blob, STARTMENU_BLOB_SIZE, STARTMENU_ENTRY_OFFSET);
+    ushell_instance_reset(&icons_instance, icons_blob, ICONS_BLOB_SIZE, ICONS_ENTRY_OFFSET);
 
     uint32_t width = display_width();
     uint32_t height = display_height();
@@ -194,11 +228,15 @@ int ushell_process_initialize(void) {
     uint32_t startmenu_buffer_bytes = STARTMENU_WIDTH * STARTMENU_HEIGHT * 4u;
     if (ushell_spawn(&startmenu_instance, startmenu_buffer_bytes) != 0) return -1;
 
+    uint32_t icons_buffer_bytes = ICONS_GRID_WIDTH * ICONS_GRID_HEIGHT * 4u;
+    if (ushell_spawn(&icons_instance, icons_buffer_bytes) != 0) return -1;
+
     return 0;
 }
 
 int ushell_process_self_test(void) {
     if (ushell_instance_self_test(&taskbar_instance) != 0) return -1;
     if (ushell_instance_self_test(&startmenu_instance) != 0) return -1;
+    if (ushell_instance_self_test(&icons_instance) != 0) return -1;
     return 0;
 }

@@ -12,8 +12,10 @@
    zusammen bereits 3 der 4 Slots dauerhaft, BEVOR ueberhaupt ein
    Userspace-Shell-Prozess entsteht - fuer zwei davon (Taskbar+Startmenue)
    reichte das nicht mehr. Auf 6 angehoben (3 bestehende + 2 Shell-
-   Prozesse + 1 Reserve). */
-#define PROCESS_CAPACITY 6u
+   Prozesse + 1 Reserve), spaeter auf 7 (3 bestehende + 3 Shell-Prozesse
+   Taskbar+Startmenue+Icons + 1 Reserve), als ushell_process.c einen
+   dritten dauerhaften Prozess (Desktop-Icons) bekam. */
+#define PROCESS_CAPACITY 7u
 #define OBJECT_TYPE_PROCESS 4u
 
 void process_manager_initialize(void);

@@ -25,6 +25,7 @@
 #include "compositor.h"
 #include "desktop.h"
 #include "desktop_shell.h"
+#include "bootsplash.h"
 #include "surface.h"
 #include "window.h"
 #include "pmm.h"
@@ -212,6 +213,11 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) __asm__("kmain");
 static void report(const char *label, int ok) {
     serial_puts(label);
     serial_puts(ok ? " ok\r\n" : " FEHLGESCHLAGEN\r\n");
+    /* report() wird in der gesamten Hintergrund-Ladephase hunderte Male
+       aufgerufen - genau der richtige Takt, um den Boot-Splash (siehe
+       bootsplash.h) ohne echten Timer-Interrupt-Hook kontinuierlich
+       weiterlaufen zu lassen (No-op, solange der Splash nicht aktiv ist). */
+    bootsplash_tick();
 }
 
 void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
@@ -277,6 +283,15 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     report("NOVA: Compositor Selftest", fb_ok && compositor_self_test() == 0);
 
     report("NOVA: Desktop Show", fb_ok && desktop_show() == 0);
+
+    /* Boot-Splash (Logo + Lauflicht-Ladebalken, siehe bootsplash.h)
+       ueberdeckt den gerade gezeigten minimalen "Desktop First"-Frame
+       sofort wieder - ersetzt den bisher lange ungenutzt stehenbleibenden
+       Anblick waehrend der kompletten folgenden Hintergrund-Ladephase.
+       bootsplash_self_test() VOR bootsplash_show(), wie bei jedem anderen
+       Modul in diesem Kernel. */
+    report("NOVA: Boot Splash Selftest", bootsplash_self_test() == 0);
+    report("NOVA: Boot Splash Show", fb_ok && bootsplash_show() == 0);
     serial_puts("NOVA: Desktop angezeigt - Hintergrund-Subsysteme laden jetzt weiter\r\n");
 
     boot_phase_last_success = BOOT_PHASE_HANDOFF;
@@ -1103,6 +1118,16 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     boot_phase_last_success = BOOT_PHASE_DESKTOP_READY;
     boot_phase_current = BOOT_PHASE_SYSTEM_READY;
     boot_phase_log();
+
+    /* Desktop vollstaendig geladen (BOOT_PHASE_SYSTEM_READY erreicht) -
+       Boot-Splash beenden und den inzwischen laengst fertig eingerichteten
+       echten Desktop (Wallpaper/Desktop-Shell-Fenster, siehe oben) EINMALIG
+       per compositor_composite() in den Framebuffer zeichnen (ersetzt den
+       Splash - der normale kontinuierliche Compositor-Thread uebernimmt
+       erst viel spaeter nach scheduler_enable(), siehe compositor.h). */
+    bootsplash_hide();
+    compositor_composite();
+    serial_puts("NOVA: Boot-Splash beendet - echter Desktop sichtbar\r\n");
 
     serial_puts("NOVA: alle bisherigen Subsysteme vollstaendig verifiziert\r\n");
 
