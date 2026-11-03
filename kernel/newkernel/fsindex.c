@@ -27,6 +27,15 @@ static fsindex_entry_t fsindex_table[IDX_CAPACITY];
 static uint32_t fsindex_count = 0;
 static int fsindex_ready = 0;
 
+/* NPSPEC-INDEX-INTEGRITY-0001: einfache, nicht-kryptografische Pruefsumme
+   ueber die eigenen Deskriptor-Felder (erkennt versehentliche Korruption
+   des Eintrags selbst - keine Pruefung des Verzeichnisinhalts, dafuer gibt
+   es in fsindex_entry_t aktuell keine Sysdir-Zuordnung). */
+static uint32_t sysdir_checksum(const sysdir_record_t *dir) {
+    return dir->id ^ (dir->protection * 0x01000193u) ^ (dir->trust_level << 8) ^
+           dir->object_count;
+}
+
 int sysdir_register(uint32_t sysdir_id, uint32_t protection) {
     if (sysdir_id >= SYSDIR_COUNT) {
         return -1;
@@ -45,7 +54,7 @@ int sysdir_register(uint32_t sysdir_id, uint32_t protection) {
     }
 
     dir->object_count = 0;
-    dir->checksum = 0;
+    dir->checksum = sysdir_checksum(dir);
     return 0;
 }
 
@@ -82,7 +91,8 @@ void fsindex_initialize(void) {
     fsindex_ready = 1;
 }
 
-int fsindex_insert(uint32_t inode_lo, uint32_t vol_id, uint32_t ns_id, uint32_t type) {
+int fsindex_insert(uint32_t inode_lo, uint32_t vol_id, uint32_t ns_id, uint32_t type,
+                    uint32_t extra_flags) {
     if (fsindex_count >= IDX_CAPACITY) {
         return -1;
     }
@@ -92,7 +102,10 @@ int fsindex_insert(uint32_t inode_lo, uint32_t vol_id, uint32_t ns_id, uint32_t 
     entry->ns_id = ns_id;
     entry->type = type;
     entry->size = 0;
-    entry->flags = IDX_FLAG_VALID;
+    /* IDX_FLAG_WORKSPACE/IDX_FLAG_RELATION waren bisher definiert, aber nie
+       setzbar - jetzt per extra_flags durchreichbar (nur die beiden
+       bekannten Bits werden uebernommen, kein beliebiges Bit-Leck). */
+    entry->flags = IDX_FLAG_VALID | (extra_flags & (IDX_FLAG_WORKSPACE | IDX_FLAG_RELATION));
     /* Suchkeyword-Hash: einfacher Poly-Hash. */
     entry->search_hash = (inode_lo * 0x9E3779B9u) ^ vol_id ^ ns_id;
     entry->tx_id = 0;
@@ -124,18 +137,41 @@ void fsindex_rebuild(void) {
         entry->flags |= IDX_FLAG_VALID;
         entry->search_hash = entry->object_id_lo ^ entry->object_id_vol;
     }
+    /* Pruefsummen aller registrierten Systemverzeichnisse ebenfalls
+       auffrischen (vorher nur bei sysdir_register() einmalig gesetzt). */
+    for (uint32_t i = 0; i < SYSDIR_COUNT; ++i) {
+        sysdir_record_t *dir = &sysdir_table[i];
+        if (!(dir->flags & IDX_FLAG_VALID)) {
+            continue;
+        }
+        dir->checksum = sysdir_checksum(dir);
+    }
 }
 
 int fsindex_self_test(void) {
     if (fsindex_ready != 1) return -1;
     if (sysdir_table[0].id != SYSDIR_KERNEL) return -1;
 
-    if (fsindex_insert(0x100u, 0, FS_NS_SYSTEM, FSOBJ_TYPE_DIR) != 0) return -1;
+    if (fsindex_insert(0x100u, 0, FS_NS_SYSTEM, FSOBJ_TYPE_DIR, 0u) != 0) return -1;
 
     uint32_t inode = 0;
     if (fsindex_search(FS_NS_SYSTEM, FSOBJ_TYPE_DIR, &inode) != 0) return -1;
 
+    /* NPSPEC-INDEX-WORKSPACE-0001/-RELATION-0001: extra_flags wird jetzt
+       tatsaechlich uebernommen. */
+    if (fsindex_insert(0x101u, 0, FS_NS_WORKSPACE, FSOBJ_TYPE_FILE,
+                        IDX_FLAG_WORKSPACE | IDX_FLAG_RELATION) != 0) {
+        return -1;
+    }
+
+    /* NPSPEC-INDEX-INTEGRITY-0001: Pruefsumme muss nach Registrierung real
+       (nicht mehr pauschal 0) und nach fsindex_rebuild() stabil sein. */
+    if (sysdir_table[SYSDIR_KERNEL].checksum == 0) return -1;
+    uint32_t checksum_before = sysdir_table[SYSDIR_KERNEL].checksum;
+
     fsindex_rebuild();
+
+    if (sysdir_table[SYSDIR_KERNEL].checksum != checksum_before) return -1;
 
     return 0;
 }

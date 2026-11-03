@@ -3,6 +3,7 @@
    Drop-/Overwrite-Zaehlung, Critical-Spiegelung, Rekursionsschutz) 1:1
    aus dem alten ASM uebernommen. */
 #include "logging.h"
+#include "interrupt.h"
 
 #define LOG_RING_CAPACITY  8u
 #define LOG_COMMIT_MARKER  0x43474F4Cu /* "LOGC" */
@@ -31,9 +32,8 @@ static uint32_t logging_critical_records = 0;
 static uint32_t logging_recursion_events = 0;
 static int logging_recursion_guard = 0;
 
-/* TODO: durch echten Wert ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 void logging_initialize(void) {

@@ -91,6 +91,48 @@ uint32_t glob_negotiate_language(const uint32_t *candidates, uint32_t count) {
     return LANG_NONE;
 }
 
+int glob_register_locale(uint32_t lang_tag, uint32_t direction, uint32_t calendar,
+                          uint32_t numfmt_flags) {
+    if (lang_tag == 0) {
+        return -1;
+    }
+    if (glob_locale_count >= LOCALE_CAPACITY) {
+        return -1;
+    }
+    glob_locale_t *loc = &glob_locales[glob_locale_count];
+    loc->lang = lang_tag;
+    loc->region = lang_tag;
+    loc->direction = direction;
+    loc->calendar = calendar;
+    loc->numfmt_flags = numfmt_flags;
+    loc->date_order = 0;
+    loc->time_24h = 1;
+    loc->decimal_sep = (numfmt_flags & NUMFMT_DECIMAL_COMMA) ? 0x2Cu : 0x2Eu;
+    loc->group_sep = (numfmt_flags & NUMFMT_GROUP_DOT) ? 0x2Eu : 0x2Cu;
+    loc->currency_code = 0;
+    ++glob_locale_count;
+    return 0;
+}
+
+void glob_get_context(uint32_t *out_lang, uint32_t *out_dir, uint32_t *out_calendar) {
+    if (out_lang) {
+        *out_lang = glob_current_lang;
+    }
+    if (out_dir) {
+        *out_dir = glob_current_dir;
+    }
+    if (out_calendar) {
+        uint32_t calendar = CAL_GREGORIAN;
+        for (uint32_t i = 0; i < glob_locale_count; ++i) {
+            if (glob_locales[i].lang == glob_current_lang) {
+                calendar = glob_locales[i].calendar;
+                break;
+            }
+        }
+        *out_calendar = calendar;
+    }
+}
+
 int globalization_self_test(void) {
     if (glob_mgr_ready != 1) return -1;
 
@@ -101,6 +143,25 @@ int globalization_self_test(void) {
     if (glob_current_dir != GLOB_DIR_RTL) return -1;
 
     glob_set_language(LANG_DE_DE); /* zuruecksetzen */
+
+    /* NPSPEC-GLOBALIZATION-LANGUAGE-0001/-LOCALE-0001: vorher konnte NUR
+       de-DE jemals "unterstuetzt" sein - jetzt echte Registrierung einer
+       zweiten Locale und erfolgreiche Verhandlung darauf. */
+    if (glob_is_supported(LANG_EN_US) == 0) return -1; /* noch nicht registriert */
+    if (glob_register_locale(LANG_EN_US, GLOB_DIR_LTR, CAL_GREGORIAN,
+                              NUMFMT_GROUP_DOT) != 0) {
+        return -1;
+    }
+    if (glob_is_supported(LANG_EN_US) != 0) return -1;
+
+    uint32_t candidates[2] = { LANG_FR_FR, LANG_EN_US };
+    if (glob_negotiate_language(candidates, 2u) != LANG_EN_US) return -1;
+
+    uint32_t out_lang = 0, out_dir = 0xFFFFFFFFu, out_cal = 0xFFFFFFFFu;
+    glob_get_context(&out_lang, &out_dir, &out_cal);
+    if (out_lang != LANG_DE_DE || out_dir != GLOB_DIR_LTR || out_cal != CAL_GREGORIAN) {
+        return -1;
+    }
 
     return 0;
 }

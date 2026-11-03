@@ -74,5 +74,21 @@ int semmgr_validate(uint32_t sem_id, uint32_t value, uint32_t *out_result) {
 }
 
 int semmgr_self_test(void) {
-    return (semmgr_ready == 1) ? 0 : -1;
+    if (semmgr_ready != 1) return -1;
+
+    /* Vorher nur semmgr_ready geprueft - jetzt zusaetzlich die echten
+       register/query/validate-Funktionen (analog zu object.c's Muster). */
+    uint32_t sem_id = 0;
+    if (semmgr_register(0x1234u, 0u, 0u, &sem_id) != 0) return -1;
+    if (semmgr_query(0x1234u) == 0) return -1;
+    if (semmgr_query(0xFFFFu) != 0) return -1; /* unbekannter name_hash */
+
+    uint32_t result = 0xFFFFFFFFu;
+    if (semmgr_validate(sem_id, 42u, &result) != 0) return -1;
+    if (result != SVAL_OK) return -1; /* kein validate_fn registriert -> SVAL_OK */
+
+    if (semmgr_validate(0xFFFFu, 0u, &result) == 0) return -1; /* unbekannte sem_id */
+    if (result != SVAL_TYPE_MISMATCH) return -1;
+
+    return 0;
 }

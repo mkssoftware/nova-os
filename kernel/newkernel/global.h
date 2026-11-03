@@ -58,4 +58,16 @@ int glob_is_supported(uint32_t lang_tag);
 /* Gibt den ersten unterstuetzten Tag aus candidates zurueck, oder LANG_NONE. */
 uint32_t glob_negotiate_language(const uint32_t *candidates, uint32_t count);
 
+/* NPSPEC-GLOBALIZATION-LANGUAGE-0001 #6/-LOCALE-0001 #8 (Fallback-Ketten):
+   bisher wurde NUR die Default-Locale (de-DE) jemals registriert -
+   glob_is_supported()/glob_negotiate_language() konnten dadurch strukturell
+   nie etwas anderes matchen. 0 = Erfolg, -1 wenn Tabelle voll oder
+   lang_tag==0. */
+int glob_register_locale(uint32_t lang_tag, uint32_t direction, uint32_t calendar,
+                          uint32_t numfmt_flags);
+
+/* NPSPEC-GLOBALIZATION-INTROSPECTION-0001 #1: effektiven Kontext
+   introspizierbar machen (vorher nur als private Statics gehalten). */
+void glob_get_context(uint32_t *out_lang, uint32_t *out_dir, uint32_t *out_calendar);
+
 #endif

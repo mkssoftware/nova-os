@@ -16,6 +16,8 @@
 #include "time.h"
 #include "powermgr.h"
 #include "display.h"
+#include "cap.h"
+#include "process.h"
 
 static int syscall_mgr_initialized = 0;
 /* Sichtbarkeits-Flag fuer das Startmenue (siehe SYSCALL_CORE_TOGGLE_
@@ -24,6 +26,15 @@ static int syscall_mgr_initialized = 0;
    (Taskbar schaltet um, Startmenue-Prozess fragt ab) gemeinsam genutzt
    wird. */
 static int syscall_start_menu_visible = 0;
+
+/* NPSPEC-SECURITY-CAPABILITY-0001: erste echte Laufzeit-Nutzung des §103
+   Capability Frameworks (cap.h/cap_core.c, vorher nur von dessen eigenen
+   Selbsttests ausgeuebt). Genau ein Prozess kann Inhaber des Shutdown-
+   Capability sein. */
+#define CAP_RIGHT_SHUTDOWN 0x01u
+static uint32_t syscall_shutdown_authorized_pid = 0;
+static uint32_t syscall_shutdown_cap_id = 0;
+
 static int syscall_sysenter_available = 0;
 static uint32_t syscall_stats_successful = 0;
 static uint32_t syscall_stats_failed = 0;
@@ -106,8 +117,31 @@ void syscall_manager_initialize(void) {
     syscall_stats_successful = 0;
     syscall_stats_failed = 0;
     syscall_call_depth = 0;
+    syscall_shutdown_authorized_pid = 0;
+    syscall_shutdown_cap_id = 0;
 
     syscall_mgr_initialized = 1;
+}
+
+int syscall_grant_shutdown_capability(uint32_t pid) {
+    uint32_t cap_id = 0;
+    if (cap_create(pid, CAP_RIGHT_SHUTDOWN, 0u, CAP_DOMAIN_KERNEL, &cap_id) != 0) {
+        return -1;
+    }
+    syscall_shutdown_authorized_pid = pid;
+    syscall_shutdown_cap_id = cap_id;
+    return 0;
+}
+
+int syscall_shutdown_authorized(uint32_t caller_cr3) {
+    if (syscall_shutdown_authorized_pid == 0) {
+        return 0; /* noch keine Vergabe erfolgt */
+    }
+    uint32_t caller_pid = process_find_by_cr3(caller_cr3);
+    if (caller_pid == 0 || caller_pid != syscall_shutdown_authorized_pid) {
+        return 0;
+    }
+    return (cap_check(syscall_shutdown_cap_id, CAP_RIGHT_SHUTDOWN) == 0) ? 1 : 0;
 }
 
 static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
@@ -480,6 +514,17 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
     }
 
     if (operation == SYSCALL_CORE_SHUTDOWN) {
+        /* NPSPEC-SECURITY-CAPABILITY-0001: nur der Prozess, dem per
+           syscall_grant_shutdown_capability() das Shutdown-Capability
+           uebertragen wurde (siehe ushell_process_initialize()), darf die
+           Maschine herunterfahren - fail-closed, jeder andere Aufrufer
+           (oder ein Aufruf bevor die Vergabe ueberhaupt stattgefunden hat)
+           wird abgelehnt. */
+        if (!syscall_shutdown_authorized(paging_root_physical())) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         ++syscall_stats_successful;
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
         /* Sicheres Herunterfahren: erst die geordnete Uebergangssequenz
@@ -902,13 +947,55 @@ int syscall_manager_self_test(void) {
     if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
     if (frame_read(frame_addr, FRAME_OFF_EDI) != visible_before) return -1; /* zurueck auf Ausgangszustand */
 
-    /* SYSCALL_CORE_SHUTDOWN wird BEWUSST NICHT hier aufgerufen (gleiche
-       Konvention wie powermgr.c's eigener Kommentar zu power_manager_
-       platform_off() - ein echter Aufruf wuerde QEMU sofort per ACPI-
-       Poweroff beenden). Nur die Konstante selbst wird indirekt dadurch
-       geprueft, dass GUI_OP_HIDE (unten) denselben Dispatch-Pfad ueber
-       eine andere, gefahrlose Operation durchlaeuft. */
+    /* NPSPEC-SECURITY-CAPABILITY-0001: der echte Dispatch-Pfad fuer
+       SYSCALL_CORE_SHUTDOWN darf HIER gefahrlos durchlaufen werden, weil
+       an dieser Boot-Stelle (deutlich vor ushell_process_initialize(),
+       das als einziger Aufrufer syscall_grant_shutdown_capability()
+       aufruft) noch KEINE Vergabe stattgefunden hat - die Autorisierungs-
+       pruefung schlaegt also sicher VOR power_manager_request_shutdown()
+       fehl, kein echter ACPI-Poweroff. */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_SHUTDOWN);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_CAP) return -1;
+
+    /* Direkter Test der Autorisierungslogik mit einem eigenen, dedizierten
+       Test-Prozess (nicht die dauerhaften PIDs anderer Selbsttests) -
+       beweist PASS (richtige PID + richtiges Capability), FAIL (falsches
+       cr3) und FAIL (anderer Prozess, kein Capability-Inhaber). */
+    uint32_t cap_test_pid = process_create(0u, 0xCAFEF00Du /* synthetisches Test-cr3 */);
+    if (cap_test_pid == 0) return -1;
+    uint32_t other_pid = process_create(0u, 0xDEADF00Du);
+    if (other_pid == 0) {
+        process_terminate(cap_test_pid, 0u);
+        process_reap(cap_test_pid);
+        return -1;
+    }
+
+    if (syscall_shutdown_authorized(0xCAFEF00Du) != 0) goto cap_test_fail; /* noch keine Vergabe */
+
+    if (syscall_grant_shutdown_capability(cap_test_pid) != 0) goto cap_test_fail;
+    if (syscall_shutdown_authorized(0xCAFEF00Du) != 1) goto cap_test_fail; /* Inhaber */
+    if (syscall_shutdown_authorized(0xDEADF00Du) != 0) goto cap_test_fail; /* anderer Prozess */
+    if (syscall_shutdown_authorized(0x12345678u) != 0) goto cap_test_fail; /* unbekanntes cr3 */
+
+    process_terminate(cap_test_pid, 0u);
+    process_reap(cap_test_pid);
+    process_terminate(other_pid, 0u);
+    process_reap(other_pid);
+    syscall_shutdown_authorized_pid = 0; /* Testvergabe zuruecknehmen */
+    syscall_shutdown_cap_id = 0;
 
     serial_puts("NOVA: System Call Interface Selbsttest OK (7/7)\r\n");
     return 0;
+
+cap_test_fail:
+    process_terminate(cap_test_pid, 0u);
+    process_reap(cap_test_pid);
+    process_terminate(other_pid, 0u);
+    process_reap(other_pid);
+    syscall_shutdown_authorized_pid = 0;
+    syscall_shutdown_cap_id = 0;
+    return -1;
 }

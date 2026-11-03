@@ -59,4 +59,8 @@ int app_dispatch_intent(uint32_t intent_hash, uint32_t sender_id, uint32_t targe
 /* 0 = Erfolg, -1 wenn voll. */
 int svc_register(uint32_t svc_id, uint32_t app_id, uint32_t api_version, uint32_t flags);
 
+/* record = Zeiger aus app_register()/app_find_by_id(). APP_SANDBOX_NONE
+   wenn record NULL ist. */
+uint32_t app_sandbox_level(void *record);
+
 #endif

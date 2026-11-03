@@ -39,4 +39,10 @@ int dm_ringbuf_init(uint32_t base_addr, uint32_t capacity, uint32_t entry_size,
    -1 wenn sge_count==0. */
 int dm_scatter_gather(const dm_sge_t *sge_array, uint32_t sge_count, uint32_t dst);
 
+/* NPSPEC-DATAMOVE-LOCALITY-0001/-SHAREDBUFFER-0001: DM_FLAG_LOCAL/_SHARED
+   wurden bisher nur in xfer->flags abgelegt, aber nie wieder abgefragt -
+   macht die Locality-/Sharing-Einstufung eines Transfers introspizierbar.
+   0xFFFFFFFFu wenn slot unbekannt/ausserhalb der Tabelle. */
+uint32_t dm_xfer_flags(uint32_t slot);
+
 #endif

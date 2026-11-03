@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Distributed Communications (Port aus distcom32.inc). */
 #include "distcom.h"
+#include "interrupt.h"
 
 typedef struct {
     uint32_t id;
@@ -33,9 +34,8 @@ static uint32_t dc_next_msg_id = 1;
 static uint32_t dc_next_trace_id = 1;
 static int dc_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 void distcom_initialize(void) {
@@ -120,6 +120,24 @@ int dc_backpressure_check(uint32_t topic_id, uint32_t *out_bp_state) {
     return 0;
 }
 
+uint32_t dc_message_idempotency_key(uint32_t msg_id) {
+    for (uint32_t i = 0; i < dc_msg_count; ++i) {
+        if (dc_msg_table[i].id == msg_id) {
+            return dc_msg_table[i].idempotency_key;
+        }
+    }
+    return 0;
+}
+
+int dc_is_duplicate(uint32_t idempotency_key) {
+    for (uint32_t i = 0; i < dc_msg_count; ++i) {
+        if (dc_msg_table[i].idempotency_key == idempotency_key) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int distcom_self_test(void) {
     if (dc_ready != 1) return -1;
 
@@ -127,6 +145,12 @@ int distcom_self_test(void) {
     if (dc_send(DC_MSG_REQUEST, DC_PROTO_LOCAL, 1000, &msg_id) != 0) return -1;
     if (dc_topic_register(1) != 0) return -1;
     if (dc_subscribe(1, 0x01u) != 0) return -1;
+
+    /* NPSPEC-DISTCOMM-IDEMPOTENCY-0001: eine bereits zugestellte Nachricht
+       MUSS als Duplikat erkennbar sein, ein frischer Key nicht. */
+    uint32_t key = dc_message_idempotency_key(msg_id);
+    if (dc_is_duplicate(key) != 1) return -1;
+    if (dc_is_duplicate(key ^ 0xFFFFFFFFu) != 0) return -1;
 
     return 0;
 }

@@ -5,6 +5,8 @@
 #include "panic.h"
 #include "serial.h"
 #include "boot_phase.h"
+#include "interrupt.h"
+#include "bib.h"
 #include <stddef.h>
 
 #define PANIC_REPORT_SIZE 48
@@ -23,9 +25,6 @@ typedef struct {
 } panic_report_t;
 
 static panic_report_t panic_report;
-
-/* Platzhalter bis das Security-Subsystem portiert ist (ASM: CONTEXT_SECURITY_STATE). */
-static uint32_t security_state_stub = 0;
 
 void panic_manager_initialize(void) {
     panic_report = (panic_report_t){0};
@@ -146,11 +145,11 @@ void kernel_panic(uint32_t error_code, uint32_t subsystem, const char *message) 
     panic_report.eip = (uint32_t)(uintptr_t)__builtin_return_address(0);
     panic_report.esp = current_esp;
     panic_report.cr2 = read_cr2();
-    panic_report.timer_ticks = 0; /* TODO: Time-Subsystem */
+    panic_report.timer_ticks = timer_get_ticks();
     panic_report.boot_phase = boot_phase_current;
     panic_report.boot_last_phase = boot_phase_last_success;
     panic_report.cpu_id = read_apic_id();
-    panic_report.security_state = security_state_stub;
+    panic_report.security_state = bib_security()->verification_state;
 
     crash_dump_capture_minimal();
     /* TODO: draw_kernel_panic_screen - folgt mit dem Grafik-Subsystem */

@@ -75,4 +75,10 @@ uint32_t thermal_get_zone_state(uint32_t zone_id);
 /* 0 = Erfolg, -1 wenn zone_id unbekannt (out_budget_pct unveraendert). */
 int thermal_get_headroom(uint32_t zone_id, uint32_t *out_budget_pct);
 
+/* NPSPEC-THERMAL-COOLING-0001: cooling_actions wird pro Zone bereits aus
+   dem aktuellen Zustand abgeleitet (thermal_manager_update()), war aber
+   bisher fuer keinen Aufrufer sichtbar. COOL_ACTION_*-Bitmaske, oder
+   COOL_ACTION_NONE wenn zone_id unbekannt. */
+uint32_t thermal_get_cooling_actions(uint32_t zone_id);
+
 #endif

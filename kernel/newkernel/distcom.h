@@ -43,4 +43,13 @@ int dc_subscribe(uint32_t topic_id, uint32_t subscriber_bit);
 /* 0 = Erfolg (*out_bp_state erhaelt DC_BP_*), -1 wenn topic_id unbekannt. */
 int dc_backpressure_check(uint32_t topic_id, uint32_t *out_bp_state);
 
+/* NPSPEC-DISTCOMM-IDEMPOTENCY-0001: "doppelte Zustellung MUSS erkennbar
+   sein". 0 wenn msg_id unbekannt. */
+uint32_t dc_message_idempotency_key(uint32_t msg_id);
+
+/* 1 = eine bereits bekannte Nachricht traegt denselben Idempotency-Key
+   (= doppelte Zustellung), 0 = neuer Key. Lineare Suche ueber die aktuell
+   gehaltenen Nachrichten (DC_MSG_CAPACITY=8, kein Skalierungsproblem). */
+int dc_is_duplicate(uint32_t idempotency_key);
+
 #endif

@@ -1,6 +1,7 @@
 /* NovaOS C-Kernel - Boot-Phasen-Tracking (Port aus integration32.inc). */
 #include "boot_phase.h"
 #include "serial.h"
+#include "interrupt.h"
 
 #define BOOT_LOG_CAPACITY      12
 #define BOOT_COMPONENT_KERNEL  0x4B45524Eu
@@ -9,7 +10,7 @@ uint32_t boot_phase_current = BOOT_PHASE_NONE;
 uint32_t boot_phase_last_success = BOOT_PHASE_NONE;
 
 typedef struct {
-    uint32_t timer_ticks; /* TODO: sobald Time-Subsystem portiert ist */
+    uint32_t timer_ticks;
     uint32_t reserved0;
     uint32_t phase;
     uint32_t component;
@@ -27,7 +28,7 @@ static void boot_event_record_current(void) {
         return;
     }
     boot_event_t *event = &boot_events[boot_event_count];
-    event->timer_ticks = 0;
+    event->timer_ticks = timer_get_ticks();
     event->reserved0 = 0;
     event->phase = boot_phase_current;
     event->component = BOOT_COMPONENT_KERNEL;

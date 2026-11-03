@@ -93,6 +93,13 @@ int dm_scatter_gather(const dm_sge_t *sge_array, uint32_t sge_count, uint32_t ds
     return 0;
 }
 
+uint32_t dm_xfer_flags(uint32_t slot) {
+    if (slot >= dm_xfer_count) {
+        return 0xFFFFFFFFu;
+    }
+    return dm_xfer_table[slot].flags;
+}
+
 int datamove_self_test(void) {
     if (dm_ready != 1) return -1;
 
@@ -100,6 +107,23 @@ int datamove_self_test(void) {
     if (dm_dma_transfer(0x200000u, 0x201000u, 0x1000u, DM_FLAG_ZEROCOPY, &slot) != 0) {
         return -1;
     }
+
+    /* NPSPEC-DATAMOVE-LOCALITY-0001/-SHAREDBUFFER-0001: Locality-/Sharing-
+       Flags muessen pro Transfer introspizierbar sein, auch wenn der
+       Kernel (ohne echte NUMA-Topologie) noch kein unterschiedliches
+       Platzierungsverhalten je Flag zeigt. */
+    uint32_t local_slot = 0;
+    if (dm_dma_transfer(0x202000u, 0x203000u, 0x1000u, DM_FLAG_LOCAL, &local_slot) != 0) {
+        return -1;
+    }
+    if ((dm_xfer_flags(local_slot) & DM_FLAG_LOCAL) == 0) return -1;
+
+    uint32_t shared_slot = 0;
+    if (dm_dma_transfer(0x204000u, 0x205000u, 0x1000u, DM_FLAG_SHARED, &shared_slot) != 0) {
+        return -1;
+    }
+    if ((dm_xfer_flags(shared_slot) & DM_FLAG_SHARED) == 0) return -1;
+    if (dm_xfer_flags(local_slot) & DM_FLAG_SHARED) return -1;
 
     uint32_t ring_slot = 0;
     if (dm_ringbuf_init(0x210000u, 512, 64, &ring_slot) != 0) {

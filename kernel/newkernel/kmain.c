@@ -269,6 +269,16 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     int bib_ok = (bib_parse(bib_physical_address) == 0);
     report("NOVA: BIP Parse", bib_ok);
 
+    /* NPSPEC-SECURITY-CODEINTEGRITY-0001/-CODESIGNING-0001: der UEFI-
+       Bootloader liefert den echten NKI-Signaturverifikationsstatus ueber
+       das BIB-Security-TLV (siehe bib_security(), verification_state ==
+       NOVA_BOOT_VERIFICATION_INTEGRITY_VERIFIED(2) oder hoeher bedeutet
+       mindestens CRC/Build-ID-Integritaet bestaetigt). Bisher wurde dieser
+       Wert nur im Panic-Report mitgefuehrt, aber nie als eigenes
+       Boot-Gate/Selbsttest sichtbar gemacht. */
+    report("NOVA: Code Integrity (NKI Signatur)",
+           bib_ok && bib_security()->verification_state >= 2u);
+
     const bib_graphics_info_t *gfx = bib_graphics();
     int fb_ok = bib_ok && gfx->has_graphics &&
         display_initialize(gfx->framebuffer_address, gfx->pitch,

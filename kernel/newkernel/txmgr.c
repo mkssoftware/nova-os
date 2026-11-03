@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - System-Transaction-Manager (Port aus txmgr32.inc). */
 #include "txmgr.h"
+#include "interrupt.h"
 
 typedef struct {
     uint32_t id;
@@ -20,9 +21,8 @@ static uint32_t sysmgr_tx_count = 0;
 static uint32_t sysmgr_tx_next_id = 1;
 static int sysmgr_tx_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 void txmgr_initialize(void) {
@@ -68,6 +68,15 @@ static sysmgr_tx_t *txmgr_find(uint32_t tx_id) {
     return 0;
 }
 
+int txmgr_register_compensation(uint32_t tx_id, txmgr_compensation_fn_t fn) {
+    sysmgr_tx_t *tx = txmgr_find(tx_id);
+    if (!tx) {
+        return -1;
+    }
+    tx->comp_fn = fn;
+    return 0;
+}
+
 int txmgr_commit(uint32_t tx_id) {
     sysmgr_tx_t *tx = txmgr_find(tx_id);
     if (!tx) {
@@ -100,6 +109,30 @@ int txmgr_rollback(uint32_t tx_id) {
     return 0;
 }
 
+static volatile uint32_t txmgr_self_test_comp_calls = 0;
+static void txmgr_self_test_compensation(uint32_t tx_id) {
+    (void)tx_id;
+    ++txmgr_self_test_comp_calls;
+}
+
 int txmgr_self_test(void) {
-    return (sysmgr_tx_ready == 1) ? 0 : -1;
+    if (sysmgr_tx_ready != 1) return -1;
+
+    /* Vorher wurde nur sysmgr_tx_ready geprueft - jetzt zusaetzlich ein
+       echter Begin->Commit- und ein Begin->Rollback-mit-Kompensation-Weg,
+       analog zu den bereits starken Selbsttests der anderen tx*.c-Module. */
+    uint32_t tx_id = 0;
+    if (txmgr_begin(TX_TYPE_LOCAL, 0u, 0u, &tx_id) != 0) return -1;
+    if (txmgr_commit(tx_id) != 0) return -1;
+
+    uint32_t rollback_tx_id = 0;
+    if (txmgr_begin(TX_TYPE_LOCAL, TX_FLAG_COMPENSATE, 0u, &rollback_tx_id) != 0) return -1;
+    if (txmgr_register_compensation(rollback_tx_id, txmgr_self_test_compensation) != 0) return -1;
+    txmgr_self_test_comp_calls = 0;
+    if (txmgr_rollback(rollback_tx_id) != 0) return -1;
+    if (txmgr_self_test_comp_calls != 1) return -1; /* Kompensation MUSS ausgeloest worden sein */
+
+    if (txmgr_register_compensation(0xFFFFu, txmgr_self_test_compensation) == 0) return -1; /* unbekannte tx_id */
+
+    return 0;
 }

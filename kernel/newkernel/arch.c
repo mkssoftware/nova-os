@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Architecture-Model Introspection-Registry (Port aus arch32.inc). */
 #include "arch.h"
+#include "interrupt.h"
 #include <stddef.h>
 
 #define ARCH_CONTRACT_BEST_EFFORT 2u
@@ -23,9 +24,8 @@ static uint32_t arch_module_count = 0;
 static uint32_t arch_system_properties = 0;
 static int arch_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 void arch_initialize(void) {

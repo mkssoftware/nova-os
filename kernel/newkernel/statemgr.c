@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - State-Manager (Port aus statemgr32.inc). */
 #include "statemgr.h"
+#include "interrupt.h"
 
 typedef struct {
     uint32_t obj_id;
@@ -21,9 +22,8 @@ static uint32_t sm_global_state = SM_STATE_RUNNING;
 static uint32_t sm_snapshot_gen = 0;
 static int sm_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 void statemgr_initialize(void) {

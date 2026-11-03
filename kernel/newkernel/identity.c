@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Identity-Subsystem (Port aus identity32.inc). */
 #include "identity.h"
+#include "interrupt.h"
 
 typedef struct {
     uint32_t id;
@@ -20,9 +21,8 @@ static uint32_t identmgr_count = 0;
 static uint32_t identmgr_next_id = 1;
 static int identmgr_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 int ident_register(uint32_t id, uint32_t type, uint32_t cred_type, uint32_t mfa_mask) {
@@ -99,11 +99,71 @@ int ident_revoke(uint32_t id) {
     return 0;
 }
 
+int ident_suspend(uint32_t id) {
+    identmgr_record_t *rec = identmgr_find(id);
+    if (!rec || rec->state != IDENTMGR_STATE_ACTIVE) {
+        return -1;
+    }
+    rec->state = IDENT_STATE_INACTIVE;
+    return 0;
+}
+
+int ident_lock(uint32_t id) {
+    identmgr_record_t *rec = identmgr_find(id);
+    if (!rec || rec->state != IDENTMGR_STATE_ACTIVE) {
+        return -1;
+    }
+    rec->state = IDENT_STATE_LOCKED;
+    return 0;
+}
+
+int ident_reactivate(uint32_t id) {
+    identmgr_record_t *rec = identmgr_find(id);
+    if (!rec) {
+        return -1;
+    }
+    if (rec->state != IDENT_STATE_INACTIVE && rec->state != IDENT_STATE_LOCKED) {
+        return -1;
+    }
+    rec->state = IDENTMGR_STATE_ACTIVE;
+    return 0;
+}
+
+uint32_t ident_state(uint32_t id) {
+    identmgr_record_t *rec = identmgr_find(id);
+    return rec ? rec->state : 0xFFFFFFFFu;
+}
+
 int identity_mgr_self_test(void) {
     if (identmgr_ready != 1) return -1;
 
     if (ident_register(1, IDENT_TYPE_APP, CRED_TYPE_TOKEN, MFA_FACTOR_NONE) != 0) return -1;
     if (ident_authenticate(1, 0, MFA_FACTOR_NONE) != 0) return -1;
+
+    /* NPSPEC-IDENTITY-LIFECYCLE-0001: voller Zustandsautomat an einem
+       zweiten, dedizierten Test-Identity (id=2). */
+    if (ident_register(2, IDENT_TYPE_APP, CRED_TYPE_TOKEN, MFA_FACTOR_NONE) != 0) return -1;
+    if (ident_state(2) != IDENTMGR_STATE_ACTIVE) return -1;
+
+    if (ident_suspend(2) != 0) return -1;
+    if (ident_state(2) != IDENT_STATE_INACTIVE) return -1;
+    if (ident_authenticate(2, 0, MFA_FACTOR_NONE) == 0) return -1; /* INACTIVE darf nicht authentifizieren */
+    if (ident_suspend(2) == 0) return -1; /* bereits suspendiert */
+
+    if (ident_reactivate(2) != 0) return -1;
+    if (ident_state(2) != IDENTMGR_STATE_ACTIVE) return -1;
+    if (ident_authenticate(2, 0, MFA_FACTOR_NONE) != 0) return -1; /* wieder ACTIVE */
+
+    if (ident_lock(2) != 0) return -1;
+    if (ident_state(2) != IDENT_STATE_LOCKED) return -1;
+    if (ident_authenticate(2, 0, MFA_FACTOR_NONE) == 0) return -1; /* LOCKED darf nicht authentifizieren */
+
+    if (ident_reactivate(2) != 0) return -1;
+    if (ident_state(2) != IDENTMGR_STATE_ACTIVE) return -1;
+
+    if (ident_revoke(2) != 0) return -1;
+    if (ident_reactivate(2) == 0) return -1; /* Revocation ist endgueltig */
+    if (ident_state(0xFFFFu) != 0xFFFFFFFFu) return -1; /* unbekannte ID */
 
     return 0;
 }

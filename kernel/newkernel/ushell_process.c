@@ -18,6 +18,7 @@
 #include "ring3.h"
 #include "display.h"
 #include "desktop_shell.h"
+#include "syscall.h"
 
 /* Layout ALLER DREI Prozesse - MUSS mit ushell/shell_main.c,
    ushell/startmenu_main.c UND ushell/icons_main.c uebereinstimmen (dort
@@ -227,6 +228,13 @@ int ushell_process_initialize(void) {
 
     uint32_t startmenu_buffer_bytes = STARTMENU_WIDTH * STARTMENU_HEIGHT * 4u;
     if (ushell_spawn(&startmenu_instance, startmenu_buffer_bytes) != 0) return -1;
+
+    /* NPSPEC-SECURITY-CAPABILITY-0001: NUR der Startmenue-Prozess (der den
+       Shutdown-Button zeichnet, siehe ushell/startmenu_main.c) darf
+       SYSCALL_CORE_SHUTDOWN tatsaechlich ausloesen - erste echte Laufzeit-
+       Vergabe des bis dahin nie ausserhalb seiner eigenen Selbsttests
+       genutzten §103 Capability Frameworks. */
+    if (syscall_grant_shutdown_capability(startmenu_instance.pid) != 0) return -1;
 
     uint32_t icons_buffer_bytes = ICONS_GRID_WIDTH * ICONS_GRID_HEIGHT * 4u;
     if (ushell_spawn(&icons_instance, icons_buffer_bytes) != 0) return -1;

@@ -10,6 +10,7 @@ static bib_memory_info_t memory_info = {0};
 static bib_kernel_info_t kernel_info = {0};
 static bib_acpi_info_t acpi_info = {0};
 static bib_entropy_info_t entropy_info = {0};
+static bib_security_info_t security_info = {0};
 
 static uint32_t crc32_bib(const uint8_t *data, uint32_t length) {
     uint32_t crc = 0xFFFFFFFFu;
@@ -45,6 +46,10 @@ const bib_entropy_info_t *bib_entropy(void) {
     return &entropy_info;
 }
 
+const bib_security_info_t *bib_security(void) {
+    return &security_info;
+}
+
 #define NOVA_MEMORY_MAP_ENTRY_SIZE 24u
 
 int bib_parse(uint32_t bib_physical_address) {
@@ -53,6 +58,7 @@ int bib_parse(uint32_t bib_physical_address) {
     kernel_info = (bib_kernel_info_t){0};
     acpi_info = (bib_acpi_info_t){0};
     entropy_info = (bib_entropy_info_t){0};
+    security_info = (bib_security_info_t){0};
 
     if (bib_physical_address == 0 || (bib_physical_address & 7u) != 0) {
         return -1;
@@ -125,6 +131,15 @@ int bib_parse(uint32_t bib_physical_address) {
                 const nova_bib_entropy_t *e = (const nova_bib_entropy_t *)value;
                 entropy_info.has_entropy = 1;
                 for (int i = 0; i < 16; ++i) entropy_info.seed[i] = e->seed[i];
+            }
+        } else if (tlv->type == NOVA_BIB_TLV_SECURITY) {
+            if (tlv->length >= sizeof(nova_bib_security_t)) {
+                const nova_bib_security_t *s = (const nova_bib_security_t *)value;
+                security_info.has_security = 1;
+                security_info.verification_state = s->verification_state;
+                security_info.secure_boot_state = s->secure_boot_state;
+                security_info.entropy_quality = s->entropy_quality;
+                security_info.flags = s->flags;
             }
         }
 

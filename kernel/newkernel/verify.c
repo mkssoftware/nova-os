@@ -1,5 +1,7 @@
 /* NovaOS C-Kernel - Verification-Subsystem (Port aus verify32.inc). */
 #include "verify.h"
+#include "interrupt.h"
+#include "cap.h"
 
 #define CAP_FLAG_REVOKED 0x01u
 
@@ -27,16 +29,28 @@ static uint32_t vfy_pred_count = 0;
 static uint32_t vfy_next_id = 1;
 static int vfy_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
-/* TODO: durch echtes Capability-Lookup ersetzen, sobald cap_integration32.inc
-   portiert ist. Bis dahin: keine Capability bekannt -> immer "nicht gefunden". */
+/* Echtes Capability-Lookup ueber das inzwischen portierte §103 Capability
+   Framework (cap.h/cap.c, NICHT zu verwechseln mit program.c's einfacherer
+   Registry). cap_check() ist fail-closed: 0 = erlaubt/gueltig,
+   NP_ERR_CAP_REVOKED = bekannt aber widerrufen (als Flag zurueckgegeben,
+   KEIN "nicht gefunden"), jeder andere NP_ERR_CAP_*-Code (ungueltig,
+   abgelaufen, falsche Domain, ...) wird konservativ als "nicht gefunden"
+   behandelt - fuer die reine Revoked-Pruefung von verify_check() reicht
+   diese Unterscheidung. */
 static int cap_query(uint32_t cap_id, uint32_t *out_flags) {
-    (void)cap_id;
-    (void)out_flags;
+    int rc = cap_check(cap_id, NP_CAP_QUERY);
+    if (rc == 0) {
+        if (out_flags) *out_flags = 0;
+        return 0;
+    }
+    if (rc == NP_ERR_CAP_REVOKED) {
+        if (out_flags) *out_flags = CAP_FLAG_REVOKED;
+        return 0;
+    }
     return -1;
 }
 
@@ -114,6 +128,25 @@ int verify_self_test(void) {
     if (verify_check(VFY_TYPE_RUNTIME, 1, &result) != 0) return -1;
 
     if (verify_contract_register(0x100u, 0xAABBu, 0xCCDDu) != 0) return -1;
+
+    /* cap_query() war bis hierhin ein fest verdrahteter Stub ("immer nicht
+       gefunden") - jetzt echt an cap.h/cap.c angebunden. cap_initialize()
+       hier selbst aufrufen (kmain.c's eigener "Capability Framework
+       Selftest"-Schritt laeuft erst SPAETER im Boot und resettet den Pool
+       beim eigenen Aufruf ohnehin wieder sauber - kein Interferenzrisiko). */
+    if (cap_initialize() != 0) return -1;
+    uint32_t cap_id = 0;
+    if (cap_create(0x200u, NP_CAP_QUERY, 0u, CAP_DOMAIN_KERNEL, &cap_id) != 0) return -1;
+
+    if (verify_check(VFY_TYPE_CAPABILITY, cap_id, &result) != 0) return -1;
+    if (result != VFY_PASS) return -1; /* echte, gueltige Capability */
+
+    if (cap_revoke(cap_id) != 0) return -1;
+    if (verify_check(VFY_TYPE_CAPABILITY, cap_id, &result) != 0) return -1;
+    if (result != VFY_FAIL) return -1; /* widerrufen */
+
+    if (verify_check(VFY_TYPE_CAPABILITY, 0xFFFFu, &result) != 0) return -1;
+    if (result != VFY_WARN) return -1; /* unbekannte Capability-ID */
 
     return 0;
 }

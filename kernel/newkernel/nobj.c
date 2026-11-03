@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Nova Object-Subsystem (Port aus object32.inc). */
 #include "nobj.h"
+#include "interrupt.h"
 
 #define FSPERM_0644 0644u
 
@@ -22,9 +23,8 @@ static uint32_t obj_count = 0;
 static uint32_t obj_next_id = 1;
 static int obj_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 void object_initialize(void) {

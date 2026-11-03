@@ -146,6 +146,22 @@ int app_find_by_id(uint32_t app_id, void **out_record) {
 }
 
 int app_dispatch_intent(uint32_t intent_hash, uint32_t sender_id, uint32_t target_id) {
+    /* NPSPEC-APP-SANDBOX-0001: sandbox_level wurde bisher nur gespeichert,
+       nie durchgesetzt. APP_SANDBOX_ISOLATED darf per Definition keine
+       Intents an eine ANDERE App senden (reine Selbstkommunikation bleibt
+       erlaubt) - Standard/Strict/None schraenken das Dispatchen selbst
+       nicht ein (das waere Aufgabe des jeweiligen Capability-Checks beim
+       Empfaenger, nicht hier). */
+    if (sender_id != target_id) {
+        void *sender_record = 0;
+        if (app_find_by_id(sender_id, &sender_record) == 0) {
+            app_record_t *sender = (app_record_t *)sender_record;
+            if (sender->sandbox == APP_SANDBOX_ISOLATED) {
+                return -1;
+            }
+        }
+    }
+
     if (intent_count >= INTENT_CAPACITY) {
         return -1;
     }
@@ -194,6 +210,13 @@ int svc_register(uint32_t svc_id, uint32_t app_id, uint32_t api_version, uint32_
     return 0;
 }
 
+uint32_t app_sandbox_level(void *record) {
+    if (!record) {
+        return APP_SANDBOX_NONE;
+    }
+    return ((app_record_t *)record)->sandbox;
+}
+
 int app_manager_self_test(void) {
     if (app_mgr_ready != 1) return -1;
 
@@ -228,5 +251,34 @@ int app_manager_self_test(void) {
 
     rec->state = APP_STATE_INACTIVE;
     --app_count;
+
+    /* NPSPEC-APP-SANDBOX-0001: sandbox_level muss introspizierbar UND
+       durchgesetzt sein - eine ISOLATED-App darf keine Intents an eine
+       ANDERE App senden, Selbstkommunikation bleibt erlaubt. */
+    void *isolated_record = 0;
+    if (app_register(0xAAAAAAAAu, APP_TYPE_BACKGROUND, APP_SANDBOX_ISOLATED, 0u,
+                      &isolated_record) != 0) {
+        return -1;
+    }
+    if (app_sandbox_level(isolated_record) != APP_SANDBOX_ISOLATED) {
+        ((app_record_t *)isolated_record)->state = APP_STATE_INACTIVE;
+        --app_count;
+        return -1;
+    }
+    if (app_dispatch_intent(0x1u, 0xAAAAAAAAu, 0xBBBBBBBBu) == 0) {
+        ((app_record_t *)isolated_record)->state = APP_STATE_INACTIVE;
+        --app_count;
+        return -1; /* ISOLATED -> fremde App haette verweigert werden muessen */
+    }
+    if (app_dispatch_intent(0x1u, 0xAAAAAAAAu, 0xAAAAAAAAu) != 0) {
+        ((app_record_t *)isolated_record)->state = APP_STATE_INACTIVE;
+        --app_count;
+        return -1; /* Selbstkommunikation bleibt erlaubt */
+    }
+    ((app_record_t *)isolated_record)->state = APP_STATE_INACTIVE;
+    --app_count;
+
+    if (app_sandbox_level(0) != APP_SANDBOX_NONE) return -1;
+
     return 0;
 }

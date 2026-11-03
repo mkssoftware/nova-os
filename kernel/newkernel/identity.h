@@ -41,4 +41,21 @@ int ident_authenticate(uint32_t id, uint32_t cred_hash, uint32_t mfa_presented);
 /* 0 = Erfolg, -1 wenn id unbekannt. */
 int ident_revoke(uint32_t id);
 
+/* NPSPEC-IDENTITY-LIFECYCLE-0001 #2: expliziter Lifecycle-State - bisher
+   wurden IDENT_STATE_INACTIVE/_LOCKED nie erreicht (nur ACTIVE beim
+   Registrieren, REVOKED per ident_revoke). ACTIVE -> INACTIVE/LOCKED,
+   0 = Erfolg, -1 wenn id unbekannt oder nicht ACTIVE. */
+int ident_suspend(uint32_t id);  /* -> IDENT_STATE_INACTIVE */
+int ident_lock(uint32_t id);     /* -> IDENT_STATE_LOCKED */
+
+/* INACTIVE|LOCKED -> ACTIVE. 0 = Erfolg, -1 wenn id unbekannt oder
+   REVOKED/bereits ACTIVE (Revocation ist bewusst endgueltig - siehe
+   ident_revoke - und nicht ueber reactivate umkehrbar). */
+int ident_reactivate(uint32_t id);
+
+/* Aktueller Zustand (IDENT_STATE_x / IDENTMGR_STATE_x), oder
+   IDENTMGR_STATE_ACTIVE faellt NICHT als Fallback zurueck - 0xFFFFFFFFu
+   wenn id unbekannt (0 waere mit dem echten ACTIVE-Wert mehrdeutig). */
+uint32_t ident_state(uint32_t id);
+
 #endif

@@ -48,6 +48,18 @@ typedef struct {
     uint8_t seed[16];
 } bib_entropy_info_t;
 
+/* Port des alten CONTEXT_SECURITY_STATE/hal32.inc-Felds - kommt vom
+   UEFI-Bootloader (kernel_loader.c), der hier den echten NKI-Signatur-
+   verifikationsstatus und den per Secure-Boot-UEFI-Variable abgefragten
+   Zustand eintraegt (kein Platzhalter). */
+typedef struct {
+    int has_security;
+    uint32_t verification_state; /* NOVA_BOOT_VERIFICATION_* */
+    uint32_t secure_boot_state;
+    uint32_t entropy_quality;
+    uint32_t flags; /* NOVA_BOOT_SECURITY_* Bitmaske */
+} bib_security_info_t;
+
 /* Validiert den BIB (Magic, Version, Header-Groesse, Architektur, CRC32)
    und extrahiert Graphics-, Memory- und Kernel-TLV, falls vorhanden.
    0 = BIB gueltig. */
@@ -61,5 +73,6 @@ const bib_memory_info_t *bib_memory(void);
 const bib_kernel_info_t *bib_kernel(void);
 const bib_acpi_info_t *bib_acpi(void);
 const bib_entropy_info_t *bib_entropy(void);
+const bib_security_info_t *bib_security(void);
 
 #endif

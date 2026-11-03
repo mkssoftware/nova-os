@@ -247,6 +247,24 @@ void time_ptp_adjust(int32_t offset_ns) {
     time_sync_state = TIMESYNC_PTP;
 }
 
+void time_leap_schedule(void) {
+    time_leap_state = LEAP_STATE_PENDING;
+}
+
+void time_leap_apply(void) {
+    if (time_leap_state == LEAP_STATE_PENDING) {
+        time_leap_state = LEAP_STATE_ACTIVE;
+    }
+}
+
+void time_leap_clear(void) {
+    time_leap_state = LEAP_STATE_NONE;
+}
+
+uint32_t time_get_leap_state(void) {
+    return time_leap_state;
+}
+
 uint64_t time_media_get_position(void) {
     if (time_tsc_freq_khz == 0) {
         return 0;
@@ -299,6 +317,16 @@ int time_subsystem_self_test(void) {
     if (time_timer_cancel(timer_id) != 0) return -1;
 
     time_read_rtc(&time_rtc_buf);
+
+    /* NPSPEC-TIME-LEAPSECOND-0001: Zustandsautomat jetzt real pruefbar
+       (vorher immer LEAP_STATE_NONE, nie abfragbar/ueberfuehrbar). */
+    if (time_get_leap_state() != LEAP_STATE_NONE) return -1;
+    time_leap_schedule();
+    if (time_get_leap_state() != LEAP_STATE_PENDING) return -1;
+    time_leap_apply();
+    if (time_get_leap_state() != LEAP_STATE_ACTIVE) return -1;
+    time_leap_clear();
+    if (time_get_leap_state() != LEAP_STATE_NONE) return -1;
 
     return 0;
 }

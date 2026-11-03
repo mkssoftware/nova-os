@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Trust-Subsystem (Port aus trust32.inc). */
 #include "trust.h"
+#include "interrupt.h"
 
 typedef struct {
     uint32_t subject_id;
@@ -25,9 +26,8 @@ static uint32_t trust_mgr_count = 0;
 static uint32_t trust_audit_count = 0;
 static int trust_mgr_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 static void trust_audit_append(uint32_t subject_id, uint32_t event) {

@@ -32,6 +32,12 @@ int txmgr_self_test(void); /* 0 = ok */
 /* 0 = Erfolg, *out_tx_id erhaelt die ID; -1 wenn Tabelle voll. */
 int txmgr_begin(uint32_t type, uint32_t flags, uint32_t timeout_ticks, uint32_t *out_tx_id);
 
+/* NPSPEC-TRANSACTION-COMPENSATION-0001: comp_fn existierte als Datenfeld
+   und wurde bereits in txmgr_rollback() aufgerufen, war aber nie von
+   aussen setzbar (immer 0) - daher loeste Kompensation nie tatsaechlich
+   aus. 0 = Erfolg, -1 wenn tx_id unbekannt. */
+int txmgr_register_compensation(uint32_t tx_id, txmgr_compensation_fn_t fn);
+
 /* 0 = Erfolg, -1 wenn tx_id unbekannt, nicht ACTIVE oder Timeout ueberschritten. */
 int txmgr_commit(uint32_t tx_id);
 

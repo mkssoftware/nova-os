@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Update-Manager (Port aus update32.inc). */
 #include "update.h"
+#include "interrupt.h"
 
 typedef struct {
     uint32_t id;
@@ -25,9 +26,8 @@ static uint32_t upd_next_id = 1;
 static uint32_t upd_active_slot = UPD_SLOT_A;
 static int upd_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 void update_initialize(void) {

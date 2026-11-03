@@ -45,8 +45,12 @@ int fsindex_self_test(void); /* 0 = ok */
 /* 0 = Erfolg, -1 wenn sysdir_id >= SYSDIR_COUNT. */
 int sysdir_register(uint32_t sysdir_id, uint32_t protection);
 
-/* 0 = Erfolg, -1 wenn Index voll. */
-int fsindex_insert(uint32_t inode_lo, uint32_t vol_id, uint32_t ns_id, uint32_t type);
+/* NPSPEC-INDEX-WORKSPACE-0001/-RELATION-0001: extra_flags nimmt
+   IDX_FLAG_WORKSPACE/IDX_FLAG_RELATION entgegen (vorher nur definiert,
+   nie gesetzt) - 0 fuer einen gewoehnlichen Eintrag ohne diese Markierung.
+   0 = Erfolg, -1 wenn Index voll. */
+int fsindex_insert(uint32_t inode_lo, uint32_t vol_id, uint32_t ns_id, uint32_t type,
+                    uint32_t extra_flags);
 
 /* 0 = Erfolg (*out_inode_lo gesetzt), -1 = nicht gefunden. */
 int fsindex_search(uint32_t ns_id, uint32_t type, uint32_t *out_inode_lo);

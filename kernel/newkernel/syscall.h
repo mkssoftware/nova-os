@@ -30,6 +30,7 @@
 #define SYSCALL_STATUS_OPERATION (-9)
 #define SYSCALL_STATUS_POINTER   (-15)
 #define SYSCALL_STATUS_SURFACE   (-16) /* surface.c hat die Operation abgelehnt (unbekanntes Handle/ungueltiger Zustand) */
+#define SYSCALL_STATUS_CAP       (-17) /* Capability-Pruefung (cap.h/cap_core.c) hat die Operation abgelehnt (fail-closed) */
 
 #define SYSCALL_ABI_VERSION   1u
 #define SYSCALL_SERVICE_CORE  1u
@@ -232,5 +233,23 @@ int syscall_validate_user_range(uint32_t addr, uint32_t length);
    SYSCALL_SERVICE_CORE). Gibt den (ggf. umgeschriebenen) Frame-Zeiger
    zurueck. */
 uint32_t syscall_dispatch(uint32_t frame_ptr);
+
+/* NPSPEC-SECURITY-CAPABILITY-0001: erste echte Laufzeit-Verdrahtung des
+   bis dahin nie ausserhalb seiner eigenen Selbsttests aufgerufenen §103
+   Capability Frameworks (cap.h/cap_core.c). Vergibt dem gegebenen Prozess
+   (per PID) das Shutdown-Capability - gedacht fuer GENAU den Prozess, der
+   den Shutdown-Button zeichnet (siehe ushell_process_initialize()). 0 =
+   Erfolg, -1 wenn cap.c voll/nicht initialisiert. Erneuter Aufruf ERSETZT
+   den vorherigen Inhaber (keine Mehrfachvergabe vorgesehen - dieser
+   Kernel hat genau einen Shutdown-Button). */
+int syscall_grant_shutdown_capability(uint32_t pid);
+
+/* Testbarer Kern der SYSCALL_CORE_SHUTDOWN-Autorisierungspruefung, von
+   syscall_dispatch() UND vom Selbsttest genutzt (der Selbsttest darf den
+   echten syscall_dispatch()-Pfad fuer SHUTDOWN nicht durchlaufen - der
+   kehrt im Erfolgsfall nicht zurueck). 1 = autorisiert, 0 = verweigert
+   (keine Vergabe erfolgt, caller_cr3 gehoert zu keinem bekannten Prozess,
+   oder der bekannte Prozess ist nicht der Capability-Inhaber). */
+int syscall_shutdown_authorized(uint32_t caller_cr3);
 
 #endif

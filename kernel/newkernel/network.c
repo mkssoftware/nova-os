@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Network Stack (Port aus network32.inc). */
 #include "network.h"
+#include "interrupt.h"
 
 typedef struct {
     uint32_t id;
@@ -83,9 +84,8 @@ static uint32_t net_dns_count = 0;
 static uint32_t net_cong_algo = CONG_CUBIC;
 static int net_stack_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 int network_if_register(uint32_t id, uint32_t type, uint32_t flags, uint32_t ipv4_addr) {

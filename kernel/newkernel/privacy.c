@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Privacy-Subsystem (Port aus privacy32.inc). */
 #include "privacy.h"
+#include "interrupt.h"
 
 typedef struct {
     uint32_t data_id;
@@ -16,9 +17,8 @@ static priv2_record_t priv2_table[PRIV_CAPACITY];
 static uint32_t priv2_count = 0;
 static int priv2_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 void privacy_ext_initialize(void) {

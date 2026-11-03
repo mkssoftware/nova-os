@@ -82,6 +82,18 @@ void time_timer_tick(void);
 void time_ntp_adjust(int32_t offset_ms);
 void time_ptp_adjust(int32_t offset_ns);
 
+/* NPSPEC-TIME-LEAPSECOND-0001: time_leap_state existierte, blieb aber
+   immer LEAP_STATE_NONE - weder abfragbar noch jemals in einen anderen
+   Zustand ueberfuehrbar. time_leap_schedule() kuendigt eine bevorstehende
+   Schaltsekunde an (-> LEAP_STATE_PENDING); time_leap_apply() vollzieht sie
+   (-> LEAP_STATE_ACTIVE, reiner Zustandsuebergang, aendert KEINEN
+   Zeitwert - echte Schaltsekunden-Zeitkorrektur ist nicht Teil dieses
+   Kernels). time_leap_clear() setzt auf LEAP_STATE_NONE zurueck. */
+void time_leap_schedule(void);
+void time_leap_apply(void);
+void time_leap_clear(void);
+uint32_t time_get_leap_state(void);
+
 uint64_t time_media_get_position(void); /* 100-ns-Einheiten */
 
 /* Legacy-kompatible Einsprungpunkte (entsprachen frueher separaten

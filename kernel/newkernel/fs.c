@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Filesystem-Subsystem (Port aus fs32.inc). */
 #include "fs.h"
+#include "interrupt.h"
 
 typedef struct {
     uint32_t id;
@@ -45,9 +46,8 @@ static uint32_t fs_obj_generation = 1;
 static uint32_t fs_obj_inode_counter = 0;
 static int fs_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 int fs_vol_register(uint32_t vol_id, uint32_t flags, uint32_t ns_id) {

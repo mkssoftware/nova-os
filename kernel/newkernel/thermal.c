@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Thermal Manager (Port aus thermal32.inc). */
 #include "thermal.h"
+#include "interrupt.h"
 #include "serial.h"
 #include "powermgr.h"
 
@@ -40,9 +41,8 @@ static uint32_t therm_sensor_count = 0;
 static uint32_t therm_zone_count = 0;
 static int therm_mgr_ready = 0;
 
-/* TODO: durch timer_ticks ersetzen, sobald das Time-Subsystem portiert ist. */
 static uint32_t current_timer_ticks(void) {
-    return 0;
+    return timer_get_ticks();
 }
 
 static void therm_create_cpu_zone(void) {
@@ -228,12 +228,28 @@ int thermal_get_headroom(uint32_t zone_id, uint32_t *out_budget_pct) {
     return 0;
 }
 
+uint32_t thermal_get_cooling_actions(uint32_t zone_id) {
+    if (zone_id >= therm_zone_count) {
+        return COOL_ACTION_NONE;
+    }
+    return therm_zones[zone_id].cooling_actions;
+}
+
 int thermal_manager_self_test(void) {
     if (therm_mgr_ready != 1) return -1;
     if (therm_zone_count == 0) return -1;
 
     uint32_t state = thermal_get_zone_state(0);
     if (state > THERM_STATE_UNKNOWN) return -1; /* UNKNOWN oder gueltiger Zustand = ok */
+
+    /* NPSPEC-THERMAL-COOLING-0001: Cooling-Actions-Bitmaske muss ab-
+       fragbar sein (vorher: berechnet, aber fuer niemanden sichtbar). */
+    uint32_t actions = thermal_get_cooling_actions(0);
+    if (actions & ~(uint32_t)(COOL_ACTION_FAN | COOL_ACTION_FREQ | COOL_ACTION_POWER |
+                               COOL_ACTION_MIGRATE | COOL_ACTION_SHUTDOWN)) {
+        return -1; /* unbekanntes Bit gesetzt */
+    }
+    if (thermal_get_cooling_actions(0xFFFFu) != COOL_ACTION_NONE) return -1; /* unbekannte Zone */
 
     return 0;
 }
