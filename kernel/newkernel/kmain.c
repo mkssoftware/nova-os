@@ -111,6 +111,7 @@
 #include "liquidglass.h"
 #include "gfxoptimize.h"
 #include "gfxperf.h"
+#include "taskbarglass.h"
 #include "nvme.h"
 #include "ahci.h"
 #include "gpt.h"
@@ -615,6 +616,9 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     gfxperf_initialize();
     report("NOVA: Graphics Performance Selftest", gfxperf_self_test() == 0);
+
+    taskbarglass_initialize();
+    report("NOVA: Taskbar Liquid Glass Selftest", taskbarglass_self_test() == 0);
 
     network_stack_initialize();
     report("NOVA: Network Stack Selftest", network_stack_self_test() == 0);

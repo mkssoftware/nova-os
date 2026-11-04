@@ -18,6 +18,7 @@
 #include "display.h"
 #include "cap.h"
 #include "process.h"
+#include "taskbarglass.h"
 
 static int syscall_mgr_initialized = 0;
 /* Sichtbarkeits-Flag fuer das Startmenue (siehe SYSCALL_CORE_TOGGLE_
@@ -169,6 +170,13 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
             return frame_ptr;
         }
 
+        /* Nova Taskbar Liquid Glass (taskbarglass.h): erkennt per Geometrie,
+           ob dies die Ring-3-Taskbar (ushell/shell_main.c) ist, und legt bei
+           Erkennung den gesamten Graphics-Engine-Zustand (Scene Node/
+           Materialinstanz/Layer/Frame-Scheduler-Ausgabe) dafuer an. No-Op
+           fuer jede andere Surface (Icons/Startmenue/Ring3-Demo). */
+        taskbarglass_on_surface_created(handle, x, y, w, h);
+
         ++syscall_stats_successful;
         frame_write(frame_ptr, FRAME_OFF_EDI, handle);
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
@@ -205,6 +213,13 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     }
 
     if (operation == GUI_OP_COMMIT) {
+        /* Nova Taskbar Liquid Glass: VOR dem eigentlichen surface_commit()
+           - ersetzt (nur fuer die zuvor erkannte Taskbar-Surface, siehe
+           taskbarglass_on_surface_created()) per Chroma-Key-Substitution
+           die flache Hintergrundfarbe durch den echten, bedarfsgesteuert
+           berechneten Liquid-Glass-Hintergrund. No-Op fuer jede andere
+           Surface. */
+        taskbarglass_on_commit(edx);
         int ok = (surface_commit(edx) == 0);
         if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
         frame_write(frame_ptr, FRAME_OFF_EAX,
