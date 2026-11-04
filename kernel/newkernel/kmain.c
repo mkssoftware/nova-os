@@ -107,6 +107,10 @@
 #include "layercompose.h"
 #include "dispproto.h"
 #include "framesched.h"
+#include "materender.h"
+#include "liquidglass.h"
+#include "gfxoptimize.h"
+#include "gfxperf.h"
 #include "nvme.h"
 #include "ahci.h"
 #include "gpt.h"
@@ -599,6 +603,18 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     framesched_initialize();
     report("NOVA: Frame Scheduler Selftest", framesched_self_test() == 0);
+
+    materender_initialize();
+    report("NOVA: Material-Aware Rendering Selftest", materender_self_test() == 0);
+
+    liquidglass_initialize();
+    report("NOVA: Incremental Liquid Glass Selftest", liquidglass_self_test() == 0);
+
+    gfxoptimize_initialize();
+    report("NOVA: Graphics Optimization Selftest", gfxoptimize_self_test() == 0);
+
+    gfxperf_initialize();
+    report("NOVA: Graphics Performance Selftest", gfxperf_self_test() == 0);
 
     network_stack_initialize();
     report("NOVA: Network Stack Selftest", network_stack_self_test() == 0);
