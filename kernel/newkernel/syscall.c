@@ -412,8 +412,14 @@ static uint32_t syscall_dispatch_input(uint32_t frame_ptr, uint32_t operation) {
     }
     syscall_input_poll_args_t *args = (syscall_input_poll_args_t *)(uintptr_t)args_addr;
 
+    /* NPSPEC-INPUT-EVENT-0001 Abschnitt 5: jeder Ring-3-Client bekommt
+       jetzt seine EIGENE, an seine PID gebundene Warteschlange statt mit
+       allen anderen Clients um eine einzige globale FIFO zu konkurrieren
+       (siehe input.h/input_client_poll_for() fuer die volle Begruendung -
+       vorher konnte ein schneller/haeufiger Poller einem anderen Prozess
+       systematisch jedes Event wegschnappen). */
     input_event_t evt;
-    if (input_client_poll(&evt) == 0) {
+    if (input_client_poll_for(process_find_by_cr3(paging_root_physical()), &evt) == 0) {
         args->has_event = 1u;
         args->type = (uint32_t)evt.type;
         args->timestamp_ticks = evt.timestamp_ticks;
@@ -836,9 +842,18 @@ int syscall_manager_self_test(void) {
        wie ps2_controller_self_test's Absicherung. */
     interrupt_disable();
 
+    /* input_client_poll_for() bindet eine PID ERST beim ersten Poll-Aufruf
+       an einen Slot - ein Broadcast, der VOR dieser Bindung passiert,
+       erreicht den neuen Slot nicht. Darum hier VORAB (leerer Dummy-Poll)
+       binden, BEVOR unten das synthetische Event eingespeist wird - sonst
+       ginge genau dieses Event an Slot 0 (noch ungebunden), waehrend der
+       gleich folgende echte syscall_dispatch()-Aufruf bereits aus dem neu
+       gebundenen PID-Slot liest und faelschlich "kein Event" saehe. */
     input_event_t drain_tmp;
+    (void)input_client_poll_for(process_find_by_cr3(paging_root_physical()), &drain_tmp);
     while (input_pop_event(&drain_tmp) == 0) { }
-    while (input_client_poll(&drain_tmp) == 0) { }
+    /* Leert ALLE Client-Slots (nicht nur Slot 0). */
+    input_client_drain_all();
 
     input_event_t synth_evt = {0};
     synth_evt.type = INPUT_EVENT_KEY_DOWN;

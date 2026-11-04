@@ -107,15 +107,43 @@ uint32_t input_cursor_y(void);
 
 #define INPUT_CLIENT_QUEUE_CAPACITY 16u
 
-/* 0 = Erfolg (*out gesetzt), -1 = Warteschlange leer. Von
-   SYSCALL_SERVICE_INPUT (syscall.c) aufgerufen - laeuft NICHT in einem
-   ISR-Kontext (der Syscall-Dispatch selbst laeuft mit IF=0, aber das ist
-   fuer einen reinen Lesezugriff auf diese Warteschlange unkritisch, da
-   sie nur vom Input-Thread beschrieben wird, niemals direkt von einer
-   ISR). */
+/* NPSPEC-INPUT-EVENT-0001 Abschnitt 5 ("getrennte Warteschlangen pro
+   Empfaenger") - bis 2026-11-04 bewusst NICHT umgesetzt (siehe
+   Dateikommentar oben, mittlerweile VERALTET: es gibt seit ushell_process.c
+   laengst DREI echte, gleichzeitig laufende Ring-3-Clients, nicht mehr nur
+   einen). Echter Fund: alle drei konkurrierten um dieselbe EINE globale
+   Warteschlange - wer zuerst pollte, "gewann" jedes Event, unabhaengig
+   davon, fuer wen es per Cursor-Position eigentlich gedacht war (siehe
+   [[feedback_input_single_queue_race]]). Jetzt: bis zu INPUT_CLIENT_SLOTS
+   eigene, per PID gebundene Warteschlangen - jedes dispatchte Event wird
+   per Broadcast in ALLE aktuell gebundenen Slots UND in den Legacy-Slot 0
+   eingereiht (jeder Client filtert ohnehin selbst per Cursor-Position/
+   Hit-Test, ein Broadcast ist daher sicher und einfacher als echtes
+   Vorab-Routing). */
+#define INPUT_CLIENT_SLOTS 4u
+
+/* Legacy-Verhalten (Slot 0, IMMER gebunden) - fuer Selbsttests und als
+   Fallback, wenn der Aufrufer-PID nicht aufloesbar ist (frueh im Boot,
+   bevor irgendein Prozess existiert). 0 = Erfolg (*out gesetzt), -1 =
+   Warteschlange leer. */
 int input_client_poll(input_event_t *out);
 uint32_t input_client_pending_count(void);
 uint32_t input_client_dropped_count(void);
+
+/* Wie input_client_poll(), aber aus der PER-PID gebundenen Warteschlange
+   (erster Aufruf mit einer neuen PID bindet lazy einen freien Slot - der
+   Client bekommt ab dann alle KUENFTIGEN Broadcasts, keine rueckwirkenden).
+   pid==0 ist gleichbedeutend mit input_client_poll() (Slot 0). Faellt bei
+   voller Slot-Tabelle (alle INPUT_CLIENT_SLOTS-1 echten Slots belegt) auf
+   Slot 0 zurueck, statt das Event zu verlieren - EIN gemeinsamer
+   Notbehelf-Empfaenger ist besser als ein stillschweigend blinder Client.
+   0 = Erfolg (*out gesetzt), -1 = Warteschlange leer. */
+int input_client_poll_for(uint32_t pid, input_event_t *out);
+
+/* Fuer Selbsttests (siehe syscall.c): leert ALLE Slots (0 und alle aktuell
+   gebundenen), unabhaengig davon, welcher Slot vom naechsten echten Poll-
+   Aufruf tatsaechlich genutzt wuerde. */
+void input_client_drain_all(void);
 
 /* Verarbeitet alle aktuell im rohen ISR-Ringpuffer wartenden Events
    (Cursor-Update/Fokus-Abfrage/Einreihen in die Client-Warteschlange,

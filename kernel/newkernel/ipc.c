@@ -68,6 +68,222 @@ int ipc_self_test(void) {
 }
 
 /* --------------------------------------------------------------------- */
+/* NPSPEC-IPC-0001: echtes Endpoint-Modell (Phase 1, siehe ipc.h)        */
+/* --------------------------------------------------------------------- */
+
+typedef struct {
+    uint32_t id;
+    uint32_t state;
+    uint32_t owner_pid;
+    uint32_t capacity;
+    ipc_message_t queue[IPC_ENDPOINT_QUEUE_CAPACITY];
+    uint32_t head, tail, count;
+    uint32_t allowed_senders[IPC_ENDPOINT_ALLOWED_SENDERS];
+    uint32_t allowed_count;
+    uint32_t sent_total, received_total, dropped_total, denied_total;
+} ipc_endpoint_t;
+
+static ipc_endpoint_t ipc_endpoints[IPC_ENDPOINT_CAPACITY];
+static uint32_t ipc_endpoint_next_id = 1;
+static int ipc_endpoint_mgr_ready = 0;
+
+void ipc_endpoint_manager_initialize(void) {
+    for (uint32_t i = 0; i < IPC_ENDPOINT_CAPACITY; ++i) {
+        ipc_endpoints[i] = (ipc_endpoint_t){0};
+    }
+    ipc_endpoint_next_id = 1;
+    ipc_endpoint_mgr_ready = 1;
+}
+
+static ipc_endpoint_t *ipc_endpoint_find(uint32_t endpoint_id) {
+    if (endpoint_id == 0) return 0;
+    for (uint32_t i = 0; i < IPC_ENDPOINT_CAPACITY; ++i) {
+        if (ipc_endpoints[i].id == endpoint_id) {
+            return &ipc_endpoints[i];
+        }
+    }
+    return 0;
+}
+
+static int ipc_endpoint_sender_allowed(const ipc_endpoint_t *ep, uint32_t sender_pid) {
+    if (sender_pid == ep->owner_pid) return 1;
+    for (uint32_t i = 0; i < ep->allowed_count; ++i) {
+        if (ep->allowed_senders[i] == sender_pid) return 1;
+    }
+    return 0;
+}
+
+int ipc_endpoint_create(uint32_t owner_pid, uint32_t capacity, uint32_t *out_endpoint_id) {
+    /* Jeder CLOSED-Slot ist wiederverwendbar (auch ein zuvor schon
+       genutzter und wieder geschlossener) - ipc_endpoint_info() fuer die
+       ALTE ID liefert danach folgerichtig IPC_ERR_NOT_FOUND, da die neue
+       Belegung eine neue ID bekommt (siehe ipc_endpoint_next_id unten). */
+    ipc_endpoint_t *slot = 0;
+    for (uint32_t i = 0; i < IPC_ENDPOINT_CAPACITY; ++i) {
+        if (ipc_endpoints[i].state == IPC_ENDPOINT_STATE_CLOSED) {
+            slot = &ipc_endpoints[i];
+            break;
+        }
+    }
+    if (!slot) return IPC_ERR_CAPACITY;
+
+    if (capacity == 0 || capacity > IPC_ENDPOINT_QUEUE_CAPACITY) {
+        capacity = IPC_ENDPOINT_QUEUE_CAPACITY;
+    }
+
+    *slot = (ipc_endpoint_t){0};
+    slot->id = ipc_endpoint_next_id++;
+    slot->state = IPC_ENDPOINT_STATE_OPEN;
+    slot->owner_pid = owner_pid;
+    slot->capacity = capacity;
+
+    if (out_endpoint_id) *out_endpoint_id = slot->id;
+    return 0;
+}
+
+int ipc_endpoint_close(uint32_t owner_pid, uint32_t endpoint_id) {
+    ipc_endpoint_t *ep = ipc_endpoint_find(endpoint_id);
+    if (!ep) return IPC_ERR_NOT_FOUND;
+    if (ep->owner_pid != owner_pid) return IPC_ERR_DENIED;
+    ep->state = IPC_ENDPOINT_STATE_CLOSED; /* id bleibt fuer ipc_endpoint_info() erhalten */
+    return 0;
+}
+
+int ipc_endpoint_grant_send(uint32_t owner_pid, uint32_t endpoint_id, uint32_t sender_pid) {
+    ipc_endpoint_t *ep = ipc_endpoint_find(endpoint_id);
+    if (!ep) return IPC_ERR_NOT_FOUND;
+    if (ep->state != IPC_ENDPOINT_STATE_OPEN) return IPC_ERR_CLOSED;
+    if (ep->owner_pid != owner_pid) return IPC_ERR_DENIED;
+    if (ipc_endpoint_sender_allowed(ep, sender_pid)) return 0; /* bereits erlaubt */
+    if (ep->allowed_count >= IPC_ENDPOINT_ALLOWED_SENDERS) return IPC_ERR_CAPACITY;
+    ep->allowed_senders[ep->allowed_count++] = sender_pid;
+    return 0;
+}
+
+int ipc_endpoint_send(uint32_t sender_pid, uint32_t endpoint_id, const ipc_message_t *msg) {
+    ipc_endpoint_t *ep = ipc_endpoint_find(endpoint_id);
+    if (!ep) return IPC_ERR_NOT_FOUND;
+    if (ep->state != IPC_ENDPOINT_STATE_OPEN) return IPC_ERR_CLOSED;
+    if (!ipc_endpoint_sender_allowed(ep, sender_pid)) {
+        ++ep->denied_total;
+        return IPC_ERR_DENIED;
+    }
+    if (ep->count >= ep->capacity) {
+        ++ep->dropped_total;
+        return IPC_ERR_FULL;
+    }
+    ep->queue[ep->tail] = *msg;
+    ep->tail = (ep->tail + 1u) % IPC_ENDPOINT_QUEUE_CAPACITY;
+    ++ep->count;
+    ++ep->sent_total;
+    return 0;
+}
+
+int ipc_endpoint_receive(uint32_t owner_pid, uint32_t endpoint_id, ipc_message_t *out_msg) {
+    ipc_endpoint_t *ep = ipc_endpoint_find(endpoint_id);
+    if (!ep) return IPC_ERR_NOT_FOUND;
+    if (ep->state != IPC_ENDPOINT_STATE_OPEN) return IPC_ERR_CLOSED;
+    if (ep->owner_pid != owner_pid) return IPC_ERR_DENIED;
+    if (ep->count == 0) return IPC_ERR_FULL; /* "nichts verfuegbar", siehe ipc.h */
+    *out_msg = ep->queue[ep->head];
+    ep->head = (ep->head + 1u) % IPC_ENDPOINT_QUEUE_CAPACITY;
+    --ep->count;
+    ++ep->received_total;
+    return 0;
+}
+
+int ipc_endpoint_check_sender(uint32_t endpoint_id, uint32_t sender_pid) {
+    ipc_endpoint_t *ep = ipc_endpoint_find(endpoint_id);
+    if (!ep) return IPC_ERR_NOT_FOUND;
+    if (ep->state != IPC_ENDPOINT_STATE_OPEN) return IPC_ERR_CLOSED;
+    if (!ipc_endpoint_sender_allowed(ep, sender_pid)) return IPC_ERR_DENIED;
+    return 0;
+}
+
+int ipc_endpoint_info(uint32_t endpoint_id, ipc_endpoint_info_t *out_info) {
+    ipc_endpoint_t *ep = ipc_endpoint_find(endpoint_id);
+    if (!ep) return IPC_ERR_NOT_FOUND;
+    if (out_info) {
+        out_info->owner_pid = ep->owner_pid;
+        out_info->state = ep->state;
+        out_info->capacity = ep->capacity;
+        out_info->queue_depth = ep->count;
+        out_info->sent_total = ep->sent_total;
+        out_info->received_total = ep->received_total;
+        out_info->dropped_total = ep->dropped_total;
+        out_info->denied_total = ep->denied_total;
+    }
+    return 0;
+}
+
+int ipc_endpoint_manager_self_test(void) {
+    if (ipc_endpoint_mgr_ready != 1) return -1;
+
+    const uint32_t OWNER_PID = 0x9001u;
+    const uint32_t GRANTED_PID = 0x9002u;
+    const uint32_t STRANGER_PID = 0x9003u;
+
+    uint32_t ep_id = 0;
+    if (ipc_endpoint_create(OWNER_PID, 2u /* klein, um Backpressure leicht zu erzwingen */,
+                             &ep_id) != 0) {
+        return -1;
+    }
+
+    /* #2/#3: Kenntnis der ID allein genuegt nicht - ein fremder Prozess
+       wird abgelehnt. */
+    ipc_message_t msg = {{0x1111u, 0x2222u, 0x3333u, 0x4444u}};
+    if (ipc_endpoint_send(STRANGER_PID, ep_id, &msg) != IPC_ERR_DENIED) return -1;
+
+    /* #7: explizite Autorisierung schaltet den Zugriff frei. */
+    if (ipc_endpoint_grant_send(OWNER_PID, ep_id, GRANTED_PID) != 0) return -1;
+    if (ipc_endpoint_send(GRANTED_PID, ep_id, &msg) != 0) return -1;
+
+    /* Owner darf immer senden, auch ohne explizite Eintragung. */
+    ipc_message_t msg2 = {{0x5555u, 0x6666u, 0x7777u, 0x8888u}};
+    if (ipc_endpoint_send(OWNER_PID, ep_id, &msg2) != 0) return -1;
+
+    /* #10 Backpressure: Kapazitaet 2 ist jetzt voll -> REJECT, kein
+       stilles Verwerfen. */
+    ipc_message_t msg3 = {{0x9999u, 0xAAAAu, 0xBBBBu, 0xCCCCu}};
+    if (ipc_endpoint_send(OWNER_PID, ep_id, &msg3) != IPC_ERR_FULL) return -1;
+
+    ipc_endpoint_info_t info;
+    if (ipc_endpoint_info(ep_id, &info) != 0) return -1;
+    if (info.owner_pid != OWNER_PID || info.state != IPC_ENDPOINT_STATE_OPEN) return -1;
+    if (info.queue_depth != 2u || info.sent_total != 2u) return -1;
+    if (info.dropped_total != 1u || info.denied_total != 1u) return -1;
+
+    /* Nur der Owner darf empfangen - FIFO-Reihenfolge bleibt erhalten. */
+    if (ipc_endpoint_receive(STRANGER_PID, ep_id, &msg) != IPC_ERR_DENIED) return -1;
+    ipc_message_t recv1 = {{0}}, recv2 = {{0}};
+    if (ipc_endpoint_receive(OWNER_PID, ep_id, &recv1) != 0) return -1;
+    if (recv1.words[0] != 0x1111u) return -1; /* GRANTED_PIDs Nachricht kam zuerst */
+    if (ipc_endpoint_receive(OWNER_PID, ep_id, &recv2) != 0) return -1;
+    if (recv2.words[0] != 0x5555u) return -1;
+    if (ipc_endpoint_receive(OWNER_PID, ep_id, &recv1) != IPC_ERR_FULL) return -1; /* leer */
+
+    /* #11 Endpoint-Verlust MUSS erkennbar sein: nach dem Schliessen
+       schlagen ALLE Operationen mit einem eigenen Fehlercode fehl, nicht
+       als "unbekannt" oder stillschweigend. */
+    if (ipc_endpoint_close(STRANGER_PID, ep_id) != IPC_ERR_DENIED) return -1; /* nicht Owner */
+    if (ipc_endpoint_close(OWNER_PID, ep_id) != 0) return -1;
+    if (ipc_endpoint_close(OWNER_PID, ep_id) != 0) return -1; /* idempotent */
+    if (ipc_endpoint_send(OWNER_PID, ep_id, &msg) != IPC_ERR_CLOSED) return -1;
+    if (ipc_endpoint_receive(OWNER_PID, ep_id, &recv1) != IPC_ERR_CLOSED) return -1;
+    if (ipc_endpoint_grant_send(OWNER_PID, ep_id, GRANTED_PID) != IPC_ERR_CLOSED) return -1;
+
+    /* #12 Introspection bleibt fuer einen geschlossenen Endpoint moeglich
+       (letzter bekannter Zustand), zeigt aber NIE Nachrichteninhalte -
+       ipc_endpoint_info_t hat strukturell gar kein Payload-Feld. */
+    if (ipc_endpoint_info(ep_id, &info) != 0) return -1;
+    if (info.state != IPC_ENDPOINT_STATE_CLOSED) return -1;
+
+    if (ipc_endpoint_info(0xFFFFu, &info) != IPC_ERR_NOT_FOUND) return -1; /* unbekannte ID */
+
+    return 0;
+}
+
+/* --------------------------------------------------------------------- */
 /* Bootkritischer Device Manager                                         */
 /* --------------------------------------------------------------------- */
 

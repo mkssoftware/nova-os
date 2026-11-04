@@ -22,6 +22,109 @@ int ipc_send(const ipc_message_t *msg);
 /* 1 = Erfolg (out_msg gefuellt), 0 = Queue leer. */
 int ipc_receive(ipc_message_t *out_msg);
 
+/* --------------------------------------------------------------------- */
+/* NPSPEC-IPC-0001: echtes Endpoint-Modell (Phase 1)                     */
+/* --------------------------------------------------------------------- */
+/* Die obige ipc_send()/ipc_receive()-Queue ist EINE einzige globale,
+   ungetypte FIFO - keine Endpoint-Identitaet, keine Zugriffskontrolle
+   (NPSPEC-IPC-0001 Anforderung #2/#3: "Endpunkte MUESSEN eindeutig
+   identifizierbar sein", "Endpoint-Identitaet und Zugriffsberechtigung
+   MUESSEN getrennt bleiben" - beides hier unerfuellt). Bleibt unveraendert
+   bestehen (echte Bestandsnutzer: cap_integration.c/scheduler.c).
+
+   Phase 1 fuehrt ECHTE, adressierbare, zugriffskontrollierte Endpoints
+   ein: jeder Endpoint hat einen Owner-Prozess (einzig berechtigt zum
+   Empfangen/Schliessen) und eine explizite Sender-Allowlist (Kenntnis der
+   EndpointID allein gewaehrt KEINEN Zugriff - erst `ipc_endpoint_grant_
+   send()` traegt einen weiteren Prozess explizit ein, NPSPEC-IPC-0001
+   #3/#7 "Capability-Uebertragung MUSS explizit autorisiert sein"). Jeder
+   Endpoint hat eine BEGRENZTE eigene Warteschlange (#10 Backpressure -
+   bei Ueberlauf REJECT, kein stilles Verwerfen). Schliessen macht den
+   Endpoint fuer alle Operationen erkennbar ungueltig (#11 "Endpoint-
+   Verlust MUSS erkennbar sein"). `ipc_endpoint_info()` liefert reine
+   Metadaten (Owner/Zustand/Fuellstand/Zaehler), NIE Nachrichteninhalte
+   (#12 Introspection, mit dem dortigen Offenlegungsverbot).
+
+   Bewusst NICHT Teil dieser Phase (eigene, groessere Folgeschritte, siehe
+   die jeweils eigenstaendigen NPSPEC-IPC-CHANNEL/-RPC/-PUBSUB/-EVENTBUS/
+   -SHAREDMEMORY/-ZEROCOPY-Spezifikationen, die bewusst ALS AUFBAU AUF
+   diesem Grundmodell formuliert sind, nicht als Teil davon): typisiertes
+   Request/Response mit Korrelation, Pub/Sub-Topics, ein globaler Event-
+   Bus, Shared-Memory-Buffer-Referenzen, echtes Zero-Copy, entfernte
+   (Multi-Node-)Endpoints. Automatisches Schliessen beim Prozess-Ende
+   (process_terminate()) ist ebenfalls NICHT verdrahtet - bewusst
+   entkoppelt, analog zum bereits bestehenden Muster bei object.c/heap.c
+   (keine Cross-Modul-Kopplung in process.c hinein) - ein kuenftiger
+   Reaper-Mechanismus kann `ipc_endpoint_close()` fuer jeden vom
+   terminierten Prozess gehaltenen Endpoint aufrufen. */
+
+#define IPC_ENDPOINT_CAPACITY         8u
+#define IPC_ENDPOINT_QUEUE_CAPACITY   8u
+#define IPC_ENDPOINT_ALLOWED_SENDERS  4u
+
+#define IPC_ENDPOINT_STATE_CLOSED 0u
+#define IPC_ENDPOINT_STATE_OPEN   1u
+
+#define IPC_ERR_NOT_FOUND (-1) /* unbekannte endpoint_id */
+#define IPC_ERR_CLOSED    (-2) /* Endpoint existiert, ist aber geschlossen */
+#define IPC_ERR_DENIED    (-3) /* Aufrufer ist weder Owner noch auf der Allowlist */
+#define IPC_ERR_FULL      (-4) /* Backpressure: Warteschlange voll, REJECT */
+#define IPC_ERR_CAPACITY  (-5) /* Endpoint- oder Allowlist-Tabelle voll */
+
+typedef struct {
+    uint32_t owner_pid;
+    uint32_t state;       /* IPC_ENDPOINT_STATE_* */
+    uint32_t capacity;
+    uint32_t queue_depth; /* aktuell wartende Nachrichten */
+    uint32_t sent_total;
+    uint32_t received_total;
+    uint32_t dropped_total; /* Backpressure-Ablehnungen (voll) */
+    uint32_t denied_total;  /* Zugriffsverweigerungen (nicht autorisiert) */
+} ipc_endpoint_info_t;
+
+void ipc_endpoint_manager_initialize(void);
+int ipc_endpoint_manager_self_test(void); /* 0 = ok */
+
+/* 0 = Erfolg (*out_endpoint_id gesetzt), IPC_ERR_CAPACITY wenn die
+   Endpoint-Tabelle voll ist. capacity wird auf IPC_ENDPOINT_QUEUE_CAPACITY
+   begrenzt (0 wird wie IPC_ENDPOINT_QUEUE_CAPACITY behandelt). */
+int ipc_endpoint_create(uint32_t owner_pid, uint32_t capacity, uint32_t *out_endpoint_id);
+
+/* Nur der Owner darf schliessen. 0 = Erfolg, IPC_ERR_NOT_FOUND/_DENIED
+   sonst. Idempotent (bereits geschlossen -> weiterhin 0). */
+int ipc_endpoint_close(uint32_t owner_pid, uint32_t endpoint_id);
+
+/* Traegt sender_pid explizit in die Allowlist ein (Owner ist implizit
+   IMMER sendeberechtigt, muss nicht eingetragen werden). Nur der Owner
+   darf gewaehren. 0 = Erfolg, IPC_ERR_NOT_FOUND/_CLOSED/_DENIED/_CAPACITY
+   (Allowlist voll). */
+int ipc_endpoint_grant_send(uint32_t owner_pid, uint32_t endpoint_id, uint32_t sender_pid);
+
+/* sender_pid MUSS Owner oder auf der Allowlist sein. 0 = Erfolg,
+   IPC_ERR_NOT_FOUND/_CLOSED/_DENIED/_FULL (Backpressure-Reject, zaehlt
+   dropped_total hoch). */
+int ipc_endpoint_send(uint32_t sender_pid, uint32_t endpoint_id, const ipc_message_t *msg);
+
+/* Nur der Owner darf empfangen. 0 = Erfolg (*out_msg gefuellt),
+   IPC_ERR_NOT_FOUND/_CLOSED/_DENIED, oder IPC_ERR_FULL wiederverwendet
+   als "Warteschlange leer" (kein eigener Code noetig - beide Faelle sind
+   fuer den Aufrufer gleich zu behandeln: aktuell nichts verfuegbar). */
+int ipc_endpoint_receive(uint32_t owner_pid, uint32_t endpoint_id, ipc_message_t *out_msg);
+
+/* Reine Metadaten, NIE Nachrichteninhalte (NPSPEC-IPC-0001 Introspection-
+   Offenlegungsverbot). 0 = Erfolg (*out_info gefuellt), IPC_ERR_NOT_FOUND
+   sonst - funktioniert bewusst AUCH fuer geschlossene Endpoints (der
+   letzte bekannte Zustand bleibt introspizierbar, bis die ID durch einen
+   neuen ipc_endpoint_create()-Aufruf wiederverwendet wird). */
+int ipc_endpoint_info(uint32_t endpoint_id, ipc_endpoint_info_t *out_info);
+
+/* Wie die Zugriffspruefung innerhalb von ipc_endpoint_send(), aber OHNE
+   etwas einzureihen - fuer Aufrufer (siehe rpc.c), die die Autorisierung
+   eines Endpoints wiederverwenden wollen, ohne dessen rohe Byte-
+   Warteschlange zu benutzen. 0 = sender_pid ist Owner oder autorisiert,
+   IPC_ERR_NOT_FOUND/_CLOSED/_DENIED sonst. */
+int ipc_endpoint_check_sender(uint32_t endpoint_id, uint32_t sender_pid);
+
 #define DEVICE_CAPACITY     8u
 #define DEVICE_STATE_ACTIVE 1u
 #define OBJECT_TYPE_DEVICE  6u

@@ -95,6 +95,10 @@
 #include "input.h"
 #include "time.h"
 #include "ipc.h"
+#include "rpc.h"
+#include "channel.h"
+#include "pubsub.h"
+#include "eventbus.h"
 #include "nvme.h"
 #include "ahci.h"
 #include "gpt.h"
@@ -594,6 +598,21 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     ipc_initialize();
     report("NOVA: IPC Queue Selftest", ipc_self_test() == 0);
+
+    ipc_endpoint_manager_initialize();
+    report("NOVA: IPC Endpoint Manager Selftest", ipc_endpoint_manager_self_test() == 0);
+
+    rpc_manager_initialize();
+    report("NOVA: RPC Manager Selftest", rpc_manager_self_test() == 0);
+
+    channel_manager_initialize();
+    report("NOVA: IPC Channel Manager Selftest", channel_manager_self_test() == 0);
+
+    pubsub_manager_initialize();
+    report("NOVA: IPC PubSub Manager Selftest", pubsub_manager_self_test() == 0);
+
+    eventbus_manager_initialize();
+    report("NOVA: IPC Event Bus Manager Selftest", eventbus_manager_self_test() == 0);
 
     device_manager_initialize();
     report("NOVA: Device Manager Selftest", device_manager_self_test() == 0);

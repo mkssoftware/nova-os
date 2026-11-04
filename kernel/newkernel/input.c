@@ -26,13 +26,19 @@ static uint32_t input_drag_handle = 0;
 static int32_t input_drag_offset_x = 0;
 static int32_t input_drag_offset_y = 0;
 
-/* Zweite, von input_ring getrennte Warteschlange fuer den Ring-3-Client
-   (siehe input.h Scope-Hinweis zu SYSCALL_SERVICE_INPUT). */
-static input_event_t input_client_queue[INPUT_CLIENT_QUEUE_CAPACITY];
-static uint32_t input_client_head = 0;
-static uint32_t input_client_tail = 0;
-static uint32_t input_client_count = 0;
-static uint32_t input_client_dropped = 0;
+/* Zweite, von input_ring getrennte Warteschlangen-FAMILIE fuer Ring-3-
+   Clients (siehe input.h Scope-Hinweis zu SYSCALL_SERVICE_INPUT und zur
+   NPSPEC-INPUT-EVENT-0001-Nachruestung). Slot 0 = Legacy/Fallback, immer
+   gebunden (pid-Feld bleibt 0, "bound" bleibt 1). Slots 1..N-1 werden
+   lazy an die erste PID gebunden, die dort pollt. */
+typedef struct {
+    int bound;
+    uint32_t pid;
+    input_event_t queue[INPUT_CLIENT_QUEUE_CAPACITY];
+    uint32_t head, tail, count, dropped;
+} input_client_slot_t;
+
+static input_client_slot_t input_client_slots[INPUT_CLIENT_SLOTS];
 
 /* Mindestabstand zwischen zwei Ringpuffer-Drain-Durchlaeufen des Input-
    Threads, in echten Timer-Ticks (gleiches Muster wie compositor.c's
@@ -47,11 +53,17 @@ void input_initialize(void) {
     input_ring_count = 0;
     input_dropped = 0;
 
-    for (uint32_t i = 0; i < INPUT_CLIENT_QUEUE_CAPACITY; ++i) input_client_queue[i] = (input_event_t){0};
-    input_client_head = 0;
-    input_client_tail = 0;
-    input_client_count = 0;
-    input_client_dropped = 0;
+    for (uint32_t s = 0; s < INPUT_CLIENT_SLOTS; ++s) {
+        input_client_slot_t *slot = &input_client_slots[s];
+        for (uint32_t i = 0; i < INPUT_CLIENT_QUEUE_CAPACITY; ++i) slot->queue[i] = (input_event_t){0};
+        slot->head = 0;
+        slot->tail = 0;
+        slot->count = 0;
+        slot->dropped = 0;
+        slot->pid = 0;
+        slot->bound = 0;
+    }
+    input_client_slots[0].bound = 1; /* Legacy-Slot immer gebunden */
 
     uint32_t width = display_width();
     uint32_t height = display_height();
@@ -99,30 +111,73 @@ uint32_t input_cursor_y(void) {
     return input_cursor_y_value;
 }
 
-static void input_client_push(const input_event_t *evt) {
-    if (input_client_count >= INPUT_CLIENT_QUEUE_CAPACITY) {
-        ++input_client_dropped;
+static void input_slot_push(input_client_slot_t *slot, const input_event_t *evt) {
+    if (slot->count >= INPUT_CLIENT_QUEUE_CAPACITY) {
+        ++slot->dropped;
         return;
     }
-    input_client_queue[input_client_head] = *evt;
-    input_client_head = (input_client_head + 1u) % INPUT_CLIENT_QUEUE_CAPACITY;
-    ++input_client_count;
+    slot->queue[slot->head] = *evt;
+    slot->head = (slot->head + 1u) % INPUT_CLIENT_QUEUE_CAPACITY;
+    ++slot->count;
 }
 
-int input_client_poll(input_event_t *out) {
-    if (input_client_count == 0u) return -1;
-    *out = input_client_queue[input_client_tail];
-    input_client_tail = (input_client_tail + 1u) % INPUT_CLIENT_QUEUE_CAPACITY;
-    --input_client_count;
+static int input_slot_poll(input_client_slot_t *slot, input_event_t *out) {
+    if (slot->count == 0u) return -1;
+    *out = slot->queue[slot->tail];
+    slot->tail = (slot->tail + 1u) % INPUT_CLIENT_QUEUE_CAPACITY;
+    --slot->count;
     return 0;
 }
 
+/* Broadcast: JEDES dispatchte Event geht an Slot 0 UND an alle aktuell
+   an eine echte PID gebundenen Slots - siehe input.h fuer die Begruendung
+   (jeder Client filtert selbst per Cursor-Position/Hit-Test). */
+static void input_client_push(const input_event_t *evt) {
+    for (uint32_t s = 0; s < INPUT_CLIENT_SLOTS; ++s) {
+        if (input_client_slots[s].bound) {
+            input_slot_push(&input_client_slots[s], evt);
+        }
+    }
+}
+
+int input_client_poll(input_event_t *out) {
+    return input_slot_poll(&input_client_slots[0], out);
+}
+
 uint32_t input_client_pending_count(void) {
-    return input_client_count;
+    return input_client_slots[0].count;
 }
 
 uint32_t input_client_dropped_count(void) {
-    return input_client_dropped;
+    return input_client_slots[0].dropped;
+}
+
+int input_client_poll_for(uint32_t pid, input_event_t *out) {
+    if (pid == 0u) {
+        return input_client_poll(out);
+    }
+    for (uint32_t s = 1; s < INPUT_CLIENT_SLOTS; ++s) {
+        if (input_client_slots[s].bound && input_client_slots[s].pid == pid) {
+            return input_slot_poll(&input_client_slots[s], out);
+        }
+    }
+    for (uint32_t s = 1; s < INPUT_CLIENT_SLOTS; ++s) {
+        if (!input_client_slots[s].bound) {
+            input_client_slots[s].bound = 1;
+            input_client_slots[s].pid = pid;
+            return input_slot_poll(&input_client_slots[s], out); /* frisch gebunden, leer */
+        }
+    }
+    /* Slot-Tabelle voll - lieber am gemeinsamen Legacy-Slot 0 teilnehmen
+       als Events fuer diesen Client stillschweigend zu verlieren. */
+    return input_client_poll(out);
+}
+
+void input_client_drain_all(void) {
+    input_event_t tmp;
+    for (uint32_t s = 0; s < INPUT_CLIENT_SLOTS; ++s) {
+        while (input_slot_poll(&input_client_slots[s], &tmp) == 0) { }
+    }
 }
 
 /* Alt+Tab-aehnliches Fokus-Zyklieren (NPSPEC-INPUT-FOCUS-0002, reduziert

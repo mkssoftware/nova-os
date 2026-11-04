@@ -16,7 +16,7 @@
 #define BOOTSPLASH_DOT_RADIUS   5u
 #define BOOTSPLASH_DOT_GAP      22u
 #define BOOTSPLASH_LOGO_GAP     36u /* Abstand Logo-Unterkante zu Ladebalken-Mitte */
-#define BOOTSPLASH_TICK_DIVISOR 3u  /* ein Lauflicht-Schritt alle N bootsplash_tick()-Aufrufe */
+#define BOOTSPLASH_TICK_DIVISOR 1u  /* ein Lauflicht-Schritt alle N bootsplash_tick()-Aufrufe */
 
 static int splash_active = 0;
 static uint32_t splash_tick_counter = 0;
