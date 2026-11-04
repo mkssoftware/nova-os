@@ -99,6 +99,14 @@
 #include "channel.h"
 #include "pubsub.h"
 #include "eventbus.h"
+#include "gfxstate.h"
+#include "scenegraph.h"
+#include "renderengine.h"
+#include "rendergraph.h"
+#include "damagetrack.h"
+#include "layercompose.h"
+#include "dispproto.h"
+#include "framesched.h"
 #include "nvme.h"
 #include "ahci.h"
 #include "gpt.h"
@@ -567,6 +575,30 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     matperf_quality_initialize();
     matext_initialize();
     matext_presets_register_standard();
+
+    gfxstate_initialize();
+    report("NOVA: Graphics State Architecture Selftest", gfxstate_self_test() == 0);
+
+    scenegraph_initialize();
+    report("NOVA: Scene Graph Selftest", scenegraph_self_test() == 0);
+
+    renderengine_initialize();
+    report("NOVA: Render Engine Selftest", renderengine_self_test() == 0);
+
+    rendergraph_initialize();
+    report("NOVA: Render Graph Selftest", rendergraph_self_test() == 0);
+
+    damagetrack_initialize();
+    report("NOVA: Damage Tracking Selftest", damagetrack_self_test() == 0);
+
+    layercompose_initialize();
+    report("NOVA: Composition Layer Selftest", layercompose_self_test() == 0);
+
+    dispproto_initialize();
+    report("NOVA: Display Protocol Selftest", dispproto_self_test() == 0);
+
+    framesched_initialize();
+    report("NOVA: Frame Scheduler Selftest", framesched_self_test() == 0);
 
     network_stack_initialize();
     report("NOVA: Network Stack Selftest", network_stack_self_test() == 0);
