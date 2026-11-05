@@ -6,7 +6,63 @@
    siehe ring3_set_kernel_stack) und eigenen GUI-Puffer. Taskbar und
    Startmenue koordinieren sich ueber das winzige Sichtbarkeits-Flag in
    syscall.c (siehe dort) - die Icons sind rein statisch und brauchen
-   keine laufende Koordination mit den anderen beiden. */
+   keine laufende Koordination mit den anderen beiden.
+
+   W^X-Trennung (NPSPEC-SECURITY-0001-artige Haertung, Code-Review-Fund
+   2026-11-04): Code-Seiten (.text+.rdata) wurden bisher MIT
+   PAGING_PAGE_WRITE gemappt, weil Compiler/Linker .text/.rdata/.data/.bss
+   desselben Blobs in EINEM gemeinsamen Adressbereich ablegten - ein
+   Ring-3-Prozess konnte damit seinen eigenen ausfuehrbaren Code
+   ueberschreiben. Fix: `ushell-link.ld`/`startmenu-link.ld`/
+   `icons-link.ld` richten den ersten schreibbaren Abschnitt (.data) jetzt
+   per `. = ALIGN(4096);` auf eine Seitengrenze aus (Marker-Symbol
+   `__rw_start`), und die zugehoerigen Blob-Header (`ushell_blob.h`/
+   `startmenu_blob.h`) exportieren die daraus resultierende Groesse als
+   `USHELL_RO_SIZE`/`STARTMENU_RO_SIZE` - `ushell_spawn()` mappt Seiten
+   unterhalb dieser Grenze OHNE `PAGING_PAGE_WRITE`. NX/Nichtausfuehrbarkeit
+   fuer Datenseiten ist mit der aktuellen 32-Bit-Non-PAE-Paging-
+   Implementierung (siehe paging.h - nur PRESENT/WRITE/USER, kein NX-Bit,
+   das braucht PAE oder Long Mode) technisch NICHT umsetzbar - bewusst
+   NICHT Teil dieser Aenderung, siehe NPSPEC-Empfehlung "auf geeigneter
+   Hardware spaeter durchsetzen".
+
+   AUSNAHME Desktop-Icons: beim Neulinken fuer diese Aenderung stellte sich
+   heraus, dass der aktuelle `icons_main.c`/`svgicon.c`-Quellstand (der
+   SVG-Icon-Cache, `SVGICON_CACHE_SLOTS * svgicon_bitmap_t`) inzwischen
+   einen weit groesseren .data/.bss-Fussabdruck hat, als in das bestehende,
+   gegen `USHELL_CODE_PAGES` (64 KiB) bemessene Budget passt - der
+   ausgelieferte `icons_blob.h` ist daher vermutlich bereits aelter als der
+   aktuelle Quellstand. Eine Neuerzeugung dieses einen Blobs wuerde zudem
+   das Seiten-Budget sprengen und braucht eine eigene Entscheidung (Cache
+   verkleinern oder Budget erhoehen) - bewusst NICHT Teil dieser Aenderung.
+   Icons bleiben daher vorerst wie bisher vollstaendig beschreibbar
+   (ICONS_RO_SIZE=0 unten) - kein Rueckschritt, nur (noch) keine
+   Verbesserung fuer diesen einen Prozess.
+
+   Ressourcen-Aufraeumung bei Fehlschlag (zweiter Code-Review-Fund):
+   `ushell_spawn()` gab bei einem Fehler in einem spaeteren Schritt
+   zuvor bereits erfolgreich reservierte Ressourcen NICHT frei. Fix:
+   ein einzelner `cleanup`-Pfad gibt jede bereits zugeteilte physische
+   Seite (Code/Stack/Args/GUI-Puffer/Kernel-Stack, alle ueber
+   `pmm_free_page()` - auch der ueber `pmm_alloc_contiguous()` bezogene
+   GUI-Puffer besteht aus einzelnen Rahmen und wird daher Seite fuer Seite
+   freigegeben) sowie einen ggf. bereits erzeugten Prozess (per
+   `process_terminate()`+`process_reap()`, NPSPEC-PROZESS-LIFECYCLE-0001)
+   wieder frei. **Bewusste, dokumentierte Restgrenze:** das per
+   `paging_create_address_space()` angelegte Page-Directory (und ggf. beim
+   Mappen privatisierte Seitentabellen, siehe paging.h's Copy-on-Write-
+   Hinweis) kann NICHT zurueckgegeben werden - `paging.h` bietet aktuell
+   keine Gegenfunktion dazu (muesste pro Adressraum nachverfolgen, welche
+   Seitentabellen privatisiert wurden, um nur diese sicher freizugeben,
+   ohne vom Kernel-Basis-Adressraum geerbte, weiterhin geteilte Tabellen
+   zu beschaedigen) - das waere eine eigene, groessere Erweiterung von
+   paging.c und bewusst NICHT Teil dieser Aenderung (deckungsgleich mit
+   der Nutzer-Einschaetzung: fuer einen Bootstrap-Prototyp hinnehmbar,
+   fuer eine allgemeine Prozessverwaltung spaeter nachzuruesten). Die
+   verbleibenden Stale-Mappings in diesem einen, dauerhaft verwaisten
+   Directory sind harmlos: niemand schaltet je wieder per CR3 darauf um,
+   und die zugehoerigen physischen Rahmen der einzelnen Code-/Daten-Seiten
+   selbst werden (siehe oben) korrekt zurueckgegeben. */
 #include "ushell_process.h"
 #include "ushell_blob.h"
 #include "startmenu_blob.h"
@@ -87,9 +143,25 @@ static void ushell_instance_reset(ushell_instance_t *inst, const uint8_t *blob,
    gemappt, Prozess registriert, ECHTER praeemptiv geplanter Scheduler-
    Slot reserviert. gui_buffer_bytes bestimmt die Groesse des (physisch
    zusammenhaengenden, siehe pmm_alloc_contiguous) GUI-Puffers - jeder
-   Prozess braucht hier eine fuer sein eigenes Fenster passende Groesse. */
-static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes) {
+   Prozess braucht hier eine fuer sein eigenes Fenster passende Groesse.
+   ro_size ist die Groesse (Bytes, Vielfaches von 4096) des schreib-
+   geschuetzten Code-Praefixes dieses Blobs (USHELL_RO_SIZE/
+   STARTMENU_RO_SIZE, 0 = vollstaendig beschreibbar wie bisher - siehe
+   Dateikopf, aktuell fuer Icons). Bei JEDEM Fehler ab hier werden alle in
+   DIESEM Aufruf bereits zugeteilten physischen Seiten und ein ggf. schon
+   erzeugter Prozess wieder freigegeben (siehe Dateikopf fuer die eine
+   bewusst verbleibende Ausnahme: das Page-Directory selbst). */
+static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint32_t ro_size) {
     if (inst->blob_size > USHELL_CODE_PAGES * PMM_PAGE_SIZE) return -1;
+
+    uint32_t code_pages[USHELL_CODE_PAGES];
+    uint32_t code_pages_count = 0;
+    uint32_t stack_page = 0;
+    uint32_t args_page = 0;
+    uint32_t buffer_first_page = 0;
+    uint32_t buffer_pages = 0;
+    uint32_t kstack_page = 0;
+    uint32_t pid = 0;
 
     uint32_t dir_phys;
     if (paging_create_address_space(&dir_phys) != 0) return -1;
@@ -97,63 +169,68 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes) {
     for (uint32_t i = 0; i < USHELL_CODE_PAGES; ++i) {
         uint32_t numa;
         uint32_t page = pmm_alloc_page(&numa);
-        if (page == 0) return -1;
+        if (page == 0) goto cleanup;
+        code_pages[i] = page;
+        code_pages_count = i + 1u;
+
         uint8_t *dst = (uint8_t *)(uintptr_t)page;
         uint32_t blob_offset = i * PMM_PAGE_SIZE;
         for (uint32_t b = 0; b < PMM_PAGE_SIZE; ++b) {
             uint32_t src_index = blob_offset + b;
             dst[b] = (src_index < inst->blob_size) ? inst->blob[src_index] : 0u;
         }
-        /* PAGING_PAGE_WRITE noetig (nicht nur PRESENT|USER): der Compiler
-           legt .text/.rdata UND .data/.bss desselben Blobs gemeinsam in
-           diesen Code-Seiten ab (siehe ushell-link.ld/startmenu-link.ld/
-           icons-link.ld - EIN gemeinsamer Adressbereich, keine separate
-           .data-Seite). icons_main.c ist der erste Verwender mit einer
-           tatsaechlich zur Laufzeit BESCHRIEBENEN statischen Variable in
-           diesem Bereich (icon_bitmap, von svgicon_render() gefuellt) -
-           Taskbar/Startmenue hatten dort bislang nur Code+konstante
-           Daten, daher blieb diese fehlende Schreibrechte-Vergabe bisher
-           folgenlos. Ohne dieses Flag faultet der erste Schreibzugriff
-           (Ring-3-Seitenfehler auf eine PRESENT-aber-nicht-WRITE-Seite) -
-           real durch einen Boot-Test mit dem Icons-Prozess aufgedeckt. */
-        if (paging_map_page_into(dir_phys, USHELL_CODE_VADDR + blob_offset, page,
-                                  PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
-            return -1;
+        /* W^X-Trennung (siehe Dateikopf): Seiten unterhalb ro_size sind
+           .text/.rdata - PAGING_PAGE_WRITE bewusst WEGLASSEN. Seiten ab
+           ro_size (.data/.bss, oder bei ro_size==0 der komplette Bereich
+           wie bisher bei Icons) bleiben beschreibbar. */
+        uint32_t page_flags = PAGING_PAGE_PRESENT | PAGING_PAGE_USER;
+        if (blob_offset >= ro_size) page_flags |= PAGING_PAGE_WRITE;
+        if (paging_map_page_into(dir_phys, USHELL_CODE_VADDR + blob_offset, page, page_flags) != 0) {
+            goto cleanup;
         }
     }
 
-    uint32_t numa;
-    uint32_t stack_page = pmm_alloc_page(&numa);
-    if (stack_page == 0) return -1;
-    uint8_t *stack_dst = (uint8_t *)(uintptr_t)stack_page;
-    for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) stack_dst[i] = 0;
+    {
+        uint32_t numa;
+        stack_page = pmm_alloc_page(&numa);
+    }
+    if (stack_page == 0) goto cleanup;
+    {
+        uint8_t *stack_dst = (uint8_t *)(uintptr_t)stack_page;
+        for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) stack_dst[i] = 0;
+    }
     if (paging_map_page_into(dir_phys, USHELL_STACK_VADDR, stack_page,
                               PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
-        return -1;
+        goto cleanup;
     }
 
-    uint32_t args_page = pmm_alloc_page(&numa);
-    if (args_page == 0) return -1;
-    uint8_t *args_dst = (uint8_t *)(uintptr_t)args_page;
-    for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) args_dst[i] = 0;
+    {
+        uint32_t numa;
+        args_page = pmm_alloc_page(&numa);
+    }
+    if (args_page == 0) goto cleanup;
+    {
+        uint8_t *args_dst = (uint8_t *)(uintptr_t)args_page;
+        for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) args_dst[i] = 0;
+    }
     if (paging_map_page_into(dir_phys, USHELL_ARGS_VADDR, args_page,
                               PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
-        return -1;
+        goto cleanup;
     }
 
-    uint32_t buffer_pages = (gui_buffer_bytes + PMM_PAGE_SIZE - 1u) / PMM_PAGE_SIZE;
-    uint32_t buffer_first_page;
-    if (pmm_alloc_contiguous(buffer_pages, &buffer_first_page) != 0) return -1;
-    uint8_t *buffer_dst = (uint8_t *)(uintptr_t)buffer_first_page;
-    for (uint32_t i = 0; i < buffer_pages * PMM_PAGE_SIZE; ++i) buffer_dst[i] = 0;
+    buffer_pages = (gui_buffer_bytes + PMM_PAGE_SIZE - 1u) / PMM_PAGE_SIZE;
+    if (pmm_alloc_contiguous(buffer_pages, &buffer_first_page) != 0) { buffer_pages = 0; goto cleanup; }
+    {
+        uint8_t *buffer_dst = (uint8_t *)(uintptr_t)buffer_first_page;
+        for (uint32_t i = 0; i < buffer_pages * PMM_PAGE_SIZE; ++i) buffer_dst[i] = 0;
+    }
     for (uint32_t i = 0; i < buffer_pages; ++i) {
         if (paging_map_page_into(dir_phys, USHELL_GUI_BUFFER_VADDR + i * PMM_PAGE_SIZE,
                                   buffer_first_page + i * PMM_PAGE_SIZE,
                                   PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
-            return -1;
+            goto cleanup;
         }
     }
-    inst->gui_buffer_pages = buffer_pages;
 
     /* Eigener Kernel-Stack (ESP0) fuer diesen Slot (siehe ring3.h/
        scheduler.h fuer die Begruendung: zwei gleichzeitig laufende
@@ -163,27 +240,52 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes) {
        Adresse nutzbar - genau wie der GUI-Puffer. Braucht keine eigene
        Prozess-Mapping, da er NUR bei CPL=0 (Interrupt-Handler-Kontext)
        verwendet wird. */
-    uint32_t kstack_numa;
-    uint32_t kstack_page = pmm_alloc_page(&kstack_numa);
-    if (kstack_page == 0) return -1;
-    uint8_t *kstack_dst = (uint8_t *)(uintptr_t)kstack_page;
-    for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) kstack_dst[i] = 0;
+    {
+        uint32_t kstack_numa;
+        kstack_page = pmm_alloc_page(&kstack_numa);
+    }
+    if (kstack_page == 0) goto cleanup;
+    {
+        uint8_t *kstack_dst = (uint8_t *)(uintptr_t)kstack_page;
+        for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) kstack_dst[i] = 0;
+    }
     uint32_t kernel_stack_top = kstack_page + PMM_PAGE_SIZE - 16u;
 
-    uint32_t pid = process_create(0x4 /* PROCESS_FLAG_USERSPACE, siehe ring3.c */, dir_phys);
-    if (pid == 0) return -1;
+    pid = process_create(0x4 /* PROCESS_FLAG_USERSPACE, siehe ring3.c */, dir_phys);
+    if (pid == 0) goto cleanup;
 
-    uint32_t slot;
-    if (scheduler_claim_dynamic_user_slot(USHELL_CODE_VADDR + inst->entry_offset, USHELL_STACK_TOP,
-                                           RING3_CODE_SELECTOR, RING3_DATA_SELECTOR,
-                                           -1, dir_phys, kernel_stack_top, &slot) != 0) {
-        return -1;
+    {
+        uint32_t slot;
+        if (scheduler_claim_dynamic_user_slot(USHELL_CODE_VADDR + inst->entry_offset, USHELL_STACK_TOP,
+                                               RING3_CODE_SELECTOR, RING3_DATA_SELECTOR,
+                                               -1, dir_phys, kernel_stack_top, &slot) != 0) {
+            goto cleanup;
+        }
+        inst->scheduler_slot = slot;
     }
 
     inst->pid = pid;
-    inst->scheduler_slot = slot;
     inst->directory_phys = dir_phys;
+    inst->gui_buffer_pages = buffer_pages;
     return 0;
+
+cleanup:
+    /* Jede bereits zugeteilte physische Seite zurueckgeben (siehe
+       Dateikopf: das Page-Directory selbst bleibt die eine bewusste
+       Ausnahme). Reihenfolge ist unkritisch - pmm_free_page() nimmt
+       Rahmen in beliebiger Reihenfolge zurueck. */
+    if (pid != 0) {
+        process_terminate(pid, 0xFFFFFFFFu /* Spawn-Fehlschlag */);
+        process_reap(pid);
+    }
+    if (kstack_page != 0) pmm_free_page(kstack_page);
+    for (uint32_t i = 0; i < buffer_pages; ++i) {
+        if (buffer_first_page != 0) pmm_free_page(buffer_first_page + i * PMM_PAGE_SIZE);
+    }
+    if (args_page != 0) pmm_free_page(args_page);
+    if (stack_page != 0) pmm_free_page(stack_page);
+    for (uint32_t i = 0; i < code_pages_count; ++i) pmm_free_page(code_pages[i]);
+    return -1;
 }
 
 static int ushell_instance_self_test(const ushell_instance_t *inst) {
@@ -224,10 +326,10 @@ int ushell_process_initialize(void) {
     if (width == 0u || height <= TASKBAR_HEIGHT) return -1;
 
     uint32_t taskbar_buffer_bytes = width * TASKBAR_HEIGHT * 4u;
-    if (ushell_spawn(&taskbar_instance, taskbar_buffer_bytes) != 0) return -1;
+    if (ushell_spawn(&taskbar_instance, taskbar_buffer_bytes, USHELL_RO_SIZE) != 0) return -1;
 
     uint32_t startmenu_buffer_bytes = STARTMENU_WIDTH * STARTMENU_HEIGHT * 4u;
-    if (ushell_spawn(&startmenu_instance, startmenu_buffer_bytes) != 0) return -1;
+    if (ushell_spawn(&startmenu_instance, startmenu_buffer_bytes, STARTMENU_RO_SIZE) != 0) return -1;
 
     /* NPSPEC-SECURITY-CAPABILITY-0001: NUR der Startmenue-Prozess (der den
        Shutdown-Button zeichnet, siehe ushell/startmenu_main.c) darf
@@ -236,8 +338,12 @@ int ushell_process_initialize(void) {
        genutzten §103 Capability Frameworks. */
     if (syscall_grant_shutdown_capability(startmenu_instance.pid) != 0) return -1;
 
+    /* ICONS_RO_SIZE=0 (vollstaendig beschreibbar, wie vor dieser
+       Aenderung) - der ausgelieferte icons_blob.h wurde bewusst NICHT
+       neu erzeugt, siehe Dateikopf-Hinweis zum SVG-Icon-Cache-
+       Fussabdruck. */
     uint32_t icons_buffer_bytes = ICONS_GRID_WIDTH * ICONS_GRID_HEIGHT * 4u;
-    if (ushell_spawn(&icons_instance, icons_buffer_bytes) != 0) return -1;
+    if (ushell_spawn(&icons_instance, icons_buffer_bytes, 0u) != 0) return -1;
 
     return 0;
 }

@@ -1,6 +1,53 @@
-/* NovaOS C-Kernel - serielle Grundausgabe (COM1, 16550-kompatibel). */
+/* NovaOS C-Kernel - serielle Grundausgabe (COM1, 16550-kompatibel).
+
+   SMP-sicheres Logging: VOR dieser Aenderung war serial_putc()/serial_puts()
+   weder gegen gleichzeitige Aufrufe von mehreren CPUs (SMP, siehe smp.h -
+   "SMP Online-APs" im Boot-Log) noch gegen einen Aufruf aus einem
+   Interrupt-Handler WAEHREND ein anderer Kontext bereits mitten in einem
+   serial_puts()-Aufruf steckt abgesichert:
+   - Zwei Schreiber, die gleichzeitig `inb(0x3FD) & 0x20` (Transmitter
+     Holding Register Empty) pruefen und beide "bereit" sehen, koennen
+     beide outb() auf denselben UART-Port ausfuehren - ein Byte geht
+     verloren/wird ueberschrieben (klassischer TOCTOU-Race).
+   - `serial_at_line_start` ist ein geteiltes globales Flag ohne jeden
+     Schutz - ein zweiter Schreiber kann mitten im Zeitstempel-Praefix
+     eines ersten Schreibers eigene Zeichen einstreuen (zerrissene/
+     verschachtelte Log-Zeilen, insbesondere gefaehrlich bei einem
+     Kernel-Panic-Handler, der GENAU DANN protokollieren will, wenn ein
+     anderer Kontext bereits mitten im Schreiben war).
+
+   Fix: ein IRQ-sicherer Spinlock (sync.h, bereits fuer genau diesen
+   Zweck vorgesehen - Bootstrap-Synchronisation OHNE Scheduler-
+   Abhaengigkeit) schuetzt JEDEN einzelnen Aufruf von serial_putc()/
+   serial_puts()/serial_put_hex32() als atomare Einheit:
+   sync_spin_lock_irqsave() deaktiviert zusaetzlich Interrupts auf der
+   aufrufenden CPU WAEHREND der Lock gehalten wird - das verhindert nicht
+   nur echte SMP-Races (andere CPU), sondern auch das Selbst-Deadlock-
+   Szenario auf EINER CPU: haelt ein Thread den Lock und wird durch einen
+   Timer-Tick unterbrochen, dessen Interrupt-Handler ebenfalls protokol-
+   lieren will, wuerde dieser ohne IRQ-Deaktivierung ewig auf einen Lock
+   warten, den der unterbrochene (und nun nicht weiterlaufende) Thread
+   nie freigibt. sync_spin_lock_irqsave()/_unlock_irqrestore() arbeiten
+   als reine, zustandslose Primitive direkt auf dem uebergebenen Lock-Wort
+   (siehe sync.c) - sie benoetigen KEIN vorheriges sync_initialize() und
+   koennen daher bereits in serial_init() (der erste Aufruf im gesamten
+   Kernel, lange vor jedem anderen Modul-Init) sicher verwendet werden.
+
+   Bewusste Scope-Grenze: NUR jeder EINZELNE Aufruf ist atomar. Die im
+   gesamten Kernel etablierte Mehr-Aufruf-Zeile (`serial_puts("Text=");
+   serial_put_hex32(wert); serial_puts("\r\n");`) bleibt zwischen ihren
+   drei Teilaufrufen weiterhin fuer eine Verschachtelung durch einen
+   anderen Schreiber offen - eine echte Gesamtzeilen-Atomaritaet wuerde
+   eine neue, formatierende Logging-API (ein einziger Aufruf pro Zeile)
+   voraussetzen und haette Aenderungen an hunderten bestehenden
+   Aufrufstellen im gesamten Kernel zur Folge - bewusst nicht Teil dieser
+   Aenderung (reine Byte-/UART-Race-Sicherheit war die gestellte
+   Aufgabe). */
 #include "serial.h"
+#include "sync.h"
 #include <stdint.h>
+
+static volatile uint32_t serial_lock = SYNC_SPIN_UNLOCKED;
 
 static inline void outb(unsigned short port, unsigned char val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -114,6 +161,8 @@ static void serial_put_timestamp(void) {
 }
 
 void serial_init(void) {
+    sync_spin_init(&serial_lock);
+
     outb(0x3F9, 0x00);
     outb(0x3FB, 0x80);
     outb(0x3F8, 0x01);
@@ -127,27 +176,67 @@ void serial_init(void) {
 }
 
 void serial_putc(char c) {
-    while (!(inb(0x3FD) & 0x20)) { }
-    outb(0x3F8, (unsigned char)c);
+    uint32_t flags = sync_spin_lock_irqsave(&serial_lock);
+    serial_raw_putc((unsigned char)c);
+    sync_spin_unlock_irqrestore(&serial_lock, flags);
 }
 
 void serial_puts(const char *s) {
+    uint32_t flags = sync_spin_lock_irqsave(&serial_lock);
     while (*s) {
         if (serial_at_line_start) {
             serial_put_timestamp();
             serial_at_line_start = 0;
         }
-        serial_putc(*s);
+        serial_raw_putc((unsigned char)*s);
         if (*s == '\n') {
             serial_at_line_start = 1;
         }
         ++s;
     }
+    sync_spin_unlock_irqrestore(&serial_lock, flags);
 }
 
 void serial_put_hex32(unsigned int value) {
     static const char digits[] = "0123456789ABCDEF";
+    uint32_t flags = sync_spin_lock_irqsave(&serial_lock);
     for (int shift = 28; shift >= 0; shift -= 4) {
-        serial_putc(digits[(value >> shift) & 0xF]);
+        serial_raw_putc((unsigned char)digits[(value >> shift) & 0xF]);
     }
+    sync_spin_unlock_irqrestore(&serial_lock, flags);
+}
+
+int serial_self_test(void) {
+    /* sync_spin_try_lock() auf demselben Lock-Wort darf NACH jedem
+       abgeschlossenen oeffentlichen Aufruf sofort erfolgreich sein -
+       das beweist (ohne internen Zustand nach aussen zu exponieren),
+       dass jeder Aufruf seinen Lock korrekt wieder freigibt (kein
+       Leck, kein Selbst-Deadlock). Ein haengen gebliebener Lock wuerde
+       hier sofort als Fehlschlag sichtbar statt den Kernel beim
+       naechsten echten serial_puts()-Aufruf stillschweigend einzufrieren. */
+    serial_putc(' ');
+    if (sync_spin_try_lock(&serial_lock) != 0) return -1;
+    sync_spin_unlock(&serial_lock);
+
+    serial_puts("\r\n");
+    if (sync_spin_try_lock(&serial_lock) != 0) return -1;
+    sync_spin_unlock(&serial_lock);
+
+    serial_put_hex32(0xDEADBEEFu);
+    serial_puts("\r\n");
+    if (sync_spin_try_lock(&serial_lock) != 0) return -1;
+    sync_spin_unlock(&serial_lock);
+
+    /* Spinlock-Grundverhalten direkt am echten Logging-Lock bewiesen
+       (kein separater Test-Lock noetig, siehe sync_self_test() fuer die
+       allgemeine Spinlock-Abdeckung): ein bereits gehaltener Lock lehnt
+       einen zweiten try_lock ab. */
+    uint32_t flags = sync_spin_lock_irqsave(&serial_lock);
+    int try_while_held = sync_spin_try_lock(&serial_lock);
+    sync_spin_unlock_irqrestore(&serial_lock, flags);
+    if (try_while_held == 0) return -1; /* haette belegt sein muessen */
+    if (sync_spin_try_lock(&serial_lock) != 0) return -1;
+    sync_spin_unlock(&serial_lock);
+
+    return 0;
 }

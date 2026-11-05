@@ -16,6 +16,7 @@
 #include "aslr.h"
 #include "slab.h"
 #include "heap.h"
+#include "kalloc.h"
 #include "object.h"
 #include "handle.h"
 #include "component.h"
@@ -243,6 +244,7 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     /* --- Unverzichtbare Grundlage (Diagnose/Absturzsicherheit) --- */
     serial_init();
     serial_puts("NOVA: Kernel-Kern gebootet\r\n");
+    report("NOVA: Serial Logging (SMP-sicher) Selftest", serial_self_test() == 0);
 
     logging_initialize();
     report("NOVA: Logging Selftest", logging_self_test() == 0);
@@ -392,6 +394,9 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     slab_initialize();
     report("NOVA: Slab Selftest", slab_self_test() == 0);
+
+    kalloc_initialize();
+    report("NOVA: General Kernel Allocator Selftest", kalloc_self_test() == 0);
 
     object_manager_initialize();
     report("NOVA: Object Manager Selftest", object_manager_self_test() == 0);

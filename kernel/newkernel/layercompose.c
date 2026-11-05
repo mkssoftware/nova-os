@@ -1,5 +1,11 @@
+/* Dynamisch wachsende Layer-/Composition-Cache-Tabellen (2026-11-05,
+   Antwort auf "viele feste Grenzen nicht dynamisch loesbar" - siehe
+   [[project_general_allocator]] fuer kalloc.c, zweites umgestelltes
+   Modul nach process.c). LAYER_CAPACITY/COMPOSITION_CACHE_CAPACITY
+   (layercompose.h) sind jetzt nur noch Startkapazitaeten. */
 #include "layercompose.h"
 #include "damagetrack.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -25,21 +31,58 @@ typedef struct {
     int in_use;
 } composition_cache_entry_t;
 
-static layer_t layers[LAYER_CAPACITY];
-static composition_cache_entry_t caches[COMPOSITION_CACHE_CAPACITY];
+static layer_t *layers = NULL;
+static uint32_t layers_capacity = 0;
+static composition_cache_entry_t *caches = NULL;
+static uint32_t caches_capacity = 0;
 static uint32_t layer_next_id = 1;
 static int layercompose_ready = 0;
 
 void layercompose_initialize(void) {
-    for (uint32_t i = 0; i < LAYER_CAPACITY; ++i) layers[i] = (layer_t){0};
-    for (uint32_t i = 0; i < COMPOSITION_CACHE_CAPACITY; ++i) caches[i] = (composition_cache_entry_t){0};
+    if (layers) kfree(layers);
+    layers = (layer_t *)kcalloc(LAYER_CAPACITY, sizeof(layer_t));
+    layers_capacity = layers ? LAYER_CAPACITY : 0u;
+
+    if (caches) kfree(caches);
+    caches = (composition_cache_entry_t *)kcalloc(COMPOSITION_CACHE_CAPACITY, sizeof(composition_cache_entry_t));
+    caches_capacity = caches ? COMPOSITION_CACHE_CAPACITY : 0u;
+
     layer_next_id = 1;
     layercompose_ready = 1;
 }
 
+/* Verdoppelt layers[] (siehe process.c's process_table_grow() fuer das
+   identische Muster: krealloc() kopiert nur alte Bytes, der Zuwachs wird
+   hier explizit genullt). 0 = Erfolg (*out_slot = erster freier Slot im
+   neuen Bereich), -1 bei Erschoepfung (layers/layers_capacity bleiben
+   unveraendert gueltig). */
+static int layers_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (layers_capacity == 0u) ? LAYER_CAPACITY : layers_capacity * 2u;
+    layer_t *grown = (layer_t *)krealloc(layers, new_capacity * (uint32_t)sizeof(layer_t));
+    if (!grown) return -1;
+    for (uint32_t i = layers_capacity; i < new_capacity; ++i) grown[i] = (layer_t){0};
+    *out_slot = layers_capacity;
+    layers = grown;
+    layers_capacity = new_capacity;
+    return 0;
+}
+
+/* Gegenstueck zu layers_grow() fuer caches[]. */
+static int caches_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (caches_capacity == 0u) ? COMPOSITION_CACHE_CAPACITY : caches_capacity * 2u;
+    composition_cache_entry_t *grown = (composition_cache_entry_t *)krealloc(
+        caches, new_capacity * (uint32_t)sizeof(composition_cache_entry_t));
+    if (!grown) return -1;
+    for (uint32_t i = caches_capacity; i < new_capacity; ++i) grown[i] = (composition_cache_entry_t){0};
+    *out_slot = caches_capacity;
+    caches = grown;
+    caches_capacity = new_capacity;
+    return 0;
+}
+
 static layer_t *layer_find(uint32_t layer_id) {
     if (layer_id == 0) return NULL;
-    for (uint32_t i = 0; i < LAYER_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < layers_capacity; ++i) {
         if (layers[i].in_use && layers[i].layer_id == layer_id) return &layers[i];
     }
     return NULL;
@@ -56,10 +99,12 @@ int layer_create(uint32_t parent_id, uint32_t category, uint32_t surface_id, uin
     if (parent_id != 0 && !layer_find(parent_id)) return LAYER_ERR_NOT_FOUND;
 
     uint32_t slot;
-    for (slot = 0; slot < LAYER_CAPACITY; ++slot) {
+    for (slot = 0; slot < layers_capacity; ++slot) {
         if (!layers[slot].in_use) break;
     }
-    if (slot >= LAYER_CAPACITY) return LAYER_ERR_CAPACITY;
+    if (slot >= layers_capacity) {
+        if (layers_grow(&slot) != 0) return LAYER_ERR_CAPACITY;
+    }
 
     layers[slot] = (layer_t){0};
     layers[slot].layer_id = layer_next_id++;
@@ -126,7 +171,7 @@ int layer_remove(uint32_t layer_id) {
     if (!l) return LAYER_ERR_NOT_FOUND;
     uint32_t resolved;
     damage_resolve_target(layer_id, &resolved);
-    for (uint32_t i = 0; i < COMPOSITION_CACHE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < caches_capacity; ++i) {
         if (caches[i].in_use && caches[i].layer_id == layer_id) caches[i] = (composition_cache_entry_t){0};
     }
     *l = (layer_t){0};
@@ -160,7 +205,7 @@ static int rect_contains(render_rect_t outer, render_rect_t inner) {
 }
 
 int compositor_occlusion_pass(void) {
-    for (uint32_t i = 0; i < LAYER_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < layers_capacity; ++i) {
         if (!layers[i].in_use) continue;
         if (layers[i].needs_backdrop) {
             layers[i].visibility_state = LAYER_EFFECT_DEPENDENT;
@@ -168,7 +213,7 @@ int compositor_occlusion_pass(void) {
         }
 
         int occluded = 0;
-        for (uint32_t j = 0; j < LAYER_CAPACITY; ++j) {
+        for (uint32_t j = 0; j < layers_capacity; ++j) {
             if (!layers[j].in_use || i == j) continue;
             if (layers[j].z_order <= layers[i].z_order) continue;
             if (!layers[j].opaque || layers[j].opacity != 100) continue;
@@ -183,7 +228,7 @@ int compositor_occlusion_pass(void) {
 }
 
 static composition_cache_entry_t *cache_find(uint32_t layer_id) {
-    for (uint32_t i = 0; i < COMPOSITION_CACHE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < caches_capacity; ++i) {
         if (caches[i].in_use && caches[i].layer_id == layer_id) return &caches[i];
     }
     return NULL;
@@ -195,11 +240,16 @@ int compositor_compose(uint32_t damage_area, uint32_t total_area,
     uint32_t processed = 0;
 
     /* Painter's Algorithm: aufsteigende Z-Order (hinten->vorne). Einfache
-       Auswahl-Sortierung ueber die kleine Layer-Tabelle reicht hier aus. */
-    int done[LAYER_CAPACITY] = {0};
-    for (uint32_t step = 0; step < LAYER_CAPACITY; ++step) {
+       Auswahl-Sortierung ueber die Layer-Tabelle reicht hier aus. "done"
+       wird dynamisch auf die AKTUELLE layers_capacity bemessen (statt
+       eines fest LAYER_CAPACITY grossen Arrays) - sie kann durch
+       layer_create()/layers_grow() seit dem letzten Aufruf gewachsen
+       sein. */
+    int *done = (int *)kcalloc(layers_capacity, sizeof(int));
+    if (!done) return -1;
+    for (uint32_t step = 0; step < layers_capacity; ++step) {
         int best = -1;
-        for (uint32_t i = 0; i < LAYER_CAPACITY; ++i) {
+        for (uint32_t i = 0; i < layers_capacity; ++i) {
             if (!layers[i].in_use || done[i]) continue;
             if (best < 0 || layers[i].z_order < layers[(uint32_t)best].z_order) best = (int)i;
         }
@@ -225,13 +275,19 @@ int compositor_compose(uint32_t damage_area, uint32_t total_area,
                 value = (l->layer_id * 2654435761u) ^ (l->state_version * 40503u);
             }
             if (!entry) {
-                for (uint32_t c = 0; c < COMPOSITION_CACHE_CAPACITY; ++c) {
+                for (uint32_t c = 0; c < caches_capacity; ++c) {
                     if (!caches[c].in_use) {
                         entry = &caches[c];
-                        entry->layer_id = l->layer_id;
-                        entry->in_use = 1;
                         break;
                     }
+                }
+                if (!entry) {
+                    uint32_t new_slot;
+                    if (caches_grow(&new_slot) == 0) entry = &caches[new_slot];
+                }
+                if (entry) {
+                    entry->layer_id = l->layer_id;
+                    entry->in_use = 1;
                 }
             }
             if (entry) {
@@ -248,6 +304,7 @@ int compositor_compose(uint32_t damage_area, uint32_t total_area,
         composited ^= value;
     }
 
+    kfree(done);
     *out_composited_value = composited;
     *out_processed_count = processed;
     return 0;
@@ -337,6 +394,32 @@ int layercompose_self_test(void) {
     if (layer_create(0xFFFFu, LAYER_CATEGORY_POPUP, 0, 0, inside1, 0, &dummy) != LAYER_ERR_NOT_FOUND) return -1;
     if (layer_set_bounds(0xFFFFu, inside1) != LAYER_ERR_NOT_FOUND) return -1;
     if (layer_info(0xFFFFu, &linfo) != LAYER_ERR_NOT_FOUND) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr Layer
+       anlegen, als die urspruengliche feste LAYER_CAPACITY je erlaubt
+       haette (vorher: layer_create() haette hier LAYER_ERR_CAPACITY
+       geliefert) - muss dafuer mindestens einmal per layers_grow()
+       gewachsen sein. compositor_compose() laeuft danach ueber die
+       gewachsene Tabelle (beweist, dass das dynamisch allozierte
+       "done"-Array in compositor_compose() korrekt mitgewachsen ist)
+       und muss dabei auch den Composition-Cache per caches_grow() ueber
+       COMPOSITION_CACHE_CAPACITY hinaus wachsen lassen (jeder dieser
+       Layer braucht einen eigenen, neuen Cache-Eintrag). */
+    uint32_t growth_count = LAYER_CAPACITY + 3u;
+    uint32_t growth_ids[LAYER_CAPACITY + 3u];
+    for (uint32_t i = 0; i < growth_count; ++i) {
+        render_rect_t r = {100u + i, 100u, 2u, 2u};
+        if (layer_create(0, LAYER_CATEGORY_APPLICATION, 0, 0, r, 5, &growth_ids[i]) != 0) return -1;
+    }
+    if (compositor_occlusion_pass() != 0) return -1;
+
+    uint32_t composited_g, processed_g;
+    if (compositor_compose(10, 1000, &composited_g, &processed_g) != 0) return -1;
+    if (processed_g < growth_count) return -1; /* alle neuen Layer wurden verarbeitet */
+
+    for (uint32_t i = 0; i < growth_count; ++i) {
+        if (layer_remove(growth_ids[i]) != 0) return -1;
+    }
 
     return 0;
 }

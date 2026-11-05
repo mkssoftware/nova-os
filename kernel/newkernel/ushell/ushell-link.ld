@@ -9,6 +9,14 @@ SECTIONS
     . = 0x00500000;
     .text : { *(.text) }
     .rdata : { *(.rdata) *(.rodata) }
+    /* Seitenausrichtung VOR dem ersten schreibbaren Abschnitt: dadurch
+       teilen sich Code/Konstanten (.text/.rdata, oben) und veraenderliche
+       Daten (.data/.bss, unten) NIE dieselbe 4-KiB-Seite - Voraussetzung
+       dafuer, dass ushell_process.c sie mit unterschiedlichen Paging-
+       Rechten (Code schreibgeschuetzt, Daten beschreibbar) abbilden kann.
+       __rw_start markiert die Grenze fuer den Lader (siehe dort). */
+    . = ALIGN(4096);
+    __rw_start = .;
     .data : { *(.data) }
     .bss : { *(.bss) }
     /DISCARD/ : { *(.reloc) *(.pdata) *(.xdata) *(.eh_frame) *(.CRT) }

@@ -1,6 +1,20 @@
-/* NovaOS C-Kernel - Kernel Process Manager (Port aus process32.inc). */
+/* NovaOS C-Kernel - Kernel Process Manager (Port aus process32.inc).
+
+   Dynamisch wachsende Prozesstabelle (2026-11-05, Antwort auf "viele
+   feste Grenzen nicht dynamisch loesbar" - siehe [[project_general_allocator]]
+   fuer kalloc.c, die hierfuer gebaute Grundlage). PROCESS_CAPACITY
+   (process.h) ist jetzt nur noch die STARTKAPAZITAET, kein hartes
+   Maximum mehr: process_create() verdoppelt die Tabelle per
+   krealloc() (kalloc.h), sobald kein freier Slot mehr existiert, statt
+   0 (Tabelle voll) zurueckzugeben. Erschoepfung ist jetzt ausschliesslich
+   echte Systemspeicher-Erschoepfung (PMM leer), nicht mehr ein
+   willkuerlicher Compile-Zeit-Wert. security.h's `SECURITY_CAPACITY`
+   (eigene, seit laengerem nicht mehr synchron gehaltene Konstante, siehe
+   dortigen Kommentar) bleibt bewusst unangetastet - eigene, unabhaengige
+   Tabelle, nicht Teil dieser Aenderung. */
 #include "process.h"
 #include "object.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -13,14 +27,18 @@ typedef struct {
     uint32_t exit_status;
 } process_record_t;
 
-static process_record_t process_table[PROCESS_CAPACITY];
+static process_record_t *process_table = NULL;
+static uint32_t process_table_capacity = 0;
 static uint32_t process_count_value = 0;
 static uint32_t process_next_pid = 1;
 
 void process_manager_initialize(void) {
-    for (uint32_t i = 0; i < PROCESS_CAPACITY; ++i) {
-        process_table[i] = (process_record_t){0};
+    if (process_table) {
+        kfree(process_table);
+        process_table = NULL;
     }
+    process_table = (process_record_t *)kcalloc(PROCESS_CAPACITY, sizeof(process_record_t));
+    process_table_capacity = process_table ? PROCESS_CAPACITY : 0u;
     process_count_value = 0;
     process_next_pid = 1;
 }
@@ -30,7 +48,7 @@ uint32_t process_count(void) {
 }
 
 void *process_lookup(uint32_t pid) {
-    for (uint32_t i = 0; i < PROCESS_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < process_table_capacity; ++i) {
         process_record_t *rec = &process_table[i];
         if (rec->state == PROCESS_STATE_EMPTY) {
             continue;
@@ -42,15 +60,40 @@ void *process_lookup(uint32_t pid) {
     return 0;
 }
 
+/* Verdoppelt die Tabelle (mind. auf PROCESS_CAPACITY, falls sie durch
+   eine fehlgeschlagene fruehere Initialisierung bei 0 steht). Der neu
+   hinzugewonnene Bereich wird explizit genullt - krealloc() kopiert nur
+   die alten Bytes, zeroed den Zuwachs NICHT automatisch (anders als
+   kcalloc() bei der ERSTEN Allokation). 0 = Erfolg (*out_slot = erster
+   garantiert freier Slot im neuen Bereich), -1 bei Speichererschoepfung
+   (process_table/process_table_capacity bleiben in diesem Fall
+   UNVERAENDERT gueltig, wie bei krealloc() ueblich). */
+static int process_table_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (process_table_capacity == 0u) ? PROCESS_CAPACITY : process_table_capacity * 2u;
+    process_record_t *grown = (process_record_t *)krealloc(process_table,
+                                                             new_capacity * (uint32_t)sizeof(process_record_t));
+    if (!grown) return -1;
+
+    for (uint32_t i = process_table_capacity; i < new_capacity; ++i) {
+        grown[i] = (process_record_t){0};
+    }
+    *out_slot = process_table_capacity;
+    process_table = grown;
+    process_table_capacity = new_capacity;
+    return 0;
+}
+
 uint32_t process_create(uint32_t flags, uint32_t page_directory_cr3) {
     uint32_t slot;
-    for (slot = 0; slot < PROCESS_CAPACITY; ++slot) {
+    for (slot = 0; slot < process_table_capacity; ++slot) {
         if (process_table[slot].state == PROCESS_STATE_EMPTY) {
             break;
         }
     }
-    if (slot >= PROCESS_CAPACITY) {
-        return 0;
+    if (slot >= process_table_capacity) {
+        if (process_table_grow(&slot) != 0) {
+            return 0;
+        }
     }
 
     uint32_t pid = process_next_pid;
@@ -82,7 +125,7 @@ uint32_t process_find_by_cr3(uint32_t cr3) {
     if (cr3 == 0) {
         return 0u;
     }
-    for (uint32_t i = 0; i < PROCESS_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < process_table_capacity; ++i) {
         process_record_t *rec = &process_table[i];
         if (rec->state == PROCESS_STATE_EMPTY) {
             continue;
@@ -189,6 +232,28 @@ int process_manager_self_test(void) {
     if (process_count_value != count_before_reap - 1u) return -1;
     if (process_lookup(test_pid) != 0) return -1; /* Slot wirklich frei */
     if (process_exit_status(test_pid) != 0) return -1; /* mit Slot verschwunden */
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr Prozesse
+       anlegen, als die urspruengliche PROCESS_CAPACITY jemals erlaubt
+       haette (vorher: process_create() haette hier 0 geliefert) - die
+       Tabelle MUSS dafuer mindestens einmal per process_table_grow()
+       gewachsen sein. Alle Testprozesse werden danach wieder beendet und
+       eingesammelt, damit kein Slot fuer spaetere Selbsttests belegt
+       bleibt (nur PID 1 bleibt wie zuvor dauerhaft bestehen). */
+    uint32_t growth_pids[PROCESS_CAPACITY + 3u];
+    uint32_t growth_count = PROCESS_CAPACITY + 3u;
+    for (uint32_t i = 0; i < growth_count; ++i) {
+        growth_pids[i] = process_create(0, cr3);
+        if (growth_pids[i] == 0) return -1; /* waere vor dieser Aenderung hier fehlgeschlagen */
+    }
+    if (process_state(growth_pids[growth_count - 1u]) != PROCESS_STATE_RUNNING) return -1;
+    if (process_get_cr3(growth_pids[growth_count - 1u]) != cr3) return -1;
+
+    for (uint32_t i = 0; i < growth_count; ++i) {
+        if (process_terminate(growth_pids[i], 0) != 0) return -1;
+        if (process_reap(growth_pids[i]) != 0) return -1;
+    }
+    if (process_lookup(growth_pids[growth_count - 1u]) != 0) return -1;
 
     return 0;
 }
