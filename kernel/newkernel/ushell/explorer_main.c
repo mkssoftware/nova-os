@@ -118,10 +118,19 @@ typedef struct {
 #define DIRENTRY_ADDR    (ARGS_VADDR + 256u)  /* ~275 Byte, endet bei ~531 */
 #define GUI_BUFFER_VADDR 0x00402000u
 
+/* Verkleinert (2026-11-19, durch echten Boot-Test gefunden): der
+   Bootstrap-PMM (pmm.c) traegt insgesamt nur 1024 Rahmen (4 MiB) -
+   bei FUENF gleichzeitig laufenden Ring-3-Desktop-Prozessen reichte das
+   urspruengliche 440x300-Fenster (129 zusammenhaengende Rahmen) zusammen
+   mit den anderen vier Prozessen nicht mehr zuverlaessig aus (siehe
+   ushell_process.c's Kommentar zur GUI-Puffer-zuerst-Allokationsreihen-
+   folge fuer den vollen Befund). 320x200 (64 Rahmen) laesst deutlich
+   mehr Marge fuer die anderen vier Prozesse plus Seitentabellen-
+   Verwaltungsaufwand. */
 #define WIN_X 60u
 #define WIN_Y 60u
-#define WIN_W 440u
-#define WIN_H 300u
+#define WIN_W 320u
+#define WIN_H 200u
 
 #define HEADER_H   24u
 #define FOOTER_H   20u
@@ -295,7 +304,7 @@ static void draw_explorer(render2d_surface_t *surf) {
 
         char name_buf[48];
         uint32_t copy_len = rows[i].entry.name_len;
-        if (copy_len > 46u) copy_len = 46u;
+        if (copy_len > 28u) copy_len = 28u;
         for (uint32_t c = 0u; c < copy_len; ++c) name_buf[c] = rows[i].entry.name[c];
         name_buf[copy_len] = '\0';
         render2d_draw_text(surf, 8u, y + (ROW_H - 16u) / 2u, name_buf, COLOR_TEXT, bg, 0u);
