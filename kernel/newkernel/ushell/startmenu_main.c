@@ -17,8 +17,11 @@
 
 #define SYSCALL_SERVICE_CORE                 1u
 #define SYSCALL_CORE_GET_DISPLAY_INFO        3u
+#define SYSCALL_CORE_TOGGLE_START_MENU       5u
 #define SYSCALL_CORE_GET_START_MENU_VISIBLE  6u
 #define SYSCALL_CORE_SHUTDOWN                7u
+#define SYSCALL_CORE_TOGGLE_EXPLORER         8u
+#define SYSCALL_CORE_TOGGLE_SETTINGS         10u
 
 #define SYSCALL_SERVICE_GUI       2u
 #define GUI_OP_CREATE_SURFACE     1u
@@ -135,6 +138,22 @@ void startmenu_start(void) {
                         const char *label = menu_entries[idx];
                         if (label[0] == 'S' && label[1] == 'h') { /* "Shutdown" */
                             syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_SHUTDOWN, 0u, 0u, 0, 0);
+                        } else if (label[0] == 'E' && label[1] == 'x') { /* "Explorer" */
+                            /* Oeffnet den echten Dateiexplorer-Prozess (siehe
+                               explorer_main.c) - Menue schliesst sich danach
+                               wie bei jedem normalen Startmenue nach einer
+                               Auswahl. "Terminal" bleibt bewusst UNVERDRAHTET
+                               (keine Kommandoumgebung vorhanden - NovaDOS ist
+                               zurueckgestellt, siehe project_desktop_os_
+                               mandate - ein Klick waere ein wirkungsloser
+                               Schalter). */
+                            syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_EXPLORER, 0u, 0u, 0, 0);
+                            syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_START_MENU, 0u, 0u, 0, 0);
+                        } else if (label[0] == 'S' && label[1] == 'e') { /* "Settings" */
+                            /* Oeffnet die echten Systemeinstellungen (siehe
+                               settings_main.c) - gleiches Muster. */
+                            syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_SETTINGS, 0u, 0u, 0, 0);
+                            syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_START_MENU, 0u, 0u, 0, 0);
                         }
                     }
                 }

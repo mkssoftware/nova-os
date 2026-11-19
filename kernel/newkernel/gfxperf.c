@@ -1,9 +1,17 @@
+/* Dynamisch wachsende Span-/Statistik-Tabellen (2026-11-05, Antwort auf
+   "viele feste Grenzen nicht dynamisch loesbar" - siehe
+   [[project_general_allocator]], zwoelftes umgestelltes Modul).
+   GFXPERF_MAX_SPANS/GFXPERF_MAX_SUBSYSTEM_STATS (gfxperf.h) sind jetzt
+   nur noch Startkapazitaeten. span_id bleibt wie bisher "Index+1" in
+   spans[] - bleibt nach einem krealloc()-Wachstum gueltig, da sich nur
+   die Speicheradresse der Tabelle, nicht die Indizierung aendert. */
 #include "gfxperf.h"
 #include "gfxoptimize.h"
 #include "framesched.h"
 #include "damagetrack.h"
 #include "renderengine.h"
 #include "interrupt.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -22,8 +30,10 @@ typedef struct {
     int in_use;
 } gfxperf_stats_t;
 
-static gfxperf_span_t spans[GFXPERF_MAX_SPANS];
-static gfxperf_stats_t stats[GFXPERF_MAX_SUBSYSTEM_STATS];
+static gfxperf_span_t *spans = NULL;
+static uint32_t spans_capacity = 0;
+static gfxperf_stats_t *stats = NULL;
+static uint32_t stats_capacity = 0;
 static int gfxperf_ready = 0;
 static int gfxperf_enabled_flag = 1;
 
@@ -31,8 +41,14 @@ static uint32_t hysteresis_count = 0;
 static uint32_t last_recommended_profile = GFXOPT_QUALITY_BALANCED;
 
 void gfxperf_initialize(void) {
-    for (uint32_t i = 0; i < GFXPERF_MAX_SPANS; ++i) spans[i] = (gfxperf_span_t){0};
-    for (uint32_t i = 0; i < GFXPERF_MAX_SUBSYSTEM_STATS; ++i) stats[i] = (gfxperf_stats_t){0};
+    if (spans) kfree(spans);
+    spans = (gfxperf_span_t *)kcalloc(GFXPERF_MAX_SPANS, sizeof(gfxperf_span_t));
+    spans_capacity = spans ? GFXPERF_MAX_SPANS : 0u;
+
+    if (stats) kfree(stats);
+    stats = (gfxperf_stats_t *)kcalloc(GFXPERF_MAX_SUBSYSTEM_STATS, sizeof(gfxperf_stats_t));
+    stats_capacity = stats ? GFXPERF_MAX_SUBSYSTEM_STATS : 0u;
+
     gfxperf_enabled_flag = 1;
     hysteresis_count = 0;
     last_recommended_profile = GFXOPT_QUALITY_BALANCED;
@@ -46,8 +62,32 @@ int gfxperf_set_enabled(int enabled) {
 
 int gfxperf_enabled(void) { return gfxperf_enabled_flag; }
 
+/* Verdoppelt spans[]/stats[] (identisches Muster wie die bereits
+   umgestellten Module). */
+static int spans_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (spans_capacity == 0u) ? GFXPERF_MAX_SPANS : spans_capacity * 2u;
+    gfxperf_span_t *grown = (gfxperf_span_t *)krealloc(spans, new_capacity * (uint32_t)sizeof(gfxperf_span_t));
+    if (!grown) return -1;
+    for (uint32_t i = spans_capacity; i < new_capacity; ++i) grown[i] = (gfxperf_span_t){0};
+    *out_slot = spans_capacity;
+    spans = grown;
+    spans_capacity = new_capacity;
+    return 0;
+}
+
+static int stats_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (stats_capacity == 0u) ? GFXPERF_MAX_SUBSYSTEM_STATS : stats_capacity * 2u;
+    gfxperf_stats_t *grown = (gfxperf_stats_t *)krealloc(stats, new_capacity * (uint32_t)sizeof(gfxperf_stats_t));
+    if (!grown) return -1;
+    for (uint32_t i = stats_capacity; i < new_capacity; ++i) grown[i] = (gfxperf_stats_t){0};
+    *out_slot = stats_capacity;
+    stats = grown;
+    stats_capacity = new_capacity;
+    return 0;
+}
+
 static gfxperf_stats_t *stats_find(uint32_t subsystem_tag) {
-    for (uint32_t i = 0; i < GFXPERF_MAX_SUBSYSTEM_STATS; ++i) {
+    for (uint32_t i = 0; i < stats_capacity; ++i) {
         if (stats[i].in_use && stats[i].subsystem_tag == subsystem_tag) return &stats[i];
     }
     return NULL;
@@ -56,15 +96,16 @@ static gfxperf_stats_t *stats_find(uint32_t subsystem_tag) {
 static gfxperf_stats_t *stats_alloc(uint32_t subsystem_tag) {
     gfxperf_stats_t *s = stats_find(subsystem_tag);
     if (s) return s;
-    for (uint32_t i = 0; i < GFXPERF_MAX_SUBSYSTEM_STATS; ++i) {
-        if (!stats[i].in_use) {
-            stats[i] = (gfxperf_stats_t){0};
-            stats[i].subsystem_tag = subsystem_tag;
-            stats[i].in_use = 1;
-            return &stats[i];
-        }
+    uint32_t slot;
+    for (slot = 0; slot < stats_capacity; ++slot) {
+        if (!stats[slot].in_use) break;
     }
-    return NULL;
+    if (slot >= stats_capacity) {
+        if (stats_grow(&slot) != 0) return NULL;
+    }
+    stats[slot].subsystem_tag = subsystem_tag;
+    stats[slot].in_use = 1;
+    return &stats[slot];
 }
 
 int gfxperf_begin(uint32_t subsystem_tag, uint32_t frame_id, uint32_t *out_span_id) {
@@ -74,10 +115,12 @@ int gfxperf_begin(uint32_t subsystem_tag, uint32_t frame_id, uint32_t *out_span_
     }
 
     uint32_t slot;
-    for (slot = 0; slot < GFXPERF_MAX_SPANS; ++slot) {
+    for (slot = 0; slot < spans_capacity; ++slot) {
         if (!spans[slot].in_use) break;
     }
-    if (slot >= GFXPERF_MAX_SPANS) return GFXPERF_ERR_CAPACITY;
+    if (slot >= spans_capacity) {
+        if (spans_grow(&slot) != 0) return GFXPERF_ERR_CAPACITY;
+    }
 
     spans[slot] = (gfxperf_span_t){0};
     spans[slot].subsystem_tag = subsystem_tag;
@@ -94,7 +137,7 @@ int gfxperf_end(uint32_t span_id, uint32_t *out_duration_ticks) {
         *out_duration_ticks = 0;
         return 0;
     }
-    if (span_id > GFXPERF_MAX_SPANS || !spans[span_id - 1].in_use) return GFXPERF_ERR_NOT_FOUND;
+    if (span_id > spans_capacity || !spans[span_id - 1].in_use) return GFXPERF_ERR_NOT_FOUND;
 
     gfxperf_span_t *s = &spans[span_id - 1];
     uint32_t duration = timer_get_ticks() - s->start_tick;
@@ -268,6 +311,37 @@ int gfxperf_self_test(void) {
     /* Keine Messdaten (0) aendert die Empfehlung nicht. */
     if (gfxperf_recommend_profile(0u, &profile) != 0) return -1;
     if (profile != GFXOPT_QUALITY_POWER_SAVING) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr GLEICHZEITIG
+       offene Spans, als die urspruengliche feste GFXPERF_MAX_SPANS je
+       erlaubt haette (erzwingt spans_grow() - keine davon wird vor dem
+       Oeffnen der naechsten beendet), UND mehr verschiedene Subsystem-
+       Tags, als GFXPERF_MAX_SUBSYSTEM_STATS je erlaubt haette (erzwingt
+       stats_grow()). */
+    uint32_t span_growth_count = GFXPERF_MAX_SPANS + 5u;
+    uint32_t *growth_spans = (uint32_t *)kalloc(span_growth_count * (uint32_t)sizeof(uint32_t));
+    if (!growth_spans) return -1;
+    for (uint32_t i = 0; i < span_growth_count; ++i) {
+        if (gfxperf_begin(1000u + i, 0, &growth_spans[i]) != 0) return -1;
+        if (growth_spans[i] == 0) return -1; /* Messung aktiv -> nie der Deaktiviert-Sentinel */
+    }
+    for (uint32_t i = 0; i < span_growth_count; ++i) {
+        uint32_t dur;
+        if (gfxperf_end(growth_spans[i], &dur) != 0) return -1;
+    }
+    kfree(growth_spans);
+
+    uint32_t stats_growth_count = GFXPERF_MAX_SUBSYSTEM_STATS + 5u;
+    uint32_t last_tag = 0;
+    for (uint32_t i = 0; i < stats_growth_count; ++i) {
+        uint32_t sp, dur;
+        last_tag = 2000u + i;
+        if (gfxperf_begin(last_tag, 0, &sp) != 0) return -1;
+        if (gfxperf_end(sp, &dur) != 0) return -1;
+    }
+    uint32_t last_count, last_avg, last_min, last_max;
+    if (gfxperf_subsystem_stats(last_tag, &last_count, &last_avg, &last_min, &last_max) != 0) return -1;
+    if (last_count != 1) return -1;
 
     return 0;
 }

@@ -19,6 +19,7 @@
 #include "cap.h"
 #include "process.h"
 #include "taskbarglass.h"
+#include "pmm.h"
 
 static int syscall_mgr_initialized = 0;
 /* Sichtbarkeits-Flag fuer das Startmenue (siehe SYSCALL_CORE_TOGGLE_
@@ -27,6 +28,16 @@ static int syscall_mgr_initialized = 0;
    (Taskbar schaltet um, Startmenue-Prozess fragt ab) gemeinsam genutzt
    wird. */
 static int syscall_start_menu_visible = 0;
+
+/* Gleiches Muster fuer den Dateiexplorer (2026-11-19) - siehe syscall.h's
+   SYSCALL_CORE_TOGGLE_EXPLORER/_GET_EXPLORER_VISIBLE. Startet unsichtbar
+   (0 = wie das Startmenue), der Explorer-Prozess zeigt sein Fenster erst
+   nach dem ersten TOGGLE_EXPLORER. */
+static int syscall_explorer_visible = 0;
+
+/* Gleiches Muster fuer die Systemeinstellungen (2026-11-19) - siehe
+   syscall.h's SYSCALL_CORE_TOGGLE_SETTINGS/_GET_SETTINGS_VISIBLE. */
+static int syscall_settings_visible = 0;
 
 /* NPSPEC-SECURITY-CAPABILITY-0001: erste echte Laufzeit-Nutzung des §103
    Capability Frameworks (cap.h/cap_core.c, vorher nur von dessen eigenen
@@ -530,6 +541,42 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
     if (operation == SYSCALL_CORE_GET_START_MENU_VISIBLE) {
         ++syscall_stats_successful;
         frame_write(frame_ptr, FRAME_OFF_EDI, (uint32_t)syscall_start_menu_visible);
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_TOGGLE_EXPLORER) {
+        syscall_explorer_visible = !syscall_explorer_visible;
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_GET_EXPLORER_VISIBLE) {
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EDI, (uint32_t)syscall_explorer_visible);
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_TOGGLE_SETTINGS) {
+        syscall_settings_visible = !syscall_settings_visible;
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_GET_SETTINGS_VISIBLE) {
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EDI, (uint32_t)syscall_settings_visible);
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_GET_SYSTEM_INFO) {
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EDI, pmm_frame_count());
+        frame_write(frame_ptr, FRAME_OFF_ESI, PMM_PAGE_SIZE);
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
         return frame_ptr;
     }

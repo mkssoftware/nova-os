@@ -1,5 +1,19 @@
+/* Dynamisch wachsende Resource-/Pass-/Edge-Tabellen (2026-11-05, Antwort
+   auf "viele feste Grenzen nicht dynamisch loesbar" - siehe
+   [[project_general_allocator]], siebtes umgestelltes Modul).
+   RG_RESOURCE_CAPACITY/RG_PASS_CAPACITY/RG_EDGE_CAPACITY (rendergraph.h)
+   sind jetzt nur noch Startkapazitaeten. RG_PASS_MAX_RESOURCES (In-
+   Struct-Array pro Pass) bleibt bewusst UNVERAENDERT - eine echte
+   Praxisgrenze (Ein-/Ausgaben EINES Passes), keine wachsende Sammlung.
+   `current_plan[]` (bisher statisch RG_PASS_CAPACITY) UND die lokalen
+   Scratch-Arrays in rg_build() (`needed[]`/`in_degree[]`/`queue[]`,
+   bisher ebenfalls fest RG_PASS_CAPACITY) muessen mit passes_capacity
+   mitwachsen - rg_build() alloziert sie jetzt dynamisch auf die
+   AKTUELLE Kapazitaet und gibt sie ueber einen gemeinsamen
+   Cleanup-Pfad frei (die Funktion hat mehrere Rueckgabestellen). */
 #include "rendergraph.h"
 #include "renderengine.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -31,23 +45,40 @@ typedef struct {
     int in_use;
 } rg_edge_t;
 
-static rg_resource_t resources[RG_RESOURCE_CAPACITY];
-static rg_pass_t passes[RG_PASS_CAPACITY];
-static rg_edge_t edges[RG_EDGE_CAPACITY];
+static rg_resource_t *resources = NULL;
+static uint32_t resources_capacity = 0;
+static rg_pass_t *passes = NULL;
+static uint32_t passes_capacity = 0;
+static rg_edge_t *edges = NULL;
+static uint32_t edges_capacity = 0;
 static uint32_t rg_next_resource_id = 1;
 static uint32_t rg_next_pass_id = 1;
 static uint32_t edge_count = 0;
 
-static uint32_t current_plan[RG_PASS_CAPACITY];
+static uint32_t *current_plan = NULL;
+static uint32_t current_plan_capacity = 0;
 static uint32_t current_plan_count = 0;
 static int plan_valid = 0;
 
 static int rendergraph_ready = 0;
 
 void rendergraph_initialize(void) {
-    for (uint32_t i = 0; i < RG_RESOURCE_CAPACITY; ++i) resources[i] = (rg_resource_t){0};
-    for (uint32_t i = 0; i < RG_PASS_CAPACITY; ++i) passes[i] = (rg_pass_t){0};
-    for (uint32_t i = 0; i < RG_EDGE_CAPACITY; ++i) edges[i] = (rg_edge_t){0};
+    if (resources) kfree(resources);
+    resources = (rg_resource_t *)kcalloc(RG_RESOURCE_CAPACITY, sizeof(rg_resource_t));
+    resources_capacity = resources ? RG_RESOURCE_CAPACITY : 0u;
+
+    if (passes) kfree(passes);
+    passes = (rg_pass_t *)kcalloc(RG_PASS_CAPACITY, sizeof(rg_pass_t));
+    passes_capacity = passes ? RG_PASS_CAPACITY : 0u;
+
+    if (edges) kfree(edges);
+    edges = (rg_edge_t *)kcalloc(RG_EDGE_CAPACITY, sizeof(rg_edge_t));
+    edges_capacity = edges ? RG_EDGE_CAPACITY : 0u;
+
+    if (current_plan) kfree(current_plan);
+    current_plan = NULL;
+    current_plan_capacity = 0;
+
     rg_next_resource_id = 1;
     rg_next_pass_id = 1;
     edge_count = 0;
@@ -56,16 +87,65 @@ void rendergraph_initialize(void) {
     rendergraph_ready = 1;
 }
 
+/* Verdoppelt resources[]/passes[]/edges[] (identisches Muster wie die
+   bereits umgestellten Module). 0 = Erfolg (*out_slot = erster freier
+   Slot), -1 bei Erschoepfung (Tabelle/Kapazitaet bleiben unveraendert
+   gueltig). */
+static int resources_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (resources_capacity == 0u) ? RG_RESOURCE_CAPACITY : resources_capacity * 2u;
+    rg_resource_t *grown = (rg_resource_t *)krealloc(resources, new_capacity * (uint32_t)sizeof(rg_resource_t));
+    if (!grown) return -1;
+    for (uint32_t i = resources_capacity; i < new_capacity; ++i) grown[i] = (rg_resource_t){0};
+    *out_slot = resources_capacity;
+    resources = grown;
+    resources_capacity = new_capacity;
+    return 0;
+}
+
+static int passes_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (passes_capacity == 0u) ? RG_PASS_CAPACITY : passes_capacity * 2u;
+    rg_pass_t *grown = (rg_pass_t *)krealloc(passes, new_capacity * (uint32_t)sizeof(rg_pass_t));
+    if (!grown) return -1;
+    for (uint32_t i = passes_capacity; i < new_capacity; ++i) grown[i] = (rg_pass_t){0};
+    *out_slot = passes_capacity;
+    passes = grown;
+    passes_capacity = new_capacity;
+    return 0;
+}
+
+static int edges_grow(void) {
+    uint32_t new_capacity = (edges_capacity == 0u) ? RG_EDGE_CAPACITY : edges_capacity * 2u;
+    rg_edge_t *grown = (rg_edge_t *)krealloc(edges, new_capacity * (uint32_t)sizeof(rg_edge_t));
+    if (!grown) return -1;
+    for (uint32_t i = edges_capacity; i < new_capacity; ++i) grown[i] = (rg_edge_t){0};
+    edges = grown;
+    edges_capacity = new_capacity;
+    return 0;
+}
+
+/* Stellt sicher, dass current_plan[] mindestens needed_capacity Eintraege
+   fassen kann (current_plan wird bei jedem rg_build() ohnehin vollstaendig
+   neu befuellt - ein einfaches krealloc() auf Bedarf reicht, kein
+   Zero-Fill des Zuwachses noetig). 0 = Erfolg, -1 bei Erschoepfung. */
+static int ensure_current_plan_capacity(uint32_t needed_capacity) {
+    if (current_plan_capacity >= needed_capacity) return 0;
+    uint32_t *grown = (uint32_t *)krealloc(current_plan, needed_capacity * (uint32_t)sizeof(uint32_t));
+    if (!grown) return -1;
+    current_plan = grown;
+    current_plan_capacity = needed_capacity;
+    return 0;
+}
+
 static rg_pass_t *pass_find(uint32_t pass_id) {
     if (pass_id == 0) return NULL;
-    for (uint32_t i = 0; i < RG_PASS_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < passes_capacity; ++i) {
         if (passes[i].in_use && passes[i].pass_id == pass_id) return &passes[i];
     }
     return NULL;
 }
 
 static int resource_exists(uint32_t resource_id) {
-    for (uint32_t i = 0; i < RG_RESOURCE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < resources_capacity; ++i) {
         if (resources[i].in_use && resources[i].resource_id == resource_id) return 1;
     }
     return 0;
@@ -80,10 +160,12 @@ static int has_resource(const uint32_t *list, uint32_t count, uint32_t resource_
 
 int rg_resource_declare(uint32_t resource_class, uint32_t *out_resource_id) {
     uint32_t slot;
-    for (slot = 0; slot < RG_RESOURCE_CAPACITY; ++slot) {
+    for (slot = 0; slot < resources_capacity; ++slot) {
         if (!resources[slot].in_use) break;
     }
-    if (slot >= RG_RESOURCE_CAPACITY) return RG_ERR_CAPACITY;
+    if (slot >= resources_capacity) {
+        if (resources_grow(&slot) != 0) return RG_ERR_CAPACITY;
+    }
     resources[slot].resource_id = rg_next_resource_id++;
     resources[slot].resource_class = resource_class;
     resources[slot].in_use = 1;
@@ -94,10 +176,12 @@ int rg_resource_declare(uint32_t resource_class, uint32_t *out_resource_id) {
 int rg_pass_declare(uint32_t pass_type, uint32_t node_id, uint32_t region_id,
                     uint32_t *out_pass_id) {
     uint32_t slot;
-    for (slot = 0; slot < RG_PASS_CAPACITY; ++slot) {
+    for (slot = 0; slot < passes_capacity; ++slot) {
         if (!passes[slot].in_use) break;
     }
-    if (slot >= RG_PASS_CAPACITY) return RG_ERR_CAPACITY;
+    if (slot >= passes_capacity) {
+        if (passes_grow(&slot) != 0) return RG_ERR_CAPACITY;
+    }
 
     passes[slot] = (rg_pass_t){0};
     passes[slot].pass_id = rg_next_pass_id++;
@@ -141,7 +225,9 @@ int rg_pass_mark_required(uint32_t pass_id) {
 }
 
 static int add_edge(uint32_t pass_a, uint32_t pass_b, uint32_t resource_id, uint32_t hazard_type) {
-    if (edge_count >= RG_EDGE_CAPACITY) return RG_ERR_CAPACITY;
+    if (edge_count >= edges_capacity) {
+        if (edges_grow() != 0) return RG_ERR_CAPACITY;
+    }
     edges[edge_count].pass_a = pass_a;
     edges[edge_count].pass_b = pass_b;
     edges[edge_count].resource_id = resource_id;
@@ -158,9 +244,9 @@ int rg_build(uint32_t *out_order, uint32_t max_out, uint32_t *out_count) {
        IMMER vom frueher deklarierten zum spaeter deklarierten Pass - dadurch
        ist der resultierende Graph strukturell azyklisch (#6 Zyklus-
        Erkennung ist dadurch trivial erfuellt, nicht umgangen). */
-    for (uint32_t i = 0; i < RG_PASS_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < passes_capacity; ++i) {
         if (!passes[i].in_use) continue;
-        for (uint32_t j = 0; j < RG_PASS_CAPACITY; ++j) {
+        for (uint32_t j = 0; j < passes_capacity; ++j) {
             if (!passes[j].in_use || passes[j].pass_id <= passes[i].pass_id) continue;
             rg_pass_t *a = &passes[i];
             rg_pass_t *b = &passes[j];
@@ -186,11 +272,29 @@ int rg_build(uint32_t *out_order, uint32_t max_out, uint32_t *out_count) {
         }
     }
 
+    /* needed[]/in_degree[]/queue[] auf die AKTUELLE passes_capacity
+       dynamisch alloziert (bisher fest RG_PASS_CAPACITY grosse lokale
+       Arrays) - ueber einen gemeinsamen Cleanup-Pfad freigegeben, da
+       diese Funktion mehrere Rueckgabestellen hat. */
+    int *needed = (int *)kcalloc(passes_capacity, sizeof(int));
+    uint32_t *in_degree = (uint32_t *)kcalloc(passes_capacity, sizeof(uint32_t));
+    uint32_t *queue = (uint32_t *)kcalloc(passes_capacity, sizeof(uint32_t));
+    int result = 0;
+    uint32_t produced = 0;
+
+    if (!needed || !in_degree || !queue) {
+        result = RG_ERR_CAPACITY;
+        goto cleanup;
+    }
+    if (ensure_current_plan_capacity(passes_capacity) != 0) {
+        result = RG_ERR_CAPACITY;
+        goto cleanup;
+    }
+
     /* 2. Dead Pass Elimination: rueckwaerts ab den required-Passes entlang
        RAW-Kanten (nur RAW beschreibt eine echte Produzenten-Abhaengigkeit -
        WAR/WAW sind reine Ausfuehrungsordnung, kein Bedarf). */
-    int needed[RG_PASS_CAPACITY];
-    for (uint32_t i = 0; i < RG_PASS_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < passes_capacity; ++i) {
         needed[i] = passes[i].in_use && passes[i].required;
     }
     int changed = 1;
@@ -210,15 +314,13 @@ int rg_build(uint32_t *out_order, uint32_t max_out, uint32_t *out_count) {
         }
     }
 
-    for (uint32_t i = 0; i < RG_PASS_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < passes_capacity; ++i) {
         if (!passes[i].in_use) continue;
         passes[i].lifecycle_state = needed[i] ? RG_PASS_SCHEDULED : RG_PASS_CULLED;
     }
 
     /* 3. Topologische Sortierung (Kahn) ausschliesslich ueber benoetigte
        Passes und Kanten, deren beide Enden benoetigt werden. */
-    uint32_t in_degree[RG_PASS_CAPACITY];
-    for (uint32_t i = 0; i < RG_PASS_CAPACITY; ++i) in_degree[i] = 0;
     for (uint32_t e = 0; e < edge_count; ++e) {
         rg_pass_t *source = pass_find(edges[e].pass_a);
         rg_pass_t *target = pass_find(edges[e].pass_b);
@@ -228,17 +330,15 @@ int rg_build(uint32_t *out_order, uint32_t max_out, uint32_t *out_count) {
         if (needed[si] && needed[ti]) in_degree[ti]++;
     }
 
-    uint32_t queue[RG_PASS_CAPACITY];
     uint32_t queue_count = 0;
-    for (uint32_t i = 0; i < RG_PASS_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < passes_capacity; ++i) {
         if (passes[i].in_use && needed[i] && in_degree[i] == 0) {
             queue[queue_count++] = i;
         }
     }
 
-    uint32_t produced = 0;
     uint32_t total_needed = 0;
-    for (uint32_t i = 0; i < RG_PASS_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < passes_capacity; ++i) {
         if (passes[i].in_use && needed[i]) total_needed++;
     }
 
@@ -264,7 +364,8 @@ int rg_build(uint32_t *out_order, uint32_t max_out, uint32_t *out_count) {
     }
 
     if (produced != total_needed) {
-        return RG_ERR_CYCLE; /* sicherheitshalber erkannt, strukturell hier ausgeschlossen */
+        result = RG_ERR_CYCLE; /* sicherheitshalber erkannt, strukturell hier ausgeschlossen */
+        goto cleanup;
     }
 
     current_plan_count = (produced < max_out) ? produced : max_out;
@@ -274,7 +375,12 @@ int rg_build(uint32_t *out_order, uint32_t max_out, uint32_t *out_count) {
         out_order[i] = current_plan[i];
     }
     *out_count = produced;
-    return 0;
+
+cleanup:
+    kfree(needed);
+    kfree(in_degree);
+    kfree(queue);
+    return result;
 }
 
 int rg_execute(uint32_t damage_area, uint32_t total_area) {
@@ -411,6 +517,70 @@ int rendergraph_self_test(void) {
     if (rg_pass_add_output(passA, 0xFFFFu) != RG_ERR_NOT_FOUND) return -1;
     if (rg_pass_info(0xFFFFu, &pinfo) != RG_ERR_NOT_FOUND) return -1;
     if (rg_hazard_between(passA, passC, resA, &hazard) != RG_ERR_NOT_FOUND) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: eine lange Kette
+       aus GROWTH_N Passes (jeder liest die Ausgabe seines Vorgaengers und
+       schreibt eine neue, eigene Ressource) erzwingt mindestens ein
+       passes_grow() (GROWTH_N > RG_PASS_CAPACITY), resources_grow()
+       (GROWTH_N Ressourcen > RG_RESOURCE_CAPACITY) UND edges_grow()
+       (GROWTH_N-1 RAW-Kanten > RG_EDGE_CAPACITY) - mit der urspruenglichen
+       festen Kapazitaet waere spaetestens rg_resource_declare() oder
+       rg_pass_declare() hier fehlgeschlagen. */
+    const uint32_t GROWTH_N = 40u;
+    /* Auf dem kalloc-Heap statt auf dem Stack (dieses freestanding Target
+       hat kein Laufzeit-chkstk/keine Stack-Probe-Unterstuetzung - drei
+       Arrays dieser Groesse zusaetzlich zu den bereits vorhandenen
+       lokalen Variablen dieser Funktion hoben das Stack-Frame ueber die
+       Schwelle, ab der der Compiler einen __chkstk_ms-Aufruf einfuegt,
+       der hier nicht linkbar ist). */
+    uint32_t *growth_res = (uint32_t *)kalloc(GROWTH_N * (uint32_t)sizeof(uint32_t));
+    uint32_t *growth_pass = (uint32_t *)kalloc(GROWTH_N * (uint32_t)sizeof(uint32_t));
+    uint32_t *growth_order = (uint32_t *)kalloc(GROWTH_N * (uint32_t)sizeof(uint32_t));
+    if (!growth_res || !growth_pass || !growth_order) return -1;
+
+    for (uint32_t i = 0; i < GROWTH_N; ++i) {
+        if (rg_resource_declare(RG_RESOURCE_TRANSIENT, &growth_res[i]) != 0) return -1;
+    }
+    for (uint32_t i = 0; i < GROWTH_N; ++i) {
+        if (rg_pass_declare(RG_PASS_TYPE_GRAPHICS, 0, 0, &growth_pass[i]) != 0) return -1;
+        if (i > 0) {
+            if (rg_pass_add_input(growth_pass[i], growth_res[i - 1]) != 0) return -1;
+        }
+        if (rg_pass_add_output(growth_pass[i], growth_res[i]) != 0) return -1;
+    }
+    if (rg_pass_mark_required(growth_pass[GROWTH_N - 1u]) != 0) return -1;
+
+    /* rg_build() wertet IMMER alle noch in_use-Passes aus, nicht nur die
+       dieser Kette - die frueher im Test als required markierten passA/
+       passB/passC bleiben als eigene, unabhaengige Komponente im Graphen
+       bestehen und werden hier mit ausgewertet. Der erste Aufruf dient nur
+       dazu, die tatsaechliche Gesamtzahl (growth_count, hier typischerweise
+       GROWTH_N + 3) zu ermitteln, bevor ein ausreichend grosser Puffer fuer
+       die vollstaendige Reihenfolge alloziert wird - absolute Positionen/
+       Anzahlen waeren hier fragil, eine Positions-/Reihenfolgepruefung
+       innerhalb des tatsaechlichen Ergebnisses ist robust. */
+    uint32_t growth_count;
+    if (rg_build(growth_order, GROWTH_N, &growth_count) != 0) return -1;
+    if (growth_count < GROWTH_N) return -1; /* mindestens die gesamte Kette muss benoetigt werden */
+
+    kfree(growth_order);
+    growth_order = (uint32_t *)kalloc(growth_count * (uint32_t)sizeof(uint32_t));
+    if (!growth_order) return -1;
+    uint32_t growth_count2;
+    if (rg_build(growth_order, growth_count, &growth_count2) != 0) return -1;
+    if (growth_count2 != growth_count) return -1;
+
+    int growth_idx_first = -1, growth_idx_last = -1;
+    for (uint32_t i = 0; i < growth_count; ++i) {
+        if (growth_order[i] == growth_pass[0]) growth_idx_first = (int)i;
+        if (growth_order[i] == growth_pass[GROWTH_N - 1u]) growth_idx_last = (int)i;
+    }
+    if (growth_idx_first < 0 || growth_idx_last < 0) return -1;
+    if (!(growth_idx_first < growth_idx_last)) return -1; /* erster Pass der Kette laeuft vor dem required Endpunkt */
+
+    kfree(growth_res);
+    kfree(growth_pass);
+    kfree(growth_order);
 
     return 0;
 }

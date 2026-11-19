@@ -1,5 +1,20 @@
-/* NovaOS C-Kernel - Nova Material Engine: Material System (siehe material.h). */
+/* NovaOS C-Kernel - Nova Material Engine: Material System (siehe
+   material.h).
+
+   Dynamisch wachsende Definitions-/Instanz-Tabellen (2026-11-05, Antwort
+   auf "viele feste Grenzen nicht dynamisch loesbar" - siehe
+   [[project_general_allocator]], dreizehntes umgestelltes Modul).
+   MATERIAL_MAX_DEFINITIONS/MATERIAL_MAX_INSTANCES (material.h) sind
+   jetzt nur noch Startkapazitaeten. definition_id/instance_id sind in
+   diesem Modul (anders als die meisten anderen bisher umgestellten)
+   DIREKTE 1-basierte Array-Indizes (`i+1u`), kein separat gezaehlter
+   "naechster ID"-Zaehler - das bleibt nach einem krealloc()-Wachstum
+   unveraendert gueltig, da bereits vergebene IDs weiterhin dieselben
+   (jetzt ggf. verschobenen, aber weiterhin per Index gueltigen) Slots
+   referenzieren. */
 #include "material.h"
+#include "kalloc.h"
+#include <stddef.h>
 
 typedef struct {
     uint32_t in_use;
@@ -19,9 +34,38 @@ typedef struct {
     uint32_t generation;
 } material_instance_t;
 
-static material_definition_t g_defs[MATERIAL_MAX_DEFINITIONS];
-static material_instance_t g_inst[MATERIAL_MAX_INSTANCES];
+static material_definition_t *g_defs = NULL;
+static uint32_t g_defs_capacity = 0;
+static material_instance_t *g_inst = NULL;
+static uint32_t g_inst_capacity = 0;
 static uint32_t g_def_count = 0;
+
+/* Verdoppelt g_defs[]/g_inst[] (identisches Muster wie die bereits
+   umgestellten Module). 0 = Erfolg (*out_slot = erster freier Slot),
+   -1 bei Erschoepfung (Tabelle/Kapazitaet bleiben unveraendert gueltig). */
+static int defs_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (g_defs_capacity == 0u) ? MATERIAL_MAX_DEFINITIONS : g_defs_capacity * 2u;
+    material_definition_t *grown = (material_definition_t *)krealloc(
+        g_defs, new_capacity * (uint32_t)sizeof(material_definition_t));
+    if (!grown) return -1;
+    for (uint32_t i = g_defs_capacity; i < new_capacity; ++i) grown[i] = (material_definition_t){0};
+    *out_slot = g_defs_capacity;
+    g_defs = grown;
+    g_defs_capacity = new_capacity;
+    return 0;
+}
+
+static int inst_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (g_inst_capacity == 0u) ? MATERIAL_MAX_INSTANCES : g_inst_capacity * 2u;
+    material_instance_t *grown = (material_instance_t *)krealloc(
+        g_inst, new_capacity * (uint32_t)sizeof(material_instance_t));
+    if (!grown) return -1;
+    for (uint32_t i = g_inst_capacity; i < new_capacity; ++i) grown[i] = (material_instance_t){0};
+    *out_slot = g_inst_capacity;
+    g_inst = grown;
+    g_inst_capacity = new_capacity;
+    return 0;
+}
 
 static void zero_properties(material_properties_t *p) {
     p->color_rgb = 0; p->tint_rgb = 0; p->tint_strength = 0; p->opacity = 255;
@@ -56,31 +100,39 @@ static void apply_override(material_properties_t *base, const material_propertie
 }
 
 void material_initialize(void) {
-    for (uint32_t i = 0; i < MATERIAL_MAX_DEFINITIONS; ++i) g_defs[i].in_use = 0;
-    for (uint32_t i = 0; i < MATERIAL_MAX_INSTANCES; ++i) g_inst[i].in_use = 0;
+    if (g_defs) kfree(g_defs);
+    g_defs = (material_definition_t *)kcalloc(MATERIAL_MAX_DEFINITIONS, sizeof(material_definition_t));
+    g_defs_capacity = g_defs ? MATERIAL_MAX_DEFINITIONS : 0u;
+
+    if (g_inst) kfree(g_inst);
+    g_inst = (material_instance_t *)kcalloc(MATERIAL_MAX_INSTANCES, sizeof(material_instance_t));
+    g_inst_capacity = g_inst ? MATERIAL_MAX_INSTANCES : 0u;
+
     g_def_count = 0;
 }
 
 uint32_t material_register(const char *name, uint32_t type, const material_properties_t *defaults) {
     if (!name || name[0] == '\0') return 0;
-    for (uint32_t i = 0; i < MATERIAL_MAX_DEFINITIONS; ++i) {
-        if (!g_defs[i].in_use) {
-            g_defs[i].in_use = 1;
-            copy_name(g_defs[i].name, name);
-            g_defs[i].type = type;
-            if (defaults) g_defs[i].base = *defaults;
-            else zero_properties(&g_defs[i].base);
-            for (uint32_t s = 0; s < MATERIAL_STATE_COUNT; ++s) g_defs[i].state_mask[s] = 0;
-            ++g_def_count;
-            return i + 1u;
-        }
+    uint32_t slot;
+    for (slot = 0; slot < g_defs_capacity; ++slot) {
+        if (!g_defs[slot].in_use) break;
     }
-    return 0;
+    if (slot >= g_defs_capacity) {
+        if (defs_grow(&slot) != 0) return 0;
+    }
+    g_defs[slot].in_use = 1;
+    copy_name(g_defs[slot].name, name);
+    g_defs[slot].type = type;
+    if (defaults) g_defs[slot].base = *defaults;
+    else zero_properties(&g_defs[slot].base);
+    for (uint32_t s = 0; s < MATERIAL_STATE_COUNT; ++s) g_defs[slot].state_mask[s] = 0;
+    ++g_def_count;
+    return slot + 1u;
 }
 
 int material_set_state_override(uint32_t definition_id, uint32_t state,
                                   const material_properties_t *props, uint32_t field_mask) {
-    if (definition_id == 0 || definition_id > MATERIAL_MAX_DEFINITIONS) return -1;
+    if (definition_id == 0 || definition_id > g_defs_capacity) return -1;
     if (state >= MATERIAL_STATE_COUNT || !props) return -1;
     material_definition_t *d = &g_defs[definition_id - 1u];
     if (!d->in_use) return -1;
@@ -90,7 +142,7 @@ int material_set_state_override(uint32_t definition_id, uint32_t state,
 }
 
 int material_definition_exists(uint32_t definition_id) {
-    if (definition_id == 0 || definition_id > MATERIAL_MAX_DEFINITIONS) return 0;
+    if (definition_id == 0 || definition_id > g_defs_capacity) return 0;
     return g_defs[definition_id - 1u].in_use ? 1 : 0;
 }
 
@@ -109,18 +161,20 @@ uint32_t material_fallback_id(void) { return MATERIAL_ID_SOLID; }
 
 uint32_t material_instance_create(uint32_t definition_id) {
     if (!material_definition_exists(definition_id)) definition_id = material_fallback_id();
-    for (uint32_t i = 0; i < MATERIAL_MAX_INSTANCES; ++i) {
-        if (!g_inst[i].in_use) {
-            g_inst[i].in_use = 1;
-            g_inst[i].definition_id = definition_id;
-            g_inst[i].state = MATERIAL_STATE_NORMAL;
-            g_inst[i].override_mask = 0;
-            g_inst[i].generation = 0;
-            zero_properties(&g_inst[i].override);
-            return i + 1u;
-        }
+    uint32_t slot;
+    for (slot = 0; slot < g_inst_capacity; ++slot) {
+        if (!g_inst[slot].in_use) break;
     }
-    return 0;
+    if (slot >= g_inst_capacity) {
+        if (inst_grow(&slot) != 0) return 0;
+    }
+    g_inst[slot].in_use = 1;
+    g_inst[slot].definition_id = definition_id;
+    g_inst[slot].state = MATERIAL_STATE_NORMAL;
+    g_inst[slot].override_mask = 0;
+    g_inst[slot].generation = 0;
+    zero_properties(&g_inst[slot].override);
+    return slot + 1u;
 }
 
 int material_instance_destroy(uint32_t instance_id) {
@@ -130,7 +184,7 @@ int material_instance_destroy(uint32_t instance_id) {
 }
 
 int material_instance_exists(uint32_t instance_id) {
-    if (instance_id == 0 || instance_id > MATERIAL_MAX_INSTANCES) return 0;
+    if (instance_id == 0 || instance_id > g_inst_capacity) return 0;
     return g_inst[instance_id - 1u].in_use ? 1 : 0;
 }
 
@@ -301,6 +355,32 @@ int material_self_test(void) {
 
     if (material_instance_destroy(inst_id) != 0) return -1;
     if (material_instance_exists(inst_id)) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr Definitionen
+       UND mehr Instanzen anlegen, als die urspruenglichen festen
+       Kapazitaeten je erlaubt haetten - mindestens je ein defs_grow()/
+       inst_grow() ist dafuer noetig. Definitionswachstum bewusst klein
+       (+5) gehalten, um den obigen `999u`-Invalid-ID-Test nicht
+       nachtraeglich gueltig werden zu lassen (der lief bereits VOR
+       dieser Stelle, aber auch kuenftige Umordnungen bleiben so sicher). */
+    uint32_t def_growth_count = MATERIAL_MAX_DEFINITIONS + 5u;
+    uint32_t last_def = 0;
+    for (uint32_t i = 0; i < def_growth_count; ++i) {
+        material_properties_t d;
+        zero_properties(&d);
+        last_def = material_register("growth-def", MATERIAL_TYPE_CUSTOM, &d);
+        if (last_def == 0) return -1;
+    }
+    if (!material_definition_exists(last_def)) return -1;
+    if (last_def >= 999u) return -1; /* darf den obigen Invalid-ID-Test nicht beruehren */
+
+    uint32_t inst_growth_count = MATERIAL_MAX_INSTANCES + 5u;
+    uint32_t last_growth_inst = 0;
+    for (uint32_t i = 0; i < inst_growth_count; ++i) {
+        last_growth_inst = material_instance_create(last_def);
+        if (last_growth_inst == 0) return -1;
+    }
+    if (material_instance_definition(last_growth_inst) != last_def) return -1;
 
     return 0;
 }

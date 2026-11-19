@@ -1,5 +1,27 @@
+/* Dynamisch wachsende Scene-/Node-/Property-/Cache-Tabellen (2026-11-05,
+   Antwort auf "viele feste Grenzen nicht dynamisch loesbar" - siehe
+   [[project_general_allocator]], viertes umgestelltes Modul nach
+   process.c/layercompose.c/gfxstate.c). SCENE_CAPACITY/
+   SCENE_NODE_CAPACITY/SCENE_PROPERTY_DEF_CAPACITY/SCENE_PROPERTY_CAPACITY/
+   SCENE_CACHE_CAPACITY (scenegraph.h) sind jetzt nur noch
+   Startkapazitaeten - genau die Tabelle (`scenes[]`, urspruenglich
+   SCENE_CAPACITY=4), deren Erschoepfung in einer fruehen Session dieses
+   Vorhabens real einen Boot-Test scheitern liess (manuell auf 16
+   angehoben, siehe [[project_gui_graphics_engine]] Debugging-Lektion),
+   kann jetzt gar nicht mehr erschoepfen.
+
+   BEWUSST UNVERAENDERT: `transactions[]` (SCENE_TX_CAPACITY=8 - ein
+   Szenen-Transaktion-Slot wird spaetestens bei Commit/Abort SOFORT
+   wieder frei, kein unbegrenzt waechsendes Register wie bei gfxstate.c's
+   Dependency-Kanten), `SCENE_NODE_MAX_CHILDREN`/`SCENE_TX_MAX_OPS`
+   (In-Struct-Arrays - ein Kind-Limit pro Node bzw. ein Operations-Limit
+   pro Transaktion sind echte, bewusst bemessene Praxisgrenzen, keine
+   global waechsende Sammlung; eine dynamische Umstellung braeuchte pro
+   Node/Transaktion eine eigene Heap-Allokation - eigene, groessere
+   Erweiterung, nicht Teil dieser Aenderung). */
 #include "scenegraph.h"
 #include "gfxstate.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 #define SCENE_OP_PROPERTY 1u
@@ -66,11 +88,16 @@ typedef struct {
     int in_use;
 } scene_tx_t;
 
-static scene_t scenes[SCENE_CAPACITY];
-static scene_node_t nodes[SCENE_NODE_CAPACITY];
-static scene_property_def_t property_defs[SCENE_PROPERTY_DEF_CAPACITY];
-static scene_property_value_t property_values[SCENE_PROPERTY_CAPACITY];
-static scene_cache_entry_t caches[SCENE_CACHE_CAPACITY];
+static scene_t *scenes = NULL;
+static uint32_t scenes_capacity = 0;
+static scene_node_t *nodes = NULL;
+static uint32_t nodes_capacity = 0;
+static scene_property_def_t *property_defs = NULL;
+static uint32_t property_defs_capacity = 0;
+static scene_property_value_t *property_values = NULL;
+static uint32_t property_values_capacity = 0;
+static scene_cache_entry_t *caches = NULL;
+static uint32_t caches_capacity = 0;
 static scene_tx_t transactions[SCENE_TX_CAPACITY];
 
 static uint32_t scene_next_id = 1;
@@ -78,12 +105,55 @@ static uint32_t node_next_id = 1;
 static uint32_t cache_next_id = 1;
 static int scenegraph_ready = 0;
 
+/* Gemeinsames Verdoppelungs-Muster (identisch zu process.c/
+   layercompose.c/gfxstate.c) - je eine kleine, typisierte Hilfsfunktion
+   statt eines generischen void*-Allokators: bleibt dadurch ohne
+   Funktionszeiger/memcpy-Tricks typsicher und einfach lesbar. */
+#define SCENEGRAPH_DEFINE_GROWER(fn_name, table, capacity_var, element_t, initial_capacity) \
+    static int fn_name(uint32_t *out_slot) { \
+        uint32_t new_capacity = (capacity_var == 0u) ? (initial_capacity) : capacity_var * 2u; \
+        element_t *grown = (element_t *)krealloc(table, new_capacity * (uint32_t)sizeof(element_t)); \
+        if (!grown) return -1; \
+        for (uint32_t i = capacity_var; i < new_capacity; ++i) grown[i] = (element_t){0}; \
+        *out_slot = capacity_var; \
+        table = grown; \
+        capacity_var = new_capacity; \
+        return 0; \
+    }
+
+SCENEGRAPH_DEFINE_GROWER(scenes_grow, scenes, scenes_capacity, scene_t, SCENE_CAPACITY)
+SCENEGRAPH_DEFINE_GROWER(nodes_grow, nodes, nodes_capacity, scene_node_t, SCENE_NODE_CAPACITY)
+SCENEGRAPH_DEFINE_GROWER(property_defs_grow, property_defs, property_defs_capacity,
+                          scene_property_def_t, SCENE_PROPERTY_DEF_CAPACITY)
+SCENEGRAPH_DEFINE_GROWER(property_values_grow, property_values, property_values_capacity,
+                          scene_property_value_t, SCENE_PROPERTY_CAPACITY)
+SCENEGRAPH_DEFINE_GROWER(caches_grow, caches, caches_capacity, scene_cache_entry_t, SCENE_CACHE_CAPACITY)
+
+static void *scenegraph_alloc_table(uint32_t count, uint32_t elem_size, uint32_t *out_capacity) {
+    void *table = kcalloc(count, elem_size);
+    *out_capacity = table ? count : 0u;
+    return table;
+}
+
 void scenegraph_initialize(void) {
-    for (uint32_t i = 0; i < SCENE_CAPACITY; ++i) scenes[i] = (scene_t){0};
-    for (uint32_t i = 0; i < SCENE_NODE_CAPACITY; ++i) nodes[i] = (scene_node_t){0};
-    for (uint32_t i = 0; i < SCENE_PROPERTY_DEF_CAPACITY; ++i) property_defs[i] = (scene_property_def_t){0};
-    for (uint32_t i = 0; i < SCENE_PROPERTY_CAPACITY; ++i) property_values[i] = (scene_property_value_t){0};
-    for (uint32_t i = 0; i < SCENE_CACHE_CAPACITY; ++i) caches[i] = (scene_cache_entry_t){0};
+    if (scenes) kfree(scenes);
+    scenes = (scene_t *)scenegraph_alloc_table(SCENE_CAPACITY, sizeof(scene_t), &scenes_capacity);
+
+    if (nodes) kfree(nodes);
+    nodes = (scene_node_t *)scenegraph_alloc_table(SCENE_NODE_CAPACITY, sizeof(scene_node_t), &nodes_capacity);
+
+    if (property_defs) kfree(property_defs);
+    property_defs = (scene_property_def_t *)scenegraph_alloc_table(
+        SCENE_PROPERTY_DEF_CAPACITY, sizeof(scene_property_def_t), &property_defs_capacity);
+
+    if (property_values) kfree(property_values);
+    property_values = (scene_property_value_t *)scenegraph_alloc_table(
+        SCENE_PROPERTY_CAPACITY, sizeof(scene_property_value_t), &property_values_capacity);
+
+    if (caches) kfree(caches);
+    caches = (scene_cache_entry_t *)scenegraph_alloc_table(
+        SCENE_CACHE_CAPACITY, sizeof(scene_cache_entry_t), &caches_capacity);
+
     for (uint32_t i = 0; i < SCENE_TX_CAPACITY; ++i) transactions[i] = (scene_tx_t){0};
     scene_next_id = 1;
     node_next_id = 1;
@@ -93,7 +163,7 @@ void scenegraph_initialize(void) {
 
 static scene_t *scene_find(uint32_t scene_id) {
     if (scene_id == 0) return NULL;
-    for (uint32_t i = 0; i < SCENE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < scenes_capacity; ++i) {
         if (scenes[i].in_use && scenes[i].scene_id == scene_id) return &scenes[i];
     }
     return NULL;
@@ -101,21 +171,21 @@ static scene_t *scene_find(uint32_t scene_id) {
 
 static scene_node_t *node_find(uint32_t node_id) {
     if (node_id == 0) return NULL;
-    for (uint32_t i = 0; i < SCENE_NODE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < nodes_capacity; ++i) {
         if (nodes[i].in_use && nodes[i].node_id == node_id) return &nodes[i];
     }
     return NULL;
 }
 
 static scene_property_def_t *propdef_find(uint32_t property_id) {
-    for (uint32_t i = 0; i < SCENE_PROPERTY_DEF_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < property_defs_capacity; ++i) {
         if (property_defs[i].in_use && property_defs[i].property_id == property_id) return &property_defs[i];
     }
     return NULL;
 }
 
 static scene_property_value_t *propval_find(uint32_t node_id, uint32_t property_id) {
-    for (uint32_t i = 0; i < SCENE_PROPERTY_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < property_values_capacity; ++i) {
         if (property_values[i].in_use && property_values[i].node_id == node_id &&
             property_values[i].property_id == property_id) {
             return &property_values[i];
@@ -130,7 +200,7 @@ static int propval_write(uint32_t node_id, uint32_t property_id, uint32_t value)
         v->value = value;
         return 0;
     }
-    for (uint32_t i = 0; i < SCENE_PROPERTY_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < property_values_capacity; ++i) {
         if (!property_values[i].in_use) {
             property_values[i].node_id = node_id;
             property_values[i].property_id = property_id;
@@ -139,7 +209,13 @@ static int propval_write(uint32_t node_id, uint32_t property_id, uint32_t value)
             return 0;
         }
     }
-    return SCENE_ERR_CAPACITY;
+    uint32_t slot;
+    if (property_values_grow(&slot) != 0) return SCENE_ERR_CAPACITY;
+    property_values[slot].node_id = node_id;
+    property_values[slot].property_id = property_id;
+    property_values[slot].value = value;
+    property_values[slot].in_use = 1;
+    return 0;
 }
 
 static scene_tx_t *tx_find(uint32_t gfx_tx_id) {
@@ -178,16 +254,20 @@ static void node_remove_child(scene_node_t *parent, uint32_t child_id) {
 
 int scene_create(uint32_t *out_scene_id, uint32_t *out_root_node_id) {
     uint32_t sslot;
-    for (sslot = 0; sslot < SCENE_CAPACITY; ++sslot) {
+    for (sslot = 0; sslot < scenes_capacity; ++sslot) {
         if (!scenes[sslot].in_use) break;
     }
-    if (sslot >= SCENE_CAPACITY) return SCENE_ERR_CAPACITY;
+    if (sslot >= scenes_capacity) {
+        if (scenes_grow(&sslot) != 0) return SCENE_ERR_CAPACITY;
+    }
 
     uint32_t nslot;
-    for (nslot = 0; nslot < SCENE_NODE_CAPACITY; ++nslot) {
+    for (nslot = 0; nslot < nodes_capacity; ++nslot) {
         if (!nodes[nslot].in_use) break;
     }
-    if (nslot >= SCENE_NODE_CAPACITY) return SCENE_ERR_CAPACITY;
+    if (nslot >= nodes_capacity) {
+        if (nodes_grow(&nslot) != 0) return SCENE_ERR_CAPACITY;
+    }
 
     uint32_t scene_id = scene_next_id++;
     uint32_t root_id = node_next_id++;
@@ -221,7 +301,7 @@ int scene_property_define(uint32_t property_id, uint32_t property_type,
         def->flags = flags;
         return 0;
     }
-    for (uint32_t i = 0; i < SCENE_PROPERTY_DEF_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < property_defs_capacity; ++i) {
         if (!property_defs[i].in_use) {
             property_defs[i].property_id = property_id;
             property_defs[i].property_type = property_type;
@@ -231,7 +311,14 @@ int scene_property_define(uint32_t property_id, uint32_t property_type,
             return 0;
         }
     }
-    return SCENE_ERR_CAPACITY;
+    uint32_t slot;
+    if (property_defs_grow(&slot) != 0) return SCENE_ERR_CAPACITY;
+    property_defs[slot].property_id = property_id;
+    property_defs[slot].property_type = property_type;
+    property_defs[slot].default_value = default_value;
+    property_defs[slot].flags = flags;
+    property_defs[slot].in_use = 1;
+    return 0;
 }
 
 int scene_transaction_begin(uint32_t scene_id, uint32_t *out_tx_id) {
@@ -268,10 +355,12 @@ int scene_node_create(uint32_t tx_id, uint32_t parent_id, uint32_t node_type,
     }
 
     uint32_t slot;
-    for (slot = 0; slot < SCENE_NODE_CAPACITY; ++slot) {
+    for (slot = 0; slot < nodes_capacity; ++slot) {
         if (!nodes[slot].in_use) break;
     }
-    if (slot >= SCENE_NODE_CAPACITY) return SCENE_ERR_CAPACITY;
+    if (slot >= nodes_capacity) {
+        if (nodes_grow(&slot) != 0) return SCENE_ERR_CAPACITY;
+    }
 
     uint32_t node_id = node_next_id++;
     nodes[slot] = (scene_node_t){0};
@@ -394,7 +483,7 @@ int scene_node_release(uint32_t node_id) {
     if (!node) return SCENE_ERR_NOT_FOUND;
     if (node->lifecycle_state != SCENE_NODE_DETACHED) return SCENE_ERR_INVALID_STATE;
 
-    for (uint32_t i = 0; i < SCENE_PROPERTY_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < property_values_capacity; ++i) {
         if (property_values[i].in_use && property_values[i].node_id == node_id) {
             property_values[i] = (scene_property_value_t){0};
         }
@@ -417,10 +506,12 @@ int scene_cache_put(uint32_t owner_node_id, uint32_t result_type, uint32_t value
     if (!node) return SCENE_ERR_NOT_FOUND;
 
     uint32_t slot;
-    for (slot = 0; slot < SCENE_CACHE_CAPACITY; ++slot) {
+    for (slot = 0; slot < caches_capacity; ++slot) {
         if (!caches[slot].in_use) break;
     }
-    if (slot >= SCENE_CACHE_CAPACITY) return SCENE_ERR_CAPACITY;
+    if (slot >= caches_capacity) {
+        if (caches_grow(&slot) != 0) return SCENE_ERR_CAPACITY;
+    }
 
     caches[slot].cache_id = cache_next_id++;
     caches[slot].owner_node_id = owner_node_id;
@@ -435,7 +526,7 @@ int scene_cache_put(uint32_t owner_node_id, uint32_t result_type, uint32_t value
 
 int scene_cache_get(uint32_t cache_id, scene_cache_info_t *out_info) {
     scene_cache_entry_t *c = NULL;
-    for (uint32_t i = 0; i < SCENE_CACHE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < caches_capacity; ++i) {
         if (caches[i].in_use && caches[i].cache_id == cache_id) {
             c = &caches[i];
             break;
@@ -529,7 +620,7 @@ int scene_transaction_abort(uint32_t tx_id) {
     for (uint32_t i = 0; i < tx->touched_count; ++i) {
         scene_node_t *node = node_find(tx->touched_nodes[i]);
         if (node && node->lifecycle_state == SCENE_NODE_CREATED) {
-            for (uint32_t p = 0; p < SCENE_PROPERTY_CAPACITY; ++p) {
+            for (uint32_t p = 0; p < property_values_capacity; ++p) {
                 if (property_values[p].in_use && property_values[p].node_id == node->node_id) {
                     property_values[p] = (scene_property_value_t){0};
                 }
@@ -694,6 +785,48 @@ int scenegraph_self_test(void) {
     if (scene_node_info(0xFFFFu, &ninfo) != SCENE_ERR_NOT_FOUND) return -1;
     if (scene_cache_get(0xFFFFu, &cinfo) != SCENE_ERR_NOT_FOUND) return -1;
     if (scene_transaction_begin(0xFFFFu, &tx9) != SCENE_ERR_NOT_FOUND) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: `scenes[]` war
+       GENAU die Tabelle, deren urspruengliche feste Kapazitaet (4, spaeter
+       manuell auf 16 angehoben) in einer frueheren Session dieses
+       Vorhabens real einen Boot-Test scheitern liess (siehe Dateikopf) -
+       jetzt mehr Szenen anlegen, als SCENE_CAPACITY je erlaubt haette,
+       beweist mindestens ein scenes_grow(). Jede neue Szene legt
+       zusaetzlich einen Root-Node an - beweist bei dieser Gelegenheit
+       gleich mit, dass nodes_grow() korrekt mitwaechst. */
+    uint32_t scene_growth_count = SCENE_CAPACITY + 3u;
+    for (uint32_t i = 0; i < scene_growth_count; ++i) {
+        uint32_t sid, rid;
+        if (scene_create(&sid, &rid) != 0) return -1;
+    }
+
+    /* Zusaetzlich gezielt mehr Nodes IN EINER Szene anlegen, als
+       SCENE_NODE_CAPACITY je erlaubt haette - unabhaengig von obigem
+       Szenen-Wachstum. */
+    uint32_t node_growth_count = SCENE_NODE_CAPACITY + 5u;
+    uint32_t last_node = 0;
+    for (uint32_t i = 0; i < node_growth_count; ++i) {
+        uint32_t tx_n;
+        if (scene_transaction_begin(scene1, &tx_n) != 0) return -1;
+        uint32_t new_node;
+        if (scene_node_create(tx_n, root1, SCENE_NODE_TYPE_GEOMETRY, &new_node) != 0) return -1;
+        uint32_t v_n;
+        if (scene_transaction_commit(tx_n, &v_n) != 0) return -1;
+        last_node = new_node;
+    }
+    if (scene_node_info(last_node, &ninfo) != 0) return -1;
+    if (ninfo.lifecycle_state != SCENE_NODE_ATTACHED) return -1;
+
+    /* Und mehr Cache-Eintraege, als SCENE_CACHE_CAPACITY je erlaubt
+       haette (alle auf nodeA, ueberschreiben sich nicht - jeder Aufruf
+       von scene_cache_put() legt einen NEUEN Eintrag an). */
+    uint32_t cache_growth_count = SCENE_CACHE_CAPACITY + 3u;
+    uint32_t last_cache = 0;
+    for (uint32_t i = 0; i < cache_growth_count; ++i) {
+        if (scene_cache_put(nodeA, SCENE_CACHE_BOUNDS, 1000u + i, &last_cache) != 0) return -1;
+    }
+    if (scene_cache_get(last_cache, &cinfo) != 0) return -1;
+    if (cinfo.cached_value != 1000u + cache_growth_count - 1u) return -1;
 
     return 0;
 }

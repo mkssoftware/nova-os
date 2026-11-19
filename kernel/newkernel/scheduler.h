@@ -59,9 +59,17 @@
    dynamic_user_slot(), direkt von ushell_process.c aufgerufen), braucht
    dort also keinen Platz. Nochmals auf 10 angehoben fuer den zweiten
    Userspace-Prozess (Startmenue, siehe ushell/startmenu_main.c), und auf
-   11 fuer den dritten (Desktop-Icons, siehe ushell/icons_main.c) - jeder
-   weitere dauerhafte Ring-3-Prozess braucht einen eigenen Slot. */
-#define SCHEDULER_THREAD_COUNT 11u
+   11 fuer den dritten (Desktop-Icons, siehe ushell/icons_main.c), und auf
+   12 fuer den vierten (Dateiexplorer, siehe ushell/explorer_main.c,
+   2026-11-19 - real durch denselben Boot-Test gefunden: ushell_process_
+   initialize() scheiterte sonst bei scheduler_claim_dynamic_user_slot()
+   fuer den Explorer, da alle 11 Slots bereits belegt waren), und
+   proaktiv auf 13 fuer den fuenften (Systemeinstellungen, siehe
+   ushell/settings_main.c, 2026-11-19 - diesmal VORAB angehoben statt
+   erst nach einem fehlschlagenden Boot-Test, da das Muster inzwischen
+   bekannt ist) - jeder weitere dauerhafte Ring-3-Prozess braucht einen
+   eigenen Slot. */
+#define SCHEDULER_THREAD_COUNT 13u
 #define SCHEDULER_FRAME_SIZE   68u
 /* Wie SCHEDULER_FRAME_SIZE, aber fuer einen Slot, der NACH Ring 3 wechselt
    (siehe scheduler_claim_dynamic_user_slot) - 8 Byte groesser, weil ein

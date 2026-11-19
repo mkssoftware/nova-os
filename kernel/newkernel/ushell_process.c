@@ -67,6 +67,8 @@
 #include "ushell_blob.h"
 #include "startmenu_blob.h"
 #include "icons_blob.h"
+#include "explorer_blob.h"
+#include "settings_blob.h"
 #include "pmm.h"
 #include "paging.h"
 #include "process.h"
@@ -75,6 +77,7 @@
 #include "display.h"
 #include "desktop_shell.h"
 #include "syscall.h"
+#include "serial.h"
 
 /* Layout ALLER DREI Prozesse - MUSS mit ushell/shell_main.c,
    ushell/startmenu_main.c UND ushell/icons_main.c uebereinstimmen (dort
@@ -120,6 +123,22 @@ typedef struct {
 static ushell_instance_t taskbar_instance;
 static ushell_instance_t startmenu_instance;
 static ushell_instance_t icons_instance;
+static ushell_instance_t explorer_instance;
+static ushell_instance_t settings_instance;
+
+/* Muss mit ushell/explorer_main.c uebereinstimmen (WIN_W/WIN_H/WIN_X/WIN_Y). */
+#define EXPLORER_WIN_W 440u
+#define EXPLORER_WIN_H 300u
+#define EXPLORER_WIN_X 60u
+#define EXPLORER_WIN_Y 60u
+
+/* Muss mit ushell/settings_main.c uebereinstimmen (siehe dortigen
+   Kommentar zur bewussten Verkleinerung wegen des Bootstrap-PMM-
+   Kapazitaetslimits). */
+#define SETTINGS_WIN_W 280u
+#define SETTINGS_WIN_H 150u
+#define SETTINGS_WIN_X 540u
+#define SETTINGS_WIN_Y 60u
 
 #define ICONS_COUNT       2u
 #define ICONS_CELL_W      64u
@@ -152,6 +171,8 @@ static void ushell_instance_reset(ushell_instance_t *inst, const uint8_t *blob,
    erzeugter Prozess wieder freigegeben (siehe Dateikopf fuer die eine
    bewusst verbleibende Ausnahme: das Page-Directory selbst). */
 static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint32_t ro_size) {
+    serial_puts("NOVA-DBG: spawn gui="); serial_put_hex32(gui_buffer_bytes);
+    serial_puts(" free_before="); serial_put_hex32(pmm_frame_count()); serial_puts("\r\n");
     if (inst->blob_size > USHELL_CODE_PAGES * PMM_PAGE_SIZE) return -1;
 
     uint32_t code_pages[USHELL_CODE_PAGES];
@@ -219,6 +240,8 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint
     }
 
     buffer_pages = (gui_buffer_bytes + PMM_PAGE_SIZE - 1u) / PMM_PAGE_SIZE;
+    serial_puts("NOVA-DBG: need_buf_pages="); serial_put_hex32(buffer_pages);
+    serial_puts(" free_now="); serial_put_hex32(pmm_frame_count()); serial_puts("\r\n");
     if (pmm_alloc_contiguous(buffer_pages, &buffer_first_page) != 0) { buffer_pages = 0; goto cleanup; }
     {
         uint8_t *buffer_dst = (uint8_t *)(uintptr_t)buffer_first_page;
@@ -320,6 +343,8 @@ int ushell_process_initialize(void) {
     ushell_instance_reset(&taskbar_instance, ushell_blob, USHELL_BLOB_SIZE, USHELL_ENTRY_OFFSET);
     ushell_instance_reset(&startmenu_instance, startmenu_blob, STARTMENU_BLOB_SIZE, STARTMENU_ENTRY_OFFSET);
     ushell_instance_reset(&icons_instance, icons_blob, ICONS_BLOB_SIZE, ICONS_ENTRY_OFFSET);
+    ushell_instance_reset(&explorer_instance, explorer_blob, EXPLORER_BLOB_SIZE, EXPLORER_ENTRY_OFFSET);
+    ushell_instance_reset(&settings_instance, settings_blob, SETTINGS_BLOB_SIZE, SETTINGS_ENTRY_OFFSET);
 
     uint32_t width = display_width();
     uint32_t height = display_height();
@@ -345,6 +370,22 @@ int ushell_process_initialize(void) {
     uint32_t icons_buffer_bytes = ICONS_GRID_WIDTH * ICONS_GRID_HEIGHT * 4u;
     if (ushell_spawn(&icons_instance, icons_buffer_bytes, 0u) != 0) return -1;
 
+    /* Dateiexplorer (echte VFS-Anbindung, siehe explorer_main.c) - nur
+       gestartet, wenn der Bildschirm gross genug fuer sein festes Fenster
+       ist (WIN_X+WIN_W/WIN_Y+WIN_H), analog zu den Groessenprüfungen der
+       anderen drei Prozesse weiter oben in dieser Funktion. */
+    if (width >= EXPLORER_WIN_X + EXPLORER_WIN_W && height >= EXPLORER_WIN_Y + EXPLORER_WIN_H) {
+        uint32_t explorer_buffer_bytes = EXPLORER_WIN_W * EXPLORER_WIN_H * 4u;
+        if (ushell_spawn(&explorer_instance, explorer_buffer_bytes, EXPLORER_RO_SIZE) != 0) return -1;
+    }
+
+    /* Systemeinstellungen (echte Systeminformationen, siehe
+       settings_main.c) - gleiche Groessenpruefung wie der Explorer. */
+    if (width >= SETTINGS_WIN_X + SETTINGS_WIN_W && height >= SETTINGS_WIN_Y + SETTINGS_WIN_H) {
+        uint32_t settings_buffer_bytes = SETTINGS_WIN_W * SETTINGS_WIN_H * 4u;
+        if (ushell_spawn(&settings_instance, settings_buffer_bytes, SETTINGS_RO_SIZE) != 0) return -1;
+    }
+
     return 0;
 }
 
@@ -352,5 +393,7 @@ int ushell_process_self_test(void) {
     if (ushell_instance_self_test(&taskbar_instance) != 0) return -1;
     if (ushell_instance_self_test(&startmenu_instance) != 0) return -1;
     if (ushell_instance_self_test(&icons_instance) != 0) return -1;
+    if (explorer_instance.pid != 0 && ushell_instance_self_test(&explorer_instance) != 0) return -1;
+    if (settings_instance.pid != 0 && ushell_instance_self_test(&settings_instance) != 0) return -1;
     return 0;
 }

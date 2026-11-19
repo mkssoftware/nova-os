@@ -1,6 +1,16 @@
+/* Dynamisch wachsende Region-Tabelle (2026-11-05, Antwort auf "viele
+   feste Grenzen nicht dynamisch loesbar" - siehe
+   [[project_general_allocator]], fuenftes umgestelltes Modul).
+   DAMAGE_REGION_CAPACITY (damagetrack.h) ist jetzt nur noch die
+   Startkapazitaet. DAMAGE_MAX_PER_TARGET_BEFORE_FULL (Fragmentierungs-
+   Schwellwert) und DAMAGE_PROPAGATE_MAX (Ausgabe-Obergrenze fuer
+   gfx_dependency_invalidate_from() in damage_from_node_change(), siehe
+   dort) bleiben bewusst UNVERAENDERT - echte, bewusst bemessene
+   Verhaltensgrenzen, keine wachsende Sammlung. */
 #include "damagetrack.h"
 #include "gfxstate.h"
 #include "scenegraph.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -13,16 +23,32 @@ typedef struct {
     int in_use;
 } damage_region_t;
 
-static damage_region_t regions[DAMAGE_REGION_CAPACITY];
+static damage_region_t *regions = NULL;
+static uint32_t regions_capacity = 0;
 static uint32_t damage_next_region_id = 1;
 static int damagetrack_ready = 0;
 
 void damagetrack_initialize(void) {
-    for (uint32_t i = 0; i < DAMAGE_REGION_CAPACITY; ++i) {
-        regions[i] = (damage_region_t){0};
-    }
+    if (regions) kfree(regions);
+    regions = (damage_region_t *)kcalloc(DAMAGE_REGION_CAPACITY, sizeof(damage_region_t));
+    regions_capacity = regions ? DAMAGE_REGION_CAPACITY : 0u;
     damage_next_region_id = 1;
     damagetrack_ready = 1;
+}
+
+/* Verdoppelt regions[] (identisches Muster wie process.c/layercompose.c/
+   gfxstate.c/scenegraph.c). 0 = Erfolg (*out_slot = erster freier Slot im
+   neuen Bereich), -1 bei Erschoepfung (regions/regions_capacity bleiben
+   unveraendert gueltig). */
+static int regions_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (regions_capacity == 0u) ? DAMAGE_REGION_CAPACITY : regions_capacity * 2u;
+    damage_region_t *grown = (damage_region_t *)krealloc(regions, new_capacity * (uint32_t)sizeof(damage_region_t));
+    if (!grown) return -1;
+    for (uint32_t i = regions_capacity; i < new_capacity; ++i) grown[i] = (damage_region_t){0};
+    *out_slot = regions_capacity;
+    regions = grown;
+    regions_capacity = new_capacity;
+    return 0;
 }
 
 static int rect_empty(render_rect_t r) {
@@ -81,7 +107,7 @@ render_rect_t damage_rect_expand(render_rect_t r, uint32_t margin) {
 
 static damage_region_t *region_find(uint32_t region_id) {
     if (region_id == 0) return NULL;
-    for (uint32_t i = 0; i < DAMAGE_REGION_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < regions_capacity; ++i) {
         if (regions[i].in_use && regions[i].region_id == region_id) return &regions[i];
     }
     return NULL;
@@ -90,10 +116,12 @@ static damage_region_t *region_find(uint32_t region_id) {
 int damage_add(uint32_t target_id, render_rect_t rect, uint32_t state_version,
                 uint32_t *out_region_id) {
     uint32_t slot;
-    for (slot = 0; slot < DAMAGE_REGION_CAPACITY; ++slot) {
+    for (slot = 0; slot < regions_capacity; ++slot) {
         if (!regions[slot].in_use) break;
     }
-    if (slot >= DAMAGE_REGION_CAPACITY) return DAMAGE_ERR_CAPACITY;
+    if (slot >= regions_capacity) {
+        if (regions_grow(&slot) != 0) return DAMAGE_ERR_CAPACITY;
+    }
 
     regions[slot].region_id = damage_next_region_id++;
     regions[slot].target_id = target_id;
@@ -174,7 +202,7 @@ int damage_region_info(uint32_t region_id, damage_region_info_t *out_info) {
 
 int damage_pending_count(uint32_t target_id, uint32_t *out_count) {
     uint32_t count = 0;
-    for (uint32_t i = 0; i < DAMAGE_REGION_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < regions_capacity; ++i) {
         if (regions[i].in_use && regions[i].target_id == target_id && !regions[i].deferred) {
             count++;
         }
@@ -186,7 +214,7 @@ int damage_pending_count(uint32_t target_id, uint32_t *out_count) {
 int damage_merge_target(uint32_t target_id, render_rect_t *out_merged, uint32_t max_out,
                         uint32_t *out_count, uint32_t *out_region_type) {
     uint32_t pending_count = 0;
-    for (uint32_t i = 0; i < DAMAGE_REGION_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < regions_capacity; ++i) {
         if (regions[i].in_use && regions[i].target_id == target_id && !regions[i].deferred) {
             pending_count++;
         }
@@ -200,7 +228,7 @@ int damage_merge_target(uint32_t target_id, render_rect_t *out_merged, uint32_t 
 
     if (pending_count > DAMAGE_MAX_PER_TARGET_BEFORE_FULL) {
         render_rect_t full = (render_rect_t){0, 0, 0, 0};
-        for (uint32_t i = 0; i < DAMAGE_REGION_CAPACITY; ++i) {
+        for (uint32_t i = 0; i < regions_capacity; ++i) {
             if (regions[i].in_use && regions[i].target_id == target_id && !regions[i].deferred) {
                 full = damage_rect_union(full, regions[i].bounds);
             }
@@ -212,7 +240,7 @@ int damage_merge_target(uint32_t target_id, render_rect_t *out_merged, uint32_t 
     }
 
     uint32_t working_count = 0;
-    for (uint32_t i = 0; i < DAMAGE_REGION_CAPACITY && working_count < max_out; ++i) {
+    for (uint32_t i = 0; i < regions_capacity && working_count < max_out; ++i) {
         if (!regions[i].in_use || regions[i].target_id != target_id || regions[i].deferred) continue;
 
         int merged = 0;
@@ -235,7 +263,7 @@ int damage_merge_target(uint32_t target_id, render_rect_t *out_merged, uint32_t 
 
 int damage_resolve_target(uint32_t target_id, uint32_t *out_count) {
     uint32_t count = 0;
-    for (uint32_t i = 0; i < DAMAGE_REGION_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < regions_capacity; ++i) {
         if (regions[i].in_use && regions[i].target_id == target_id && !regions[i].deferred) {
             regions[i] = (damage_region_t){0};
             count++;
@@ -349,6 +377,29 @@ int damagetrack_self_test(void) {
     /* Unbekannte IDs. */
     if (damage_from_node_change(0xFFFFu, trigger, &prop_count) != DAMAGE_ERR_NOT_FOUND) return -1;
     if (damage_mark_occluded(0xFFFFu) != DAMAGE_ERR_NOT_FOUND) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr Regionen
+       anlegen, als die urspruengliche feste DAMAGE_REGION_CAPACITY je
+       erlaubt haette - mindestens eine davon bleibt unaufgeloest, bevor
+       die Erschoepfung eintraete (vorher: damage_add() haette hier
+       DAMAGE_ERR_CAPACITY geliefert). Grosser Sentinel-Target (siehe
+       gfxstate.c's gleichlautende Debugging-Lektion 2026-11-05) statt
+       einer kleinen Zahl, um keine neue ID-Kollision mit einem anderen
+       Modul einzugehen. */
+    const uint32_t GROWTH_TARGET = 0x7E000000u;
+    uint32_t growth_count = DAMAGE_REGION_CAPACITY + 5u;
+    for (uint32_t i = 0; i < growth_count; ++i) {
+        uint32_t region_id;
+        render_rect_t r = {i, 0u, 1u, 1u};
+        if (damage_add(GROWTH_TARGET, r, 1u, &region_id) != 0) return -1;
+    }
+    uint32_t growth_pending;
+    if (damage_pending_count(GROWTH_TARGET, &growth_pending) != 0) return -1;
+    if (growth_pending != growth_count) return -1;
+
+    uint32_t growth_resolved;
+    if (damage_resolve_target(GROWTH_TARGET, &growth_resolved) != 0) return -1;
+    if (growth_resolved != growth_count) return -1;
 
     return 0;
 }

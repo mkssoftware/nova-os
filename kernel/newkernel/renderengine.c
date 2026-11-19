@@ -1,6 +1,12 @@
+/* Dynamisch wachsende Render-Cache-Tabelle (2026-11-05, Antwort auf
+   "viele feste Grenzen nicht dynamisch loesbar" - siehe
+   [[project_general_allocator]], sechstes umgestelltes Modul).
+   RENDER_CACHE_CAPACITY (renderengine.h) ist jetzt nur noch die
+   Startkapazitaet. */
 #include "renderengine.h"
 #include "scenegraph.h"
 #include "gfxstate.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -13,20 +19,36 @@ typedef struct {
     int in_use;
 } render_cache_entry_t;
 
-static render_cache_entry_t caches[RENDER_CACHE_CAPACITY];
+static render_cache_entry_t *caches = NULL;
+static uint32_t caches_capacity = 0;
 static uint32_t render_next_cache_id = 1;
 static int renderengine_ready = 0;
 
 void renderengine_initialize(void) {
-    for (uint32_t i = 0; i < RENDER_CACHE_CAPACITY; ++i) {
-        caches[i] = (render_cache_entry_t){0};
-    }
+    if (caches) kfree(caches);
+    caches = (render_cache_entry_t *)kcalloc(RENDER_CACHE_CAPACITY, sizeof(render_cache_entry_t));
+    caches_capacity = caches ? RENDER_CACHE_CAPACITY : 0u;
     render_next_cache_id = 1;
     renderengine_ready = 1;
 }
 
+/* Verdoppelt caches[] (identisches Muster wie die bereits umgestellten
+   Module). 0 = Erfolg (*out_slot = erster freier Slot), -1 bei
+   Erschoepfung (caches/caches_capacity bleiben unveraendert gueltig). */
+static int caches_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (caches_capacity == 0u) ? RENDER_CACHE_CAPACITY : caches_capacity * 2u;
+    render_cache_entry_t *grown = (render_cache_entry_t *)krealloc(caches,
+                                                                     new_capacity * (uint32_t)sizeof(render_cache_entry_t));
+    if (!grown) return -1;
+    for (uint32_t i = caches_capacity; i < new_capacity; ++i) grown[i] = (render_cache_entry_t){0};
+    *out_slot = caches_capacity;
+    caches = grown;
+    caches_capacity = new_capacity;
+    return 0;
+}
+
 static render_cache_entry_t *cache_find_slot(uint32_t node_id, uint32_t region_id) {
-    for (uint32_t i = 0; i < RENDER_CACHE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < caches_capacity; ++i) {
         if (caches[i].in_use && caches[i].owner_node_id == node_id && caches[i].region_id == region_id) {
             return &caches[i];
         }
@@ -36,7 +58,7 @@ static render_cache_entry_t *cache_find_slot(uint32_t node_id, uint32_t region_i
 
 static render_cache_entry_t *cache_find_by_id(uint32_t cache_id) {
     if (cache_id == 0) return NULL;
-    for (uint32_t i = 0; i < RENDER_CACHE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < caches_capacity; ++i) {
         if (caches[i].in_use && caches[i].cache_id == cache_id) {
             return &caches[i];
         }
@@ -73,10 +95,12 @@ int render_execute_retained(uint32_t node_id, uint32_t region_id,
 
     if (!entry) {
         uint32_t slot;
-        for (slot = 0; slot < RENDER_CACHE_CAPACITY; ++slot) {
+        for (slot = 0; slot < caches_capacity; ++slot) {
             if (!caches[slot].in_use) break;
         }
-        if (slot >= RENDER_CACHE_CAPACITY) return RENDER_ERR_CAPACITY;
+        if (slot >= caches_capacity) {
+            if (caches_grow(&slot) != 0) return RENDER_ERR_CAPACITY;
+        }
         entry = &caches[slot];
         entry->cache_id = render_next_cache_id++;
         entry->owner_node_id = node_id;
@@ -241,6 +265,19 @@ int renderengine_self_test(void) {
     if (render_execute_retained(0xFFFFu, 0, 0, 1000, &dummy_val, &dummy_hit, &dummy_strategy) != RENDER_ERR_NOT_FOUND) {
         return -1;
     }
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr Cache-
+       Eintraege anlegen (ueber verschiedene region_id auf demselben
+       Node), als die urspruengliche feste RENDER_CACHE_CAPACITY je
+       erlaubt haette - mindestens ein caches_grow() ist dafuer noetig. */
+    uint32_t growth_count = RENDER_CACHE_CAPACITY + 5u;
+    for (uint32_t i = 0; i < growth_count; ++i) {
+        uint32_t gv, gs; int gh;
+        if (render_execute_retained(nodeA, i + 1u, 0, 1000, &gv, &gh, &gs) != 0) return -1;
+        if (gh != 0) return -1; /* jede region_id ist neu, nie zuvor gecacht */
+    }
+    uint32_t last_cache_id;
+    if (render_cache_find(nodeA, growth_count, &last_cache_id) != 0) return -1;
 
     return 0;
 }

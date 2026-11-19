@@ -1,9 +1,14 @@
+/* Dynamisch wachsende Bindetabelle (2026-11-05, Antwort auf "viele feste
+   Grenzen nicht dynamisch loesbar" - siehe [[project_general_allocator]],
+   zehntes umgestelltes Modul). MATERENDER_MAX_BINDINGS (materender.h)
+   ist jetzt nur noch die Startkapazitaet. */
 #include "materender.h"
 #include "gfxstate.h"
 #include "scenegraph.h"
 #include "damagetrack.h"
 #include "material.h"
 #include "matperf.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -12,16 +17,34 @@ typedef struct {
     int in_use;
 } materender_binding_t;
 
-static materender_binding_t bindings[MATERENDER_MAX_BINDINGS];
+static materender_binding_t *bindings = NULL;
+static uint32_t bindings_capacity = 0;
 static int materender_ready = 0;
 
 void materender_initialize(void) {
-    for (uint32_t i = 0; i < MATERENDER_MAX_BINDINGS; ++i) bindings[i] = (materender_binding_t){0};
+    if (bindings) kfree(bindings);
+    bindings = (materender_binding_t *)kcalloc(MATERENDER_MAX_BINDINGS, sizeof(materender_binding_t));
+    bindings_capacity = bindings ? MATERENDER_MAX_BINDINGS : 0u;
     materender_ready = 1;
 }
 
+/* Verdoppelt bindings[] (identisches Muster wie die bereits umgestellten
+   Module). 0 = Erfolg (*out_slot = erster freier Slot), -1 bei
+   Erschoepfung (bindings/bindings_capacity bleiben unveraendert gueltig). */
+static int bindings_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (bindings_capacity == 0u) ? MATERENDER_MAX_BINDINGS : bindings_capacity * 2u;
+    materender_binding_t *grown = (materender_binding_t *)krealloc(bindings,
+                                                                     new_capacity * (uint32_t)sizeof(materender_binding_t));
+    if (!grown) return -1;
+    for (uint32_t i = bindings_capacity; i < new_capacity; ++i) grown[i] = (materender_binding_t){0};
+    *out_slot = bindings_capacity;
+    bindings = grown;
+    bindings_capacity = new_capacity;
+    return 0;
+}
+
 static materender_binding_t *binding_find(uint32_t node_id) {
-    for (uint32_t i = 0; i < MATERENDER_MAX_BINDINGS; ++i) {
+    for (uint32_t i = 0; i < bindings_capacity; ++i) {
         if (bindings[i].in_use && bindings[i].node_id == node_id) return &bindings[i];
     }
     return NULL;
@@ -33,10 +56,12 @@ int materender_bind(uint32_t node_id, uint32_t instance_id) {
     materender_binding_t *b = binding_find(node_id);
     if (!b) {
         uint32_t slot;
-        for (slot = 0; slot < MATERENDER_MAX_BINDINGS; ++slot) {
+        for (slot = 0; slot < bindings_capacity; ++slot) {
             if (!bindings[slot].in_use) break;
         }
-        if (slot >= MATERENDER_MAX_BINDINGS) return MATERENDER_ERR_CAPACITY;
+        if (slot >= bindings_capacity) {
+            if (bindings_grow(&slot) != 0) return MATERENDER_ERR_CAPACITY;
+        }
         b = &bindings[slot];
         b->node_id = node_id;
         b->in_use = 1;
@@ -260,6 +285,19 @@ int materender_self_test(void) {
 
     /* Binden an ungueltige Instanz schlaegt fehl. */
     if (materender_bind(nodeA, 0xFFFFu) != MATERENDER_ERR_INVALID) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr Bindungen
+       anlegen, als die urspruengliche feste MATERENDER_MAX_BINDINGS je
+       erlaubt haette - node_id ist hier ein frei vom Aufrufer vergebenes
+       Schluesselfeld (materender_bind() validiert nur die Instanz, nicht
+       den Node), daher reichen grosse Sentinel-IDs ohne echte Scene-
+       Nodes. */
+    const uint32_t GROWTH_NODE_BASE = 0x7C000000u;
+    uint32_t growth_count = MATERENDER_MAX_BINDINGS + 5u;
+    for (uint32_t i = 0; i < growth_count; ++i) {
+        if (materender_bind(GROWTH_NODE_BASE + i, instA) != 0) return -1;
+    }
+    if (materender_bound_instance(GROWTH_NODE_BASE + growth_count - 1u) != instA) return -1;
 
     return 0;
 }

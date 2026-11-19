@@ -1,7 +1,14 @@
+/* Dynamisch wachsende Output-/Buffer-/Fence-/Surface-/Presentation-/
+   Commit-Tx-Tabellen (2026-11-05, Antwort auf "viele feste Grenzen
+   nicht dynamisch loesbar" - siehe [[project_general_allocator]],
+   achtes umgestelltes Modul). DISP_OUTPUT_CAPACITY/DISP_BUFFER_CAPACITY/
+   DISP_FENCE_CAPACITY/DISP_SURFACE_CAPACITY/DISP_PRESENT_CAPACITY
+   (dispproto.h) sind jetzt nur noch Startkapazitaeten. */
 #include "dispproto.h"
 #include "gfxstate.h"
 #include "damagetrack.h"
 #include "interrupt.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -59,12 +66,18 @@ typedef struct {
     int in_use;
 } commit_tx_t;
 
-static output_t outputs[DISP_OUTPUT_CAPACITY];
-static buffer_t buffers[DISP_BUFFER_CAPACITY];
-static fence_t fences[DISP_FENCE_CAPACITY];
-static surface_t surfaces[DISP_SURFACE_CAPACITY];
-static presentation_t presentations[DISP_PRESENT_CAPACITY];
-static commit_tx_t commit_txs[DISP_SURFACE_CAPACITY];
+static output_t *outputs = NULL;
+static uint32_t outputs_capacity = 0;
+static buffer_t *buffers = NULL;
+static uint32_t buffers_capacity = 0;
+static fence_t *fences = NULL;
+static uint32_t fences_capacity = 0;
+static surface_t *surfaces = NULL;
+static uint32_t surfaces_capacity = 0;
+static presentation_t *presentations = NULL;
+static uint32_t presentations_capacity = 0;
+static commit_tx_t *commit_txs = NULL;
+static uint32_t commit_txs_capacity = 0;
 
 static uint32_t next_output_id = 1;
 static uint32_t next_buffer_id = 1;
@@ -73,13 +86,47 @@ static uint32_t next_surface_id = 1;
 static uint32_t next_presentation_id = 1;
 static int dispproto_ready = 0;
 
+/* Gemeinsames Verdoppelungs-Muster (identisch zu scenegraph.c's
+   SCENEGRAPH_DEFINE_GROWER). */
+#define DISPPROTO_DEFINE_GROWER(fn_name, table, capacity_var, element_t, initial_capacity) \
+    static int fn_name(uint32_t *out_slot) { \
+        uint32_t new_capacity = (capacity_var == 0u) ? (initial_capacity) : capacity_var * 2u; \
+        element_t *grown = (element_t *)krealloc(table, new_capacity * (uint32_t)sizeof(element_t)); \
+        if (!grown) return -1; \
+        for (uint32_t i = capacity_var; i < new_capacity; ++i) grown[i] = (element_t){0}; \
+        *out_slot = capacity_var; \
+        table = grown; \
+        capacity_var = new_capacity; \
+        return 0; \
+    }
+
+DISPPROTO_DEFINE_GROWER(outputs_grow, outputs, outputs_capacity, output_t, DISP_OUTPUT_CAPACITY)
+DISPPROTO_DEFINE_GROWER(buffers_grow, buffers, buffers_capacity, buffer_t, DISP_BUFFER_CAPACITY)
+DISPPROTO_DEFINE_GROWER(fences_grow, fences, fences_capacity, fence_t, DISP_FENCE_CAPACITY)
+DISPPROTO_DEFINE_GROWER(surfaces_grow, surfaces, surfaces_capacity, surface_t, DISP_SURFACE_CAPACITY)
+DISPPROTO_DEFINE_GROWER(presentations_grow, presentations, presentations_capacity, presentation_t, DISP_PRESENT_CAPACITY)
+DISPPROTO_DEFINE_GROWER(commit_txs_grow, commit_txs, commit_txs_capacity, commit_tx_t, DISP_SURFACE_CAPACITY)
+
+static void *dispproto_alloc_table(uint32_t count, uint32_t elem_size, uint32_t *out_capacity) {
+    void *table = kcalloc(count, elem_size);
+    *out_capacity = table ? count : 0u;
+    return table;
+}
+
 void dispproto_initialize(void) {
-    for (uint32_t i = 0; i < DISP_OUTPUT_CAPACITY; ++i) outputs[i] = (output_t){0};
-    for (uint32_t i = 0; i < DISP_BUFFER_CAPACITY; ++i) buffers[i] = (buffer_t){0};
-    for (uint32_t i = 0; i < DISP_FENCE_CAPACITY; ++i) fences[i] = (fence_t){0};
-    for (uint32_t i = 0; i < DISP_SURFACE_CAPACITY; ++i) surfaces[i] = (surface_t){0};
-    for (uint32_t i = 0; i < DISP_PRESENT_CAPACITY; ++i) presentations[i] = (presentation_t){0};
-    for (uint32_t i = 0; i < DISP_SURFACE_CAPACITY; ++i) commit_txs[i] = (commit_tx_t){0};
+    if (outputs) kfree(outputs);
+    outputs = (output_t *)dispproto_alloc_table(DISP_OUTPUT_CAPACITY, sizeof(output_t), &outputs_capacity);
+    if (buffers) kfree(buffers);
+    buffers = (buffer_t *)dispproto_alloc_table(DISP_BUFFER_CAPACITY, sizeof(buffer_t), &buffers_capacity);
+    if (fences) kfree(fences);
+    fences = (fence_t *)dispproto_alloc_table(DISP_FENCE_CAPACITY, sizeof(fence_t), &fences_capacity);
+    if (surfaces) kfree(surfaces);
+    surfaces = (surface_t *)dispproto_alloc_table(DISP_SURFACE_CAPACITY, sizeof(surface_t), &surfaces_capacity);
+    if (presentations) kfree(presentations);
+    presentations = (presentation_t *)dispproto_alloc_table(DISP_PRESENT_CAPACITY, sizeof(presentation_t), &presentations_capacity);
+    if (commit_txs) kfree(commit_txs);
+    commit_txs = (commit_tx_t *)dispproto_alloc_table(DISP_SURFACE_CAPACITY, sizeof(commit_tx_t), &commit_txs_capacity);
+
     next_output_id = 1;
     next_buffer_id = 1;
     next_fence_id = 1;
@@ -90,7 +137,7 @@ void dispproto_initialize(void) {
 
 static output_t *output_find(uint32_t id) {
     if (id == 0) return NULL;
-    for (uint32_t i = 0; i < DISP_OUTPUT_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < outputs_capacity; ++i) {
         if (outputs[i].in_use && outputs[i].output_id == id) return &outputs[i];
     }
     return NULL;
@@ -98,7 +145,7 @@ static output_t *output_find(uint32_t id) {
 
 static buffer_t *buffer_find(uint32_t id) {
     if (id == 0) return NULL;
-    for (uint32_t i = 0; i < DISP_BUFFER_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < buffers_capacity; ++i) {
         if (buffers[i].in_use && buffers[i].buffer_id == id) return &buffers[i];
     }
     return NULL;
@@ -106,7 +153,7 @@ static buffer_t *buffer_find(uint32_t id) {
 
 static fence_t *fence_find(uint32_t id) {
     if (id == 0) return NULL;
-    for (uint32_t i = 0; i < DISP_FENCE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < fences_capacity; ++i) {
         if (fences[i].in_use && fences[i].fence_id == id) return &fences[i];
     }
     return NULL;
@@ -114,7 +161,7 @@ static fence_t *fence_find(uint32_t id) {
 
 static surface_t *surface_find(uint32_t id) {
     if (id == 0) return NULL;
-    for (uint32_t i = 0; i < DISP_SURFACE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < surfaces_capacity; ++i) {
         if (surfaces[i].in_use && surfaces[i].surface_id == id) return &surfaces[i];
     }
     return NULL;
@@ -122,14 +169,14 @@ static surface_t *surface_find(uint32_t id) {
 
 static presentation_t *presentation_find(uint32_t id) {
     if (id == 0) return NULL;
-    for (uint32_t i = 0; i < DISP_PRESENT_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < presentations_capacity; ++i) {
         if (presentations[i].in_use && presentations[i].presentation_id == id) return &presentations[i];
     }
     return NULL;
 }
 
 static commit_tx_t *commit_tx_find(uint32_t gfx_tx_id) {
-    for (uint32_t i = 0; i < DISP_SURFACE_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < commit_txs_capacity; ++i) {
         if (commit_txs[i].in_use && commit_txs[i].gfx_tx_id == gfx_tx_id) return &commit_txs[i];
     }
     return NULL;
@@ -137,10 +184,12 @@ static commit_tx_t *commit_tx_find(uint32_t gfx_tx_id) {
 
 int output_create(uint32_t *out_output_id) {
     uint32_t slot;
-    for (slot = 0; slot < DISP_OUTPUT_CAPACITY; ++slot) {
+    for (slot = 0; slot < outputs_capacity; ++slot) {
         if (!outputs[slot].in_use) break;
     }
-    if (slot >= DISP_OUTPUT_CAPACITY) return DISPPROTO_ERR_CAPACITY;
+    if (slot >= outputs_capacity) {
+        if (outputs_grow(&slot) != 0) return DISPPROTO_ERR_CAPACITY;
+    }
     outputs[slot].output_id = next_output_id++;
     outputs[slot].in_use = 1;
     *out_output_id = outputs[slot].output_id;
@@ -149,10 +198,12 @@ int output_create(uint32_t *out_output_id) {
 
 int buffer_create(uint32_t width, uint32_t height, uint32_t format, uint32_t *out_buffer_id) {
     uint32_t slot;
-    for (slot = 0; slot < DISP_BUFFER_CAPACITY; ++slot) {
+    for (slot = 0; slot < buffers_capacity; ++slot) {
         if (!buffers[slot].in_use) break;
     }
-    if (slot >= DISP_BUFFER_CAPACITY) return DISPPROTO_ERR_CAPACITY;
+    if (slot >= buffers_capacity) {
+        if (buffers_grow(&slot) != 0) return DISPPROTO_ERR_CAPACITY;
+    }
 
     buffers[slot].buffer_id = next_buffer_id++;
     buffers[slot].width = width;
@@ -202,10 +253,12 @@ static void buffer_drop_ref(uint32_t buffer_id) {
 
 int fence_create(uint32_t *out_fence_id) {
     uint32_t slot;
-    for (slot = 0; slot < DISP_FENCE_CAPACITY; ++slot) {
+    for (slot = 0; slot < fences_capacity; ++slot) {
         if (!fences[slot].in_use) break;
     }
-    if (slot >= DISP_FENCE_CAPACITY) return DISPPROTO_ERR_CAPACITY;
+    if (slot >= fences_capacity) {
+        if (fences_grow(&slot) != 0) return DISPPROTO_ERR_CAPACITY;
+    }
     fences[slot].fence_id = next_fence_id++;
     fences[slot].signaled = 0;
     fences[slot].in_use = 1;
@@ -229,10 +282,12 @@ int fence_is_signaled(uint32_t fence_id, int *out_signaled) {
 
 int disp_surface_create(uint32_t owner_pid, uint32_t *out_surface_id) {
     uint32_t slot;
-    for (slot = 0; slot < DISP_SURFACE_CAPACITY; ++slot) {
+    for (slot = 0; slot < surfaces_capacity; ++slot) {
         if (!surfaces[slot].in_use) break;
     }
-    if (slot >= DISP_SURFACE_CAPACITY) return DISPPROTO_ERR_CAPACITY;
+    if (slot >= surfaces_capacity) {
+        if (surfaces_grow(&slot) != 0) return DISPPROTO_ERR_CAPACITY;
+    }
 
     surfaces[slot] = (surface_t){0};
     surfaces[slot].surface_id = next_surface_id++;
@@ -274,12 +329,14 @@ int disp_surface_commit_begin(uint32_t surface_id, uint32_t *out_tx_id) {
     if (rc != 0) return rc;
 
     uint32_t slot;
-    for (slot = 0; slot < DISP_SURFACE_CAPACITY; ++slot) {
+    for (slot = 0; slot < commit_txs_capacity; ++slot) {
         if (!commit_txs[slot].in_use) break;
     }
-    if (slot >= DISP_SURFACE_CAPACITY) {
-        gfx_transaction_abort(gfx_tx_id);
-        return DISPPROTO_ERR_CAPACITY;
+    if (slot >= commit_txs_capacity) {
+        if (commit_txs_grow(&slot) != 0) {
+            gfx_transaction_abort(gfx_tx_id);
+            return DISPPROTO_ERR_CAPACITY;
+        }
     }
     commit_txs[slot].gfx_tx_id = gfx_tx_id;
     commit_txs[slot].surface_id = surface_id;
@@ -371,10 +428,12 @@ int present_submit(uint32_t output_id, uint32_t surface_id, uint32_t *out_presen
     }
 
     uint32_t slot;
-    for (slot = 0; slot < DISP_PRESENT_CAPACITY; ++slot) {
+    for (slot = 0; slot < presentations_capacity; ++slot) {
         if (!presentations[slot].in_use) break;
     }
-    if (slot >= DISP_PRESENT_CAPACITY) return DISPPROTO_ERR_CAPACITY;
+    if (slot >= presentations_capacity) {
+        if (presentations_grow(&slot) != 0) return DISPPROTO_ERR_CAPACITY;
+    }
 
     presentations[slot].presentation_id = next_presentation_id++;
     presentations[slot].output_id = output_id;
@@ -532,6 +591,20 @@ int dispproto_self_test(void) {
     if (buffer_info(0xFFFFu, &binfo) != DISPPROTO_ERR_NOT_FOUND) return -1;
     if (fence_signal(0xFFFFu) != DISPPROTO_ERR_NOT_FOUND) return -1;
     if (present_info(0xFFFFu, &pinfo) != DISPPROTO_ERR_NOT_FOUND) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr Buffer/
+       Surfaces/Fences anlegen, als die urspruenglichen festen Kapazitaeten
+       je erlaubt haetten - mindestens je ein *_grow() ist dafuer noetig. */
+    uint32_t last_buf = 0, last_surf = 0, last_fence = 0;
+    uint32_t growth_count = DISP_SURFACE_CAPACITY + 5u; /* DISP_BUFFER/FENCE/SURFACE_CAPACITY sind alle 16 */
+    for (uint32_t i = 0; i < growth_count; ++i) {
+        if (buffer_create(10u, 10u, 1u, &last_buf) != 0) return -1;
+        if (disp_surface_create(1u, &last_surf) != 0) return -1;
+        if (fence_create(&last_fence) != 0) return -1;
+    }
+    if (buffer_info(last_buf, &binfo) != 0) return -1;
+    if (disp_surface_info(last_surf, &sinfo) != 0) return -1;
+    if (fence_is_signaled(last_fence, &signaled) != 0) return -1;
 
     return 0;
 }

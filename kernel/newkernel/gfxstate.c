@@ -1,4 +1,16 @@
+/* Dynamisch wachsende Dependency-/Semantik-Tabellen (2026-11-05, Antwort
+   auf "viele feste Grenzen nicht dynamisch loesbar" - siehe
+   [[project_general_allocator]], drittes umgestelltes Modul nach
+   process.c/layercompose.c). GFX_DEPENDENCY_CAPACITY/GFX_SEMANTIC_CAPACITY
+   (gfxstate.h) sind jetzt nur noch Startkapazitaeten. `transactions[]`
+   (GFX_TX_CAPACITY) UND das pro Transaktion feste `GFX_TX_MAX_CHANGES`
+   bleiben bewusst UNVERAENDERT - Transaktionen sind ein echt kurzlebiger,
+   bewusst bemessener Pool mit eigener Wiederverwendungs-Strategie
+   (aeltesten ABGESCHLOSSENEN Slot wiederverwenden statt wachsen, siehe
+   gfx_transaction_begin()), kein unbegrenzt waechsendes Register wie die
+   Abhaengigkeitskanten/Semantik-Eintraege. */
 #include "gfxstate.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -36,8 +48,10 @@ typedef struct {
 #define GFX_ADAPTIVE_CHANGE_LIMIT 32u
 
 static gfx_transaction_t transactions[GFX_TX_CAPACITY];
-static gfx_dependency_t dependencies[GFX_DEPENDENCY_CAPACITY];
-static gfx_semantic_entry_t semantics[GFX_SEMANTIC_CAPACITY];
+static gfx_dependency_t *dependencies = NULL;
+static uint32_t dependencies_capacity = 0;
+static gfx_semantic_entry_t *semantics = NULL;
+static uint32_t semantics_capacity = 0;
 static uint32_t gfx_next_tx_id = 1;
 static uint32_t gfx_next_edge_id = 1;
 static uint32_t gfx_next_state_version = 1;
@@ -47,16 +61,49 @@ void gfxstate_initialize(void) {
     for (uint32_t i = 0; i < GFX_TX_CAPACITY; ++i) {
         transactions[i] = (gfx_transaction_t){0};
     }
-    for (uint32_t i = 0; i < GFX_DEPENDENCY_CAPACITY; ++i) {
-        dependencies[i] = (gfx_dependency_t){0};
-    }
-    for (uint32_t i = 0; i < GFX_SEMANTIC_CAPACITY; ++i) {
-        semantics[i] = (gfx_semantic_entry_t){0};
-    }
+
+    if (dependencies) kfree(dependencies);
+    dependencies = (gfx_dependency_t *)kcalloc(GFX_DEPENDENCY_CAPACITY, sizeof(gfx_dependency_t));
+    dependencies_capacity = dependencies ? GFX_DEPENDENCY_CAPACITY : 0u;
+
+    if (semantics) kfree(semantics);
+    semantics = (gfx_semantic_entry_t *)kcalloc(GFX_SEMANTIC_CAPACITY, sizeof(gfx_semantic_entry_t));
+    semantics_capacity = semantics ? GFX_SEMANTIC_CAPACITY : 0u;
+
     gfx_next_tx_id = 1;
     gfx_next_edge_id = 1;
     gfx_next_state_version = 1;
     gfxstate_ready = 1;
+}
+
+/* Verdoppelt dependencies[] (identisches Muster wie process.c's
+   process_table_grow()/layercompose.c's layers_grow()). 0 = Erfolg
+   (*out_slot = erster freier Slot im neuen Bereich), -1 bei
+   Erschoepfung (dependencies/dependencies_capacity bleiben unveraendert
+   gueltig). */
+static int dependencies_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (dependencies_capacity == 0u) ? GFX_DEPENDENCY_CAPACITY : dependencies_capacity * 2u;
+    gfx_dependency_t *grown = (gfx_dependency_t *)krealloc(dependencies,
+                                                             new_capacity * (uint32_t)sizeof(gfx_dependency_t));
+    if (!grown) return -1;
+    for (uint32_t i = dependencies_capacity; i < new_capacity; ++i) grown[i] = (gfx_dependency_t){0};
+    *out_slot = dependencies_capacity;
+    dependencies = grown;
+    dependencies_capacity = new_capacity;
+    return 0;
+}
+
+/* Gegenstueck zu dependencies_grow() fuer semantics[]. */
+static int semantics_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (semantics_capacity == 0u) ? GFX_SEMANTIC_CAPACITY : semantics_capacity * 2u;
+    gfx_semantic_entry_t *grown = (gfx_semantic_entry_t *)krealloc(
+        semantics, new_capacity * (uint32_t)sizeof(gfx_semantic_entry_t));
+    if (!grown) return -1;
+    for (uint32_t i = semantics_capacity; i < new_capacity; ++i) grown[i] = (gfx_semantic_entry_t){0};
+    *out_slot = semantics_capacity;
+    semantics = grown;
+    semantics_capacity = new_capacity;
+    return 0;
 }
 
 static gfx_transaction_t *tx_find(uint32_t tx_id) {
@@ -75,7 +122,7 @@ static gfx_dependency_t *dep_find(uint32_t edge_id) {
     if (edge_id == 0) {
         return NULL;
     }
-    for (uint32_t i = 0; i < GFX_DEPENDENCY_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < dependencies_capacity; ++i) {
         if (dependencies[i].in_use && dependencies[i].edge_id == edge_id) {
             return &dependencies[i];
         }
@@ -87,18 +134,41 @@ static gfx_dependency_t *dep_find(uint32_t edge_id) {
    den Knoten `to` erreichen? Dient der Zyklus-Erkennung in
    gfx_dependency_add(): source_id->target_id wuerde einen Zyklus
    schliessen, wenn target_id transitiv bereits source_id erreicht. */
+/* queue[]/visited[] werden auf die AKTUELLE dependencies_capacity bemessen
+   (per kalloc, nicht mehr fest GFX_DEPENDENCY_CAPACITY) - das ist ein
+   gueltiges, straffes Maximum unabhaengig davon, ob man es als
+   "Kantenzahl" oder "Anzahl verschiedener Elemente" liest: ueber hoechstens
+   dependencies_capacity Kanten lassen sich hoechstens dependencies_capacity+1
+   verschiedene Elemente erreichen (jede Kante fuehrt zu HOECHSTENS einem
+   neuen, noch nicht besuchten Element) - +1 Rundungsmarge statt exakter
+   Grenze schadet nicht, vereinfacht aber die Allokation. Bei Erschoepfung
+   wird KONSERVATIV 1 (= Zyklus/Erreichbarkeit angenommen) zurueckgegeben,
+   nicht 0 - ein abgewiesenes gfx_dependency_add() ist die sichere Wahl,
+   eine faelschlich erlaubte Zyklus-Kante waere es nicht (#9
+   Fehlerbehandlung-Grundsatz dieses Moduls). */
 static int can_reach(uint32_t from, uint32_t to) {
     if (from == to) {
         return 1;
     }
-    uint32_t queue[GFX_DEPENDENCY_CAPACITY];
-    uint32_t visited[GFX_DEPENDENCY_CAPACITY];
+    if (dependencies_capacity == 0) {
+        return 0;
+    }
+
+    uint32_t *queue = (uint32_t *)kalloc(dependencies_capacity * (uint32_t)sizeof(uint32_t));
+    uint32_t *visited = (uint32_t *)kalloc(dependencies_capacity * (uint32_t)sizeof(uint32_t));
+    if (!queue || !visited) {
+        if (queue) kfree(queue);
+        if (visited) kfree(visited);
+        return 1;
+    }
+
     uint32_t queue_count = 0;
     uint32_t visited_count = 0;
 
     queue[queue_count++] = from;
     visited[visited_count++] = from;
 
+    int result = 0;
     while (queue_count > 0) {
         uint32_t current = queue[0];
         for (uint32_t i = 1; i < queue_count; ++i) {
@@ -106,13 +176,14 @@ static int can_reach(uint32_t from, uint32_t to) {
         }
         queue_count--;
 
-        for (uint32_t i = 0; i < GFX_DEPENDENCY_CAPACITY; ++i) {
+        for (uint32_t i = 0; i < dependencies_capacity; ++i) {
             if (!dependencies[i].in_use || dependencies[i].source_id != current) {
                 continue;
             }
             uint32_t next = dependencies[i].target_id;
             if (next == to) {
-                return 1;
+                result = 1;
+                goto done;
             }
             int already_visited = 0;
             for (uint32_t v = 0; v < visited_count; ++v) {
@@ -121,13 +192,17 @@ static int can_reach(uint32_t from, uint32_t to) {
                     break;
                 }
             }
-            if (!already_visited && visited_count < GFX_DEPENDENCY_CAPACITY && queue_count < GFX_DEPENDENCY_CAPACITY) {
+            if (!already_visited && visited_count < dependencies_capacity && queue_count < dependencies_capacity) {
                 visited[visited_count++] = next;
                 queue[queue_count++] = next;
             }
         }
     }
-    return 0;
+
+done:
+    kfree(queue);
+    kfree(visited);
+    return result;
 }
 
 int gfx_dependency_add(uint32_t source_id, uint32_t target_id, uint32_t dep_type,
@@ -140,13 +215,15 @@ int gfx_dependency_add(uint32_t source_id, uint32_t target_id, uint32_t dep_type
     }
 
     uint32_t slot;
-    for (slot = 0; slot < GFX_DEPENDENCY_CAPACITY; ++slot) {
+    for (slot = 0; slot < dependencies_capacity; ++slot) {
         if (!dependencies[slot].in_use) {
             break;
         }
     }
-    if (slot >= GFX_DEPENDENCY_CAPACITY) {
-        return GFX_ERR_CAPACITY;
+    if (slot >= dependencies_capacity) {
+        if (dependencies_grow(&slot) != 0) {
+            return GFX_ERR_CAPACITY;
+        }
     }
 
     dependencies[slot].edge_id = gfx_next_edge_id++;
@@ -171,8 +248,24 @@ int gfx_dependency_remove(uint32_t edge_id) {
 
 int gfx_dependency_invalidate_from(uint32_t changed_id, uint32_t *out_affected,
                                     uint32_t max_out, uint32_t *out_count) {
-    uint32_t queue[GFX_DEPENDENCY_CAPACITY];
-    uint32_t visited[GFX_DEPENDENCY_CAPACITY];
+    *out_count = 0;
+    if (dependencies_capacity == 0) return 0;
+
+    /* queue[]/visited[] dynamisch auf die AKTUELLE dependencies_capacity
+       bemessen (siehe can_reach() fuer dieselbe Begruendung). Anders als
+       can_reach() MUSS diese Funktion laut Vertrag (siehe gfxstate.h)
+       "immer Erfolg" liefern - bei einer derart seltenen Erschoepfung
+       (die Scratch-Puffer sind klein) bleibt *out_count=0 (bereits oben
+       gesetzt) ein sicherer, konservativer Rueckgabewert: GFX_ERR_CAPACITY
+       statt eines verschwiegenen Teilergebnisses. */
+    uint32_t *queue = (uint32_t *)kalloc(dependencies_capacity * (uint32_t)sizeof(uint32_t));
+    uint32_t *visited = (uint32_t *)kalloc(dependencies_capacity * (uint32_t)sizeof(uint32_t));
+    if (!queue || !visited) {
+        if (queue) kfree(queue);
+        if (visited) kfree(visited);
+        return GFX_ERR_CAPACITY;
+    }
+
     uint32_t queue_count = 0;
     uint32_t visited_count = 0;
     uint32_t affected_count = 0;
@@ -187,7 +280,7 @@ int gfx_dependency_invalidate_from(uint32_t changed_id, uint32_t *out_affected,
         }
         queue_count--;
 
-        for (uint32_t i = 0; i < GFX_DEPENDENCY_CAPACITY; ++i) {
+        for (uint32_t i = 0; i < dependencies_capacity; ++i) {
             if (!dependencies[i].in_use || dependencies[i].source_id != current) {
                 continue;
             }
@@ -202,7 +295,7 @@ int gfx_dependency_invalidate_from(uint32_t changed_id, uint32_t *out_affected,
                 }
             }
             if (!already_visited) {
-                if (visited_count < GFX_DEPENDENCY_CAPACITY && queue_count < GFX_DEPENDENCY_CAPACITY) {
+                if (visited_count < dependencies_capacity && queue_count < dependencies_capacity) {
                     visited[visited_count++] = next;
                     queue[queue_count++] = next;
                 }
@@ -213,6 +306,8 @@ int gfx_dependency_invalidate_from(uint32_t changed_id, uint32_t *out_affected,
         }
     }
 
+    kfree(queue);
+    kfree(visited);
     *out_count = affected_count;
     return 0;
 }
@@ -231,13 +326,13 @@ int gfx_dependency_info(uint32_t edge_id, gfx_dependency_info_t *out_info) {
 }
 
 int gfx_semantic_set(uint32_t element_id, uint32_t semantic_mask) {
-    for (uint32_t i = 0; i < GFX_SEMANTIC_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < semantics_capacity; ++i) {
         if (semantics[i].in_use && semantics[i].element_id == element_id) {
             semantics[i].semantic_mask = semantic_mask;
             return 0;
         }
     }
-    for (uint32_t i = 0; i < GFX_SEMANTIC_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < semantics_capacity; ++i) {
         if (!semantics[i].in_use) {
             semantics[i].element_id = element_id;
             semantics[i].semantic_mask = semantic_mask;
@@ -245,11 +340,18 @@ int gfx_semantic_set(uint32_t element_id, uint32_t semantic_mask) {
             return 0;
         }
     }
-    return GFX_ERR_CAPACITY;
+    uint32_t slot;
+    if (semantics_grow(&slot) != 0) {
+        return GFX_ERR_CAPACITY;
+    }
+    semantics[slot].element_id = element_id;
+    semantics[slot].semantic_mask = semantic_mask;
+    semantics[slot].in_use = 1;
+    return 0;
 }
 
 uint32_t gfx_semantic_get(uint32_t element_id) {
-    for (uint32_t i = 0; i < GFX_SEMANTIC_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < semantics_capacity; ++i) {
         if (semantics[i].in_use && semantics[i].element_id == element_id) {
             return semantics[i].semantic_mask;
         }
@@ -272,11 +374,15 @@ uint32_t gfx_adaptive_select_strategy(uint32_t change_count, uint32_t damage_are
 }
 
 static void propagate_commit(gfx_transaction_t *tx) {
-    uint32_t affected[GFX_DEPENDENCY_CAPACITY];
+    /* Die invalidierten Element-IDs werden hier nicht ausgewertet (nur
+       invalidation_total je Kante zaehlt) - max_out=0/out_affected=NULL
+       ist sicher, da gfx_dependency_invalidate_from() out_affected nur
+       dereferenziert, wenn affected_count < max_out (siehe dort), was
+       bei max_out=0 nie zutrifft. Erspart einen eigenen, auf
+       dependencies_capacity zu bemessenden Puffer an dieser Stelle. */
     uint32_t affected_count;
     for (uint32_t i = 0; i < tx->change_count; ++i) {
-        gfx_dependency_invalidate_from(tx->changes[i].element_id, affected,
-                                        GFX_DEPENDENCY_CAPACITY, &affected_count);
+        gfx_dependency_invalidate_from(tx->changes[i].element_id, NULL, 0, &affected_count);
     }
 }
 
@@ -383,7 +489,16 @@ int gfxstate_self_test(void) {
         return -1;
     }
 
-    const uint32_t ELEM_A = 100u, ELEM_B = 200u, ELEM_C = 300u;
+    /* Grosse Sentinel-Werte statt kleiner Zahlen wie 100/200/300 (siehe
+       Debugging-Lektion 2026-11-05: eine spaetere Session liess
+       scenegraph.c's node_next_id-Zaehler durch einen Wachstumstest so
+       weit vorlaufen, dass ein DYNAMISCH zugewiesener Node zufaellig
+       exakt die ID 100 erhielt und damit mit DIESER Konstante und der
+       von ihr nie entfernten Kante edge_ab=100->200 kollidierte -
+       dieselbe Fehlerklasse wie Phase 7's damagetrack.c-ID-Kollision.
+       Werte in diesem Bereich sind fuer irgendeinen dynamischen Zaehler
+       in diesem Kernel praktisch unerreichbar). */
+    const uint32_t ELEM_A = 0x7F000001u, ELEM_B = 0x7F000002u, ELEM_C = 0x7F000003u;
 
     /* Transaktion: sammeln -> committen -> Version/Change-Count pruefen. */
     uint32_t tx1;
@@ -475,6 +590,41 @@ int gfxstate_self_test(void) {
     /* Unbekannte IDs. */
     if (gfx_transaction_info(0xFFFFu, &txinfo) != GFX_ERR_NOT_FOUND) return -1;
     if (gfx_dependency_info(0xFFFFu, &depinfo) != GFX_ERR_NOT_FOUND) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr Abhaengig-
+       keitskanten anlegen, als die urspruengliche feste
+       GFX_DEPENDENCY_CAPACITY je erlaubt haette - eine lange Kette
+       (kein Zyklus, jede Kante eindeutig) aus GFX_DEPENDENCY_CAPACITY+5
+       Kanten. Muss dafuer mindestens einmal per dependencies_grow()
+       gewachsen sein. Eine abschliessende can_reach()-Pruefung (ueber
+       gfx_dependency_add()s eigene Zyklus-Erkennung) durchlaeuft dabei
+       zwangslaeufig die GANZE gewachsene Kette - beweist, dass
+       can_reach()s dynamisch allozierte queue[]/visited[] korrekt
+       mitgewachsen sind (mit der alten festen Groesse waere die
+       Zyklus-Erkennung hier unvollstaendig gewesen). */
+    const uint32_t CHAIN_BASE = 10000u;
+    const uint32_t CHAIN_EDGES = GFX_DEPENDENCY_CAPACITY + 5u;
+    for (uint32_t i = 0; i < CHAIN_EDGES; ++i) {
+        uint32_t edge_id;
+        if (gfx_dependency_add(CHAIN_BASE + i, CHAIN_BASE + i + 1u, GFX_DEP_PROPERTY, &edge_id) != 0) {
+            return -1;
+        }
+    }
+    /* Eine Kante vom Kettenende zum Kettenanfang wuerde einen Zyklus ueber
+       die GESAMTE Kette schliessen - muss abgewiesen werden. */
+    uint32_t cycle_edge_dummy;
+    if (gfx_dependency_add(CHAIN_BASE + CHAIN_EDGES, CHAIN_BASE, GFX_DEP_PROPERTY,
+                            &cycle_edge_dummy) != GFX_ERR_CYCLE) {
+        return -1;
+    }
+
+    /* Beweist ebenso: mehr Semantik-Eintraege, als die urspruengliche
+       feste GFX_SEMANTIC_CAPACITY je erlaubt haette. */
+    const uint32_t SEMANTIC_COUNT = GFX_SEMANTIC_CAPACITY + 3u;
+    for (uint32_t i = 0; i < SEMANTIC_COUNT; ++i) {
+        if (gfx_semantic_set(CHAIN_BASE + 100000u + i, GFX_SEM_CONTENT) != 0) return -1;
+    }
+    if (gfx_semantic_get(CHAIN_BASE + 100000u + SEMANTIC_COUNT - 1u) != GFX_SEM_CONTENT) return -1;
 
     return 0;
 }

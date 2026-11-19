@@ -1,6 +1,12 @@
+/* Dynamisch wachsende Output-/Frame-Tabellen (2026-11-05, Antwort auf
+   "viele feste Grenzen nicht dynamisch loesbar" - siehe
+   [[project_general_allocator]], neuntes umgestelltes Modul).
+   FSCHED_OUTPUT_CAPACITY/FSCHED_FRAME_CAPACITY (framesched.h) sind jetzt
+   nur noch Startkapazitaeten. */
 #include "framesched.h"
 #include "damagetrack.h"
 #include "interrupt.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -29,21 +35,54 @@ typedef struct {
     int in_use;
 } frame_t;
 
-static output_sched_t outputs[FSCHED_OUTPUT_CAPACITY];
-static frame_t frames[FSCHED_FRAME_CAPACITY];
+static output_sched_t *outputs = NULL;
+static uint32_t outputs_capacity = 0;
+static frame_t *frames = NULL;
+static uint32_t frames_capacity = 0;
 static uint32_t next_frame_id = 1;
 static int framesched_ready = 0;
 
 void framesched_initialize(void) {
-    for (uint32_t i = 0; i < FSCHED_OUTPUT_CAPACITY; ++i) outputs[i] = (output_sched_t){0};
-    for (uint32_t i = 0; i < FSCHED_FRAME_CAPACITY; ++i) frames[i] = (frame_t){0};
+    if (outputs) kfree(outputs);
+    outputs = (output_sched_t *)kcalloc(FSCHED_OUTPUT_CAPACITY, sizeof(output_sched_t));
+    outputs_capacity = outputs ? FSCHED_OUTPUT_CAPACITY : 0u;
+
+    if (frames) kfree(frames);
+    frames = (frame_t *)kcalloc(FSCHED_FRAME_CAPACITY, sizeof(frame_t));
+    frames_capacity = frames ? FSCHED_FRAME_CAPACITY : 0u;
+
     next_frame_id = 1;
     framesched_ready = 1;
 }
 
+/* Verdoppelt outputs[]/frames[] (identisches Muster wie die bereits
+   umgestellten Module). 0 = Erfolg (*out_slot = erster freier Slot),
+   -1 bei Erschoepfung (Tabelle/Kapazitaet bleiben unveraendert gueltig). */
+static int outputs_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (outputs_capacity == 0u) ? FSCHED_OUTPUT_CAPACITY : outputs_capacity * 2u;
+    output_sched_t *grown = (output_sched_t *)krealloc(outputs, new_capacity * (uint32_t)sizeof(output_sched_t));
+    if (!grown) return -1;
+    for (uint32_t i = outputs_capacity; i < new_capacity; ++i) grown[i] = (output_sched_t){0};
+    *out_slot = outputs_capacity;
+    outputs = grown;
+    outputs_capacity = new_capacity;
+    return 0;
+}
+
+static int frames_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (frames_capacity == 0u) ? FSCHED_FRAME_CAPACITY : frames_capacity * 2u;
+    frame_t *grown = (frame_t *)krealloc(frames, new_capacity * (uint32_t)sizeof(frame_t));
+    if (!grown) return -1;
+    for (uint32_t i = frames_capacity; i < new_capacity; ++i) grown[i] = (frame_t){0};
+    *out_slot = frames_capacity;
+    frames = grown;
+    frames_capacity = new_capacity;
+    return 0;
+}
+
 static output_sched_t *output_find(uint32_t id) {
     if (id == 0) return NULL;
-    for (uint32_t i = 0; i < FSCHED_OUTPUT_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < outputs_capacity; ++i) {
         if (outputs[i].in_use && outputs[i].output_id == id) return &outputs[i];
     }
     return NULL;
@@ -51,7 +90,7 @@ static output_sched_t *output_find(uint32_t id) {
 
 static frame_t *frame_find(uint32_t id) {
     if (id == 0) return NULL;
-    for (uint32_t i = 0; i < FSCHED_FRAME_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < frames_capacity; ++i) {
         if (frames[i].in_use && frames[i].frame_id == id) return &frames[i];
     }
     return NULL;
@@ -60,10 +99,12 @@ static frame_t *frame_find(uint32_t id) {
 int fsched_output_register(uint32_t output_id, uint32_t refresh_interval_ticks) {
     if (output_find(output_id)) return FSCHED_ERR_INVALID_STATE;
     uint32_t slot;
-    for (slot = 0; slot < FSCHED_OUTPUT_CAPACITY; ++slot) {
+    for (slot = 0; slot < outputs_capacity; ++slot) {
         if (!outputs[slot].in_use) break;
     }
-    if (slot >= FSCHED_OUTPUT_CAPACITY) return FSCHED_ERR_CAPACITY;
+    if (slot >= outputs_capacity) {
+        if (outputs_grow(&slot) != 0) return FSCHED_ERR_CAPACITY;
+    }
 
     outputs[slot] = (output_sched_t){0};
     outputs[slot].output_id = output_id;
@@ -111,7 +152,7 @@ int fsched_vsync_tick(uint32_t output_id) {
 }
 
 static int output_has_unpresented_frame(uint32_t output_id) {
-    for (uint32_t i = 0; i < FSCHED_FRAME_CAPACITY; ++i) {
+    for (uint32_t i = 0; i < frames_capacity; ++i) {
         if (frames[i].in_use && frames[i].output_id == output_id && frames[i].state != FRAME_PRESENTED) {
             return 1;
         }
@@ -150,10 +191,12 @@ int fsched_frame_request(uint32_t output_id, uint32_t target_id,
     }
 
     uint32_t slot;
-    for (slot = 0; slot < FSCHED_FRAME_CAPACITY; ++slot) {
+    for (slot = 0; slot < frames_capacity; ++slot) {
         if (!frames[slot].in_use) break;
     }
-    if (slot >= FSCHED_FRAME_CAPACITY) return FSCHED_ERR_CAPACITY;
+    if (slot >= frames_capacity) {
+        if (frames_grow(&slot) != 0) return FSCHED_ERR_CAPACITY;
+    }
 
     uint32_t next_vsync = o->last_vsync_time + o->refresh_interval_ticks;
 
@@ -351,6 +394,29 @@ int framesched_self_test(void) {
     if (fsched_output_info(0xFFFFu, &oinfo) != FSCHED_ERR_NOT_FOUND) return -1;
     if (fsched_frame_info(0xFFFFu, &finfo) != FSCHED_ERR_NOT_FOUND) return -1;
     if (fsched_frame_render_start(0xFFFFu) != FSCHED_ERR_NOT_FOUND) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr Ausgaben UND
+       mehr Frames anlegen, als die urspruenglichen festen Kapazitaeten je
+       erlaubt haetten. Grosse Sentinel-IDs (siehe scenegraph.c/
+       gfxstate.c-Debugging-Lektion 2026-11-05) statt kleiner Zahlen. */
+    const uint32_t GROWTH_OUTPUT_BASE = 0x7D000000u;
+    const uint32_t GROWTH_TARGET = 0x7D100000u;
+    uint32_t output_growth_count = FSCHED_OUTPUT_CAPACITY + 3u;
+    for (uint32_t i = 0; i < output_growth_count; ++i) {
+        if (fsched_output_register(GROWTH_OUTPUT_BASE + i, 16u) != 0) return -1;
+    }
+    if (fsched_output_info(GROWTH_OUTPUT_BASE + output_growth_count - 1u, &oinfo) != 0) return -1;
+
+    uint32_t region_id3;
+    if (damage_add(GROWTH_TARGET, (render_rect_t){0, 0, 5, 5}, 1u, &region_id3) != 0) return -1;
+    uint32_t frame_growth_count = FSCHED_FRAME_CAPACITY + 5u;
+    uint32_t last_growth_frame = 0;
+    for (uint32_t i = 0; i < frame_growth_count; ++i) {
+        int gsched;
+        if (fsched_frame_request(GROWTH_OUTPUT_BASE, GROWTH_TARGET, 1u, &last_growth_frame, &gsched) != 0) return -1;
+        if (gsched != 1) return -1; /* kein Throttle gesetzt, Damage bleibt stehen -> jedes Mal geplant */
+    }
+    if (fsched_frame_info(last_growth_frame, &finfo) != 0) return -1;
 
     return 0;
 }

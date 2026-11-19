@@ -1,8 +1,14 @@
+/* Dynamisch wachsende Slot-/Backdrop-Tabellen (2026-11-05, Antwort auf
+   "viele feste Grenzen nicht dynamisch loesbar" - siehe
+   [[project_general_allocator]], elftes umgestelltes Modul).
+   LIQUIDGLASS_MAX_SLOTS (liquidglass.h) ist jetzt nur noch die
+   Startkapazitaet (fuer beide Tabellen gleichermassen). */
 #include "liquidglass.h"
 #include "materender.h"
 #include "scenegraph.h"
 #include "material.h"
 #include "matperf.h"
+#include "kalloc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -19,20 +25,51 @@ typedef struct {
     int in_use;
 } liquidglass_backdrop_t;
 
-static liquidglass_slot_t slots[LIQUIDGLASS_MAX_SLOTS];
-static liquidglass_backdrop_t backdrops[LIQUIDGLASS_MAX_SLOTS];
+static liquidglass_slot_t *slots = NULL;
+static uint32_t slots_capacity = 0;
+static liquidglass_backdrop_t *backdrops = NULL;
+static uint32_t backdrops_capacity = 0;
 static int liquidglass_ready = 0;
 
 void liquidglass_initialize(void) {
-    for (uint32_t i = 0; i < LIQUIDGLASS_MAX_SLOTS; ++i) {
-        slots[i] = (liquidglass_slot_t){0};
-        backdrops[i] = (liquidglass_backdrop_t){0};
-    }
+    if (slots) kfree(slots);
+    slots = (liquidglass_slot_t *)kcalloc(LIQUIDGLASS_MAX_SLOTS, sizeof(liquidglass_slot_t));
+    slots_capacity = slots ? LIQUIDGLASS_MAX_SLOTS : 0u;
+
+    if (backdrops) kfree(backdrops);
+    backdrops = (liquidglass_backdrop_t *)kcalloc(LIQUIDGLASS_MAX_SLOTS, sizeof(liquidglass_backdrop_t));
+    backdrops_capacity = backdrops ? LIQUIDGLASS_MAX_SLOTS : 0u;
+
     liquidglass_ready = 1;
 }
 
+/* Verdoppelt slots[]/backdrops[] (identisches Muster wie die bereits
+   umgestellten Module). */
+static int slots_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (slots_capacity == 0u) ? LIQUIDGLASS_MAX_SLOTS : slots_capacity * 2u;
+    liquidglass_slot_t *grown = (liquidglass_slot_t *)krealloc(slots, new_capacity * (uint32_t)sizeof(liquidglass_slot_t));
+    if (!grown) return -1;
+    for (uint32_t i = slots_capacity; i < new_capacity; ++i) grown[i] = (liquidglass_slot_t){0};
+    *out_slot = slots_capacity;
+    slots = grown;
+    slots_capacity = new_capacity;
+    return 0;
+}
+
+static int backdrops_grow(uint32_t *out_slot) {
+    uint32_t new_capacity = (backdrops_capacity == 0u) ? LIQUIDGLASS_MAX_SLOTS : backdrops_capacity * 2u;
+    liquidglass_backdrop_t *grown = (liquidglass_backdrop_t *)krealloc(
+        backdrops, new_capacity * (uint32_t)sizeof(liquidglass_backdrop_t));
+    if (!grown) return -1;
+    for (uint32_t i = backdrops_capacity; i < new_capacity; ++i) grown[i] = (liquidglass_backdrop_t){0};
+    *out_slot = backdrops_capacity;
+    backdrops = grown;
+    backdrops_capacity = new_capacity;
+    return 0;
+}
+
 static liquidglass_slot_t *slot_find(uint32_t node_id, uint32_t stage) {
-    for (uint32_t i = 0; i < LIQUIDGLASS_MAX_SLOTS; ++i) {
+    for (uint32_t i = 0; i < slots_capacity; ++i) {
         if (slots[i].in_use && slots[i].node_id == node_id && slots[i].stage == stage) return &slots[i];
     }
     return NULL;
@@ -41,7 +78,7 @@ static liquidglass_slot_t *slot_find(uint32_t node_id, uint32_t stage) {
 static liquidglass_slot_t *slot_alloc(uint32_t node_id, uint32_t stage) {
     liquidglass_slot_t *s = slot_find(node_id, stage);
     if (s) return s;
-    for (uint32_t i = 0; i < LIQUIDGLASS_MAX_SLOTS; ++i) {
+    for (uint32_t i = 0; i < slots_capacity; ++i) {
         if (!slots[i].in_use) {
             slots[i] = (liquidglass_slot_t){0};
             slots[i].node_id = node_id;
@@ -50,11 +87,16 @@ static liquidglass_slot_t *slot_alloc(uint32_t node_id, uint32_t stage) {
             return &slots[i];
         }
     }
-    return NULL;
+    uint32_t new_slot;
+    if (slots_grow(&new_slot) != 0) return NULL;
+    slots[new_slot].node_id = node_id;
+    slots[new_slot].stage = stage;
+    slots[new_slot].in_use = 1;
+    return &slots[new_slot];
 }
 
 static uint32_t backdrop_find(uint32_t node_id) {
-    for (uint32_t i = 0; i < LIQUIDGLASS_MAX_SLOTS; ++i) {
+    for (uint32_t i = 0; i < backdrops_capacity; ++i) {
         if (backdrops[i].in_use && backdrops[i].node_id == node_id) return backdrops[i].backdrop_node_id;
     }
     return 0;
@@ -78,14 +120,18 @@ int liquidglass_set_backdrop(uint32_t node_id, uint32_t backdrop_node_id) {
     if (!is_liquid_bound(node_id, NULL)) return LIQUIDGLASS_ERR_INVALID;
 
     liquidglass_backdrop_t *b = NULL;
-    for (uint32_t i = 0; i < LIQUIDGLASS_MAX_SLOTS; ++i) {
+    for (uint32_t i = 0; i < backdrops_capacity; ++i) {
         if (backdrops[i].in_use && backdrops[i].node_id == node_id) { b = &backdrops[i]; break; }
     }
     if (!b) {
-        for (uint32_t i = 0; i < LIQUIDGLASS_MAX_SLOTS; ++i) {
-            if (!backdrops[i].in_use) { b = &backdrops[i]; break; }
+        uint32_t slot;
+        for (slot = 0; slot < backdrops_capacity; ++slot) {
+            if (!backdrops[slot].in_use) break;
         }
-        if (!b) return LIQUIDGLASS_ERR_CAPACITY;
+        if (slot >= backdrops_capacity) {
+            if (backdrops_grow(&slot) != 0) return LIQUIDGLASS_ERR_CAPACITY;
+        }
+        b = &backdrops[slot];
         b->node_id = node_id;
         b->in_use = 1;
     }
@@ -275,6 +321,20 @@ int liquidglass_self_test(void) {
     uint32_t count;
     if (liquidglass_evaluate_all(nodeGlass, region, values, hits, &count) != 0) return -1;
     if (count != 5) return -1;
+
+    /* Beweist die eigentliche Aenderung dieser Session: mehr Knoten an
+       LIQUID binden und je eine LIGHTING-Stufe auswerten (kein Backdrop
+       noetig), als die urspruengliche feste LIQUIDGLASS_MAX_SLOTS je
+       erlaubt haette - mindestens ein slots_grow() ist dafuer noetig
+       (materender_bind() selbst ist seit dessen eigener Umstellung
+       bereits dynamisch). Grosse Sentinel-Node-IDs statt kleiner Zahlen. */
+    const uint32_t GROWTH_NODE_BASE = 0x7B000000u;
+    uint32_t growth_count = LIQUIDGLASS_MAX_SLOTS + 5u;
+    for (uint32_t i = 0; i < growth_count; ++i) {
+        if (materender_bind(GROWTH_NODE_BASE + i, instLiquid) != 0) return -1;
+        uint32_t gval; int ghit;
+        if (liquidglass_evaluate_stage(GROWTH_NODE_BASE + i, LIQUIDGLASS_STAGE_LIGHTING, region, &gval, &ghit) != 0) return -1;
+    }
 
     return 0;
 }

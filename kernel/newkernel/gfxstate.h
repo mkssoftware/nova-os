@@ -139,9 +139,14 @@ int gfx_dependency_remove(uint32_t edge_id);
 /* Transitive Aenderungspropagation (#6 Aenderungspropagation): sammelt
    alle Elemente, die (direkt oder transitiv) von changed_id abhaengen, in
    out_affected (Kapazitaet max_out - bei Erreichen wird abgeschnitten,
-   *out_count gibt die tatsaechlich gesammelte Anzahl), und zaehlt die
-   invalidation_total jeder durchlaufenen Kante hoch. 0 = immer Erfolg
-   (auch bei 0 Abhaengigkeiten). */
+   *out_count gibt die tatsaechlich gesammelte Anzahl; max_out==0/
+   out_affected==NULL ist zulaessig, wenn nur die invalidation_total-
+   Zaehlung interessiert, siehe gfxstate.c propagate_commit()), und
+   zaehlt die invalidation_total jeder durchlaufenen Kante hoch. 0 =
+   Erfolg (auch bei 0 Abhaengigkeiten; *out_count ist dann 0),
+   GFX_ERR_CAPACITY bei (sehr seltener) Erschoepfung des internen
+   Scratch-Speichers - *out_count ist in diesem Fall ebenfalls 0, niemals
+   ein verschwiegenes Teilergebnis. */
 int gfx_dependency_invalidate_from(uint32_t changed_id, uint32_t *out_affected,
                                     uint32_t max_out, uint32_t *out_count);
 

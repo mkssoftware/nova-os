@@ -55,6 +55,31 @@
 #define SYSCALL_CORE_TOGGLE_START_MENU     5u
 #define SYSCALL_CORE_GET_START_MENU_VISIBLE 6u
 #define SYSCALL_CORE_SHUTDOWN              7u
+/* Gleiches Sichtbarkeits-Flag-Muster wie TOGGLE_START_MENU/_GET_START_
+   MENU_VISIBLE (2026-11-19, Dateiexplorer-On-Demand-Start): der
+   Startmenue-Prozess (ushell/startmenu_main.c) ruft TOGGLE_EXPLORER beim
+   Klick auf den "Dateiexplorer"-Eintrag, der Explorer-Prozess (ushell/
+   explorer_main.c) fragt GET_EXPLORER_VISIBLE jeden Umlauf ab und zeigt/
+   verbirgt seine EIGENE Surface entsprechend (GUI_OP_COMMIT/_HIDE) -
+   echte Zwei-Prozess-Koordination ohne volle IPC, exakt wie beim
+   Startmenue selbst. */
+#define SYSCALL_CORE_TOGGLE_EXPLORER        8u
+#define SYSCALL_CORE_GET_EXPLORER_VISIBLE   9u
+/* Gleiches Sichtbarkeits-Flag-Muster fuer die Systemeinstellungen
+   (2026-11-19, ushell/settings_main.c). */
+#define SYSCALL_CORE_TOGGLE_SETTINGS        10u
+#define SYSCALL_CORE_GET_SETTINGS_VISIBLE   11u
+/* Liefert ECHTE Systeminformationen fuer die Einstellungs-Oberflaeche -
+   KEINE erfundenen Werte (siehe NovaOS-GUI-Verbot von "erfundenen
+   Hardwareinformationen"). EDI = aktuell freie physische Rahmen
+   (pmm_frame_count() - dieser PMM ist ein Freilisten-Stack, dessen
+   Zaehler exakt die Anzahl noch freier Rahmen ist, siehe pmm.c), ESI =
+   PMM_PAGE_SIZE (4096) - der Aufrufer multipliziert selbst, damit kein
+   32-Bit-Byte-Overflow im Kernel verdeckt wird. Kein "Gesamtspeicher"-
+   Feld, da der PMM dafuer aktuell keinen separaten, von Allokationen
+   unabhaengigen Zaehler fuehrt - nur echte, sofort verfuegbare Werte
+   anzeigen, nichts schaetzen oder erfinden. */
+#define SYSCALL_CORE_GET_SYSTEM_INFO        12u
 
 /* NPSPEC-DISPLAY-ARCH-0003/0004 (Display-Protokoll/Client-Kommunikation),
    reduziert auf einen festen Satz Operationen ueber denselben int-0x80-
