@@ -79,6 +79,7 @@ int window_minimize(uint32_t handle) {
     window_table[slot].restore_w = w;
     window_table[slot].restore_h = h;
     window_table[slot].mode = WINDOW_MODE_MINIMIZED;
+    if (window_focused == handle) window_focused = 0;
     return 0;
 }
 
@@ -101,7 +102,14 @@ static int window_maximize_like(uint32_t handle, uint32_t target_mode) {
         window_table[slot].restore_h = h;
     }
 
-    if (surface_resize(handle, 0u, 0u, display_w, display_h) != 0) return -1;
+    uint32_t target_y = 0u;
+    uint32_t target_h = display_h;
+    if (target_mode == WINDOW_MODE_MAXIMIZED && window_table[slot].decorated &&
+        display_h > WINDOW_TITLEBAR_HEIGHT) {
+        target_y = WINDOW_TITLEBAR_HEIGHT;
+        target_h = display_h - WINDOW_TITLEBAR_HEIGHT;
+    }
+    if (surface_resize(handle, 0u, target_y, display_w, target_h) != 0) return -1;
     window_table[slot].mode = target_mode;
     return 0;
 }
@@ -279,6 +287,25 @@ uint32_t window_titlebar_hit_test(uint32_t x, uint32_t y) {
     return best_handle;
 }
 
+uint32_t window_control_hit_test(uint32_t handle, uint32_t x, uint32_t y) {
+    int slot = window_find_slot(handle);
+    if (slot < 0 || !window_table[slot].decorated || !window_is_visible(handle)) return WINDOW_CONTROL_NONE;
+
+    uint32_t wx, wy, ww, wh;
+    if (surface_rect(handle, &wx, &wy, &ww, &wh) != 0) return WINDOW_CONTROL_NONE;
+    (void)wh;
+    if (wy < WINDOW_TITLEBAR_HEIGHT || ww < WINDOW_CONTROL_MIN_WIDTH) return WINDOW_CONTROL_NONE;
+
+    uint32_t bar_y = wy - WINDOW_TITLEBAR_HEIGHT;
+    uint32_t controls_x = wx + ww - WINDOW_CONTROL_COUNT * WINDOW_CONTROL_WIDTH;
+    if (x < controls_x || x >= wx + ww || y < bar_y || y >= wy) return WINDOW_CONTROL_NONE;
+
+    uint32_t index = (x - controls_x) / WINDOW_CONTROL_WIDTH;
+    if (index == 0u) return WINDOW_CONTROL_MINIMIZE;
+    if (index == 1u) return WINDOW_CONTROL_MAXIMIZE;
+    return WINDOW_CONTROL_CLOSE;
+}
+
 int window_move(uint32_t handle, uint32_t x, uint32_t y) {
     if (window_find_slot(handle) < 0) return -1;
     uint32_t cx, cy, cw, ch;
@@ -352,7 +379,8 @@ int window_self_test(void) {
     if (window_maximize(w1) != 0) return -1;
     if (window_mode(w1) != WINDOW_MODE_MAXIMIZED) return -1;
     if (surface_rect(w1, &rx, &ry, &rw, &rh) != 0) return -1;
-    if (rx != 0u || ry != 0u || rw != display_width() || rh != display_height()) return -1;
+    if (rx != 0u || ry != WINDOW_TITLEBAR_HEIGHT || rw != display_width() ||
+        rh != display_height() - WINDOW_TITLEBAR_HEIGHT) return -1;
     if (!window_is_visible(w1)) return -1; /* ACTIVE bleibt ACTIVE, nur Geometrie aendert sich */
 
     if (window_restore(w1) != 0) return -1;
@@ -404,6 +432,19 @@ int window_self_test(void) {
     if (window_titlebar_hit_test(40u, 25u) != drag_win) return -1;
     /* Punkt im Fensterinhalt selbst ist KEIN Titelleisten-Treffer. */
     if (window_titlebar_hit_test(40u, 50u) != 0u) return -1;
+
+    /* Kleine Fenster zeigen keine ueberlappenden Controls. */
+    if (window_control_hit_test(drag_win, 75u, 25u) != WINDOW_CONTROL_NONE) return -1;
+
+    uint32_t control_win;
+    if (window_create(1u, 100u, 100u, 100u, 40u, 1, &control_win) != 0) return -1;
+    static uint32_t control_pixels[100 * 40];
+    if (surface_attach_buffer(control_win, (uint32_t)(uintptr_t)control_pixels) != 0) return -1;
+    if (surface_commit(control_win) != 0) return -1;
+    if (window_control_hit_test(control_win, 150u, 90u) != WINDOW_CONTROL_MINIMIZE) return -1;
+    if (window_control_hit_test(control_win, 170u, 90u) != WINDOW_CONTROL_MAXIMIZE) return -1;
+    if (window_control_hit_test(control_win, 190u, 90u) != WINDOW_CONTROL_CLOSE) return -1;
+    window_destroy(control_win);
 
     if (window_move(drag_win, 60u, 70u) != 0) return -1;
     uint32_t mx, my, mw, mh;

@@ -225,29 +225,17 @@ int ring3_initialize(void) {
 
     uint32_t numa;
 
-    /* Die GUI-Pufferseite bleibt bewusst ZUSAETZLICH im Kernel-Basis-
-       Adressraum gemappt (unten erneut via paging_map_page_into() auch in
-       den neuen, prozesseigenen Adressraum) - Client (Ring 3, schreibt
-       seine Pixel direkt) und Compositor-Thread (Ring 0, liest sie ueber
-       surface.c) muessen dieselbe physische Seite unabhaengig vom gerade
-       aktiven CR3 erreichen koennen, siehe render2d.h-Architekturentscheidung
-       oben im ring3_program-Kommentar. Das ist eine bewusste, gemeinsame
-       Abbildung - Code/Stack (unten) sind dagegen NUR im neuen Adressraum
-       sichtbar, das ist die eigentliche Isolation. */
+    /* Der GUI-Puffer wird nur in den privaten Prozessadressraum gemappt.
+       GUI_OP_ATTACH_BUFFER loest die virtuelle Clientadresse waehrend des
+       Syscalls einmal auf ihre physische Adresse auf; der Compositor liest
+       diesen physisch identity-gemappten Rahmen. Eine zusaetzliche Abbildung
+       bei RING3_GUI_BUFFER_VADDR im Kernel-Root waere nicht nur unnoetig,
+       sondern ueberschriebe dort lebende Kernel-BSS-Daten (u.a. Wallpaper)
+       und wuerde von spaeter geklonten Prozessen geerbt. */
     uint32_t gui_buffer_page = pmm_alloc_page(&numa);
     if (gui_buffer_page == 0) return -1;
     uint8_t *gui_buffer_dst = (uint8_t *)gui_buffer_page;
     for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) gui_buffer_dst[i] = 0;
-
-    if (paging_map_page(RING3_GUI_BUFFER_VADDR, gui_buffer_page,
-                         PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
-        return -1;
-    }
-
-    /* TLB-Eintrag der zuvor (ohne User-Bit) identisch gemappten Seite im
-       Kernel-Basis-Adressraum verwerfen - sonst greift die CPU dort
-       weiter auf die alte Supervisor-Only-Uebersetzung zu. */
-    __asm__ volatile ("mov %%cr3, %%eax\n\t mov %%eax, %%cr3" ::: "eax");
 
     /* Echter, eigenstaendiger Hardware-Adressraum fuer diesen Prozess
        (siehe paging_create_address_space in paging.h) - ab hier KEIN
@@ -276,8 +264,7 @@ int ring3_initialize(void) {
         return -1;
     }
 
-    /* Dieselbe physische GUI-Pufferseite zusaetzlich in den neuen,
-       prozesseigenen Adressraum einhaengen (siehe Kommentar oben). */
+    /* Physische GUI-Pufferseite in den prozesseigenen Adressraum haengen. */
     if (paging_map_page_into(process_dir_phys, RING3_GUI_BUFFER_VADDR, gui_buffer_page,
                               PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
         return -1;

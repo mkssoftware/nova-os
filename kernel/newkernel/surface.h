@@ -60,6 +60,14 @@ int surface_attach_buffer(uint32_t handle, uint32_t buffer_addr);
    Daten. 0 wenn Handle unbekannt oder noch kein Buffer angehaengt wurde. */
 uint32_t surface_buffer_addr(uint32_t handle);
 
+/* Optionaler Color-Key fuer echte transparente Client-Chrome. Pixel im
+   angehaengten RGB-Puffer, die exakt key_rgb entsprechen, werden vom
+   Software-Compositor ausgelassen; der bereits gezeichnete Hintergrund
+   bleibt dort sichtbar. Das ist der Bootstrap-Pfad fuer Desktop-Icons,
+   solange das Wire-Protokoll noch kein per-Pixel-ARGB anbietet. */
+int surface_set_color_key(uint32_t handle, uint32_t key_rgb);
+int surface_color_key(uint32_t handle, uint32_t *out_key_rgb);
+
 /* NPSPEC-COMPOSITOR-BUFFER-0004 / SURFACE-0004 (Buffer-/Commit-Synchroni-
    sation): echte GPU-Fences sind ohne GPU bedeutungslos - stattdessen ein
    einfacher, monoton steigender Sequenzzaehler pro Surface, der bei jedem

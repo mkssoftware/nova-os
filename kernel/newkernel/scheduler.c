@@ -22,7 +22,6 @@ static uint32_t scheduler_contexts[SCHEDULER_THREAD_COUNT];
 static int32_t thread_cpu_affinity[SCHEDULER_THREAD_COUNT]; /* -1 = beliebige CPU */
 static int32_t thread_running_on[SCHEDULER_THREAD_COUNT];   /* -1 = frei, 0 = CPU0 */
 static uint32_t thread_directory_phys[SCHEDULER_THREAD_COUNT]; /* CR3 je Slot, siehe scheduler.h */
-static uint32_t scheduler_active_directory_phys = 0; /* zuletzt per CR3 geladener Adressraum */
 static uint32_t thread_kernel_stack_top[SCHEDULER_THREAD_COUNT]; /* ESP0 je Slot, siehe scheduler.h */
 static uint32_t scheduler_active_kernel_stack_top = 0; /* zuletzt in die TSS geschriebenes ESP0 */
 static int32_t scheduler_current_thread = -1; /* Pendant zu per_cpu_current_thread[0] - nur 1 CPU */
@@ -189,7 +188,6 @@ void scheduler_initialize(void) {
     if (kernel_dir != 0) {
         paging_switch_address_space(kernel_dir);
     }
-    scheduler_active_directory_phys = kernel_dir;
 
     /* Jeder Slot startet mit dem EINEN globalen Boot-Kernel-Stack
        (stack_top, boot.asm) als ESP0 - der echte Wert in der TSS wird
@@ -276,9 +274,17 @@ uint32_t scheduler_on_tick(uint32_t frame_ptr) {
            einen unnoetigen TLB-Flush beim Wechsel zwischen zwei Slots mit
            demselben (meist: Kernel-Basis-)Adressraum. */
         uint32_t target_dir = thread_directory_phys[selected];
-        if (target_dir != 0 && target_dir != scheduler_active_directory_phys) {
+        /* `ring3_enter()` wechselt den CR3 ausserhalb des Schedulers. Der
+           bislang nur intern fortgeschriebene Cache kann deshalb beim
+           allerersten Tick noch "Kernel-Directory" melden, obwohl die CPU
+           real im Bootstrap-Userspace-Directory laeuft. Vergleiche mit
+           paging_root_physical(), der einzigen Quelle fuer den aktuell
+           per paging_switch_address_space() gesetzten Adressraum. Sonst
+           wird gerade beim ersten Ring-3->Scheduler-Handoff der notwendige
+           Rueckwechsel zum Kernel-Adressraum uebersprungen. */
+        uint32_t active_dir = paging_root_physical();
+        if (target_dir != 0 && target_dir != active_dir) {
             paging_switch_address_space(target_dir);
-            scheduler_active_directory_phys = target_dir;
         }
 
         /* Eigenes ESP0 fuer diesen Slot in die TSS schreiben (siehe

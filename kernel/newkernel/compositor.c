@@ -7,6 +7,8 @@
 #include "threadmgr.h"
 #include "interrupt.h"
 #include "serial.h"
+#include "taskbarglass.h"
+#include "paging.h"
 
 /* Mindestabstand zwischen zwei automatischen Redraws des Compositor-
    Threads, in echten Timer-Ticks (keine VSync/VRR-Quelle vorhanden, siehe
@@ -14,7 +16,7 @@
    entspricht ~50ms (~20 FPS) - ausreichend fuer sichtbare Aktualisierung,
    ohne jeden Scheduler-Durchlauf unnoetig einen vollen Frame neu zu
    zeichnen. */
-#define COMPOSITOR_THREAD_INTERVAL_TICKS 5u
+#define COMPOSITOR_THREAD_INTERVAL_TICKS 2u
 
 #define COMPOSITOR_SHADOW_OFFSET 6u
 #define COMPOSITOR_SHADOW_RGB    0x000000u
@@ -30,8 +32,23 @@
    Hoehe kommt aus window.h (WINDOW_TITLEBAR_HEIGHT), da window.c/input.c
    dieselbe Geometrie fuer das Titelleisten-Hit-Testing kennen muessen. */
 #define COMPOSITOR_TITLEBAR_HEIGHT     WINDOW_TITLEBAR_HEIGHT
-#define COMPOSITOR_TITLEBAR_RGB        0x30343Cu
-#define COMPOSITOR_TITLEBAR_FOCUS_RGB  0x2D5FA0u
+#define COMPOSITOR_TITLEBAR_RGB        0x17243Au
+#define COMPOSITOR_TITLEBAR_FOCUS_RGB  0x203B67u
+#define COMPOSITOR_GLASS_ALPHA         218u
+#define COMPOSITOR_CORNER_RADIUS       6u
+#define COMPOSITOR_ACCENT_RGB          0x258BFFu
+#define COMPOSITOR_ACCENT_DIM_RGB      0x28547Fu
+#define COMPOSITOR_BORDER_RGB          0x739ED0u
+#define COMPOSITOR_CONTROL_CLOSE_RGB   0xE75A72u
+
+/* NPSPEC Liquid-Glass Abschnitt 10 ("Visuelle Verschmelzung von Fenster und
+   Taskbar"): maximale Abweichung zwischen Fenster-Unterkante und Taskbar-
+   Dock-Oberkante, bei der die Kontakterkennung noch anspringt - verhindert,
+   dass der Effekt bereits bei blossem Vorbeiziehen (noch deutlicher
+   Abstand) oder bei normaler Ueberlappung anderer Fenster faelschlich
+   ausloest. */
+#define COMPOSITOR_DOCK_MERGE_THRESHOLD 4u
+#define COMPOSITOR_DOCK_MERGE_ALPHA     90u
 
 typedef struct {
     uint32_t id; /* 0 = frei */
@@ -144,6 +161,28 @@ static uint8_t compositor_blend_channel(uint8_t src, uint8_t dst, uint32_t alpha
        eine einzelne Flaechenfarbe ohne eigenen Alphakanal pro Pixel ist. */
     uint32_t blended = (uint32_t)src * alpha + (uint32_t)dst * (255u - alpha);
     return (uint8_t)((blended + 127u) / 255u);
+}
+
+static uint32_t compositor_blend_rgb(uint32_t src, uint32_t dst, uint32_t alpha) {
+    uint8_t r = compositor_blend_channel((uint8_t)(src >> 16), (uint8_t)(dst >> 16), alpha);
+    uint8_t g = compositor_blend_channel((uint8_t)(src >> 8), (uint8_t)(dst >> 8), alpha);
+    uint8_t b = compositor_blend_channel((uint8_t)src, (uint8_t)dst, alpha);
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+static int compositor_in_rounded_rect(uint32_t px, uint32_t py, uint32_t x, uint32_t y,
+                                      uint32_t w, uint32_t h, uint32_t radius) {
+    if (px < x || py < y || px >= x + w || py >= y + h) return 0;
+    if (radius == 0u || w <= radius * 2u || h <= radius * 2u) return 1;
+    uint32_t lx = px - x;
+    uint32_t ly = py - y;
+    if (lx >= radius && lx < w - radius) return 1;
+    if (ly >= radius && ly < h - radius) return 1;
+    int32_t cx = (lx < radius) ? (int32_t)radius - 1 : (int32_t)w - (int32_t)radius;
+    int32_t cy = (ly < radius) ? (int32_t)radius - 1 : (int32_t)h - (int32_t)radius;
+    int32_t dx = (int32_t)lx - cx;
+    int32_t dy = (int32_t)ly - cy;
+    return (uint32_t)(dx * dx + dy * dy) <= radius * radius;
 }
 
 /* NPSPEC-COMPOSITOR-DAMAGE-0001 Abschnitt 6 (Partial Redraw): wie die
@@ -319,7 +358,10 @@ static int compositor_window_is_occluded(uint32_t index) {
    uint32_t 0xRRGGBB-Pixel, Stride=w*4). Clippt am Framebuffer-Rand. */
 static void compositor_blit_surface_buffer_clip(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                                                  uint32_t buffer_addr,
-                                                 uint32_t cx0, uint32_t cy0, uint32_t cx1, uint32_t cy1) {
+                                                 uint32_t cx0, uint32_t cy0, uint32_t cx1, uint32_t cy1,
+                                                 uint32_t handle, uint32_t corner_radius,
+                                                 int round_all_corners,
+                                                 uint32_t dock_ox0, uint32_t dock_ox1) {
     if (buffer_addr == 0) return;
 
     uint32_t fb_w = framebuffer_width();
@@ -336,10 +378,23 @@ static void compositor_blit_surface_buffer_clip(uint32_t x, uint32_t y, uint32_t
     if (x0 >= x_end || y0 >= y_end) return;
 
     const uint32_t *pixels = (const uint32_t *)(uintptr_t)buffer_addr;
+    uint32_t color_key = 0;
+    int have_color_key = (surface_color_key(handle, &color_key) == 0);
     for (uint32_t row = y0; row < y_end; ++row) {
         const uint32_t *src_row = pixels + (uint32_t)(row - y) * w;
         for (uint32_t col = x0; col < x_end; ++col) {
-            framebuffer_set_pixel(col, row, src_row[col - x]);
+            /* NPSPEC Liquid-Glass Abschnitt 10: im tatsaechlichen Kontakt-
+               bereich mit der Taskbar bleibt die Unterkante eckig (keine
+               Doppel-Rundung an der Verschmelzungsstelle), ausserhalb davon
+               bleibt die normale Eckenrundung erhalten. */
+            int in_dock_contact = dock_ox1 > dock_ox0 && col >= dock_ox0 && col < dock_ox1;
+            if (corner_radius != 0u &&
+                (round_all_corners || row >= y + h - corner_radius) &&
+                !in_dock_contact &&
+                !compositor_in_rounded_rect(col, row, x, y, w, h, corner_radius)) continue;
+            uint32_t pixel = src_row[col - x] & 0x00FFFFFFu;
+            if (have_color_key && pixel == color_key) continue;
+            framebuffer_set_pixel(col, row, pixel);
         }
     }
 }
@@ -422,84 +477,200 @@ static void compositor_scan_surface_damage(void) {
    eigenes frisches Damage, falls sie zufaellig in einer von ANDEREM
    Damage ausgeloesten Region liegen - sonst blieben sie als Luecke im
    Partial Redraw stehen). */
-static void compositor_draw_surfaces_clip(uint32_t cx0, uint32_t cy0, uint32_t cx1, uint32_t cy1) {
-    uint32_t capacity = surface_capacity();
-    for (uint32_t slot = 0; slot < capacity; ++slot) {
-        uint32_t handle = surface_handle_at_slot(slot);
-        if (handle == 0) continue;
-        if (surface_state(handle) != SURFACE_STATE_ACTIVE) continue;
+static void compositor_draw_titlebar_clip(uint32_t handle, uint32_t x, uint32_t y,
+                                           uint32_t w, uint32_t h,
+                                           uint32_t cx0, uint32_t cy0, uint32_t cx1, uint32_t cy1) {
+    if (!window_is_decorated(handle) || window_mode(handle) == WINDOW_MODE_FULLSCREEN ||
+        y < COMPOSITOR_TITLEBAR_HEIGHT) return;
 
-        uint32_t buffer_addr = surface_buffer_addr(handle);
-        if (buffer_addr == 0) continue;
+    uint32_t bar_y = y - COMPOSITOR_TITLEBAR_HEIGHT;
+    uint32_t focused = window_focused_handle();
+    uint32_t glass = (handle == focused) ? COMPOSITOR_TITLEBAR_FOCUS_RGB : COMPOSITOR_TITLEBAR_RGB;
+    uint32_t accent = (handle == focused) ? COMPOSITOR_ACCENT_RGB : COMPOSITOR_ACCENT_DIM_RGB;
+    uint32_t x0 = x > cx0 ? x : cx0;
+    uint32_t y0 = bar_y > cy0 ? bar_y : cy0;
+    uint32_t x1 = x + w < cx1 ? x + w : cx1;
+    uint32_t y1 = y < cy1 ? y : cy1;
 
-        uint32_t x, y, w, h;
-        if (surface_rect(handle, &x, &y, &w, &h) != 0) continue;
+    for (uint32_t row = y0; row < y1; ++row) {
+        for (uint32_t col = x0; col < x1; ++col) {
+            if (!compositor_in_rounded_rect(col, row, x, bar_y, w,
+                                            COMPOSITOR_TITLEBAR_HEIGHT + h,
+                                            COMPOSITOR_CORNER_RADIUS)) continue;
+            uint32_t dst = framebuffer_get_pixel(col, row);
+            uint32_t color = compositor_blend_rgb(glass, dst, COMPOSITOR_GLASS_ALPHA);
+            if (col < x + 3u) color = compositor_blend_rgb(accent, color, 235u);
+            framebuffer_set_pixel(col, row, color);
+        }
+    }
 
-        compositor_blit_surface_buffer_clip(x, y, w, h, buffer_addr, cx0, cy0, cx1, cy1);
+    render2d_surface_t fb;
+    render2d_init_surface(&fb, framebuffer_pixels(), framebuffer_width(), framebuffer_height(),
+                          framebuffer_stride());
+    render2d_draw_text(&fb, x + 8u, bar_y + 2u, "NovaOS", 0xF4F8FFu, glass, 0);
+
+    if (w >= WINDOW_CONTROL_MIN_WIDTH) {
+        uint32_t controls_x = x + w - WINDOW_CONTROL_COUNT * WINDOW_CONTROL_WIDTH;
+        uint32_t mid_y = bar_y + COMPOSITOR_TITLEBAR_HEIGHT / 2u;
+        uint32_t fg = 0xEAF2FFu;
+        render2d_draw_hline(&fb, controls_x + 5u, mid_y + 3u, 8u, fg);
+        render2d_draw_rect_outline(&fb, controls_x + WINDOW_CONTROL_WIDTH + 5u,
+                                   mid_y - 4u, 8u, 8u, fg);
+        uint32_t close_x = controls_x + WINDOW_CONTROL_WIDTH * 2u;
+        if (handle == focused) {
+            render2d_fill_rect(&fb, close_x, bar_y + 1u, WINDOW_CONTROL_WIDTH - 1u,
+                               COMPOSITOR_TITLEBAR_HEIGHT - 2u, COMPOSITOR_CONTROL_CLOSE_RGB);
+        }
+        for (uint32_t i = 0; i < 7u; ++i) {
+            framebuffer_set_pixel(close_x + 5u + i, mid_y - 3u + i, fg);
+            framebuffer_set_pixel(close_x + 11u - i, mid_y - 3u + i, fg);
+        }
+    }
+
+    /* Die charakteristische Nova-Signaturkante bleibt Teil des Fensters:
+       heller Kern plus weicher, nach innen abfallender Lichtsaum. */
+    uint32_t body_y1 = y + h < cy1 ? y + h : cy1;
+    uint32_t body_y0 = y > cy0 ? y : cy0;
+    if (x >= cx0 && x < cx1) {
+        for (uint32_t row = body_y0; row < body_y1; ++row) {
+            framebuffer_set_pixel(x, row, accent);
+            if (x + 1u < cx1) {
+                uint32_t dst = framebuffer_get_pixel(x + 1u, row);
+                framebuffer_set_pixel(x + 1u, row, compositor_blend_rgb(accent, dst, 150u));
+            }
+            if (x + 2u < cx1) {
+                uint32_t dst = framebuffer_get_pixel(x + 2u, row);
+                framebuffer_set_pixel(x + 2u, row, compositor_blend_rgb(accent, dst, 65u));
+            }
+        }
     }
 }
 
-static void compositor_uint_to_str(uint32_t value, char *out, uint32_t out_cap) {
-    if (out_cap == 0) return;
-    if (value == 0) {
-        out[0] = '0';
-        if (out_cap > 1) out[1] = '\0';
-        return;
-    }
-    char tmp[12];
-    uint32_t n = 0;
-    while (value > 0 && n < 11u) {
-        tmp[n++] = (char)('0' + (value % 10u));
-        value /= 10u;
-    }
-    uint32_t i = 0;
-    while (n > 0 && i < out_cap - 1u) {
-        out[i++] = tmp[--n];
-    }
-    out[i] = '\0';
+/* NPSPEC Liquid-Glass Abschnitt 10: rein geometrische Kontakterkennung
+   zwischen einem Fenster und der sichtbaren, abgerundeten Taskbar-Dock-
+   Flaeche (taskbarglass_dock_rect()) - beide Objekte bleiben technisch
+   vollstaendig unabhaengig, dies liefert nur den ueberlappenden X-Bereich
+   fuer den rein optischen Verschmelzungs-Effekt. 0 = kein Kontakt. */
+static int compositor_window_touches_taskbar(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                              uint32_t *out_ox0, uint32_t *out_ox1) {
+    uint32_t dock_x, dock_y, dock_w, dock_h;
+    if (taskbarglass_dock_rect(&dock_x, &dock_y, &dock_w, &dock_h) != 0) return 0;
+
+    uint32_t win_bottom = y + h;
+    uint32_t diff = (win_bottom > dock_y) ? (win_bottom - dock_y) : (dock_y - win_bottom);
+    if (diff > COMPOSITOR_DOCK_MERGE_THRESHOLD) return 0;
+
+    uint32_t dock_x1 = dock_x + dock_w;
+    uint32_t win_x1 = x + w;
+    uint32_t ox0 = (x > dock_x) ? x : dock_x;
+    uint32_t ox1 = (win_x1 < dock_x1) ? win_x1 : dock_x1;
+    if (ox0 >= ox1) return 0;
+
+    if (out_ox0) *out_ox0 = ox0;
+    if (out_ox1) *out_ox1 = ox1;
+    return 1;
 }
 
-/* Zeichnet eine feste Titelleiste (+ "W<Handle>"-Beschriftung) oberhalb
-   jedes sichtbaren, dekorierten window.c-Fensters, direkt in den
-   Framebuffer (nach den Surfaces, vor dem Cursor) - siehe render2d.h fuer
-   den Pixelpuffer-Adapter. Fokussierte Fenster bekommen eine andere
-   Fuellfarbe (NPSPEC-WINDOW-MANAGEMENT-0006 Datenmodell-Teil: reiner
-   visueller Hinweis, keine Eingabe-gesteuerte Fokus-Aenderung moeglich,
-   siehe window.h). */
-static void compositor_draw_decorations_clip(uint32_t cx0, uint32_t cy0, uint32_t cx1, uint32_t cy1) {
-    if (!framebuffer_available()) return;
+/* Zeichnet die eigentliche optische Verschmelzung im Kontaktbereich
+   [ox0,ox1): eine kurze Bruecke zwischen Fenster-Unterkante und Taskbar-
+   Oberkante, die den Fenster-Akzent (dieselbe Farbe wie die Signature
+   Edge, je nach Fokuszustand) weich in den darunterliegenden Taskbar-
+   Glaston ueberblendet. Malt NUR auf bereits von beiden Surfaces fertig
+   gezeichneten Pixeln - keine strukturelle Kopplung der beiden Objekte.
+   Wird pro Fenster im Z-Order-Durchlauf aufgerufen, daher ueberschreibt
+   bei ueberlappenden Kontaktzonen automatisch das zuletzt (hoeher in der
+   Z-Order, also im Vordergrund) gezeichnete Fenster die Bruecke eines
+   darunterliegenden, okkludierten Fensters - kein eigener Okklusions-Check
+   noetig. */
+static void compositor_draw_dock_merge_clip(uint32_t handle, uint32_t x, uint32_t y, uint32_t h,
+                                             uint32_t ox0, uint32_t ox1,
+                                             uint32_t cx0, uint32_t cy0, uint32_t cx1, uint32_t cy1) {
+    uint32_t dock_x, dock_y, dock_w, dock_h;
+    if (taskbarglass_dock_rect(&dock_x, &dock_y, &dock_w, &dock_h) != 0) return;
+    (void)x;
+    (void)dock_x;
+    (void)dock_w;
+    (void)dock_h;
 
-    render2d_surface_t fb_surf;
-    render2d_init_surface(&fb_surf, framebuffer_pixels(), framebuffer_width(),
-                           framebuffer_height(), framebuffer_stride());
+    uint32_t win_bottom = y + h;
+    uint32_t bridge_y0 = (win_bottom < dock_y) ? win_bottom : dock_y;
+    uint32_t bridge_y1 = (win_bottom > dock_y) ? win_bottom : dock_y;
+    if (bridge_y1 <= bridge_y0) bridge_y1 = bridge_y0 + 1u;
+
+    uint32_t rx0 = ox0 > cx0 ? ox0 : cx0;
+    uint32_t rx1 = ox1 < cx1 ? ox1 : cx1;
+    uint32_t ry0 = bridge_y0 > cy0 ? bridge_y0 : cy0;
+    uint32_t ry1 = bridge_y1 < cy1 ? bridge_y1 : cy1;
+    if (rx0 >= rx1 || ry0 >= ry1) return;
 
     uint32_t focused = window_focused_handle();
-    uint32_t capacity = window_capacity();
-    for (uint32_t slot = 0; slot < capacity; ++slot) {
-        uint32_t handle = window_handle_at_slot(slot);
-        if (handle == 0) continue;
-        if (!window_is_decorated(handle)) continue;
-        if (!window_is_visible(handle)) continue;
+    uint32_t accent = (handle == focused) ? COMPOSITOR_ACCENT_RGB : COMPOSITOR_ACCENT_DIM_RGB;
 
+    for (uint32_t row = ry0; row < ry1; ++row) {
+        for (uint32_t col = rx0; col < rx1; ++col) {
+            uint32_t dst = framebuffer_get_pixel(col, row);
+            framebuffer_set_pixel(col, row, compositor_blend_rgb(accent, dst, COMPOSITOR_DOCK_MERGE_ALPHA));
+        }
+    }
+}
+
+static int compositor_handle_is_window(uint32_t handle) {
+    for (uint32_t i = 0; i < window_capacity(); ++i) {
+        if (window_handle_at_slot(i) == handle) return 1;
+    }
+    return 0;
+}
+
+/* Erst rohe Surfaces ohne WM-Metadaten, danach echte Fenster strikt nach
+   Z-Order. Inhalt und Dekoration werden gemeinsam gezeichnet, damit die
+   Titelleiste eines unteren Fensters niemals ein oberes Fenster uebermalt. */
+static void compositor_draw_surfaces_clip(uint32_t cx0, uint32_t cy0, uint32_t cx1, uint32_t cy1) {
+    for (uint32_t slot = 0; slot < surface_capacity(); ++slot) {
+        uint32_t handle = surface_handle_at_slot(slot);
+        if (handle == 0 || compositor_handle_is_window(handle) ||
+            surface_state(handle) != SURFACE_STATE_ACTIVE) continue;
         uint32_t x, y, w, h;
         if (surface_rect(handle, &x, &y, &w, &h) != 0) continue;
-        if (y < COMPOSITOR_TITLEBAR_HEIGHT) continue; /* kein Platz oberhalb */
+        uint32_t radius = taskbarglass_is_surface(handle) ? 10u : 0u;
+        compositor_blit_surface_buffer_clip(x, y, w, h, surface_buffer_addr(handle),
+                                            cx0, cy0, cx1, cy1, handle, radius,
+                                            radius != 0u, 0u, 0u);
+    }
 
-        uint32_t bar_y = y - COMPOSITOR_TITLEBAR_HEIGHT;
-        /* Beruehrt die Titelleiste die aktuelle Redraw-Region ueberhaupt?
-           Geringfuegiges Overdraw der ganzen Leiste bei Teiltreffern ist
-           nach Abschnitt 5 zulaessig - so bleibt render2d.h unveraendert. */
-        if (x >= cx1 || x + w <= cx0 || bar_y >= cy1 || bar_y + COMPOSITOR_TITLEBAR_HEIGHT <= cy0) {
-            continue;
+    uint32_t ordered[WINDOW_CAPACITY];
+    uint32_t count = 0;
+    for (uint32_t slot = 0; slot < window_capacity(); ++slot) {
+        uint32_t handle = window_handle_at_slot(slot);
+        if (handle != 0 && window_is_visible(handle)) ordered[count++] = handle;
+    }
+    for (uint32_t i = 1; i < count; ++i) {
+        uint32_t value = ordered[i];
+        uint32_t j = i;
+        while (j > 0u && window_z_order(ordered[j - 1u]) > window_z_order(value)) {
+            ordered[j] = ordered[j - 1u];
+            --j;
         }
+        ordered[j] = value;
+    }
 
-        uint32_t bar_rgb = (handle == focused) ? COMPOSITOR_TITLEBAR_FOCUS_RGB
-                                                : COMPOSITOR_TITLEBAR_RGB;
-        render2d_fill_rect(&fb_surf, x, bar_y, w, COMPOSITOR_TITLEBAR_HEIGHT, bar_rgb);
-
-        char label[16] = "W";
-        compositor_uint_to_str(handle, &label[1], sizeof(label) - 1u);
-        render2d_draw_text(&fb_surf, x + 4u, bar_y + 2u, label, 0xFFFFFFu, bar_rgb, 0);
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t handle = ordered[i];
+        uint32_t x, y, w, h;
+        if (surface_rect(handle, &x, &y, &w, &h) != 0) continue;
+        int rounded = window_is_decorated(handle) && window_mode(handle) != WINDOW_MODE_FULLSCREEN;
+        uint32_t radius = taskbarglass_is_surface(handle) ? 10u
+                                                          : (rounded ? COMPOSITOR_CORNER_RADIUS : 0u);
+        uint32_t dock_ox0 = 0u, dock_ox1 = 0u;
+        int docked = !taskbarglass_is_surface(handle) &&
+                     compositor_window_touches_taskbar(x, y, w, h, &dock_ox0, &dock_ox1);
+        compositor_blit_surface_buffer_clip(x, y, w, h, surface_buffer_addr(handle),
+                                            cx0, cy0, cx1, cy1, handle, radius,
+                                            taskbarglass_is_surface(handle),
+                                            docked ? dock_ox0 : 0u, docked ? dock_ox1 : 0u);
+        compositor_draw_titlebar_clip(handle, x, y, w, h, cx0, cy0, cx1, cy1);
+        if (docked) {
+            compositor_draw_dock_merge_clip(handle, x, y, h, dock_ox0, dock_ox1, cx0, cy0, cx1, cy1);
+        }
     }
 }
 
@@ -569,7 +740,6 @@ static void compositor_redraw_region(uint32_t cx0, uint32_t cy0, uint32_t cx1, u
     }
 
     compositor_draw_surfaces_clip(cx0, cy0, cx1, cy1);
-    compositor_draw_decorations_clip(cx0, cy0, cx1, cy1);
 
     if (compositor_cursor_visible) {
         compositor_blend_rect_clip(compositor_cursor_x, compositor_cursor_y, 8u, 8u,
@@ -636,6 +806,7 @@ int compositor_last_redraw_was_full(void) {
    compositor_thread_body->Framebuffer unabhaengig vom spezifischen
    Ring-3-Demoprogramm in ring3.c. */
 static int compositor_client_proof_logged = 0;
+static int compositor_cr3_recovery_logged = 0;
 
 static void compositor_log_client_proof_once(void) {
     if (compositor_client_proof_logged) return;
@@ -668,6 +839,23 @@ static void compositor_log_client_proof_once(void) {
 
 void compositor_thread_body(void) {
     for (;;) {
+        /* Ein Kernel-Renderthread darf niemals Client-Mappings an den
+           niedrigen Bootstrap-Adressen sehen. Besonders der Ring-3-GUI-
+           Puffer bei 0x00402000 ueberlappt im virtuellen Adressraum noch
+           den grossen statischen Wallpaperpuffer des Bootstrap-Kernels.
+           Der Scheduler ordnet diesem Slot zwar den Kernel-CR3 zu; diese
+           Laufzeitbarriere macht den Display-Server trotzdem robust gegen
+           einen veralteten/extern geaenderten CR3 (z.B. beim ersten
+           Ring-3-Handoff) und verhindert, dass Clientpixel als scheinbare
+           horizontale Stoerzeile in das Wallpaper gelangen. */
+        uint32_t kernel_dir = paging_kernel_directory_physical();
+        if (kernel_dir != 0u && paging_root_physical() != kernel_dir) {
+            paging_switch_address_space(kernel_dir);
+            if (!compositor_cr3_recovery_logged) {
+                serial_puts("NOVA: Compositor CR3 auf Kernel-Adressraum korrigiert\r\n");
+                compositor_cr3_recovery_logged = 1;
+            }
+        }
         uint32_t now = timer_get_ticks();
         if ((now - compositor_last_thread_tick) >= COMPOSITOR_THREAD_INTERVAL_TICKS) {
             compositor_last_thread_tick = now;
@@ -797,12 +985,13 @@ int compositor_self_test(void) {
     if (surface_commit(win_handle) != 0) return -1;
 
     compositor_composite();
-    if (framebuffer_get_pixel(10u, 10u) != COMPOSITOR_TITLEBAR_RGB) return -1;
+    uint32_t title_pixel = framebuffer_get_pixel(25u, 11u);
+    if (title_pixel == 0x000000u) return -1;
 
     int found_label_pixel = 0;
     for (uint32_t row = 10u; row < 10u + COMPOSITOR_TITLEBAR_HEIGHT; ++row) {
         for (uint32_t col = 10u; col < 10u + 30u; ++col) {
-            if (framebuffer_get_pixel(col, row) != COMPOSITOR_TITLEBAR_RGB) {
+            if (framebuffer_get_pixel(col, row) != title_pixel) {
                 found_label_pixel = 1;
             }
         }
@@ -811,7 +1000,7 @@ int compositor_self_test(void) {
 
     if (window_focus(win_handle) != 0) return -1;
     compositor_composite();
-    if (framebuffer_get_pixel(10u, 10u) != COMPOSITOR_TITLEBAR_FOCUS_RGB) return -1;
+    if (framebuffer_get_pixel(25u, 11u) == title_pixel) return -1;
 
     window_destroy(win_handle);
 

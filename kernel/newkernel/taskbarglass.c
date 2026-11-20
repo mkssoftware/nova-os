@@ -19,6 +19,11 @@
    Bildtapete noch ueberlappende Fenster unter der Taskbar - der
    tatsaechliche Hintergrund ist IMMER diese bekannte Desktop-Farbe). */
 #define TASKBARGLASS_BACKDROP_RGB 0x1E2430u
+#define TASKBARGLASS_TRANSPARENT_RGB 0x00FE01u
+#define TASKBARGLASS_DOCK_MARGIN_X 12u
+#define TASKBARGLASS_DOCK_MARGIN_BOTTOM 4u
+#define TASKBARGLASS_DOCK_RADIUS 8u
+#define TASKBARGLASS_EDGE_RGB 0x4C86C8u
 
 /* Feste, projektweit eindeutige Frame-Scheduler-Ausgabe fuer die Taskbar
    (siehe framesched.h - Ausgaben werden per Aufrufer-ID verwaltet, keine
@@ -95,11 +100,12 @@ int taskbarglass_on_surface_created(uint32_t handle, uint32_t x, uint32_t y,
 
     uint32_t disp_h = display_height();
     if (disp_h == 0u || y != disp_h - TASKBARGLASS_HEIGHT) return 0;
-    if (w == 0u || w > TASKBARGLASS_MAX_WIDTH) return 0;
+    if (w <= TASKBARGLASS_DOCK_MARGIN_X * 2u || w > TASKBARGLASS_MAX_WIDTH) return 0;
 
     glass_surface_handle = handle;
     glass_width = w;
     glass_bg_valid = 0;
+    surface_set_color_key(handle, TASKBARGLASS_TRANSPARENT_RGB);
 
     if (glass_layer_id != 0) layer_set_bounds(glass_layer_id, (render_rect_t){x, y, w, h});
     return 1;
@@ -161,6 +167,56 @@ int taskbarglass_on_commit(uint32_t handle) {
             for (uint32_t i = 0; i < count; ++i) {
                 if (pixels[i] == TASKBARGLASS_BG_RGB) pixels[i] = glass_bg_pixels[i];
             }
+
+            /* Aus der weiterhin kompatiblen vollbreiten Ring-3-Surface
+               wird hier eine echte schwebende Dock-Geometrie. Pixel
+               ausserhalb des abgerundeten Dockkoerpers erhalten den auf
+               der Surface gesetzten Color-Key und lassen dadurch das
+               Wallpaper unveraendert durchscheinen. Anwendungen und
+               Uhr bleiben echte scharfe Client-Pixel. */
+            uint32_t dock_x0 = TASKBARGLASS_DOCK_MARGIN_X;
+            uint32_t dock_x1 = glass_width - TASKBARGLASS_DOCK_MARGIN_X;
+            uint32_t dock_h = TASKBARGLASS_HEIGHT - TASKBARGLASS_DOCK_MARGIN_BOTTOM;
+            for (uint32_t y = 0; y < TASKBARGLASS_HEIGHT; ++y) {
+                for (uint32_t x = 0; x < glass_width; ++x) {
+                    int inside = (x >= dock_x0 && x < dock_x1 && y < dock_h);
+                    if (inside && y < TASKBARGLASS_DOCK_RADIUS) {
+                        if (x < dock_x0 + TASKBARGLASS_DOCK_RADIUS) {
+                            int32_t dx = (int32_t)x - (int32_t)(dock_x0 + TASKBARGLASS_DOCK_RADIUS - 1u);
+                            int32_t dy = (int32_t)y - (int32_t)(TASKBARGLASS_DOCK_RADIUS - 1u);
+                            inside = (uint32_t)(dx * dx + dy * dy) <=
+                                     TASKBARGLASS_DOCK_RADIUS * TASKBARGLASS_DOCK_RADIUS;
+                        } else if (x >= dock_x1 - TASKBARGLASS_DOCK_RADIUS) {
+                            int32_t dx = (int32_t)x - (int32_t)(dock_x1 - TASKBARGLASS_DOCK_RADIUS);
+                            int32_t dy = (int32_t)y - (int32_t)(TASKBARGLASS_DOCK_RADIUS - 1u);
+                            inside = (uint32_t)(dx * dx + dy * dy) <=
+                                     TASKBARGLASS_DOCK_RADIUS * TASKBARGLASS_DOCK_RADIUS;
+                        }
+                    }
+                    if (inside && y >= dock_h - TASKBARGLASS_DOCK_RADIUS) {
+                        if (x < dock_x0 + TASKBARGLASS_DOCK_RADIUS) {
+                            int32_t dx = (int32_t)x - (int32_t)(dock_x0 + TASKBARGLASS_DOCK_RADIUS - 1u);
+                            int32_t dy = (int32_t)y - (int32_t)(dock_h - TASKBARGLASS_DOCK_RADIUS);
+                            inside = (uint32_t)(dx * dx + dy * dy) <=
+                                     TASKBARGLASS_DOCK_RADIUS * TASKBARGLASS_DOCK_RADIUS;
+                        } else if (x >= dock_x1 - TASKBARGLASS_DOCK_RADIUS) {
+                            int32_t dx = (int32_t)x - (int32_t)(dock_x1 - TASKBARGLASS_DOCK_RADIUS);
+                            int32_t dy = (int32_t)y - (int32_t)(dock_h - TASKBARGLASS_DOCK_RADIUS);
+                            inside = (uint32_t)(dx * dx + dy * dy) <=
+                                     TASKBARGLASS_DOCK_RADIUS * TASKBARGLASS_DOCK_RADIUS;
+                        }
+                    }
+                    if (!inside) pixels[y * glass_width + x] = TASKBARGLASS_TRANSPARENT_RGB;
+                }
+            }
+
+            /* Feiner oberer Glasreflex innerhalb der Rundungen. */
+            if (dock_x1 > dock_x0 + TASKBARGLASS_DOCK_RADIUS * 2u) {
+                for (uint32_t x = dock_x0 + TASKBARGLASS_DOCK_RADIUS;
+                     x < dock_x1 - TASKBARGLASS_DOCK_RADIUS; ++x) {
+                    pixels[x] = TASKBARGLASS_EDGE_RGB;
+                }
+            }
         }
     }
 
@@ -173,6 +229,30 @@ int taskbarglass_on_commit(uint32_t handle) {
     damage_resolve_target(glass_node_id, &resolved_count);
 
     return 1;
+}
+
+int taskbarglass_is_surface(uint32_t handle) {
+    return glass_ready && handle != 0u && handle == glass_surface_handle;
+}
+
+/* Liefert das sichtbare, abgerundete Dock-Rechteck (Bildschirm-Koordinaten,
+   NICHT die volle, unsichtbar breitere Ring-3-Surface dahinter) - siehe
+   taskbarglass_on_commit()s Dock-Maskierung fuer dieselben Margin-/Hoehen-
+   Konstanten. Dient dem Compositor fuer die Taskbar-Fenster-Verschmelzung
+   (NPSPEC-naher Abschnitt "Visuelle Verschmelzung von Fenster und
+   Taskbar") - OHNE dass der Compositor die Dock-Geometrie selbst kennen
+   oder duplizieren muss. 0 = Erfolg, -1 wenn aktuell keine Taskbar-Glass-
+   Surface aktiv ist. */
+int taskbarglass_dock_rect(uint32_t *out_x, uint32_t *out_y, uint32_t *out_w, uint32_t *out_h) {
+    if (!glass_ready || glass_surface_handle == 0u) return -1;
+    uint32_t sx, sy, sw, sh;
+    if (surface_rect(glass_surface_handle, &sx, &sy, &sw, &sh) != 0) return -1;
+    if (sw <= TASKBARGLASS_DOCK_MARGIN_X * 2u) return -1;
+    if (out_x) *out_x = sx + TASKBARGLASS_DOCK_MARGIN_X;
+    if (out_y) *out_y = sy;
+    if (out_w) *out_w = sw - TASKBARGLASS_DOCK_MARGIN_X * 2u;
+    if (out_h) *out_h = TASKBARGLASS_HEIGHT - TASKBARGLASS_DOCK_MARGIN_BOTTOM;
+    return 0;
 }
 
 int taskbarglass_self_test(void) {
@@ -213,7 +293,17 @@ int taskbarglass_self_test(void) {
     /* Start-Button-Pixel bleiben UNVERAENDERT (scharf), Hintergrund-Pixel
        wurden durch den Glas-Hintergrund ersetzt (ungleich der flachen
        Originalfarbe, sofern das Material tatsaechlich wirkt). */
-    if (test_buffer[0] != 0x2D5FA0u) return -1;
+    if (test_buffer[0] != TASKBARGLASS_TRANSPARENT_RGB) return -1;
+    /* Zeile 0 traegt jetzt den gewollten oberen Glasreflex (siehe
+       taskbarglass_on_commit()'s "Feiner oberer Glasreflex"-Block, der
+       pixels[x] fuer x in [dock_x0+RADIUS, dock_x1-RADIUS) OHNE
+       Zeilenoffset ueberschreibt, also IMMER Zeile 0) - eine rein
+       dekorative 1px-Linie, die in der echten Taskbar nie echten Icon-
+       Inhalt trifft (shell_main.c zeichnet erst ab y=5 aufwaerts). Die
+       Start-Button-Pruefung verwendet daher bewusst Zeile 1 statt Zeile 0,
+       um den Reflex nicht mit echtem, unveraendertem Client-Inhalt zu
+       verwechseln. */
+    if (test_buffer[200u + 20u] != 0x2D5FA0u) return -1;
     int any_substituted = 0;
     for (uint32_t x = 70u; x < 200u; ++x) {
         if (test_buffer[x] != TASKBARGLASS_BG_RGB) { any_substituted = 1; break; }

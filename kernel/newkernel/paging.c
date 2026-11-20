@@ -105,7 +105,8 @@ int paging_map_page_into(uint32_t directory_phys, uint32_t virtual_page,
        da. */
     if (directory != paging_kernel_directory &&
         (directory[pd_index] & PAGING_PAGE_PRESENT) &&
-        (directory[pd_index] & 0xFFFFF000u) == (paging_kernel_directory[pd_index] & 0xFFFFF000u)) {
+        ((directory[pd_index] & 0xFFFFF000u) ==
+         (paging_kernel_directory[pd_index] & 0xFFFFF000u))) {
         uint32_t numa_node;
         uint32_t copy_phys = pmm_alloc_page(&numa_node);
         if (copy_phys == 0) {
@@ -170,6 +171,22 @@ int paging_query_page(uint32_t virtual_page, uint32_t *out_physical, uint32_t *o
     return 0;
 }
 
+int paging_query_page_in(uint32_t directory_phys, uint32_t virtual_page,
+                         uint32_t *out_physical, uint32_t *out_flags) {
+    if (!paging_enabled || directory_phys == 0u) return -1;
+    uint32_t *directory = (uint32_t *)(uintptr_t)(directory_phys & 0xFFFFF000u);
+    uint32_t pd_index = virtual_page >> 22;
+    uint32_t pt_index = (virtual_page >> 12) & 0x3FFu;
+    uint32_t pde = directory[pd_index];
+    if (!(pde & PAGING_PAGE_PRESENT)) return -1;
+    uint32_t *page_table = (uint32_t *)(uintptr_t)(pde & 0xFFFFF000u);
+    uint32_t pte = page_table[pt_index];
+    if (!(pte & PAGING_PAGE_PRESENT)) return -1;
+    if (out_physical) *out_physical = pte & 0xFFFFF000u;
+    if (out_flags) *out_flags = pte & 0x00000FFFu;
+    return 0;
+}
+
 int paging_protect_page(uint32_t virtual_page, uint32_t new_flags) {
     if (!paging_enabled) {
         return -1;
@@ -196,7 +213,16 @@ int paging_protect_page(uint32_t virtual_page, uint32_t new_flags) {
 }
 
 uint32_t paging_root_physical(void) {
-    return paging_directory_phys;
+    /* CR3 ist CPU-lokal. `paging_directory_phys` bleibt als Verwaltungs-
+       zustand fuer die alten current-address-space-Helfer erhalten, darf
+       bei echtem SMP aber NICHT als Quelle fuer den gerade auf dieser CPU
+       aktiven Root gelten: ein paralleler Adressraumwechsel auf einem AP
+       kann den globalen Cache ueberschreiben. Scheduler und Compositor
+       brauchen hier deshalb den realen Hardwarewert des aufrufenden
+       Prozessors. */
+    uint32_t hardware_cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(hardware_cr3));
+    return hardware_cr3 & 0xFFFFF000u;
 }
 
 int paging_initialize(void) {

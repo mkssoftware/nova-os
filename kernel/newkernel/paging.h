@@ -33,15 +33,20 @@ int paging_unmap_page(uint32_t virtual_page);
    oder keine Seitentabelle vorhanden. */
 int paging_query_page(uint32_t virtual_page, uint32_t *out_physical, uint32_t *out_flags);
 
+/* Wie paging_query_page(), aber fuer einen expliziten Page-Directory-Root.
+   Dient insbesondere SMP-sicheren Kernel-Diagnosen, die nicht vom
+   globalen current-address-space-Verwaltungszeiger abhaengen duerfen. */
+int paging_query_page_in(uint32_t directory_phys, uint32_t virtual_page,
+                         uint32_t *out_physical, uint32_t *out_flags);
+
 /* Aendert die Flags einer bestehenden Abbildung, physischer Frame bleibt
    unveraendert (inkl. invlpg). 0 = Erfolg, -1 = nicht gemappt/keine
    Seitentabelle vorhanden. */
 int paging_protect_page(uint32_t virtual_page, uint32_t new_flags);
 
-/* Physische Adresse des AKTUELL per CR3 aktiven Page-Directory (siehe
-   paging_switch_address_space weiter unten - vor dem ersten Wechsel
-   identisch mit paging_kernel_directory_physical()). Dient als Page-
-   Table-Root fuer NPSPEC-MEMORY-PAGETABLE-0001. */
+/* Physische Adresse des auf der AUFRUFENDEN CPU tatsaechlich aktiven
+   Page-Directorys, direkt aus dem Hardware-CR3 gelesen. Das ist bei SMP
+   bewusst kein globaler Software-Cache. */
 uint32_t paging_root_physical(void);
 
 /* ===================================================================== */

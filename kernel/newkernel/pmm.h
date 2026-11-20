@@ -7,7 +7,13 @@
 #include <stdint.h>
 
 #define PMM_PAGE_SIZE 4096u
-#define PMM_MAX_FRAMES 1024u
+/* Der aktuelle Desktop startet fuenf getrennte Ring-3-Prozesse mit eigenen
+   Pixelpuffern. 1024 Eintraege waren dafuer nach allen Kernel-Selbsttests
+   nicht mehr ausreichend. 2048 Eintraege bleiben sicher innerhalb der
+   ohnehin auf 16 MiB begrenzten Bootstrap-Identity-Map und vermeiden, dass
+   der vollstaendige Userspace-Desktop nur wegen der alten Tabellenkapazitaet
+   ausfaellt. */
+#define PMM_MAX_FRAMES 2048u
 #define PMM_NUMA_UNKNOWN 0xFFFFFFFFu
 
 /* Obergrenze fuer alle von pmm_initialize() gesammelten Bootstrap-Rahmen.

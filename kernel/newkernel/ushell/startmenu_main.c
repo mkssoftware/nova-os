@@ -22,6 +22,7 @@
 #define SYSCALL_CORE_SHUTDOWN                7u
 #define SYSCALL_CORE_TOGGLE_EXPLORER         8u
 #define SYSCALL_CORE_TOGGLE_SETTINGS         10u
+#define SYSCALL_CORE_YIELD                   13u
 
 #define SYSCALL_SERVICE_GUI       2u
 #define GUI_OP_CREATE_SURFACE     1u
@@ -96,7 +97,7 @@ void startmenu_start(void) {
     syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_GET_DISPLAY_INFO, 0u, 0u, &edi, &esi);
     uint32_t height = esi;
     if (height <= TASKBAR_HEIGHT + MENU_HEIGHT) {
-        for (;;) { __asm__ volatile ("pause"); }
+        for (;;) { syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_YIELD, 0u, 0u, 0, 0); }
     }
     uint32_t menu_y = height - TASKBAR_HEIGHT - MENU_HEIGHT;
 
@@ -163,6 +164,6 @@ void startmenu_start(void) {
             prev_buttons = 0;
         }
 
-        for (volatile uint32_t spin = 0; spin < 400000u; ++spin) { }
+        syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_YIELD, 0u, 0u, 0, 0);
     }
 }

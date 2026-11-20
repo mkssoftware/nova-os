@@ -38,6 +38,14 @@
    Testing fuer Fenster-Drag per Titelleiste, siehe window_titlebar_hit_
    test) dieselbe Hoehe kennen muessen. */
 #define WINDOW_TITLEBAR_HEIGHT 20u
+#define WINDOW_CONTROL_WIDTH   18u
+#define WINDOW_CONTROL_COUNT   3u
+#define WINDOW_CONTROL_MIN_WIDTH 72u
+
+#define WINDOW_CONTROL_NONE      0u
+#define WINDOW_CONTROL_MINIMIZE  1u
+#define WINDOW_CONTROL_MAXIMIZE  2u
+#define WINDOW_CONTROL_CLOSE     3u
 
 /* NPSPEC-WINDOW-MANAGEMENT-0004 (Min/Maximize) + -0009 (Fullscreen),
    Darstellungsmodus getrennt vom Surface-Lifecycle (NPSPEC-WINDOW-ARCH-
@@ -142,6 +150,11 @@ uint32_t window_hit_test(uint32_t x, uint32_t y);
    input.c genutzt, um einen Fenster-Drag per Titelleiste auszuloesen
    (NPSPEC-WINDOW-DECORATION-0002). 0 wenn kein Treffer. */
 uint32_t window_titlebar_hit_test(uint32_t x, uint32_t y);
+
+/* Liefert das Bedienelement unter (x,y). Kleine Fenster unter
+   WINDOW_CONTROL_MIN_WIDTH behalten eine frei ziehbare Titelleiste und
+   zeigen bewusst keine sich ueberlappenden Controls. */
+uint32_t window_control_hit_test(uint32_t handle, uint32_t x, uint32_t y);
 
 /* Verschiebt ein Fenster an eine neue Position OHNE seine Groesse zu
    aendern (duenne Hilfsfunktion ueber surface_resize, siehe surface.h) -

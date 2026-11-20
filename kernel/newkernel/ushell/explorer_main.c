@@ -21,6 +21,22 @@
    Anwendungs-/Dateityp-Infrastruktur existiert (waere vorgetaeuschte
    Funktionalitaet, siehe NovaOS-GUI-Verbot von Dummy-Buttons).
 
+   Echte Dateioperationen (2026-11-19, NACHTRAEGLICH ergaenzt - NPSPEC-
+   Mandat 3.5 verlangt Dateien/Ordner erstellen/umbenennen/loeschen):
+   Toolbar mit zwei echten Aktionen ueber VFS_OP_CREATE/VFS_OP_DELETE.
+   "+Ordner" legt im aktuellen Verzeichnis tatsaechlich ein neues
+   NOVAFS_TYPE_DIRECTORY-Objekt an (Name kollisionsfrei gegenueber den
+   sichtbaren Eintraegen gewaehlt, da es noch kein Texteingabefeld gibt -
+   ein generierter, aber echt angelegter Name ist keine vorgetaeuschte
+   Funktion). "Loeschen" entfernt die aktuell ausgewaehlte DATEI
+   tatsaechlich per VFS_OP_DELETE (bewusst nur Dateien, keine
+   Verzeichnisse - vfsapi_delete verlangt ein leeres Verzeichnis, eine
+   sichere Pruefung dafuer fehlt hier noch). Umbenennen/Kopieren/
+   Verschieben bleiben bewusst NICHT Teil dieser Version (Kopieren
+   braucht echtes Lesen+Schreiben ueber VFS_OP_READ/_WRITE, Umbenennen/
+   Verschieben eine Texteingabe - beides noch nicht umgesetzt, kein
+   wirkungsloser Button dafuer vorhanden).
+
    Bewusste, dokumentierte Grenze (keine versteckte Einschraenkung):
    maximal EXPLORER_MAX_VISIBLE_ROWS Eintraege gleichzeitig sichtbar,
    kein Scrollen in dieser ersten Version - bei mehr Eintraegen werden
@@ -44,6 +60,7 @@
 #define SYSCALL_CORE_GET_DISPLAY_INFO      3u
 #define SYSCALL_CORE_TOGGLE_EXPLORER       8u
 #define SYSCALL_CORE_GET_EXPLORER_VISIBLE  9u
+#define SYSCALL_CORE_YIELD                 13u
 
 #define SYSCALL_SERVICE_GUI       2u
 #define GUI_OP_CREATE_SURFACE     1u
@@ -51,10 +68,13 @@
 #define GUI_OP_COMMIT             3u
 #define GUI_OP_DESTROY            4u
 #define GUI_OP_HIDE               6u
+#define GUI_OP_MOVE               7u
 
 #define SYSCALL_SERVICE_VFS       3u
 #define VFS_OP_LOOKUP             1u
+#define VFS_OP_CREATE             4u
 #define VFS_OP_READ_DIRECTORY     5u
+#define VFS_OP_DELETE             7u
 #define VFS_OP_CLOSE              9u
 
 #define SYSCALL_SERVICE_INPUT 4u
@@ -64,6 +84,7 @@
 
 #define NOVAFS_TYPE_FILE      1u
 #define NOVAFS_TYPE_DIRECTORY 2u
+#define VFSAPI_LOOKUP_FLAG_WRITE 0x01u
 
 /* Wire-Struct-Layouts 1:1 aus syscall.h uebernommen (dieser Baum
    kompiliert unabhaengig vom Kernel, siehe icons_main.c fuer dasselbe
@@ -85,6 +106,20 @@ typedef struct {
 typedef struct {
     uint32_t handle;
 } vfs_close_args_t;
+
+typedef struct {
+    uint32_t dir_handle;
+    uint32_t name_addr;
+    uint32_t name_len;
+    uint32_t object_type;
+    uint32_t result_handle;
+} vfs_create_args_t;
+
+typedef struct {
+    uint32_t dir_handle;
+    uint32_t name_addr;
+    uint32_t name_len;
+} vfs_delete_args_t;
 
 typedef struct {
     uint32_t object_id;
@@ -116,6 +151,14 @@ typedef struct {
 #define READDIR_ARGS_ADDR (ARGS_VADDR + 128u) /* 12 Byte */
 #define CLOSE_ARGS_ADDR  (ARGS_VADDR + 160u)  /* 4 Byte */
 #define DIRENTRY_ADDR    (ARGS_VADDR + 256u)  /* ~275 Byte, endet bei ~531 */
+#define CREATE_ARGS_ADDR (ARGS_VADDR + 576u)  /* 20 Byte */
+#define DELETE_ARGS_ADDR (ARGS_VADDR + 640u)  /* 12 Byte */
+/* Name-Zwischenpuffer (Navigation/"+Ordner"/Loeschen) - 255 Byte, die
+   maximale Laenge von vfs_dir_entry_t.name, damit JEDER echte NovaFS-
+   Name ohne Ueberlauf hineinpasst (siehe die drei Aufrufer unten, die
+   alle defensiv zusaetzlich auf 255 klemmen). */
+#define NEW_NAME_ADDR    (ARGS_VADDR + 704u)
+#define NEW_NAME_CAP     255u
 #define GUI_BUFFER_VADDR 0x00402000u
 
 /* Verkleinert (2026-11-19, durch echten Boot-Test gefunden): der
@@ -133,10 +176,15 @@ typedef struct {
 #define WIN_H 200u
 
 #define HEADER_H   24u
+#define TOOLBAR_H  18u
 #define FOOTER_H   20u
 #define ROW_H      18u
 #define CLOSE_BTN_SIZE 14u
-#define EXPLORER_MAX_VISIBLE_ROWS ((WIN_H - HEADER_H - FOOTER_H) / ROW_H)
+#define TOOLBAR_NEWDIR_X 4u
+#define TOOLBAR_NEWDIR_W 84u
+#define TOOLBAR_DELETE_X 92u
+#define TOOLBAR_DELETE_W 72u
+#define EXPLORER_MAX_VISIBLE_ROWS ((WIN_H - HEADER_H - TOOLBAR_H - FOOTER_H) / ROW_H)
 #define NAV_STACK_MAX 7u /* VFSAPI_HANDLE_CAPACITY=8 insgesamt - 1 fuer das aktuell offene Handle */
 
 #define COLOR_HEADER_BG 0x12192Au /* dunkles Liquid-Glass-Chrome, siehe project_gui_design_spec */
@@ -148,6 +196,9 @@ typedef struct {
 #define COLOR_TEXT_SEC  0xA8B4C7u
 #define COLOR_ACCENT    0x65D9FFu
 #define COLOR_CLOSE_BTN 0xC0405Au
+#define COLOR_TOOLBAR_BG  0x1A2334u
+#define COLOR_BTN_BG      0x2A3A52u
+#define COLOR_BTN_DISABLED 0x202835u
 
 static inline uint32_t syscall_io(uint32_t eax_in, uint32_t ebx_in, uint32_t edx_in,
                                    uint32_t esi_in, uint32_t *out_edi, uint32_t *out_esi) {
@@ -169,7 +220,16 @@ static int vfs_lookup(uint32_t dir_handle, uint32_t path_addr, uint32_t path_len
     args->dir_handle = dir_handle;
     args->path_addr = path_addr;
     args->path_len = path_len;
-    args->flags = 0u;
+    /* FIX (2026-11-19, beim Hinzufuegen der Dateioperationen gefunden):
+       OHNE VFSAPI_LOOKUP_FLAG_WRITE traegt das zurueckgelieferte Handle
+       nie VFSAPI_RIGHT_WRITE (siehe vfsapi_lookup() in vfsapi.c) - jeder
+       nachfolgende vfsapi_create()/vfsapi_delete() auf current_handle
+       haette IMMER mit VFSAPI_STATUS_ACCESS scheitern muessen, egal wo
+       im Baum. Dieser Prozess nutzt jedes per vfs_lookup() geholte
+       Handle ausschliesslich als current_handle (Root-Oeffnen/
+       Verzeichnis-Wechsel) - Schreibrechte hier anzufordern ist daher
+       immer richtig, nicht nur fuer "+Ordner"/"Loeschen". */
+    args->flags = VFSAPI_LOOKUP_FLAG_WRITE;
     args->result_handle = 0u;
     uint32_t status = syscall_io(SYSCALL_SERVICE_VFS, VFS_OP_LOOKUP, LOOKUP_ARGS_ADDR, 0u, 0, 0);
     if (status != 0u) return -1;
@@ -193,6 +253,29 @@ static void vfs_close(uint32_t handle) {
     vfs_close_args_t *args = (vfs_close_args_t *)CLOSE_ARGS_ADDR;
     args->handle = handle;
     syscall_io(SYSCALL_SERVICE_VFS, VFS_OP_CLOSE, CLOSE_ARGS_ADDR, 0u, 0, 0);
+}
+
+static int vfs_create(uint32_t dir_handle, uint32_t name_addr, uint32_t name_len,
+                       uint32_t object_type, uint32_t *out_handle) {
+    vfs_create_args_t *args = (vfs_create_args_t *)CREATE_ARGS_ADDR;
+    args->dir_handle = dir_handle;
+    args->name_addr = name_addr;
+    args->name_len = name_len;
+    args->object_type = object_type;
+    args->result_handle = 0u;
+    uint32_t status = syscall_io(SYSCALL_SERVICE_VFS, VFS_OP_CREATE, CREATE_ARGS_ADDR, 0u, 0, 0);
+    if (status != 0u) return -1;
+    if (out_handle) *out_handle = args->result_handle;
+    return 0;
+}
+
+static int vfs_delete(uint32_t dir_handle, uint32_t name_addr, uint32_t name_len) {
+    vfs_delete_args_t *args = (vfs_delete_args_t *)DELETE_ARGS_ADDR;
+    args->dir_handle = dir_handle;
+    args->name_addr = name_addr;
+    args->name_len = name_len;
+    uint32_t status = syscall_io(SYSCALL_SERVICE_VFS, VFS_OP_DELETE, DELETE_ARGS_ADDR, 0u, 0, 0);
+    return (status == 0u) ? 0 : -1;
 }
 
 /* Formatiert value dezimal nach out (Nullterminierung inklusive, max.
@@ -257,14 +340,23 @@ static void explorer_open_root(void) {
 
 static void explorer_enter_directory(const vfs_dir_entry_t *entry) {
     if (nav_depth >= NAV_STACK_MAX) return; /* Navigations-Limit erreicht, kein Absturz */
+    /* FIX (2026-11-19, beim Hinzufuegen der Dateioperationen gefunden):
+       entry->name zeigt in den `rows[]`-Array dieses Prozesses - das
+       liegt im normalen .bss (Codesegment-Bereich ab 0x500000+), NICHT
+       im Bootstrap-Userspace-Fenster [0x400000,0x404000), das
+       syscall_validate_user_range() fuer path_addr verlangt (siehe
+       syscall.c). Ein direkter Zeiger darauf liess VFS_OP_LOOKUP bisher
+       IMMER mit SYSCALL_STATUS_POINTER scheitern - echte Navigation in
+       Unterverzeichnisse war dadurch von Anfang an wirkungslos (nie
+       aufgefallen, da die bisher getestete NovaFS-Testvolume-Wurzel
+       leer war). Fix: Name zuerst in NEW_NAME_ADDR (innerhalb des
+       gueltigen Fensters) kopieren, dann von dort aus nachschlagen. */
+    char *name_dst = (char *)NEW_NAME_ADDR;
+    uint32_t name_len = entry->name_len;
+    if (name_len > NEW_NAME_CAP) name_len = NEW_NAME_CAP;
+    for (uint32_t c = 0u; c < name_len; ++c) name_dst[c] = entry->name[c];
     uint32_t new_handle;
-    /* entry->name liegt in DIRENTRY_ADDR (vom letzten Read-Directory-
-       Aufruf) - direkt als Pfad fuer den Lookup relativ zum aktuellen
-       Verzeichnis-Handle wiederverwendet, kein Kopieren noetig. */
-    const vfs_dir_entry_t *live = (const vfs_dir_entry_t *)DIRENTRY_ADDR;
-    (void)live;
-    if (vfs_lookup(current_handle, (uint32_t)(uintptr_t)entry->name, entry->name_len,
-                   &new_handle) != 0) {
+    if (vfs_lookup(current_handle, NEW_NAME_ADDR, name_len, &new_handle) != 0) {
         return;
     }
     nav_stack[nav_depth++] = current_handle;
@@ -279,6 +371,72 @@ static void explorer_go_up(void) {
     explorer_list_current_directory();
 }
 
+/* Vergleicht name (name_len Byte) gegen den Namen von rows[index]. */
+static int row_name_equals(uint32_t index, const char *name, uint32_t name_len) {
+    if (rows[index].entry.name_len != name_len) return 0;
+    for (uint32_t i = 0u; i < name_len; ++i) {
+        if (rows[index].entry.name[i] != name[i]) return 0;
+    }
+    return 1;
+}
+
+/* Legt im aktuellen Verzeichnis tatsaechlich einen neuen Ordner an (kein
+   Texteingabefeld vorhanden - der Name wird kollisionsfrei gegenueber den
+   sichtbar gelisteten Eintraegen generiert: "Neuer Ordner", bei Kollision
+   "Neuer Ordner 2".."Neuer Ordner 9"). Gibt bei Erschoepfung dieses
+   kleinen Namensraums (alle 9 Varianten bereits vorhanden) einfach auf -
+   kein Crash, kein stiller Datenverlust, nur keine weitere Aktion. */
+static void explorer_new_folder(void) {
+    static const char base_name[12] = { 'N','e','u','e','r',' ','O','r','d','n','e','r' };
+    char candidate[14];
+    for (uint32_t c = 0u; c < 12u; ++c) candidate[c] = base_name[c];
+    uint32_t candidate_len = 12u;
+
+    for (uint32_t suffix = 1u; suffix <= 9u; ++suffix) {
+        if (suffix > 1u) {
+            for (uint32_t c = 0u; c < 12u; ++c) candidate[c] = base_name[c];
+            candidate[12] = ' ';
+            candidate[13] = (char)('0' + suffix);
+            candidate_len = 14u;
+        }
+        int collision = 0;
+        for (uint32_t i = 0u; i < row_count; ++i) {
+            if (row_name_equals(i, candidate, candidate_len)) { collision = 1; break; }
+        }
+        if (!collision) {
+            char *name_dst = (char *)NEW_NAME_ADDR;
+            for (uint32_t c = 0u; c < candidate_len; ++c) name_dst[c] = candidate[c];
+            uint32_t new_handle;
+            if (vfs_create(current_handle, NEW_NAME_ADDR, candidate_len,
+                            NOVAFS_TYPE_DIRECTORY, &new_handle) == 0) {
+                vfs_close(new_handle);
+                explorer_list_current_directory();
+            }
+            return;
+        }
+    }
+}
+
+/* Loescht die aktuell ausgewaehlte DATEI (bewusst keine Verzeichnisse,
+   siehe Dateikopf-Kommentar). Kein gueltiger Datei-Auswahlzustand ->
+   stiller No-Op, kein Fehlerzustand. */
+static void explorer_delete_selected(void) {
+    if (selected_row < 0 || (uint32_t)selected_row >= row_count) return;
+    if (rows[selected_row].entry.object_type != NOVAFS_TYPE_FILE) return;
+    /* name_addr MUSS innerhalb des Bootstrap-Userspace-Fensters liegen
+       (syscall_validate_user_range(), siehe syscall.c) - rows[] liegt im
+       normalen .bss dieses Prozesses, AUSSERHALB dieses Fensters, daher
+       zuerst in NEW_NAME_ADDR kopieren (derselbe Puffer wie "+Ordner",
+       zeitlich unproblematisch da nacheinander benutzt). */
+    char *name_dst = (char *)NEW_NAME_ADDR;
+    uint32_t name_len = rows[selected_row].entry.name_len;
+    if (name_len > NEW_NAME_CAP) name_len = NEW_NAME_CAP;
+    for (uint32_t c = 0u; c < name_len; ++c) name_dst[c] = rows[selected_row].entry.name[c];
+    if (vfs_delete(current_handle, NEW_NAME_ADDR, name_len) == 0) {
+        explorer_list_current_directory();
+    }
+}
+
 static void draw_explorer(render2d_surface_t *surf) {
     render2d_fill_rect(surf, 0u, 0u, WIN_W, WIN_H, COLOR_BODY_BG);
 
@@ -289,15 +447,30 @@ static void draw_explorer(render2d_surface_t *surf) {
     render2d_draw_text(surf, WIN_W - CLOSE_BTN_SIZE - 6u + 3u, (HEADER_H - 16u) / 2u, "x",
                         COLOR_TEXT, COLOR_CLOSE_BTN, 0u);
 
+    /* Toolbar: zwei echte Aktionen (siehe Dateikopf-Kommentar). "Loeschen"
+       wird nur dann im aktiven Button-Ton gezeichnet, wenn eine loeschbare
+       Datei ausgewaehlt ist - eine echte, zustandsabhaengige Darstellung,
+       kein rein dekorativer Unterschied. */
+    render2d_fill_rect(surf, 0u, HEADER_H, WIN_W, TOOLBAR_H, COLOR_TOOLBAR_BG);
+    render2d_fill_rect(surf, TOOLBAR_NEWDIR_X, HEADER_H + 2u, TOOLBAR_NEWDIR_W, TOOLBAR_H - 4u, COLOR_BTN_BG);
+    render2d_draw_text(surf, TOOLBAR_NEWDIR_X + 4u, HEADER_H + 2u, "+Ordner", COLOR_TEXT, COLOR_BTN_BG, 0u);
+    int can_delete = (selected_row >= 0 && (uint32_t)selected_row < row_count &&
+                       rows[selected_row].entry.object_type == NOVAFS_TYPE_FILE);
+    uint32_t delete_bg = can_delete ? COLOR_BTN_BG : COLOR_BTN_DISABLED;
+    render2d_fill_rect(surf, TOOLBAR_DELETE_X, HEADER_H + 2u, TOOLBAR_DELETE_W, TOOLBAR_H - 4u, delete_bg);
+    render2d_draw_text(surf, TOOLBAR_DELETE_X + 4u, HEADER_H + 2u, "Loeschen",
+                        can_delete ? COLOR_TEXT : COLOR_TEXT_SEC, delete_bg, 0u);
+
+    uint32_t list_top = HEADER_H + TOOLBAR_H;
     uint32_t visible_row = 0u;
     if (nav_depth > 0u) {
-        render2d_fill_rect(surf, 0u, HEADER_H, WIN_W, ROW_H, COLOR_BODY_BG);
-        render2d_draw_text(surf, 8u, HEADER_H + (ROW_H - 16u) / 2u, "..", COLOR_ACCENT, COLOR_BODY_BG, 0u);
+        render2d_fill_rect(surf, 0u, list_top, WIN_W, ROW_H, COLOR_BODY_BG);
+        render2d_draw_text(surf, 8u, list_top + (ROW_H - 16u) / 2u, "..", COLOR_ACCENT, COLOR_BODY_BG, 0u);
         ++visible_row;
     }
 
     for (uint32_t i = 0u; i < row_count; ++i) {
-        uint32_t y = HEADER_H + visible_row * ROW_H;
+        uint32_t y = list_top + visible_row * ROW_H;
         uint32_t bg = ((int)i == selected_row) ? COLOR_SELECTED
                       : ((visible_row % 2u) ? COLOR_ROW_ALT : COLOR_BODY_BG);
         render2d_fill_rect(surf, 0u, y, WIN_W, ROW_H, bg);
@@ -353,7 +526,7 @@ void explorer_start(void) {
     uint32_t width = edi;
     uint32_t height = esi;
     if (width < WIN_X + WIN_W || height < WIN_Y + WIN_H) {
-        for (;;) { __asm__ volatile ("pause"); }
+        for (;;) { syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_YIELD, 0u, 0u, 0, 0); }
     }
 
     uint32_t create_edx = WIN_X | (WIN_Y << 16);
@@ -379,6 +552,15 @@ void explorer_start(void) {
     uint32_t prev_buttons = 0u;
     input_poll_args_t *input_args = (input_poll_args_t *)INPUT_ARGS_ADDR;
 
+    /* Verschieben per eigener Kopfzeile (2026-11-19, siehe GUI_OP_MOVE in
+       syscall.h): win_x/win_y sind die LAUFENDE Fensterposition (beginnend
+       bei WIN_X/WIN_Y, der Erzeugungsposition) - ab hier massgeblich fuer
+       JEDEN Bildschirm-Koordinaten-Hit-Test, WIN_X/WIN_Y bleiben nur der
+       Startwert. */
+    uint32_t win_x = WIN_X, win_y = WIN_Y;
+    uint32_t dragging = 0u;
+    uint32_t drag_offset_x = 0u, drag_offset_y = 0u;
+
     for (;;) {
         uint32_t visible;
         syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_GET_EXPLORER_VISIBLE, 0u, 0u, &visible, 0);
@@ -393,7 +575,7 @@ void explorer_start(void) {
 
         if (currently_shown == 0u) {
             prev_buttons = 0u;
-            for (volatile uint32_t spin = 0; spin < 400000u; ++spin) { }
+            syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_YIELD, 0u, 0u, 0, 0);
             continue;
         }
 
@@ -403,10 +585,10 @@ void explorer_start(void) {
         uint32_t cursor_y = input_args->cursor_y;
 
         if ((buttons & 1u) != 0u && (prev_buttons & 1u) == 0u &&
-            cursor_x >= WIN_X && cursor_x < WIN_X + WIN_W &&
-            cursor_y >= WIN_Y && cursor_y < WIN_Y + WIN_H) {
-            uint32_t local_x = cursor_x - WIN_X;
-            uint32_t local_y = cursor_y - WIN_Y;
+            cursor_x >= win_x && cursor_x < win_x + WIN_W &&
+            cursor_y >= win_y && cursor_y < win_y + WIN_H) {
+            uint32_t local_x = cursor_x - win_x;
+            uint32_t local_y = cursor_y - win_y;
             int redraw = 0;
 
             if (local_y < HEADER_H) {
@@ -416,11 +598,26 @@ void explorer_start(void) {
                        den Explorer ueber das Startmenue erneut oeffnen. */
                     syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_EXPLORER, 0u, 0u, 0, 0);
                     prev_buttons = buttons;
-                    for (volatile uint32_t spin = 0; spin < 400000u; ++spin) { }
+                    syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_YIELD, 0u, 0u, 0, 0);
                     continue;
                 }
+                /* Rest der Kopfzeile (ausser Schliessen-Button) startet ein
+                   Ziehen - identisches Muster zu window.c's Titelleisten-
+                   Drag (input.c's input_dispatch_one), nur rein in Ring 3
+                   nachgebildet, da diese Surface decorated=0 ist. */
+                dragging = 1u;
+                drag_offset_x = cursor_x - win_x;
+                drag_offset_y = cursor_y - win_y;
+            } else if (local_y < HEADER_H + TOOLBAR_H) {
+                if (local_x >= TOOLBAR_NEWDIR_X && local_x < TOOLBAR_NEWDIR_X + TOOLBAR_NEWDIR_W) {
+                    explorer_new_folder();
+                    redraw = 1;
+                } else if (local_x >= TOOLBAR_DELETE_X && local_x < TOOLBAR_DELETE_X + TOOLBAR_DELETE_W) {
+                    explorer_delete_selected();
+                    redraw = 1;
+                }
             } else if (local_y < WIN_H - FOOTER_H) {
-                uint32_t visible_row = (local_y - HEADER_H) / ROW_H;
+                uint32_t visible_row = (local_y - HEADER_H - TOOLBAR_H) / ROW_H;
                 if (nav_depth > 0u) {
                     if (visible_row == 0u) {
                         explorer_go_up();
@@ -451,8 +648,29 @@ void explorer_start(void) {
                 syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_COMMIT, surface_handle, 0u, 0, 0);
             }
         }
+
+        /* Laufendes Ziehen fortsetzen (ausserhalb des obigen, nur beim
+           ERSTEN gedrueckten Frame ausgeloesten Blocks) - solange die linke
+           Maustaste gehalten bleibt, jede Positionsaenderung sofort per
+           GUI_OP_MOVE an den Compositor melden. Kein eigenes GUI_OP_COMMIT
+           noetig: die Fensterposition ist Compositor-Metadaten, kein Teil
+           des gepufferten Fensterinhalts. */
+        if (dragging != 0u) {
+            if ((buttons & 1u) != 0u) {
+                uint32_t new_x = (cursor_x > drag_offset_x) ? cursor_x - drag_offset_x : 0u;
+                uint32_t new_y = (cursor_y > drag_offset_y) ? cursor_y - drag_offset_y : 0u;
+                if (new_x != win_x || new_y != win_y) {
+                    win_x = new_x;
+                    win_y = new_y;
+                    syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_MOVE, surface_handle,
+                               win_x | (win_y << 16), 0, 0);
+                }
+            } else {
+                dragging = 0u;
+            }
+        }
         prev_buttons = buttons;
 
-        for (volatile uint32_t spin = 0; spin < 400000u; ++spin) { }
+        syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_YIELD, 0u, 0u, 0, 0);
     }
 }

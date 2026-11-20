@@ -26,18 +26,17 @@
    NICHT Teil dieser Aenderung, siehe NPSPEC-Empfehlung "auf geeigneter
    Hardware spaeter durchsetzen".
 
-   AUSNAHME Desktop-Icons: beim Neulinken fuer diese Aenderung stellte sich
-   heraus, dass der aktuelle `icons_main.c`/`svgicon.c`-Quellstand (der
-   SVG-Icon-Cache, `SVGICON_CACHE_SLOTS * svgicon_bitmap_t`) inzwischen
-   einen weit groesseren .data/.bss-Fussabdruck hat, als in das bestehende,
-   gegen `USHELL_CODE_PAGES` (64 KiB) bemessene Budget passt - der
-   ausgelieferte `icons_blob.h` ist daher vermutlich bereits aelter als der
-   aktuelle Quellstand. Eine Neuerzeugung dieses einen Blobs wuerde zudem
-   das Seiten-Budget sprengen und braucht eine eigene Entscheidung (Cache
-   verkleinern oder Budget erhoehen) - bewusst NICHT Teil dieser Aenderung.
-   Icons bleiben daher vorerst wie bisher vollstaendig beschreibbar
-   (ICONS_RO_SIZE=0 unten) - kein Rueckschritt, nur (noch) keine
-   Verbesserung fuer diesen einen Prozess.
+   AUSNAHME Desktop-Icons (GELOEST, 2026-11-19): ein frueherer manueller
+   Blob-Build-Versuch mit `-fdata-sections` liess den SVG-Icon-Cache aus
+   svgicon.c (`g_svgicon_cache[SVGICON_CACHE_SLOTS]` + Scratch-Puffer,
+   zusammen >128 KiB) unter MinGW/PE teilweise als echte `.data$name`-
+   Sektionen statt als platzsparendes `.bss` landen - das sprengte das
+   64-KiB-`USHELL_CODE_PAGES`-Budget weit (269280 Byte). Fix: `-fdata-
+   sections` weggelassen (wie beim laenger etablierten `build-ushell-
+   taskbar.ps1`) - dieselben Arrays landen dann korrekt in `.bss` (null
+   Datei-Bytes), die Flat-Binary ist nur noch 28688 Byte. Icons bekommen
+   jetzt per `scripts/build-ushell-icons.ps1` + `ICONS_RO_SIZE` dieselbe
+   W^X-Haertung wie die anderen drei Prozesse (kein `0u` mehr unten).
 
    Ressourcen-Aufraeumung bei Fehlschlag (zweiter Code-Review-Fund):
    `ushell_spawn()` gab bei einem Fehler in einem spaeteren Schritt
@@ -77,6 +76,7 @@
 #include "display.h"
 #include "desktop_shell.h"
 #include "syscall.h"
+#include "serial.h"
 
 /* Layout ALLER DREI Prozesse - MUSS mit ushell/shell_main.c,
    ushell/startmenu_main.c UND ushell/icons_main.c uebereinstimmen (dort
@@ -189,8 +189,8 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint
     /* Der GUI-Puffer wird BEWUSST ZUERST alloziert, VOR den vielen
        einzelnen Code-/Stack-/Args-Seiten (2026-11-19, durch echten
        Boot-Test gefunden): `pmm_alloc_contiguous()` braucht einen
-       luecken losen Lauf im bewusst kleinen Bootstrap-PMM (nur 1024
-       Rahmen/4 MiB insgesamt, siehe pmm.c). Kamen die vielen kleinen
+       lueckenlosen Lauf im Bootstrap-PMM (2048 verwaltete Rahmen, siehe
+       pmm.h). Kamen die vielen kleinen
        Einzelseiten-Allokationen (bis zu `USHELL_CODE_PAGES`+2 Stueck)
        zuerst dran, zerschnitten sie wiederholt genau den Speicherbereich,
        der sonst fuer den groesseren zusammenhaengenden Puffer gereicht
@@ -359,54 +359,46 @@ int ushell_process_initialize(void) {
     uint32_t height = display_height();
     if (width == 0u || height <= TASKBAR_HEIGHT) return -1;
 
-    uint32_t taskbar_buffer_bytes = width * TASKBAR_HEIGHT * 4u;
-    if (ushell_spawn(&taskbar_instance, taskbar_buffer_bytes, USHELL_RO_SIZE) != 0) return -1;
-
-    uint32_t startmenu_buffer_bytes = STARTMENU_WIDTH * STARTMENU_HEIGHT * 4u;
-    if (ushell_spawn(&startmenu_instance, startmenu_buffer_bytes, STARTMENU_RO_SIZE) != 0) return -1;
-
-    /* NPSPEC-SECURITY-CAPABILITY-0001: NUR der Startmenue-Prozess (der den
-       Shutdown-Button zeichnet, siehe ushell/startmenu_main.c) darf
-       SYSCALL_CORE_SHUTDOWN tatsaechlich ausloesen - erste echte Laufzeit-
-       Vergabe des bis dahin nie ausserhalb seiner eigenen Selbsttests
-       genutzten §103 Capability Frameworks. */
-    if (syscall_grant_shutdown_capability(startmenu_instance.pid) != 0) return -1;
-
-    /* ICONS_RO_SIZE=0 (vollstaendig beschreibbar, wie vor dieser
-       Aenderung) - der ausgelieferte icons_blob.h wurde bewusst NICHT
-       neu erzeugt, siehe Dateikopf-Hinweis zum SVG-Icon-Cache-
-       Fussabdruck. */
-    uint32_t icons_buffer_bytes = ICONS_GRID_WIDTH * ICONS_GRID_HEIGHT * 4u;
-    if (ushell_spawn(&icons_instance, icons_buffer_bytes, 0u) != 0) return -1;
-
-    /* Systemeinstellungen (echte Systeminformationen, siehe
-       settings_main.c) - BEWUSST VOR dem Explorer gespawnt (2026-11-19,
-       durch echten Boot-Test gefunden): der Bootstrap-PMM (pmm.c) traegt
-       nur 1024 Rahmen (4 MiB) insgesamt, und `pmm_alloc_contiguous()`
-       findet nur einen tatsaechlich LUECKENLOSEN Lauf freier Rahmen -
-       der Explorer's grosser 129-Rahmen-Puffer UND dessen eigene 18
-       Einzelseiten (Code/Stack/Args) fragmentierten den verbleibenden
-       freien Bereich so stark, dass fuer die Einstellungen (nur 42
-       Rahmen noetig) danach KEIN zusammenhaengender Lauf mehr uebrig
-       blieb, obwohl insgesamt noch genug EINZELNE freie Rahmen
-       vorhanden waren. Die Reihenfolge-Umkehr behebt das zuverlaessig,
-       ohne den PMM selbst anzufassen (kein unnoetiger Eingriff in den
-       bewusst kleinen Bootstrap-Allocator). */
-    if (width >= SETTINGS_WIN_X + SETTINGS_WIN_W && height >= SETTINGS_WIN_Y + SETTINGS_WIN_H) {
-        uint32_t settings_buffer_bytes = SETTINGS_WIN_W * SETTINGS_WIN_H * 4u;
-        if (ushell_spawn(&settings_instance, settings_buffer_bytes, SETTINGS_RO_SIZE) != 0) return -1;
-    }
-
-    /* Dateiexplorer (echte VFS-Anbindung, siehe explorer_main.c) - nur
-       gestartet, wenn der Bildschirm gross genug fuer sein festes Fenster
-       ist (WIN_X+WIN_W/WIN_Y+WIN_H), analog zu den Groessenprüfungen der
-       anderen Prozesse. Wird ZULETZT gespawnt (siehe Kommentar oben), da
-       sein grosser Puffer am ehesten von einer noch wenig fragmentierten
-       Speicherlage profitiert UND am wenigsten durch einen nachfolgenden
-       kleineren Spawn gefaehrdet wird. */
+    /* Zusammenhaengende Pixelpuffer werden strikt vom groessten zum
+       kleinsten reserviert. Die fruehere Prozessreihenfolge liess zwar
+       genug freie Seiten uebrig, fragmentierte sie aber vor dem 63-Seiten-
+       Explorerpuffer. Descending-size ist hier die deterministische
+       Bootstrap-Strategie, bis der PMM echte Extent-/Buddy-Allokation hat. */
     if (width >= EXPLORER_WIN_X + EXPLORER_WIN_W && height >= EXPLORER_WIN_Y + EXPLORER_WIN_H) {
         uint32_t explorer_buffer_bytes = EXPLORER_WIN_W * EXPLORER_WIN_H * 4u;
-        if (ushell_spawn(&explorer_instance, explorer_buffer_bytes, EXPLORER_RO_SIZE) != 0) return -1;
+        serial_puts("NOVA: USHELL spawn Explorer, freie PMM-Seiten="); serial_put_hex32(pmm_frame_count()); serial_puts("\r\n");
+        if (ushell_spawn(&explorer_instance, explorer_buffer_bytes, EXPLORER_RO_SIZE) != 0) {
+            serial_puts("NOVA: USHELL spawn Explorer fehlgeschlagen\r\n"); return -1;
+        }
+    }
+
+    if (width >= SETTINGS_WIN_X + SETTINGS_WIN_W && height >= SETTINGS_WIN_Y + SETTINGS_WIN_H) {
+        uint32_t settings_buffer_bytes = SETTINGS_WIN_W * SETTINGS_WIN_H * 4u;
+        serial_puts("NOVA: USHELL spawn Einstellungen, freie PMM-Seiten="); serial_put_hex32(pmm_frame_count()); serial_puts("\r\n");
+        if (ushell_spawn(&settings_instance, settings_buffer_bytes, SETTINGS_RO_SIZE) != 0) {
+            serial_puts("NOVA: USHELL spawn Einstellungen fehlgeschlagen\r\n"); return -1;
+        }
+    }
+
+    uint32_t taskbar_buffer_bytes = width * TASKBAR_HEIGHT * 4u;
+    serial_puts("NOVA: USHELL spawn Taskbar, freie PMM-Seiten="); serial_put_hex32(pmm_frame_count()); serial_puts("\r\n");
+    if (ushell_spawn(&taskbar_instance, taskbar_buffer_bytes, USHELL_RO_SIZE) != 0) {
+        serial_puts("NOVA: USHELL spawn Taskbar fehlgeschlagen\r\n"); return -1;
+    }
+
+    uint32_t startmenu_buffer_bytes = STARTMENU_WIDTH * STARTMENU_HEIGHT * 4u;
+    serial_puts("NOVA: USHELL spawn Startmenue, freie PMM-Seiten="); serial_put_hex32(pmm_frame_count()); serial_puts("\r\n");
+    if (ushell_spawn(&startmenu_instance, startmenu_buffer_bytes, STARTMENU_RO_SIZE) != 0) {
+        serial_puts("NOVA: USHELL spawn Startmenue fehlgeschlagen\r\n"); return -1;
+    }
+
+    /* Nur der Startmenue-Prozess erhaelt die Shutdown-Capability. */
+    if (syscall_grant_shutdown_capability(startmenu_instance.pid) != 0) return -1;
+
+    uint32_t icons_buffer_bytes = ICONS_GRID_WIDTH * ICONS_GRID_HEIGHT * 4u;
+    serial_puts("NOVA: USHELL spawn Desktop-Icons, freie PMM-Seiten="); serial_put_hex32(pmm_frame_count()); serial_puts("\r\n");
+    if (ushell_spawn(&icons_instance, icons_buffer_bytes, ICONS_RO_SIZE) != 0) {
+        serial_puts("NOVA: USHELL spawn Desktop-Icons fehlgeschlagen\r\n"); return -1;
     }
 
     return 0;

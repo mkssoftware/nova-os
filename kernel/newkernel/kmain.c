@@ -1217,6 +1217,13 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     serial_puts("NOVA: alle bisherigen Subsysteme vollstaendig verifiziert\r\n");
 
+    /* Maschinenlesbare Abschlussmarke fuer Firmware-/CI-Boot-Tests. Sie
+       wird erst nach sichtbarem Desktop und erfolgreicher Userspace-Shell-
+       Initialisierung ausgegeben, also nicht bereits beim Kernel-Einstieg. */
+    if (ushell_ok && shell_ok && ring3_ok) {
+        serial_puts("NOVA_KERNEL_READY\r\n");
+    }
+
     if (ring3_ok) {
         /* Einweg-Uebergang: ab hier laeuft der erste Userspace-Thread in
            Ring 3 (siehe ring3.c). Der Heartbeat-Syscall-Log-Eintrag oben

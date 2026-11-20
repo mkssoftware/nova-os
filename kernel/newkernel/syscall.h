@@ -80,6 +80,18 @@
    unabhaengigen Zaehler fuehrt - nur echte, sofort verfuegbare Werte
    anzeigen, nichts schaetzen oder erfinden. */
 #define SYSCALL_CORE_GET_SYSTEM_INFO        12u
+/* Freiwilliger Verzicht auf den Rest des aktuellen Zeitscheiben-Anteils
+   (2026-11-19) - ruft direkt dieselbe Umschaltlogik wie ein echter
+   Timer-Tick auf (scheduler_on_tick(), siehe scheduler.c), nur
+   synchron per Syscall statt beim naechsten Interrupt ausgeloest.
+   Ersetzt die bisherigen "for(volatile spin<400000){}"-Busy-Wait-
+   Schleifen in den Ring-3-Desktop-Prozessen (ushell-Verzeichnis) - ein
+   Prozess, der gerade nichts zu tun hat, gibt die CPU jetzt ECHT
+   frei, statt leere Iterationen zu emulieren. Kein Rueckgabewert in
+   EAX noetig - der zurueckgegebene Frame-Zeiger ist bereits die
+   gesamte "Antwort" (entweder derselbe Frame, falls kein anderer
+   Slot bereitstand, oder der eines anderen Prozesses). */
+#define SYSCALL_CORE_YIELD                  13u
 
 /* NPSPEC-DISPLAY-ARCH-0003/0004 (Display-Protokoll/Client-Kommunikation),
    reduziert auf einen festen Satz Operationen ueber denselben int-0x80-
@@ -121,6 +133,19 @@
 #define GUI_WINDOW_STATE_MAXIMIZE   2u
 #define GUI_WINDOW_STATE_FULLSCREEN 3u
 #define GUI_WINDOW_STATE_RESTORE    4u
+
+/* NPSPEC-WINDOW-MANAGEMENT-0003 (Verschieben): fuer Clients, die ihre
+   eigene Kopfzeile statt der System-Titelleiste zeichnen (explorer_main.c/
+   settings_main.c - decorated=0, siehe GUI_OP_CREATE_SURFACE-Kommentar in
+   syscall.c) und deshalb nicht von input.c's Titelleisten-Drag erfasst
+   werden. EDX = Window-Handle, ESI = neue Position (x | y<<16, identische
+   Packung wie GUI_OP_CREATE_SURFACEs EDX) - der Client erkennt per eigenem
+   INPUT_OP_POLL selbst, wann ein Ziehen auf seiner Kopfzeile beginnt/endet,
+   und ruft diesen Syscall bei jeder Positionsaenderung waehrend des Ziehens
+   auf. Keine Berechtigungspruefung (identisch zu GUI_OP_DESTROY/_HIDE -
+   aktuell nur ein einziger Client-PID moeglich, siehe SYSCALL_SINGLE_
+   CLIENT_PID). */
+#define GUI_OP_MOVE                7u
 
 /* Einziger bisher existierender Client (ring3.c) - echte Mehr-Client-PID-
    Aufloesung (z.B. ueber den aktuell laufenden Scheduler-Slot) ist bewusst

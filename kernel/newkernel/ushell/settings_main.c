@@ -36,6 +36,7 @@
 #define SYSCALL_CORE_GET_TIME              4u
 #define SYSCALL_CORE_TOGGLE_SETTINGS       10u
 #define SYSCALL_CORE_GET_SETTINGS_VISIBLE  11u
+#define SYSCALL_CORE_YIELD                 13u
 #define SYSCALL_CORE_GET_SYSTEM_INFO       12u
 
 #define SYSCALL_SERVICE_GUI       2u
@@ -43,6 +44,7 @@
 #define GUI_OP_ATTACH_BUFFER      2u
 #define GUI_OP_COMMIT             3u
 #define GUI_OP_HIDE               6u
+#define GUI_OP_MOVE               7u
 
 #define SYSCALL_SERVICE_INPUT 4u
 #define INPUT_OP_POLL         1u
@@ -197,7 +199,7 @@ void settings_start(void) {
     uint32_t width = edi;
     uint32_t height = esi;
     if (width < WIN_X + WIN_W || height < WIN_Y + WIN_H) {
-        for (;;) { __asm__ volatile ("pause"); }
+        for (;;) { syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_YIELD, 0u, 0u, 0, 0); }
     }
 
     uint32_t create_edx = WIN_X | (WIN_Y << 16);
@@ -213,6 +215,13 @@ void settings_start(void) {
     uint32_t currently_shown = 0u;
     uint32_t prev_buttons = 0u;
     input_poll_args_t *input_args = (input_poll_args_t *)ARGS_VADDR;
+
+    /* Verschieben per eigener Kopfzeile (2026-11-19, siehe GUI_OP_MOVE in
+       syscall.h, identisches Muster zu explorer_main.c) - win_x/win_y sind
+       ab hier die massgebliche LAUFENDE Position fuer jeden Hit-Test. */
+    uint32_t win_x = WIN_X, win_y = WIN_Y;
+    uint32_t dragging = 0u;
+    uint32_t drag_offset_x = 0u, drag_offset_y = 0u;
 
     for (;;) {
         uint32_t visible;
@@ -233,21 +242,44 @@ void settings_start(void) {
         if (currently_shown != 0u) {
             syscall_io(SYSCALL_SERVICE_INPUT, INPUT_OP_POLL, ARGS_VADDR, 0u, 0, 0);
             uint32_t buttons = input_args->mouse_buttons;
+            uint32_t cursor_x = input_args->cursor_x;
+            uint32_t cursor_y = input_args->cursor_y;
             if ((buttons & 1u) != 0u && (prev_buttons & 1u) == 0u &&
-                input_args->cursor_x >= WIN_X && input_args->cursor_x < WIN_X + WIN_W &&
-                input_args->cursor_y >= WIN_Y && input_args->cursor_y < WIN_Y + WIN_H) {
-                uint32_t local_x = input_args->cursor_x - WIN_X;
-                uint32_t local_y = input_args->cursor_y - WIN_Y;
+                cursor_x >= win_x && cursor_x < win_x + WIN_W &&
+                cursor_y >= win_y && cursor_y < win_y + WIN_H) {
+                uint32_t local_x = cursor_x - win_x;
+                uint32_t local_y = cursor_y - win_y;
                 if (local_y < HEADER_H && local_x >= WIN_W - CLOSE_BTN_SIZE - 6u &&
                     local_x < WIN_W - 6u) {
                     syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_SETTINGS, 0u, 0u, 0, 0);
+                } else if (local_y < HEADER_H) {
+                    /* Rest der Kopfzeile startet ein Ziehen - identisches
+                       Muster zu explorer_main.c. */
+                    dragging = 1u;
+                    drag_offset_x = cursor_x - win_x;
+                    drag_offset_y = cursor_y - win_y;
+                }
+            }
+            if (dragging != 0u) {
+                if ((buttons & 1u) != 0u) {
+                    uint32_t new_x = (cursor_x > drag_offset_x) ? cursor_x - drag_offset_x : 0u;
+                    uint32_t new_y = (cursor_y > drag_offset_y) ? cursor_y - drag_offset_y : 0u;
+                    if (new_x != win_x || new_y != win_y) {
+                        win_x = new_x;
+                        win_y = new_y;
+                        syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_MOVE, surface_handle,
+                                   win_x | (win_y << 16), 0, 0);
+                    }
+                } else {
+                    dragging = 0u;
                 }
             }
             prev_buttons = buttons;
         } else {
             prev_buttons = 0u;
+            dragging = 0u;
         }
 
-        for (volatile uint32_t spin = 0; spin < 400000u; ++spin) { }
+        syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_YIELD, 0u, 0u, 0, 0);
     }
 }

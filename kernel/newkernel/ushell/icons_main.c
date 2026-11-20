@@ -10,12 +10,28 @@
    svgicon_assets.h liefert dieselben eingebetteten SVG-Quellen wie der
    bisherige Kernel-Code (desktop_shell.c's svg_source_for_label).
 
-   Bewusst IDENTISches Verhalten zum bisherigen Kernel-Code: die Icons
-   sind statisch (Explorer/Terminal), es gibt KEINE Klick-Behandlung
-   (desktop_shell.c's desktop_shell_handle_click() behandelte bisher nur
-   Taskbar-/Start-Menue-Klicks, nie Icon-Klicks) - dieser Port fuegt also
-   bewusst KEINE neue Funktionalitaet hinzu, nur dieselbe Darstellung in
-   einem eigenen Ring-3-Prozess statt im Kernel. */
+   KLICK-BEHANDLUNG (2026-11-19, Nachtrag): das Explorer-Icon oeffnet jetzt
+   echt den Dateiexplorer (SYSCALL_CORE_TOGGLE_EXPLORER, identisches
+   Sichtbarkeits-Flag-Muster wie der Taskbar-Ordner-Pin in shell_main.c).
+   Das Terminal-Icon bleibt bewusst OHNE Klick-Funktion - keine
+   Kommandoumgebung vorhanden, NovaDOS zurueckgestellt (siehe
+   project_desktop_os_mandate, identische Begruendung wie beim
+   Startmenue-/Taskbar-Eintrag "Terminal").
+
+   BLOB-GROESSENPROBLEM (2026-11-19, GELOEST): ein frueherer manueller
+   Build-Versuch mit `-fdata-sections` ergab 269280 Byte (der SVG-Icon-
+   Cache aus svgicon.c, `g_svgicon_cache[SVGICON_CACHE_SLOTS]` +
+   Scratch-Puffer, landete unter MinGW/PE teilweise als echte
+   `.data$name`-Sektionen statt als platzsparendes SHT_NOBITS-`.bss`) -
+   weit ueber dem 64-KiB-`USHELL_CODE_PAGES`-Budget. Fix: `-fdata-sections`
+   schlicht WEGLASSEN (wie beim bereits laenger funktionierenden
+   `build-ushell-taskbar.ps1`) - dieselben Arrays landen dann korrekt in
+   `.bss` (keine Datei-Bytes), die Flat-Binary ist nur noch 28688 Byte.
+   Neu erzeugt per `scripts/build-ushell-icons.ps1` (nutzt `icons-link.ld`s
+   bereits vorhandene `__rw_start`-Seitenausrichtung) - `icons_blob.h`
+   bekommt dadurch als Nebeneffekt jetzt auch die W^X-Haertung
+   (`ICONS_RO_SIZE`), die zuvor bewusst auf 0 (vollstaendig beschreibbar)
+   stand. */
 #include <stdint.h>
 #include "render2d.h"
 #include "svgicon.h"
@@ -23,19 +39,37 @@
 
 #define SYSCALL_SERVICE_CORE            1u
 #define SYSCALL_CORE_GET_DISPLAY_INFO   3u
+#define SYSCALL_CORE_TOGGLE_EXPLORER    8u
+#define SYSCALL_CORE_YIELD              13u
 
 #define SYSCALL_SERVICE_GUI       2u
 #define GUI_OP_CREATE_SURFACE     1u
 #define GUI_OP_ATTACH_BUFFER      2u
 #define GUI_OP_COMMIT             3u
 
+#define SYSCALL_SERVICE_INPUT 4u
+#define INPUT_OP_POLL         1u
+
 #define SYSCALL_ABI_VERSION 1u
 
 /* Layout dieses Prozesses - MUSS mit ushell_process.c uebereinstimmen.
    Dieselbe feste GUI_BUFFER_VADDR wie shell_main.c/startmenu_main.c
    (0x402000) - KEIN Konflikt, jeder Prozess hat seinen eigenen
-   Adressraum. */
+   Adressraum. ARGS_VADDR wird von ushell_spawn() fuer JEDEN Prozess
+   gemappt (auch wenn bisher ungenutzt), siehe ushell_process.c. */
+#define ARGS_VADDR       0x00400000u
 #define GUI_BUFFER_VADDR 0x00402000u
+
+typedef struct {
+    uint32_t has_event;
+    uint32_t type;
+    uint32_t timestamp_ticks;
+    uint32_t key_vkey;
+    uint32_t modifiers;
+    int32_t mouse_dx, mouse_dy;
+    uint32_t mouse_buttons;
+    uint32_t cursor_x, cursor_y;
+} input_poll_args_t;
 
 #define TASKBAR_HEIGHT       28u
 #define ICON_MARGIN          16u
@@ -110,7 +144,7 @@ void icons_start(void) {
     uint32_t width = edi;
     uint32_t height = esi;
     if (width < GRID_WIDTH || height <= TASKBAR_HEIGHT + ICON_MARGIN + GRID_HEIGHT) {
-        for (;;) { __asm__ volatile ("pause"); }
+        for (;;) { syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_YIELD, 0u, 0u, 0, 0); }
     }
 
     uint32_t create_edx = ICON_MARGIN | (ICON_MARGIN << 16);
@@ -126,8 +160,36 @@ void icons_start(void) {
 
     syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_COMMIT, surface_handle, 0u, 0, 0);
 
-    /* Statische Darstellung, kein Redraw-/Eingabe-Polling noetig (siehe
-       Dateikopf) - idle, damit der Scheduler-Slot keine CPU-Zeit
-       verschwendet. */
-    for (;;) { __asm__ volatile ("pause"); }
+    /* Darstellung bleibt statisch (kein Redraw noetig - die Icon-Grafik
+       aendert sich nie), aber seit dem Klick-Nachtrag wird jetzt echt auf
+       Maus-Eingaben gepollt: ein Linksklick auf die Explorer-Zelle
+       (Bildschirm-Koordinaten [ICON_MARGIN, ICON_MARGIN+GRID_WIDTH/HEIGHT),
+       dieselbe Surface-Platzierung wie beim GUI_OP_CREATE_SURFACE-Aufruf
+       oben) schaltet den Dateiexplorer um - identisches Muster zum
+       Taskbar-Ordner-Pin in shell_main.c. */
+    uint32_t explorer_x0 = ICON_MARGIN;
+    uint32_t explorer_x1 = ICON_MARGIN + ICON_CELL_W;
+    uint32_t explorer_y0 = ICON_MARGIN;
+    uint32_t explorer_y1 = ICON_MARGIN + GRID_HEIGHT;
+    uint32_t prev_buttons = 0;
+    input_poll_args_t *args = (input_poll_args_t *)ARGS_VADDR;
+
+    for (;;) {
+        syscall_io(SYSCALL_SERVICE_INPUT, INPUT_OP_POLL, ARGS_VADDR, 0u, 0, 0);
+        uint32_t buttons = args->mouse_buttons;
+        if ((buttons & 1u) != 0u && (prev_buttons & 1u) == 0u) {
+            if (args->cursor_x >= explorer_x0 && args->cursor_x < explorer_x1 &&
+                args->cursor_y >= explorer_y0 && args->cursor_y < explorer_y1) {
+                syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_EXPLORER, 0u, 0u, 0, 0);
+            }
+        }
+        prev_buttons = buttons;
+
+        /* Echter Yield statt pause() (2026-11-19): "pause" allein gibt den
+           Scheduler-Slot NICHT frei, der Prozess belegt weiterhin seine
+           volle Zeitscheibe mit nutzlosen Iterationen, bis der naechste
+           Timer-Tick ihn verdraengt - SYSCALL_CORE_YIELD ruft dieselbe
+           Umschaltlogik SOFORT und freiwillig auf. */
+        syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_YIELD, 0u, 0u, 0, 0);
+    }
 }

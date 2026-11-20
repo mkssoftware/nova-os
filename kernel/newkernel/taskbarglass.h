@@ -101,4 +101,13 @@ int taskbarglass_on_surface_created(uint32_t handle, uint32_t x, uint32_t y,
    tatsaechlich uebersprungen wurde - das ist kein Fehler). */
 int taskbarglass_on_commit(uint32_t handle);
 
+/* Compositor-Hilfe: echte Taskbar-Surface fuer die abgerundete
+   Dock-Maske erkennen, ohne die Geometrie-Heuristik dort zu duplizieren. */
+int taskbarglass_is_surface(uint32_t handle);
+
+/* Liefert das sichtbare Dock-Rechteck (Bildschirm-Koordinaten) der
+   aktiven Taskbar fuer die Fenster-Taskbar-Verschmelzung im Compositor.
+   0 = Erfolg, -1 wenn keine Taskbar aktiv ist. */
+int taskbarglass_dock_rect(uint32_t *out_x, uint32_t *out_y, uint32_t *out_w, uint32_t *out_h);
+
 #endif

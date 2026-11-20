@@ -9,6 +9,8 @@ typedef struct {
     uint32_t damage_x, damage_y, damage_w, damage_h;
     int damage_valid;
     uint32_t buffer_addr;
+    uint32_t color_key_rgb;
+    int color_key_enabled;
     uint32_t commit_seq;
     uint32_t consumed_seq;
 } surface_slot_t;
@@ -71,6 +73,8 @@ int surface_create(uint32_t owner_pid, uint32_t x, uint32_t y, uint32_t w,
             surface_slots[i].h = h;
             surface_slots[i].damage_valid = 0;
             surface_slots[i].buffer_addr = 0;
+            surface_slots[i].color_key_rgb = 0;
+            surface_slots[i].color_key_enabled = 0;
             surface_slots[i].commit_seq = 0;
             surface_slots[i].consumed_seq = 0;
             surface_damage_union(&surface_slots[i], x, y, w, h);
@@ -115,6 +119,21 @@ uint32_t surface_buffer_addr(uint32_t handle) {
     int i = surface_find_slot(handle);
     if (i < 0) return 0;
     return surface_slots[i].buffer_addr;
+}
+
+int surface_set_color_key(uint32_t handle, uint32_t key_rgb) {
+    int i = surface_find_slot(handle);
+    if (i < 0) return -1;
+    surface_slots[i].color_key_rgb = key_rgb & 0x00FFFFFFu;
+    surface_slots[i].color_key_enabled = 1;
+    return 0;
+}
+
+int surface_color_key(uint32_t handle, uint32_t *out_key_rgb) {
+    int i = surface_find_slot(handle);
+    if (i < 0 || out_key_rgb == 0 || !surface_slots[i].color_key_enabled) return -1;
+    *out_key_rgb = surface_slots[i].color_key_rgb;
+    return 0;
 }
 
 int surface_commit(uint32_t handle) {
@@ -273,6 +292,9 @@ int surface_self_test(void) {
     if (surface_attach_buffer(h1, buffer_addr) != 0) return -1;
     if (surface_state(h1) != SURFACE_STATE_ATTACHED) return -1;
     if (surface_buffer_addr(h1) != buffer_addr) return -1;
+    if (surface_color_key(h1, &union_x) == 0) return -1;
+    if (surface_set_color_key(h1, 0x123456u) != 0) return -1;
+    if (surface_color_key(h1, &union_x) != 0 || union_x != 0x123456u) return -1;
 
     /* Vor dem ersten Commit darf noch kein Commit-Sequenzwechsel vorliegen. */
     if (surface_commit_seq(h1) != 0u) return -1;

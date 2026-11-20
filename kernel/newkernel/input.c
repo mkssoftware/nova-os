@@ -266,9 +266,23 @@ static void input_dispatch_one(const input_event_t *evt) {
             if (surface_rect(titlebar_hit, &wx, &wy, &ww, &wh) == 0) {
                 window_focus(titlebar_hit);
                 window_raise(titlebar_hit);
-                input_drag_handle = titlebar_hit;
-                input_drag_offset_x = (int32_t)input_cursor_x_value - (int32_t)wx;
-                input_drag_offset_y = (int32_t)input_cursor_y_value - (int32_t)wy;
+                uint32_t control = window_control_hit_test(titlebar_hit, input_cursor_x_value,
+                                                           input_cursor_y_value);
+                if (control == WINDOW_CONTROL_CLOSE) {
+                    window_destroy(titlebar_hit);
+                } else if (control == WINDOW_CONTROL_MINIMIZE) {
+                    window_minimize(titlebar_hit);
+                } else if (control == WINDOW_CONTROL_MAXIMIZE) {
+                    if (window_mode(titlebar_hit) == WINDOW_MODE_MAXIMIZED) {
+                        window_restore(titlebar_hit);
+                    } else {
+                        window_maximize(titlebar_hit);
+                    }
+                } else {
+                    input_drag_handle = titlebar_hit;
+                    input_drag_offset_x = (int32_t)input_cursor_x_value - (int32_t)wx;
+                    input_drag_offset_y = (int32_t)input_cursor_y_value - (int32_t)wy;
+                }
             }
         } else {
             uint32_t hit = window_hit_test(input_cursor_x_value, input_cursor_y_value);

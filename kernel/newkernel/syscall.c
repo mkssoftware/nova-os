@@ -96,7 +96,32 @@ static void syscall_userspace_exit(void) {
     serial_puts(" Power=");
     serial_put_hex32(readiness_power_state());
     serial_puts("\r\n");
+    /* Der INT-0x80-Einstieg ist ein Interrupt-Gate und loescht IF beim
+       Eintritt in Ring 0. Fuer den normalen Syscall-Rueckweg stellt
+       `iretd` die Ring-3-EFLAGS wieder her. SYSCALL_CORE_EXIT biegt den
+       Rueckweg jedoch absichtlich auf diese Ring-0-Funktion um; damit
+       darf der Scheduler-Handoff nicht implizit davon abhaengen, ob die
+       vom Bootstrap-Frame uebernommene IF-Kopie auf der jeweiligen
+       Firmware/CPU-Kombination wirksam wiederhergestellt wurde. Ohne
+       explizites Enable kann das nachfolgende `hlt` dauerhaft schlafen:
+       die bereits erzeugten Ring-3-Shell-Prozesse laufen dann nie und
+       Taskbar/Desktop-Icons erzeugen folglich keine Surfaces.
+
+       Vor scheduler_enable() sind Timer-IRQs weiterhin harmlose No-Ops;
+       daher IF zuerst eindeutig freigeben und erst danach den Scheduler
+       scharf schalten. */
+    interrupt_enable();
+
     scheduler_enable();
+
+    /* Nicht auf einen kuenftigen externen PIT-Pegel als Startsignal
+       angewiesen sein: ein einmaliger Software-IRQ benutzt exakt denselben
+       normalisierten Trap-Frame wie IRQ0 und uebergibt sofort an Slot 1.
+       Danach laufen alle weiteren Zeitscheiben wieder ueber echte PIT-
+       Interrupts. Das beseitigt insbesondere den Zustand, in dem `hlt`
+       zwar korrekt mit IF=1 erreicht wird, aber ein bereits vor dem
+       Handoff quittierter Virtual-Wire-Pegel keinen neuen Wakeup erzeugt. */
+    __asm__ volatile ("int $0x20");
     for (;;) {
         __asm__ volatile ("hlt");
     }
@@ -188,6 +213,16 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
            fuer jede andere Surface (Icons/Startmenue/Ring3-Demo). */
         taskbarglass_on_surface_created(handle, x, y, w, h);
 
+        /* Die aktuelle Ring-3-Desktop-Icon-Surface besitzt noch einen
+           RGB-Puffer ohne Alphakanal. Ihre feste Hintergrundfarbe darf
+           nicht als dunkles Rechteck ueber dem Wallpaper erscheinen.
+           Bis GUI_OP_ATTACH_BUFFER ein ARGB-Format aushandeln kann,
+           aktiviert die eindeutige Bootstrap-Geometrie einen echten
+           Compositor-Color-Key. Icon- und Textpixel bleiben unveraendert. */
+        if (x == 16u && y == 16u && w == 128u && h == 56u) {
+            surface_set_color_key(handle, 0x1E2430u);
+        }
+
         ++syscall_stats_successful;
         frame_write(frame_ptr, FRAME_OFF_EDI, handle);
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
@@ -268,6 +303,17 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
         } else {
             ok = 0;
         }
+        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX,
+                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
+        return frame_ptr;
+    }
+
+    if (operation == GUI_OP_MOVE) {
+        uint32_t esi = frame_read(frame_ptr, FRAME_OFF_ESI);
+        uint32_t x = esi & 0xFFFFu;
+        uint32_t y = (esi >> 16) & 0xFFFFu;
+        int ok = (window_move(edx, x, y) == 0);
         if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
         frame_write(frame_ptr, FRAME_OFF_EAX,
                     (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
@@ -579,6 +625,22 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
         frame_write(frame_ptr, FRAME_OFF_ESI, PMM_PAGE_SIZE);
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
         return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_YIELD) {
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        /* EAX muss VOR scheduler_on_tick() geschrieben werden: der vom
+           Aufrufer gesicherte Frame IST derselbe Speicherbereich, den
+           scheduler_on_tick() in scheduler_contexts[] einhaengt (siehe
+           dortigen "scheduler_contexts[current] = frame_ptr"-Pfad) -
+           der naechste Tick dieses Prozesses liest also exakt diesen
+           Status wieder aus, wenn er erneut eingelastet wird. Der
+           Rueckgabewert ist entweder dieser unveraenderte Frame (kein
+           anderer Slot bereit) oder der eines anderen, jetzt
+           eingelasteten Prozesses - in jedem Fall der korrekte naechste
+           iretd-Zielframe. */
+        return scheduler_on_tick(frame_ptr);
     }
 
     if (operation == SYSCALL_CORE_SHUTDOWN) {
