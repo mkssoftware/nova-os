@@ -18,6 +18,7 @@
 #include "display.h"
 #include "cap.h"
 #include "process.h"
+#include "desktop_shell.h"
 #include "taskbarglass.h"
 #include "pmm.h"
 
@@ -38,6 +39,39 @@ static int syscall_explorer_visible = 0;
 /* Gleiches Muster fuer die Systemeinstellungen (2026-11-19) - siehe
    syscall.h's SYSCALL_CORE_TOGGLE_SETTINGS/_GET_SETTINGS_VISIBLE. */
 static int syscall_settings_visible = 0;
+
+/* Gleiches Muster fuer die Taskbar-Auto-Hide-Einstellung (2026-11-20,
+   GUI-Design-Spec "Taskbar": "Optionales Auto-Hide") - die erste
+   Einstellung in settings_main.c, die tatsaechlich etwas AENDERT (nicht
+   nur anzeigt). Startet AUS (0 = Taskbar immer sichtbar, bisheriges
+   Verhalten unveraendert), die Settings-App schaltet um, die Taskbar
+   (shell_main.c) fragt jeden Umlauf ab. */
+static int syscall_taskbar_autohide_enabled = 0;
+
+/* Direkte C-Aufrufe (keine SYSCALL_SERVICE_CORE-Dispatch-Runde) fuer
+   input.c's Tastatur-Kurzbefehle (Super->Startmenue, Super+E->Explorer,
+   siehe GUI-Design-Spec "Eingabe"). input.c laeuft bereits im
+   Kernel-Adressraum/Ring 0 - ein echter Syscall-Trap waere hier nur
+   unnoetiger Umweg um genau dieselben beiden Flags oben. */
+void syscall_toggle_start_menu_from_kernel(void) {
+    syscall_start_menu_visible = !syscall_start_menu_visible;
+}
+
+void syscall_toggle_explorer_from_kernel(void) {
+    syscall_explorer_visible = !syscall_explorer_visible;
+}
+
+/* Reiner Lesezugriff fuer input.c's Selbsttest (siehe dort) - spiegelt
+   exakt das, was SYSCALL_CORE_GET_START_MENU_VISIBLE/_GET_EXPLORER_
+   VISIBLE einem Ring-3-Aufrufer liefern wuerden, nur ohne den fuer einen
+   synthetischen Selbsttest unnoetigen Frame-Pointer-Umweg. */
+int syscall_start_menu_visible_value(void) {
+    return syscall_start_menu_visible;
+}
+
+int syscall_explorer_visible_value(void) {
+    return syscall_explorer_visible;
+}
 
 /* NPSPEC-SECURITY-CAPABILITY-0001: erste echte Laufzeit-Nutzung des §103
    Capability Frameworks (cap.h/cap_core.c, vorher nur von dessen eigenen
@@ -181,7 +215,27 @@ int syscall_shutdown_authorized(uint32_t caller_cr3) {
     return (cap_check(syscall_shutdown_cap_id, CAP_RIGHT_SHUTDOWN) == 0) ? 1 : 0;
 }
 
-static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
+/* Ermittelt den echten Besitzer eines Syscalls aus dem aktuell aktiven
+   Adressraum. Der Fallback auf PID 1 ist ausschliesslich fuer die
+   synthetischen Ring-0-Dispatch-Selbsttests noetig: sie laufen absichtlich
+   vor dem ersten Ring-3-Prozess im Kernel-Adressraum. Ein echter
+   Userspace-Aufruf besitzt dagegen immer einen process.c-Eintrag mit
+   passendem CR3 und erhaelt deshalb seine individuelle PID. */
+static uint32_t syscall_caller_pid(void) {
+    uint32_t pid = process_find_by_cr3(paging_root_physical());
+    return (pid != 0u) ? pid : SYSCALL_KERNEL_TEST_PID;
+}
+
+static int syscall_gui_handle_owned_by(uint32_t caller_pid, uint32_t handle) {
+    uint32_t owner = surface_owner_pid(handle);
+    /* Unbekannte Handles bis zur eigentlichen Operation durchlassen, damit
+       der ABI-konforme SURFACE-Fehler erhalten bleibt. Nur ein EXISTIEREN-
+       DES, fremdes Objekt ist ein Autorisierungsfehler. */
+    return owner == 0u || (caller_pid != 0u && owner == caller_pid);
+}
+
+static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation,
+                                     uint32_t caller_pid) {
     uint32_t edx = frame_read(frame_ptr, FRAME_OFF_EDX);
 
     if (operation == GUI_OP_CREATE_SURFACE) {
@@ -200,7 +254,7 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
            voll mit x/y/w/h) kein Dekorations-Bit hat - ein Client kann
            vorerst keine Titelleiste ueber den Syscall-Pfad anfordern. */
         uint32_t handle = 0;
-        if (window_create(SYSCALL_SINGLE_CLIENT_PID, x, y, w, h, 0, &handle) != 0) {
+        if (window_create(caller_pid, x, y, w, h, 0, &handle) != 0) {
             ++syscall_stats_failed;
             frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_SURFACE);
             return frame_ptr;
@@ -230,6 +284,11 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     }
 
     if (operation == GUI_OP_ATTACH_BUFFER) {
+        if (!syscall_gui_handle_owned_by(caller_pid, edx)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         /* RING3_GUI_BUFFER_VADDR ist dieselbe virtuelle Adresse in JEDEM
            Prozess-Adressraum (jeder Client mappt seinen eigenen Puffer
            privat dorthin, siehe ring3.c/ushell_process.c - kein Konflikt,
@@ -259,6 +318,11 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     }
 
     if (operation == GUI_OP_COMMIT) {
+        if (!syscall_gui_handle_owned_by(caller_pid, edx)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         /* Nova Taskbar Liquid Glass: VOR dem eigentlichen surface_commit()
            - ersetzt (nur fuer die zuvor erkannte Taskbar-Surface, siehe
            taskbarglass_on_surface_created()) per Chroma-Key-Substitution
@@ -267,6 +331,10 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
            Surface. */
         taskbarglass_on_commit(edx);
         int ok = (surface_commit(edx) == 0);
+        if (ok && window_accent(edx) != 0u && window_focused_handle() == 0u) {
+            window_focus(edx);
+            window_raise(edx);
+        }
         if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
         frame_write(frame_ptr, FRAME_OFF_EAX,
                     (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
@@ -274,6 +342,11 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     }
 
     if (operation == GUI_OP_DESTROY) {
+        if (!syscall_gui_handle_owned_by(caller_pid, edx)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         int ok = (window_destroy(edx) == 0); /* raeumt auch die Surface auf */
         if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
         frame_write(frame_ptr, FRAME_OFF_EAX,
@@ -282,6 +355,11 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     }
 
     if (operation == GUI_OP_HIDE) {
+        if (!syscall_gui_handle_owned_by(caller_pid, edx)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         int ok = (surface_hide(edx) == 0);
         if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
         frame_write(frame_ptr, FRAME_OFF_EAX,
@@ -290,6 +368,11 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     }
 
     if (operation == GUI_OP_WINDOW_SET_STATE) {
+        if (!syscall_gui_handle_owned_by(caller_pid, edx)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         uint32_t esi = frame_read(frame_ptr, FRAME_OFF_ESI);
         int ok;
         if (esi == GUI_WINDOW_STATE_MINIMIZE) {
@@ -310,10 +393,47 @@ static uint32_t syscall_dispatch_gui(uint32_t frame_ptr, uint32_t operation) {
     }
 
     if (operation == GUI_OP_MOVE) {
+        if (!syscall_gui_handle_owned_by(caller_pid, edx)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         uint32_t esi = frame_read(frame_ptr, FRAME_OFF_ESI);
         uint32_t x = esi & 0xFFFFu;
         uint32_t y = (esi >> 16) & 0xFFFFu;
         int ok = (window_move(edx, x, y) == 0);
+        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX,
+                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
+        return frame_ptr;
+    }
+
+    if (operation == GUI_OP_GET_RECT) {
+        if (!syscall_gui_handle_owned_by(caller_pid, edx)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
+        uint32_t rx, ry, rw, rh;
+        int ok = (surface_rect(edx, &rx, &ry, &rw, &rh) == 0);
+        if (ok) {
+            frame_write(frame_ptr, FRAME_OFF_EDI, rw);
+            frame_write(frame_ptr, FRAME_OFF_ESI, rh);
+        }
+        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX,
+                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
+        return frame_ptr;
+    }
+
+    if (operation == GUI_OP_SET_APPEARANCE) {
+        if (!syscall_gui_handle_owned_by(caller_pid, edx)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
+        uint32_t accent_rgb = frame_read(frame_ptr, FRAME_OFF_ESI) & 0x00FFFFFFu;
+        int ok = accent_rgb != 0u && window_set_accent(edx, accent_rgb) == 0;
         if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
         frame_write(frame_ptr, FRAME_OFF_EAX,
                     (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_SURFACE));
@@ -334,7 +454,8 @@ static uint32_t syscall_vfs_finish(uint32_t frame_ptr, int result) {
     return frame_ptr;
 }
 
-static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation) {
+static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation,
+                                     uint32_t caller_pid) {
     uint32_t args_addr = frame_read(frame_ptr, FRAME_OFF_EDX);
 
     if (operation == VFS_OP_LOOKUP) {
@@ -346,7 +467,7 @@ static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation) {
             return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
         }
         uint32_t result_handle = 0;
-        int rc = vfsapi_lookup(SYSCALL_SINGLE_CLIENT_PID, args->dir_handle,
+        int rc = vfsapi_lookup(caller_pid, args->dir_handle,
                                 (const char *)(uintptr_t)args->path_addr, args->path_len,
                                 args->flags, &result_handle);
         if (rc == 0) args->result_handle = result_handle;
@@ -364,10 +485,10 @@ static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation) {
         uint32_t transferred = 0;
         int rc;
         if (operation == VFS_OP_READ) {
-            rc = vfsapi_read(SYSCALL_SINGLE_CLIENT_PID, args->handle, args->offset,
+            rc = vfsapi_read(caller_pid, args->handle, args->offset,
                               (uint8_t *)(uintptr_t)args->buffer_addr, args->length, &transferred);
         } else {
-            rc = vfsapi_write(SYSCALL_SINGLE_CLIENT_PID, args->handle, args->offset,
+            rc = vfsapi_write(caller_pid, args->handle, args->offset,
                                (const uint8_t *)(uintptr_t)args->buffer_addr, args->length,
                                &transferred);
         }
@@ -384,7 +505,7 @@ static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation) {
             return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
         }
         uint32_t result_handle = 0;
-        int rc = vfsapi_create(SYSCALL_SINGLE_CLIENT_PID, args->dir_handle,
+        int rc = vfsapi_create(caller_pid, args->dir_handle,
                                 (const char *)(uintptr_t)args->name_addr, args->name_len,
                                 args->object_type, &result_handle);
         if (rc == 0) args->result_handle = result_handle;
@@ -399,7 +520,7 @@ static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation) {
         if (syscall_validate_user_range(args->entry_addr, sizeof(vfsapi_dir_entry_t)) != 0) {
             return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
         }
-        int rc = vfsapi_read_directory(SYSCALL_SINGLE_CLIENT_PID, args->dir_handle, args->index,
+        int rc = vfsapi_read_directory(caller_pid, args->dir_handle, args->index,
                                         (vfsapi_dir_entry_t *)(uintptr_t)args->entry_addr);
         return syscall_vfs_finish(frame_ptr, rc);
     }
@@ -412,7 +533,7 @@ static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation) {
         if (syscall_validate_user_range(args->info_addr, sizeof(vfsapi_info_t)) != 0) {
             return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
         }
-        int rc = vfsapi_query(SYSCALL_SINGLE_CLIENT_PID, args->handle,
+        int rc = vfsapi_query(caller_pid, args->handle,
                                (vfsapi_info_t *)(uintptr_t)args->info_addr);
         return syscall_vfs_finish(frame_ptr, rc);
     }
@@ -425,7 +546,7 @@ static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation) {
         if (syscall_validate_user_range(args->name_addr, args->name_len) != 0) {
             return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
         }
-        int rc = vfsapi_delete(SYSCALL_SINGLE_CLIENT_PID, args->dir_handle,
+        int rc = vfsapi_delete(caller_pid, args->dir_handle,
                                 (const char *)(uintptr_t)args->name_addr, args->name_len);
         return syscall_vfs_finish(frame_ptr, rc);
     }
@@ -439,7 +560,7 @@ static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation) {
             syscall_validate_user_range(args->dst_name_addr, args->dst_name_len) != 0) {
             return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
         }
-        int rc = vfsapi_rename(SYSCALL_SINGLE_CLIENT_PID, args->src_dir_handle,
+        int rc = vfsapi_rename(caller_pid, args->src_dir_handle,
                                 (const char *)(uintptr_t)args->src_name_addr, args->src_name_len,
                                 args->dst_dir_handle,
                                 (const char *)(uintptr_t)args->dst_name_addr, args->dst_name_len);
@@ -451,7 +572,7 @@ static uint32_t syscall_dispatch_vfs(uint32_t frame_ptr, uint32_t operation) {
             return syscall_vfs_finish(frame_ptr, SYSCALL_STATUS_POINTER);
         }
         syscall_vfs_close_args_t *args = (syscall_vfs_close_args_t *)(uintptr_t)args_addr;
-        int rc = vfsapi_close(SYSCALL_SINGLE_CLIENT_PID, args->handle);
+        int rc = vfsapi_close(caller_pid, args->handle);
         return syscall_vfs_finish(frame_ptr, rc);
     }
 
@@ -531,12 +652,14 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
         return frame_ptr;
     }
 
+    uint32_t caller_pid = syscall_caller_pid();
+
     if (service == SYSCALL_SERVICE_GUI) {
-        return syscall_dispatch_gui(frame_ptr, operation);
+        return syscall_dispatch_gui(frame_ptr, operation, caller_pid);
     }
 
     if (service == SYSCALL_SERVICE_VFS) {
-        return syscall_dispatch_vfs(frame_ptr, operation);
+        return syscall_dispatch_vfs(frame_ptr, operation, caller_pid);
     }
 
     if (service == SYSCALL_SERVICE_INPUT) {
@@ -619,6 +742,20 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
         return frame_ptr;
     }
 
+    if (operation == SYSCALL_CORE_TOGGLE_AUTOHIDE) {
+        syscall_taskbar_autohide_enabled = !syscall_taskbar_autohide_enabled;
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_GET_AUTOHIDE_ENABLED) {
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EDI, (uint32_t)syscall_taskbar_autohide_enabled);
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
     if (operation == SYSCALL_CORE_GET_SYSTEM_INFO) {
         ++syscall_stats_successful;
         frame_write(frame_ptr, FRAME_OFF_EDI, pmm_frame_count());
@@ -641,6 +778,24 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
            eingelasteten Prozesses - in jedem Fall der korrekte naechste
            iretd-Zielframe. */
         return scheduler_on_tick(frame_ptr);
+    }
+
+    if (operation == SYSCALL_CORE_NOTIFY) {
+        /* Feste, ehrliche Meldungsliste statt rohem Text-Pointer vom
+           Aufrufer (siehe syscall.h-Kommentar) - edx waehlt NUR aus. */
+        uint32_t edx = frame_read(frame_ptr, FRAME_OFF_EDX);
+        const char *text = 0;
+        uint32_t type = NOTIFY_TYPE_SUCCESS;
+        if (edx == NOTIFY_EVENT_FOLDER_CREATED) {
+            text = "Ordner erstellt";
+        } else if (edx == NOTIFY_EVENT_FILE_DELETED) {
+            text = "Datei geloescht";
+        }
+        int ok = (text != 0) && (notify_push(type, text, 0) == 0);
+        if (ok) ++syscall_stats_successful; else ++syscall_stats_failed;
+        frame_write(frame_ptr, FRAME_OFF_EAX,
+                    (uint32_t)(ok ? SYSCALL_STATUS_OK : SYSCALL_STATUS_OPERATION));
+        return frame_ptr;
     }
 
     if (operation == SYSCALL_CORE_SHUTDOWN) {
@@ -802,6 +957,40 @@ int syscall_manager_self_test(void) {
     if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
     if (window_mode(gui_handle) != WINDOW_MODE_NORMAL) return -1;
 
+    /* GUI_OP_GET_RECT (2026-11-20, Eckgriff-Resize-Grundlage, siehe
+       input.c): EDI/ESI muessen exakt die echte, per surface_rect()
+       ermittelte Breite/Hoehe widerspiegeln - kein neuer Wert, nur ein
+       neuer Zugriffsweg (identisches Beweismuster wie GET_DISPLAY_INFO
+       oben). */
+    uint32_t real_gx, real_gy, real_gw, real_gh;
+    if (surface_rect(gui_handle, &real_gx, &real_gy, &real_gw, &real_gh) != 0) return -1;
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_GET_RECT);
+    frame_write(frame_addr, FRAME_OFF_EDX, gui_handle);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (frame_read(frame_addr, FRAME_OFF_EDI) != real_gw) return -1;
+    if (frame_read(frame_addr, FRAME_OFF_ESI) != real_gh) return -1;
+
+    /* Zentrale Appearance-Anmeldung: nur die Akzentfarbe wird vom Client
+       gesetzt, die eigentliche Dekoration bleibt im Compositor. */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_SET_APPEARANCE);
+    frame_write(frame_addr, FRAME_OFF_EDX, gui_handle);
+    frame_write(frame_addr, FRAME_OFF_ESI, 0x65D9FFu);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (window_accent(gui_handle) != 0x65D9FFu) return -1;
+
+    /* Unbekanntes Handle muss wie bei den anderen handle-basierten GUI-
+       Operationen fehlschlagen, nicht abstuerzen oder Zufallswerte
+       liefern. */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_GET_RECT);
+    frame_write(frame_addr, FRAME_OFF_EDX, 0xFFFFu);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) == (uint32_t)SYSCALL_STATUS_OK) return -1;
+
     /* Unbekannte GUI_WINDOW_STATE_*-Konstante muss SYSCALL_STATUS_SURFACE
        liefern (wie ein unbekanntes Handle), nicht abstuerzen. */
     frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
@@ -809,6 +998,30 @@ int syscall_manager_self_test(void) {
     frame_write(frame_addr, FRAME_OFF_ESI, 0xFFu);
     syscall_dispatch(frame_addr);
     if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_SURFACE) return -1;
+
+    /* Ein existierendes Fenster eines ANDEREN Prozesses darf nicht ueber
+       einen erratenen Handle bewegt oder zerstoert werden. Der aktuelle
+       synthetische Aufrufer ist PID 1 (Kernel-CR3); foreign_handle gehoert
+       absichtlich PID 2. */
+    uint32_t foreign_handle = 0u;
+    if (window_create(2u, 20u, 20u, 32u, 32u, 0, &foreign_handle) != 0) return -1;
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_MOVE);
+    frame_write(frame_addr, FRAME_OFF_EDX, foreign_handle);
+    frame_write(frame_addr, FRAME_OFF_ESI, 30u | (30u << 16));
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_CAP) return -1;
+
+    /* Dasselbe gilt fuer GET_RECT - lesender Zugriff ist kein Grund, die
+       Besitzpruefung zu lockern (ein Prozess soll nicht einmal die
+       Groesse eines fremden Fensters erraten/erfragen koennen). */
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
+    frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_GET_RECT);
+    frame_write(frame_addr, FRAME_OFF_EDX, foreign_handle);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_CAP) return -1;
+
+    if (window_destroy(foreign_handle) != 0) return -1;
 
     frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_GUI);
     frame_write(frame_addr, FRAME_OFF_EBX, GUI_OP_DESTROY);
@@ -938,10 +1151,10 @@ int syscall_manager_self_test(void) {
     /* Aufraeumen: die eben erzeugte Testdatei nicht dauerhaft im
        gemeinsam genutzten Testvolume zuruecklassen. */
     uint32_t cleanup_handle;
-    if (vfsapi_lookup(SYSCALL_SINGLE_CLIENT_PID, 0u, benutzer_path, 9u,
+    if (vfsapi_lookup(SYSCALL_KERNEL_TEST_PID, 0u, benutzer_path, 9u,
                        VFSAPI_LOOKUP_FLAG_WRITE, &cleanup_handle) == 0) {
-        vfsapi_delete(SYSCALL_SINGLE_CLIENT_PID, cleanup_handle, file_name, 12u);
-        vfsapi_close(SYSCALL_SINGLE_CLIENT_PID, cleanup_handle);
+        vfsapi_delete(SYSCALL_KERNEL_TEST_PID, cleanup_handle, file_name, 12u);
+        vfsapi_close(SYSCALL_KERNEL_TEST_PID, cleanup_handle);
     }
 
     /* SYSCALL_SERVICE_INPUT-Dispatch (syscall_dispatch_input): ein
@@ -967,8 +1180,8 @@ int syscall_manager_self_test(void) {
     interrupt_disable();
 
     /* input_client_poll_for() bindet eine PID ERST beim ersten Poll-Aufruf
-       an einen Slot - ein Broadcast, der VOR dieser Bindung passiert,
-       erreicht den neuen Slot nicht. Darum hier VORAB (leerer Dummy-Poll)
+       an einen Slot - ein zielgerichtetes Event, das VOR dieser Bindung
+       passiert, erreicht den neuen Slot nicht. Darum hier VORAB (leerer Dummy-Poll)
        binden, BEVOR unten das synthetische Event eingespeist wird - sonst
        ginge genau dieses Event an Slot 0 (noch ungebunden), waehrend der
        gleich folgende echte syscall_dispatch()-Aufruf bereits aus dem neu
@@ -978,6 +1191,25 @@ int syscall_manager_self_test(void) {
     while (input_pop_event(&drain_tmp) == 0) { }
     /* Leert ALLE Client-Slots (nicht nur Slot 0). */
     input_client_drain_all();
+
+    /* Tastaturereignisse werden nicht mehr broadcastet, sondern an den
+       Besitzer des fokussierten Fensters geroutet. Fuer diesen isolierten
+       Dispatch-Test daher ein minimales echtes PID-1-Fenster fokussieren. */
+    uint32_t input_route_window = 0u;
+    static uint32_t input_route_pixels[4u];
+    if (window_create(SYSCALL_KERNEL_TEST_PID, 1u, 1u, 2u, 2u, 0,
+                      &input_route_window) != 0) {
+        interrupt_enable();
+        return -1;
+    }
+    if (surface_attach_buffer(input_route_window,
+                              (uint32_t)(uintptr_t)input_route_pixels) != 0 ||
+        surface_commit(input_route_window) != 0 ||
+        window_focus(input_route_window) != 0) {
+        window_destroy(input_route_window);
+        interrupt_enable();
+        return -1;
+    }
 
     input_event_t synth_evt = {0};
     synth_evt.type = INPUT_EVENT_KEY_DOWN;
@@ -1008,6 +1240,7 @@ int syscall_manager_self_test(void) {
     if (input_ok && frame_read(frame_addr, FRAME_OFF_EAX) != 0u) input_ok = 0;
     if (input_ok && poll_args->has_event != 0u) input_ok = 0;
 
+    window_destroy(input_route_window);
     interrupt_enable();
 
     if (!input_ok) return -1;
@@ -1085,6 +1318,42 @@ int syscall_manager_self_test(void) {
     syscall_dispatch(frame_addr);
     if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
     if (frame_read(frame_addr, FRAME_OFF_EDI) != visible_before) return -1; /* zurueck auf Ausgangszustand */
+
+    /* SYSCALL_CORE_TOGGLE_AUTOHIDE/_GET_AUTOHIDE_ENABLED (2026-11-20) -
+       identisches Beweismuster wie TOGGLE_START_MENU oben. */
+    uint32_t autohide_before;
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_GET_AUTOHIDE_ENABLED);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    autohide_before = frame_read(frame_addr, FRAME_OFF_EDI);
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_TOGGLE_AUTOHIDE);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_GET_AUTOHIDE_ENABLED);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (frame_read(frame_addr, FRAME_OFF_EDI) == autohide_before) return -1; /* muss gekippt sein */
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_TOGGLE_AUTOHIDE);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+
+    frame_write(frame_addr, FRAME_OFF_EAX, SYSCALL_SERVICE_CORE);
+    frame_write(frame_addr, FRAME_OFF_EBX, SYSCALL_CORE_GET_AUTOHIDE_ENABLED);
+    frame_write(frame_addr, FRAME_OFF_ECX, SYSCALL_ABI_VERSION);
+    syscall_dispatch(frame_addr);
+    if (frame_read(frame_addr, FRAME_OFF_EAX) != (uint32_t)SYSCALL_STATUS_OK) return -1;
+    if (frame_read(frame_addr, FRAME_OFF_EDI) != autohide_before) return -1; /* zurueck auf Ausgangszustand */
 
     /* NPSPEC-SECURITY-CAPABILITY-0001: der echte Dispatch-Pfad fuer
        SYSCALL_CORE_SHUTDOWN darf HIER gefahrlos durchlaufen werden, weil

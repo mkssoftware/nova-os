@@ -17,9 +17,13 @@
    Wiederholungs-Steuerung (NPSPEC-INPUT-DEVICE-0001 Key-Repeat-
    Controller) - Hardware-Autorepeat des PS/2-Controllers wird 1:1 als
    normale Make-Wiederholung durchgereicht, ohne eigene Markierung.
-   KEIN IntelliMouse-Scrollrad (4. Paket-Byte, NPSPEC-INPUT-DEVICE-0002
-   Erweiterung) - nur das 3-Byte-Standardprotokoll. KEIN Hotplug
-   (NPSPEC-INPUT-DEVICE-0006, BLOCKED: PS/2 hat kein Bus-Event). */
+   IntelliMouse-Scrollrad (4. Paket-Byte, NPSPEC-INPUT-DEVICE-0002
+   Erweiterung) seit 2026-11-20 UNTERSTUETZT - echte Geraete-ID-Erkennung
+   per Sample-Rate-Sequenz 200/100/80 + Get-Device-ID (0xF2) waehrend
+   ps2_controller_initialize(), siehe dort; faellt bei fehlender
+   Unterstuetzung sauber auf das 3-Byte-Standardprotokoll zurueck (kein
+   Hardware-Vorwissen noetig). KEIN Hotplug (NPSPEC-INPUT-DEVICE-0006,
+   BLOCKED: PS/2 hat kein Bus-Event). */
 #ifndef NOVA_PS2_H
 #define NOVA_PS2_H
 
@@ -48,6 +52,8 @@
 #define VKEY_DELETE    0x010Fu
 #define VKEY_HOME      0x0110u
 #define VKEY_END       0x0111u
+#define VKEY_F4        0x0112u
+#define VKEY_LSUPER    0x0113u
 
 typedef struct {
     uint16_t vkey;

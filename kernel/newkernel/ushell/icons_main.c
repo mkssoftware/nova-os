@@ -71,7 +71,7 @@ typedef struct {
     uint32_t cursor_x, cursor_y;
 } input_poll_args_t;
 
-#define TASKBAR_HEIGHT       28u
+#define TASKBAR_HEIGHT       44u
 #define ICON_MARGIN          16u
 #define ICON_CELL_W          64u
 #define ICON_CELL_H          56u

@@ -19,13 +19,17 @@
 #define SYSCALL_CORE_GET_TIME           4u
 #define SYSCALL_CORE_TOGGLE_START_MENU  5u
 #define SYSCALL_CORE_TOGGLE_EXPLORER    8u
+#define SYSCALL_CORE_GET_EXPLORER_VISIBLE  9u
 #define SYSCALL_CORE_TOGGLE_SETTINGS    10u
+#define SYSCALL_CORE_GET_SETTINGS_VISIBLE  11u
 #define SYSCALL_CORE_YIELD              13u
+#define SYSCALL_CORE_GET_AUTOHIDE_ENABLED 16u
 
 #define SYSCALL_SERVICE_GUI       2u
 #define GUI_OP_CREATE_SURFACE     1u
 #define GUI_OP_ATTACH_BUFFER      2u
 #define GUI_OP_COMMIT             3u
+#define GUI_OP_HIDE               6u
 
 #define SYSCALL_SERVICE_INPUT 4u
 #define INPUT_OP_POLL         1u
@@ -45,7 +49,7 @@
 #define ARGS_VADDR       0x00400000u
 #define GUI_BUFFER_VADDR 0x00402000u
 
-#define TASKBAR_HEIGHT  28u
+#define TASKBAR_HEIGHT  44u
 #define TASKBAR_START_X 16u
 #define TASKBAR_START_W 40u
 
@@ -67,6 +71,25 @@
 #define TASKBAR_DIM_RGB 0x8EA3BCu
 #define NOVA_BLUE_RGB   0x2C8CFFu
 #define NOVA_CYAN_RGB   0x5FE7FFu
+
+/* Mitte der Taskbar: ein "Chip" pro aktuell SICHTBAREM Fenster (NPSPEC
+   Liquid-Glass/GUI-Design-Spec: "Mitte geoeffnete/aktive Fenster") - bisher
+   zeigte die Taskbar ueberhaupt keine laufenden Fenster an, nur Start-
+   Button/angeheftete Programme/Uhr. Jeder Chip entspricht 1:1 demselben
+   Sichtbarkeits-Flag, das auch der Startmenue-Eintrag/das angeheftete
+   Icon umschaltet (SYSCALL_CORE_TOGGLE_EXPLORER/_SETTINGS) - ein Klick auf
+   den Chip verbirgt das Fenster wieder (Toggle, kein Fokus-Wechsel - fuer
+   nur je ein Fenster pro Typ ist das ausreichend, eine echte Fenster-
+   vorschau braucht erst eine Liste ECHTER, mehrfacher Fensterinstanzen,
+   die es noch nicht gibt). Positionen werden JEDEN Umlauf aus den aktuell
+   abgefragten Sichtbarkeits-Flags neu berechnet (siehe ushell_start()) -
+   dieselbe Berechnung fuer Zeichnen UND Hit-Test, damit beides niemals
+   auseinanderlaeuft. */
+#define TASKBAR_WINDOWS_X    172u
+#define TASKBAR_CHIP_W        96u
+#define TASKBAR_CHIP_H        28u
+#define TASKBAR_CHIP_GAP       6u
+#define TASKBAR_CHIP_BG_RGB   0x1C2433u
 
 typedef struct {
     uint32_t has_event;
@@ -139,19 +162,34 @@ static void draw_terminal_icon(render2d_surface_t *surf, uint32_t x, uint32_t y)
     render2d_draw_hline(surf, x + 9u, y + 10u, 6u, NOVA_CYAN_RGB);
 }
 
-static void draw_taskbar(render2d_surface_t *surf, uint32_t width, uint32_t hour, uint32_t minute) {
+/* chip_x==0 bedeutet "nicht sichtbar, nicht zeichnen" - 0 ist nie eine
+   gueltige Chip-Position (TASKBAR_WINDOWS_X startet bei 172). */
+static void draw_window_chip(render2d_surface_t *surf, uint32_t chip_x, const char *label) {
+    if (chip_x == 0u) return;
+    uint32_t chip_y = (TASKBAR_HEIGHT - TASKBAR_CHIP_H) / 2u;
+    render2d_fill_rect(surf, chip_x, chip_y, TASKBAR_CHIP_W, TASKBAR_CHIP_H, TASKBAR_CHIP_BG_RGB);
+    render2d_draw_hline(surf, chip_x + 4u, chip_y + TASKBAR_CHIP_H - 2u, TASKBAR_CHIP_W - 8u, NOVA_CYAN_RGB);
+    render2d_draw_text(surf, chip_x + 6u, chip_y + (TASKBAR_CHIP_H - 16u) / 2u, label,
+                        TASKBAR_FG_RGB, TASKBAR_CHIP_BG_RGB, 0);
+}
+
+static void draw_taskbar(render2d_surface_t *surf, uint32_t width, uint32_t hour, uint32_t minute,
+                          uint32_t explorer_chip_x, uint32_t settings_chip_x) {
     render2d_fill_rect(surf, 0u, 0u, width, TASKBAR_HEIGHT, TASKBAR_BG_RGB);
 
     draw_nova_star(surf, TASKBAR_START_X + 18u, TASKBAR_HEIGHT / 2u);
 
     /* Drei angeheftete Anwendungen. Der feine Punkt darunter entspricht
        der aktiven/angehefteten Markierung aus den NovaOS-Referenzen. */
-    draw_folder_icon(surf, 72u, 5u);
-    draw_grid_icon(surf, 106u, 6u);
-    draw_terminal_icon(surf, 138u, 6u);
+    draw_folder_icon(surf, 72u, (TASKBAR_HEIGHT - 18u) / 2u);
+    draw_grid_icon(surf, 106u, (TASKBAR_HEIGHT - 16u) / 2u);
+    draw_terminal_icon(surf, 138u, (TASKBAR_HEIGHT - 16u) / 2u);
     put_pixel(surf, 82u, 25u, NOVA_CYAN_RGB);
     put_pixel(surf, 113u, 25u, 0x496C98u);
     put_pixel(surf, 148u, 25u, 0x496C98u);
+
+    draw_window_chip(surf, explorer_chip_x, "Explorer");
+    draw_window_chip(surf, settings_chip_x, "Settings");
 
     char clock_label[6] = "00:00";
     if (hour > 99u) hour = 99u;
@@ -196,16 +234,49 @@ void ushell_start(void) {
 
     uint32_t prev_buttons = 0;
     input_poll_args_t *args = (input_poll_args_t *)ARGS_VADDR;
+    /* Auto-Hide (2026-11-20, erster echter Settings-Schalter, siehe
+       settings_main.c): 1 = Taskbar aktuell sichtbar/committed. Startet
+       sichtbar (deckt sich mit dem bisherigen Verhalten, solange die
+       Einstellung AUS bleibt). Bei AN wird nur noch committet, waehrend
+       der Cursor innerhalb der Taskbar-Hoehe vom unteren Rand ist -
+       exakt dieselbe Zone, die weiter unten auch fuer Klicks gilt (ein
+       verstecktes Chrome kann so nie "versehentlich" angeklickt werden,
+       es MUSS vorher wieder sichtbar geworden sein). */
+    uint32_t taskbar_revealed = 1u;
 
     for (;;) {
-        uint32_t hour, minute;
-        syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_GET_TIME, 0u, 0u, &hour, &minute);
-        draw_taskbar(&surf, width, hour, minute);
-        syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_COMMIT, surface_handle, 0u, 0, 0);
-
         syscall_io(SYSCALL_SERVICE_INPUT, INPUT_OP_POLL, ARGS_VADDR, 0u, 0, 0);
         uint32_t buttons = args->mouse_buttons;
-        if ((buttons & 1u) != 0u && (prev_buttons & 1u) == 0u) {
+
+        uint32_t autohide_enabled = 0u;
+        syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_GET_AUTOHIDE_ENABLED, 0u, 0u, &autohide_enabled, 0);
+        uint32_t want_reveal = (autohide_enabled == 0u) || (args->cursor_y >= height - TASKBAR_HEIGHT);
+
+        uint32_t explorer_visible = 0u, settings_visible = 0u;
+        uint32_t explorer_chip_x = 0u, settings_chip_x = 0u;
+        if (want_reveal) {
+            uint32_t hour, minute;
+            syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_GET_TIME, 0u, 0u, &hour, &minute);
+            syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_GET_EXPLORER_VISIBLE, 0u, 0u, &explorer_visible, 0);
+            syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_GET_SETTINGS_VISIBLE, 0u, 0u, &settings_visible, 0);
+
+            /* Chip-Positionen werden JEDEN Umlauf aus den aktuellen
+               Sichtbarkeits-Flags neu belegt (0 = kein Chip) - dieselbe
+               Berechnung dient gleich darunter auch dem Hit-Test, kann
+               also nie mit der Zeichnung auseinanderlaufen. */
+            uint32_t next_chip_x = TASKBAR_WINDOWS_X;
+            if (explorer_visible != 0u) { explorer_chip_x = next_chip_x; next_chip_x += TASKBAR_CHIP_W + TASKBAR_CHIP_GAP; }
+            if (settings_visible != 0u) { settings_chip_x = next_chip_x; next_chip_x += TASKBAR_CHIP_W + TASKBAR_CHIP_GAP; }
+
+            draw_taskbar(&surf, width, hour, minute, explorer_chip_x, settings_chip_x);
+            syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_COMMIT, surface_handle, 0u, 0, 0);
+            taskbar_revealed = 1u;
+        } else if (taskbar_revealed != 0u) {
+            syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_HIDE, surface_handle, 0u, 0, 0);
+            taskbar_revealed = 0u;
+        }
+
+        if (want_reveal && (buttons & 1u) != 0u && (prev_buttons & 1u) == 0u) {
             if (args->cursor_y >= height - TASKBAR_HEIGHT) {
                 if (args->cursor_x >= TASKBAR_START_X &&
                     args->cursor_x < TASKBAR_START_X + TASKBAR_START_W) {
@@ -215,6 +286,12 @@ void ushell_start(void) {
                     syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_EXPLORER, 0u, 0u, 0, 0);
                 } else if (args->cursor_x >= TASKBAR_GRID_X &&
                            args->cursor_x < TASKBAR_GRID_X + TASKBAR_ICON_W) {
+                    syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_SETTINGS, 0u, 0u, 0, 0);
+                } else if (explorer_chip_x != 0u && args->cursor_x >= explorer_chip_x &&
+                           args->cursor_x < explorer_chip_x + TASKBAR_CHIP_W) {
+                    syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_EXPLORER, 0u, 0u, 0, 0);
+                } else if (settings_chip_x != 0u && args->cursor_x >= settings_chip_x &&
+                           args->cursor_x < settings_chip_x + TASKBAR_CHIP_W) {
                     syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_SETTINGS, 0u, 0u, 0, 0);
                 }
             }

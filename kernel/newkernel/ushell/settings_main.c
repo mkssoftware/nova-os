@@ -16,12 +16,16 @@
    (SYSCALL_CORE_GET_TIME, bereits vorhanden, liest die echte CMOS-RTC).
    Werte werden JEDEN Umlauf neu abgefragt, keine Caches/Platzhalter.
 
-   Bewusst KEIN Schalter fuer Aufloesung/Hintergrund/Mausgeschwindigkeit
-   in dieser ersten Version - dafuer gibt es noch keine echten,
-   schreibenden System-APIs (nur GET_*, keine SET_*-Syscalls). Ein
-   sichtbarer Schalter ohne echte Wirkung waere ein vorgetaeuschtes
-   Bedienelement - diese Version zeigt daher reine Information, keine
-   Interaktion ausser dem Schliessen-Button.
+   Bewusst KEIN Schalter fuer Aufloesung/Hintergrund/Mausgeschwindigkeit -
+   dafuer gibt es weiterhin keine echten, schreibenden System-APIs (nur
+   GET_*, keine SET_*-Syscalls). Ein sichtbarer Schalter ohne echte
+   Wirkung waere ein vorgetaeuschtes Bedienelement.
+
+   ERSTER echter Schalter (2026-11-20): Taskbar-Auto-Hide
+   (SYSCALL_CORE_TOGGLE_AUTOHIDE/_GET_AUTOHIDE_ENABLED) - diese
+   Einstellung schreibt wirklich ein kernelweites Flag, das die Taskbar
+   (shell_main.c) jeden Umlauf abfragt und danach tatsaechlich ein-/
+   ausblendet (siehe dortigen Kommentar). Kein Platzhalter mehr.
 
    On-Demand-Start: identisches Muster wie explorer_main.c - bleibt
    dauerhaft laufend, zeigt seine Surface aber erst nach SYSCALL_CORE_
@@ -38,6 +42,8 @@
 #define SYSCALL_CORE_GET_SETTINGS_VISIBLE  11u
 #define SYSCALL_CORE_YIELD                 13u
 #define SYSCALL_CORE_GET_SYSTEM_INFO       12u
+#define SYSCALL_CORE_TOGGLE_AUTOHIDE       15u
+#define SYSCALL_CORE_GET_AUTOHIDE_ENABLED  16u
 
 #define SYSCALL_SERVICE_GUI       2u
 #define GUI_OP_CREATE_SURFACE     1u
@@ -45,6 +51,8 @@
 #define GUI_OP_COMMIT             3u
 #define GUI_OP_HIDE               6u
 #define GUI_OP_MOVE               7u
+#define GUI_OP_GET_RECT           8u
+#define GUI_OP_SET_APPEARANCE     9u
 
 #define SYSCALL_SERVICE_INPUT 4u
 #define INPUT_OP_POLL         1u
@@ -68,9 +76,9 @@
 #define WIN_X 540u
 #define WIN_Y 60u
 #define WIN_W 280u
-#define WIN_H 150u
+#define WIN_H 180u
 
-#define HEADER_H       24u
+#define HEADER_H       36u
 #define CLOSE_BTN_SIZE 14u
 #define ROW_H          24u
 
@@ -79,6 +87,17 @@
 #define COLOR_TEXT      0xF4F7FBu
 #define COLOR_TEXT_SEC  0xA8B4C7u
 #define COLOR_CLOSE_BTN 0xC0405Au
+#define COLOR_ACCENT    0x65D9FFu
+
+/* Taskbar-Auto-Hide-Schalter (2026-11-20, erster echter Schalter dieser
+   App) - eine kleine klickbare "Pille", gefuellt (Cyan) wenn aktiv,
+   sonst nur umrissen. Position in derselben Spalte wie die Werte oben
+   (draw_label_value's x=180), aber vertikal zentriert in der 4.
+   Zeile statt an deren Textbasislinie. */
+#define AUTOHIDE_ROW_Y   (HEADER_H + 4u * ROW_H)
+#define AUTOHIDE_TOGGLE_X 180u
+#define AUTOHIDE_TOGGLE_W 44u
+#define AUTOHIDE_TOGGLE_H 18u
 
 typedef struct {
     uint32_t has_event;
@@ -136,13 +155,13 @@ static void draw_label_value(render2d_surface_t *surf, uint32_t y, const char *l
 }
 
 static void draw_settings(render2d_surface_t *surf) {
-    render2d_fill_rect(surf, 0u, 0u, WIN_W, WIN_H, COLOR_BODY_BG);
+    render2d_fill_rect(surf, 0u, 0u, surf->width, surf->height, COLOR_BODY_BG);
 
-    render2d_fill_rect(surf, 0u, 0u, WIN_W, HEADER_H, COLOR_HEADER_BG);
+    render2d_fill_rect(surf, 0u, 0u, surf->width, HEADER_H, COLOR_HEADER_BG);
     render2d_draw_text(surf, 8u, (HEADER_H - 16u) / 2u, "Einstellungen", COLOR_TEXT, COLOR_HEADER_BG, 0u);
-    render2d_fill_rect(surf, WIN_W - CLOSE_BTN_SIZE - 6u, (HEADER_H - CLOSE_BTN_SIZE) / 2u,
+    render2d_fill_rect(surf, surf->width - CLOSE_BTN_SIZE - 6u, (HEADER_H - CLOSE_BTN_SIZE) / 2u,
                         CLOSE_BTN_SIZE, CLOSE_BTN_SIZE, COLOR_CLOSE_BTN);
-    render2d_draw_text(surf, WIN_W - CLOSE_BTN_SIZE - 6u + 3u, (HEADER_H - 16u) / 2u, "x",
+    render2d_draw_text(surf, surf->width - CLOSE_BTN_SIZE - 6u + 3u, (HEADER_H - 16u) / 2u, "x",
                         COLOR_TEXT, COLOR_CLOSE_BTN, 0u);
 
     uint32_t edi, esi;
@@ -188,6 +207,29 @@ static void draw_settings(render2d_surface_t *surf) {
     format_two_digits(hour, time_buf);
     format_two_digits(minute, time_buf + 3);
     draw_label_value(surf, HEADER_H + 3u * ROW_H, "Systemzeit:", time_buf);
+
+    /* Taskbar-Auto-Hide-Schalter - EINZIGES Bedienelement dieser App, das
+       tatsaechlich etwas AENDERT (siehe Dateikopf-Kommentar). Gefuellte
+       Pille = aktiv, nur umrissene Pille = inaktiv - beide Zustaende
+       zusaetzlich per Text ("Ein"/"Aus") beschriftet, nicht nur Farbe. */
+    render2d_draw_text(surf, 8u, AUTOHIDE_ROW_Y, "Taskbar Auto-Hide:", COLOR_TEXT_SEC, COLOR_BODY_BG, 0u);
+    uint32_t autohide_enabled;
+    syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_GET_AUTOHIDE_ENABLED, 0u, 0u, &autohide_enabled, 0);
+    uint32_t toggle_y = AUTOHIDE_ROW_Y + (16u - AUTOHIDE_TOGGLE_H) / 2u - 1u;
+    if (autohide_enabled != 0u) {
+        render2d_fill_rect(surf, AUTOHIDE_TOGGLE_X, toggle_y, AUTOHIDE_TOGGLE_W, AUTOHIDE_TOGGLE_H, COLOR_ACCENT);
+        render2d_draw_text(surf, AUTOHIDE_TOGGLE_X + 7u, toggle_y + 1u, "Ein", COLOR_HEADER_BG, COLOR_ACCENT, 0u);
+    } else {
+        render2d_draw_rect_outline(surf, AUTOHIDE_TOGGLE_X, toggle_y, AUTOHIDE_TOGGLE_W, AUTOHIDE_TOGGLE_H, COLOR_TEXT_SEC);
+        render2d_draw_text(surf, AUTOHIDE_TOGGLE_X + 7u, toggle_y + 1u, "Aus", COLOR_TEXT_SEC, COLOR_BODY_BG, 0u);
+    }
+
+    /* Eckgriff-Markierung - siehe identischer Kommentar in
+       explorer_main.c's draw_explorer(). */
+    for (uint32_t d = 0u; d < 3u; ++d) {
+        render2d_fill_rect(surf, surf->width - 4u - d * 3u, surf->height - 4u - d * 3u,
+                            2u, 2u, COLOR_TEXT_SEC);
+    }
 }
 
 void settings_start(void) __asm__("settings_start");
@@ -207,6 +249,11 @@ void settings_start(void) {
     syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_CREATE_SURFACE, create_edx, create_esi, &edi, 0);
     uint32_t surface_handle = edi;
 
+    /* Kuehles Silberblau fuer Einstellungen; die eigentliche Liquid-
+       Glass-Dekoration bleibt zentral im Compositor. */
+    syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_SET_APPEARANCE,
+               surface_handle, 0x9BCBFFu, 0, 0);
+
     syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_ATTACH_BUFFER, surface_handle, 0u, 0, 0);
 
     render2d_surface_t surf;
@@ -222,12 +269,27 @@ void settings_start(void) {
     uint32_t win_x = WIN_X, win_y = WIN_Y;
     uint32_t dragging = 0u;
     uint32_t drag_offset_x = 0u, drag_offset_y = 0u;
+    /* Laufende Fenstergroesse (2026-11-20, Eckgriff-Resize per Maus,
+       identisches Muster zu explorer_main.c) - anders als dort reicht
+       hier eine einfache Neuabfrage jeden Umlauf, da draw_settings()
+       wegen der "live"-Werte ohnehin bereits jeden sichtbaren Umlauf
+       neu zeichnet. */
+    uint32_t win_w = WIN_W, win_h = WIN_H;
 
     for (;;) {
         uint32_t visible;
         syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_GET_SETTINGS_VISIBLE, 0u, 0u, &visible, 0);
 
         if (visible != 0u) {
+            uint32_t rect_w, rect_h;
+            syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_GET_RECT, surface_handle, 0u, &rect_w, &rect_h);
+            if (rect_w != 0u && rect_h != 0u) {
+                win_w = rect_w;
+                win_h = rect_h;
+                surf.width = win_w;
+                surf.height = win_h;
+                surf.stride = win_w;
+            }
             /* Werte sind live (Speicher/Uhrzeit aendern sich) - bei
                sichtbarem Fenster jeden Umlauf neu zeichnen+committen,
                nicht nur beim Sichtbarwerden. */
@@ -245,12 +307,12 @@ void settings_start(void) {
             uint32_t cursor_x = input_args->cursor_x;
             uint32_t cursor_y = input_args->cursor_y;
             if ((buttons & 1u) != 0u && (prev_buttons & 1u) == 0u &&
-                cursor_x >= win_x && cursor_x < win_x + WIN_W &&
-                cursor_y >= win_y && cursor_y < win_y + WIN_H) {
+                cursor_x >= win_x && cursor_x < win_x + win_w &&
+                cursor_y >= win_y && cursor_y < win_y + win_h) {
                 uint32_t local_x = cursor_x - win_x;
                 uint32_t local_y = cursor_y - win_y;
-                if (local_y < HEADER_H && local_x >= WIN_W - CLOSE_BTN_SIZE - 6u &&
-                    local_x < WIN_W - 6u) {
+                if (local_y < HEADER_H && local_x >= win_w - CLOSE_BTN_SIZE - 6u &&
+                    local_x < win_w - 6u) {
                     syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_SETTINGS, 0u, 0u, 0, 0);
                 } else if (local_y < HEADER_H) {
                     /* Rest der Kopfzeile startet ein Ziehen - identisches
@@ -258,6 +320,12 @@ void settings_start(void) {
                     dragging = 1u;
                     drag_offset_x = cursor_x - win_x;
                     drag_offset_y = cursor_y - win_y;
+                } else if (local_y >= AUTOHIDE_ROW_Y && local_y < AUTOHIDE_ROW_Y + ROW_H &&
+                           local_x >= AUTOHIDE_TOGGLE_X && local_x < AUTOHIDE_TOGGLE_X + AUTOHIDE_TOGGLE_W) {
+                    /* Grosszuegige, volle Zeilenhoehe als Trefferzone statt
+                       der exakten, etwas kleineren gezeichneten Pille -
+                       leichter treffbar, ohne die Optik zu aendern. */
+                    syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_AUTOHIDE, 0u, 0u, 0, 0);
                 }
             }
             if (dragging != 0u) {

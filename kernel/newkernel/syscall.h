@@ -93,6 +93,29 @@
    Slot bereitstand, oder der eines anderen Prozesses). */
 #define SYSCALL_CORE_YIELD                  13u
 
+/* Benachrichtigungs-Toast fuer ein ECHTES, bereits abgeschlossenes
+   Ereignis eines Ring-3-Clients (NPSPEC-SHELL-NOTIFY-0001/0002,
+   desktop_shell.c's notify_push()/notify_tick() - Letzteres laeuft
+   bereits dauerhaft in desktop_shell_thread_body(), nur bisher nie
+   ausgeloest). EDX = eine der NOTIFY_EVENT_*-Konstanten - BEWUSST kein
+   roher Text-Pointer vom Aufrufer: der Kernel waehlt selbst aus einer
+   festen Liste ehrlicher, vorab bekannter Meldungen, keine beliebige
+   Zeichenkette aus Ring 3 landet ungeprueft im Benachrichtigungs-
+   Rendering. Ein Ring-3-Prozess ruft dies NUR nach einer tatsaechlich
+   bereits erfolgreichen Operation auf (siehe explorer_main.c) - niemals
+   vorab/optimistisch, sonst waere die Meldung eine Taeuschung. */
+#define SYSCALL_CORE_NOTIFY                 14u
+#define NOTIFY_EVENT_FOLDER_CREATED          1u
+#define NOTIFY_EVENT_FILE_DELETED            2u
+
+/* Gleiches Sichtbarkeits-Flag-Muster wie TOGGLE_START_MENU/_GET_START_
+   MENU_VISIBLE (2026-11-20, erste echte Einstellung in settings_main.c):
+   die Settings-App schaltet um, die Taskbar (ushell/shell_main.c) fragt
+   jeden Umlauf ab und blendet sich entsprechend ein/aus (siehe dortigen
+   Kommentar zum Auto-Hide-Zustandsautomaten). */
+#define SYSCALL_CORE_TOGGLE_AUTOHIDE        15u
+#define SYSCALL_CORE_GET_AUTOHIDE_ENABLED   16u
+
 /* NPSPEC-DISPLAY-ARCH-0003/0004 (Display-Protokoll/Client-Kommunikation),
    reduziert auf einen festen Satz Operationen ueber denselben int-0x80-
    Dispatch-Mechanismus wie SYSCALL_SERVICE_CORE (NICHT ueber die globale
@@ -142,17 +165,29 @@
    Packung wie GUI_OP_CREATE_SURFACEs EDX) - der Client erkennt per eigenem
    INPUT_OP_POLL selbst, wann ein Ziehen auf seiner Kopfzeile beginnt/endet,
    und ruft diesen Syscall bei jeder Positionsaenderung waehrend des Ziehens
-   auf. Keine Berechtigungspruefung (identisch zu GUI_OP_DESTROY/_HIDE -
-   aktuell nur ein einziger Client-PID moeglich, siehe SYSCALL_SINGLE_
-   CLIENT_PID). */
+   auf. Der Kernel prueft wie bei allen handle-basierten GUI-Operationen,
+   dass das Window dem aus dem aktiven CR3 ermittelten Aufrufer gehoert. */
 #define GUI_OP_MOVE                7u
 
-/* Einziger bisher existierender Client (ring3.c) - echte Mehr-Client-PID-
-   Aufloesung (z.B. ueber den aktuell laufenden Scheduler-Slot) ist bewusst
-   nicht in dieser Sitzung geloest. Von SYSCALL_SERVICE_GUI UND
-   SYSCALL_SERVICE_VFS gemeinsam genutzt (war vorher GUI-lokal als
-   GUI_SINGLE_CLIENT_PID definiert). */
-#define SYSCALL_SINGLE_CLIENT_PID 1u
+/* Liefert die AKTUELLE Breite/Hoehe eines Windows (EDI = Breite, ESI =
+   Hoehe, identisches Register-Muster wie SYSCALL_CORE_GET_DISPLAY_INFO)
+   - fuer Clients, die per Eckgriff (input.c) interaktiv in der Groesse
+   veraendert werden koennen (explorer_main.c/settings_main.c) und ihre
+   Inhaltsflaeche deshalb jeden Umlauf neu an die tatsaechliche Groesse
+   anpassen muessen, statt blind mit einer Kompilierzeit-Konstante zu
+   zeichnen. EDX = Window-Handle, gleiche Besitzpruefung wie GUI_OP_MOVE. */
+#define GUI_OP_GET_RECT            8u
+
+/* Aktiviert die zentrale Nova-Liquid-Glass-Fensterdarstellung. EDX =
+   eigenes Window-Handle, ESI = RGB-Akzentfarbe. Die Anwendung liefert
+   keine vorberechnete Dekoration; der Compositor bleibt verantwortlich. */
+#define GUI_OP_SET_APPEARANCE      9u
+
+/* Nur fuer synthetische Dispatch-Selbsttests, die im Kernel-Adressraum
+   laufen und deshalb keine process.c-PID aus ihrem CR3 ableiten koennen.
+   Echte Ring-3-Aufrufe verwenden immer process_find_by_cr3() und werden
+   dadurch pro Prozess getrennt autorisiert. */
+#define SYSCALL_KERNEL_TEST_PID 1u
 
 /* NPSPEC-FILESYSTEM-NAMESPACE-0002/-PERMISSION-0001/NPSPEC-POLICY-
    SYSTEMWRITE-0001 (Port aus vfs32.inc), ueber vfsapi.c (siehe dort fuer
@@ -301,5 +336,17 @@ int syscall_grant_shutdown_capability(uint32_t pid);
    (keine Vergabe erfolgt, caller_cr3 gehoert zu keinem bekannten Prozess,
    oder der bekannte Prozess ist nicht der Capability-Inhaber). */
 int syscall_shutdown_authorized(uint32_t caller_cr3);
+
+/* Direkte C-Gegenstuecke zu SYSCALL_CORE_TOGGLE_START_MENU/_TOGGLE_
+   EXPLORER fuer Aufrufer, die bereits im Kernel laufen (input.c's
+   Tastatur-Kurzbefehle Super/Super+E) - siehe syscall.c fuer die
+   Begruendung, warum hier kein echter Syscall-Trap noetig ist. */
+void syscall_toggle_start_menu_from_kernel(void);
+void syscall_toggle_explorer_from_kernel(void);
+
+/* Reine Introspektion derselben beiden Flags, fuer input.c's Selbsttest
+   (synthetische Super/Super+E-Events, ohne echten Syscall-Trap). */
+int syscall_start_menu_visible_value(void);
+int syscall_explorer_visible_value(void);
 
 #endif

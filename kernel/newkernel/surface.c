@@ -1,5 +1,6 @@
 /* NovaOS C-Kernel - Nova Surface Manager (siehe surface.h fuer Scope). */
 #include "surface.h"
+#include "sync.h"
 
 typedef struct {
     uint32_t handle; /* 0 = frei */
@@ -45,6 +46,22 @@ static void surface_damage_union(surface_slot_t *slot, uint32_t x, uint32_t y,
 static surface_slot_t surface_slots[SURFACE_CAPACITY];
 static uint32_t surface_next_handle = 1;
 
+/* SMP-Race gefunden (2026-11-20, siehe project_taskbar_redraw_freeze_bug.md):
+   ohne diesen Lock konnten surface_commit() (Ring-3-Prozess, beliebige vCPU)
+   und compositor_scan_surface_damage()/surface_clear_damage() (Compositor-
+   Thread, ggf. andere vCPU) gleichzeitig auf damage_valid/damage_x/y/w/h
+   desselben Slots zugreifen - der Compositor konnte ein frisches Damage-
+   Rechteck loeschen, kurz BEVOR er es fuer den aktuellen Redraw konsumierte,
+   oder ein neues Damage-Rechteck ging unter, weil es zwischen Lesen und
+   Loeschen des alten entstand. Sichtbarstes Symptom: die Taskbar (einziger
+   Prozess, der JEDE Schleifeniteration committet) hoerte nach dem ersten
+   Boot-Redraw komplett auf, sich sichtbar zu aktualisieren - sogar die Uhr
+   blieb stehen, obwohl der Ring-3-Prozess nachweislich weiterzeichnete.
+   Ein einzelner globaler Spinlock genuegt (geringe Kontention, kein Hot-
+   Path mit hoher Frequenz pro Kern) - gleiches Muster wie serial.c's
+   serial_lock (siehe project_smp_safe_logging.md). */
+static volatile uint32_t surface_damage_lock = SYNC_SPIN_UNLOCKED;
+
 static int surface_find_slot(uint32_t handle) {
     if (handle == 0) return -1;
     for (uint32_t i = 0; i < SURFACE_CAPACITY; ++i) {
@@ -58,6 +75,7 @@ void surface_manager_initialize(void) {
         surface_slots[i] = (surface_slot_t){0};
     }
     surface_next_handle = 1;
+    sync_spin_init(&surface_damage_lock);
 }
 
 int surface_create(uint32_t owner_pid, uint32_t x, uint32_t y, uint32_t w,
@@ -77,7 +95,11 @@ int surface_create(uint32_t owner_pid, uint32_t x, uint32_t y, uint32_t w,
             surface_slots[i].color_key_enabled = 0;
             surface_slots[i].commit_seq = 0;
             surface_slots[i].consumed_seq = 0;
-            surface_damage_union(&surface_slots[i], x, y, w, h);
+            {
+                uint32_t flags = sync_spin_lock_irqsave(&surface_damage_lock);
+                surface_damage_union(&surface_slots[i], x, y, w, h);
+                sync_spin_unlock_irqrestore(&surface_damage_lock, flags);
+            }
             *out_handle = surface_slots[i].handle;
             return 0;
         }
@@ -92,13 +114,17 @@ int surface_configure(uint32_t handle, uint32_t x, uint32_t y, uint32_t w,
     uint32_t state = surface_slots[i].state;
     if (state != SURFACE_STATE_CREATED && state != SURFACE_STATE_CONFIGURED) return -1;
 
-    surface_damage_union(&surface_slots[i], surface_slots[i].x, surface_slots[i].y,
-                         surface_slots[i].w, surface_slots[i].h);
-    surface_slots[i].x = x;
-    surface_slots[i].y = y;
-    surface_slots[i].w = w;
-    surface_slots[i].h = h;
-    surface_damage_union(&surface_slots[i], x, y, w, h);
+    {
+        uint32_t flags = sync_spin_lock_irqsave(&surface_damage_lock);
+        surface_damage_union(&surface_slots[i], surface_slots[i].x, surface_slots[i].y,
+                             surface_slots[i].w, surface_slots[i].h);
+        surface_slots[i].x = x;
+        surface_slots[i].y = y;
+        surface_slots[i].w = w;
+        surface_slots[i].h = h;
+        surface_damage_union(&surface_slots[i], x, y, w, h);
+        sync_spin_unlock_irqrestore(&surface_damage_lock, flags);
+    }
     surface_slots[i].state = SURFACE_STATE_CONFIGURED;
     return 0;
 }
@@ -140,13 +166,28 @@ int surface_commit(uint32_t handle) {
     int i = surface_find_slot(handle);
     if (i < 0) return -1;
     uint32_t state = surface_slots[i].state;
-    if (state != SURFACE_STATE_ATTACHED && state != SURFACE_STATE_HIDDEN) return -1;
+    /* ACTIVE gehoert bewusst mit zu den erlaubten Ausgangszustaenden (nicht
+       nur ATTACHED/HIDDEN): ein Client, der bereits aktiv ist und erneut
+       committet, signalisiert "neuer Frame im selben Puffer" (z.B. die
+       Taskbar, die JEDE Schleifeniteration neu zeichnet+committet - siehe
+       project_taskbar_redraw_freeze_bug.md). Ohne ACTIVE hier wird dieser
+       Folge-Commit komplett verworfen (kein Damage, kein commit_seq-
+       Inkrement) - die Surface wird nach dem ERSTEN Commit nie wieder neu
+       gezeichnet, obwohl der Client weiterhin frische Pixel liefert. */
+    if (state != SURFACE_STATE_ATTACHED && state != SURFACE_STATE_HIDDEN &&
+        state != SURFACE_STATE_ACTIVE) {
+        return -1;
+    }
 
     /* Konservativ: volles aktuelles Rechteck als beschaedigt markieren
        (siehe surface.h - echte Teilbereichs-Verfolgung braucht Buffer-
        Attach, folgt in einem spaeteren Modul). */
-    surface_damage_union(&surface_slots[i], surface_slots[i].x, surface_slots[i].y,
-                         surface_slots[i].w, surface_slots[i].h);
+    {
+        uint32_t flags = sync_spin_lock_irqsave(&surface_damage_lock);
+        surface_damage_union(&surface_slots[i], surface_slots[i].x, surface_slots[i].y,
+                             surface_slots[i].w, surface_slots[i].h);
+        sync_spin_unlock_irqrestore(&surface_damage_lock, flags);
+    }
     surface_slots[i].state = SURFACE_STATE_ACTIVE;
     ++surface_slots[i].commit_seq;
     return 0;
@@ -207,19 +248,42 @@ int surface_damage_rect(uint32_t handle, uint32_t *out_x, uint32_t *out_y,
                          uint32_t *out_w, uint32_t *out_h) {
     int i = surface_find_slot(handle);
     if (i < 0) return -1;
-    if (!surface_slots[i].damage_valid) return -1;
-    *out_x = surface_slots[i].damage_x;
-    *out_y = surface_slots[i].damage_y;
-    *out_w = surface_slots[i].damage_w;
-    *out_h = surface_slots[i].damage_h;
-    return 0;
+    uint32_t flags = sync_spin_lock_irqsave(&surface_damage_lock);
+    int valid = surface_slots[i].damage_valid;
+    if (valid) {
+        *out_x = surface_slots[i].damage_x;
+        *out_y = surface_slots[i].damage_y;
+        *out_w = surface_slots[i].damage_w;
+        *out_h = surface_slots[i].damage_h;
+    }
+    sync_spin_unlock_irqrestore(&surface_damage_lock, flags);
+    return valid ? 0 : -1;
 }
 
 int surface_clear_damage(uint32_t handle) {
     int i = surface_find_slot(handle);
     if (i < 0) return -1;
+    uint32_t flags = sync_spin_lock_irqsave(&surface_damage_lock);
     surface_slots[i].damage_valid = 0;
+    sync_spin_unlock_irqrestore(&surface_damage_lock, flags);
     return 0;
+}
+
+int surface_damage_take(uint32_t handle, uint32_t *out_x, uint32_t *out_y,
+                         uint32_t *out_w, uint32_t *out_h) {
+    int i = surface_find_slot(handle);
+    if (i < 0) return -1;
+    uint32_t flags = sync_spin_lock_irqsave(&surface_damage_lock);
+    int valid = surface_slots[i].damage_valid;
+    if (valid) {
+        *out_x = surface_slots[i].damage_x;
+        *out_y = surface_slots[i].damage_y;
+        *out_w = surface_slots[i].damage_w;
+        *out_h = surface_slots[i].damage_h;
+        surface_slots[i].damage_valid = 0;
+    }
+    sync_spin_unlock_irqrestore(&surface_damage_lock, flags);
+    return valid ? 0 : -1;
 }
 
 uint32_t surface_commit_seq(uint32_t handle) {

@@ -19,10 +19,18 @@
    window_titlebar_hit_test() + window_focus()/window_raise()/
    window_move(), aufgerufen aus input.c's input_dispatch_one, das dort
    auch den Drag-Zustandsautomaten ueber mehrere MOUSE_MOVE-Events hinweg
-   fuehrt) - NICHT mehr BLOCKED. Rahmen-Resize per Ziehen bleibt weiterhin
-   BLOCKED (kein Resize-Handle-Hit-Testing in dieser Sitzung umgesetzt) -
-   diese API bietet dafuer weiterhin nur die PROGRAMMATISCHE Operation
-   window_resize-aequivalent ueber surface_resize direkt. */
+   fuehrt) - NICHT mehr BLOCKED. Rahmen-Resize per Ziehen (2026-11-20
+   ergaenzt, NICHT mehr BLOCKED): `window_resize_corner_hit_test()` +
+   `window_resize()` unten, analog zum Titelleisten-Drag. Wichtige
+   Einschraenkung (siehe input.c's WINDOW_RESIZE_MAX_W/_H-Kommentar): der
+   GUI-Puffer eines Ring-3-Clients hat eine am Spawn-Zeitpunkt feste
+   physische Groesse (ushell_process.c) - Vergroessern ueber die
+   urspruengliche Spawn-Groesse hinaus wuerde den Compositor ausserhalb
+   des tatsaechlich gemappten Puffers lesen lassen. Resize ist deshalb
+   bewusst auf [Mindestgroesse, urspruengliche Spawn-Groesse] begrenzt
+   (Verkleinern+Wiederherstellen, kein Vergroessern ueber den Start
+   hinaus) - eine echte obere Erweiterung braeuchte eine neue, bisher
+   nicht vorhandene Nachtraeglich-mehr-Speicher-anfordern-Operation. */
 #ifndef NOVA_WINDOW_H
 #define NOVA_WINDOW_H
 
@@ -37,7 +45,7 @@
    compositor.c (zeichnet die Titelleiste) als auch window.c/input.c (Hit-
    Testing fuer Fenster-Drag per Titelleiste, siehe window_titlebar_hit_
    test) dieselbe Hoehe kennen muessen. */
-#define WINDOW_TITLEBAR_HEIGHT 20u
+#define WINDOW_TITLEBAR_HEIGHT 48u
 #define WINDOW_CONTROL_WIDTH   18u
 #define WINDOW_CONTROL_COUNT   3u
 #define WINDOW_CONTROL_MIN_WIDTH 72u
@@ -102,6 +110,13 @@ uint32_t window_z_order(uint32_t handle); /* 0 wenn unbekannt */
 int window_focus(uint32_t handle);
 uint32_t window_focused_handle(void); /* 0 wenn keines fokussiert */
 
+/* Zentrale Nova-Liquid-Glass-Darstellung. Die Anwendung meldet lediglich
+   ihre Akzentfarbe an; Rundung, Rahmen, Reflex und Signature Edge werden
+   ausschliesslich vom Compositor gezeichnet. accent_rgb==0 deaktiviert
+   die besondere Fensterdarstellung (Desktop-Chrome/Icons). */
+int window_set_accent(uint32_t handle, uint32_t accent_rgb);
+uint32_t window_accent(uint32_t handle); /* 0 wenn aus/unbekannt */
+
 /* WINDOW_MODE_NORMAL wird auch fuer ein unbekanntes Handle zurueckgegeben
    (vereinfachte Fehlerbehandlung - Aufrufer, denen das unterscheiden
    wichtig ist, pruefen zusaetzlich window_find in surface_state()). */
@@ -151,6 +166,15 @@ uint32_t window_hit_test(uint32_t x, uint32_t y);
    (NPSPEC-WINDOW-DECORATION-0002). 0 wenn kein Treffer. */
 uint32_t window_titlebar_hit_test(uint32_t x, uint32_t y);
 
+/* Wie window_hit_test, aber prueft nur eine kleine Zone
+   (WINDOW_RESIZE_GRIP_SIZE x WINDOW_RESIZE_GRIP_SIZE) in der unteren
+   rechten Ecke jedes sichtbaren Fensters - UNABHAENGIG vom Dekoriert-
+   Flag (gilt auch fuer undekorierte Client-Fenster wie Explorer/
+   Settings, die ihre Titelleiste selbst zeichnen). 0 wenn kein Treffer.
+   Hoechste z_order zuerst, wie die anderen Hit-Tests. */
+#define WINDOW_RESIZE_GRIP_SIZE 10u
+uint32_t window_resize_corner_hit_test(uint32_t x, uint32_t y);
+
 /* Liefert das Bedienelement unter (x,y). Kleine Fenster unter
    WINDOW_CONTROL_MIN_WIDTH behalten eine frei ziehbare Titelleiste und
    zeigen bewusst keine sich ueberlappenden Controls. */
@@ -160,6 +184,16 @@ uint32_t window_control_hit_test(uint32_t handle, uint32_t x, uint32_t y);
    aendern (duenne Hilfsfunktion ueber surface_resize, siehe surface.h) -
    fuer input.c's Fenster-Drag. 0 = Erfolg, -1 wenn handle unbekannt. */
 int window_move(uint32_t handle, uint32_t x, uint32_t y);
+
+/* Aendert Breite/Hoehe OHNE die Position zu aendern (duenne Hilfsfunktion
+   ueber surface_resize, analog zu window_move) - fuer input.c's
+   Eckgriff-Resize per Maus. 0 = Erfolg, -1 wenn Handle unbekannt. */
+int window_resize(uint32_t handle, uint32_t w, uint32_t h);
+
+/* Breite/Hoehe bei window_create() - die obere Sicherheitsgrenze fuer
+   window_resize() (siehe window_record_t's max_w/max_h-Kommentar in
+   window.c). 0 = Erfolg, -1 wenn Handle unbekannt. */
+int window_max_size(uint32_t handle, uint32_t *out_w, uint32_t *out_h);
 
 /* Iteration ueber alle Slots (fuer den Compositor, analog zu
    surface_capacity()/surface_handle_at_slot()). */

@@ -29,6 +29,7 @@
 #define GUI_OP_ATTACH_BUFFER      2u
 #define GUI_OP_COMMIT             3u
 #define GUI_OP_HIDE               6u
+#define GUI_OP_SET_APPEARANCE     9u
 
 #define SYSCALL_SERVICE_INPUT 4u
 #define INPUT_OP_POLL         1u
@@ -42,13 +43,13 @@
 #define ARGS_VADDR       0x00400000u
 #define GUI_BUFFER_VADDR 0x00402000u
 
-#define TASKBAR_HEIGHT    28u
-#define MENU_WIDTH        160u
-#define MENU_ITEM_H       20u
-#define MENU_ENTRY_COUNT  4u
+#define TASKBAR_HEIGHT    44u
+#define MENU_WIDTH        280u
+#define MENU_ITEM_H       36u
+#define MENU_ENTRY_COUNT  3u
 
 static const char *const menu_entries[MENU_ENTRY_COUNT] = {
-    "Explorer", "Terminal", "Settings", "Shutdown"
+    "Dateiexplorer", "Einstellungen", "Ausschalten"
 };
 #define MENU_HEIGHT ((MENU_ENTRY_COUNT + 1u) * MENU_ITEM_H)
 
@@ -78,14 +79,16 @@ static inline uint32_t syscall_io(uint32_t eax_in, uint32_t ebx_in, uint32_t edx
 }
 
 static void draw_menu(render2d_surface_t *surf) {
-    render2d_fill_rect(surf, 0u, 0u, MENU_WIDTH, MENU_HEIGHT, 0x20242Cu);
-    render2d_fill_rect(surf, 0u, 0u, MENU_WIDTH, MENU_ITEM_H, 0x2D5FA0u);
-    render2d_draw_text(surf, 6u, (MENU_ITEM_H - 16u) / 2u, "Start Menu", 0xFFFFFFu, 0x2D5FA0u, 0);
+    render2d_fill_rect(surf, 0u, 0u, MENU_WIDTH, MENU_HEIGHT, 0x10182Au);
+    render2d_fill_rect(surf, 0u, 0u, MENU_WIDTH, MENU_ITEM_H, 0x18284Au);
+    render2d_draw_text(surf, 18u, (MENU_ITEM_H - 16u) / 2u, "NovaOS", 0xF4F7FBu, 0x18284Au, 0);
 
     for (uint32_t i = 0; i < MENU_ENTRY_COUNT; ++i) {
         uint32_t y = (i + 1u) * MENU_ITEM_H;
-        render2d_draw_text(surf, 6u, y + (MENU_ITEM_H - 16u) / 2u, menu_entries[i],
-                            0xFFFFFFu, 0x20242Cu, 0);
+        uint32_t bg = (i & 1u) ? 0x151F33u : 0x121B2Du;
+        render2d_fill_rect(surf, 10u, y + 3u, MENU_WIDTH - 20u, MENU_ITEM_H - 6u, bg);
+        render2d_draw_text(surf, 22u, y + (MENU_ITEM_H - 16u) / 2u, menu_entries[i],
+                            0xF4F7FBu, bg, 0);
     }
 }
 
@@ -105,6 +108,9 @@ void startmenu_start(void) {
     uint32_t create_esi = MENU_WIDTH | (MENU_HEIGHT << 16);
     syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_CREATE_SURFACE, create_edx, create_esi, &edi, 0);
     uint32_t surface_handle = edi;
+
+    syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_SET_APPEARANCE,
+               surface_handle, 0x7C5CFFu, 0, 0);
 
     syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_ATTACH_BUFFER, surface_handle, 0u, 0, 0);
 
@@ -137,9 +143,9 @@ void startmenu_start(void) {
                     uint32_t idx = (args->cursor_y - menu_y) / MENU_ITEM_H - 1u;
                     if (idx < MENU_ENTRY_COUNT) {
                         const char *label = menu_entries[idx];
-                        if (label[0] == 'S' && label[1] == 'h') { /* "Shutdown" */
+                        if (label[0] == 'A') { /* "Ausschalten" */
                             syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_SHUTDOWN, 0u, 0u, 0, 0);
-                        } else if (label[0] == 'E' && label[1] == 'x') { /* "Explorer" */
+                        } else if (label[0] == 'D') { /* "Dateiexplorer" */
                             /* Oeffnet den echten Dateiexplorer-Prozess (siehe
                                explorer_main.c) - Menue schliesst sich danach
                                wie bei jedem normalen Startmenue nach einer
@@ -150,7 +156,7 @@ void startmenu_start(void) {
                                Schalter). */
                             syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_EXPLORER, 0u, 0u, 0, 0);
                             syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_START_MENU, 0u, 0u, 0, 0);
-                        } else if (label[0] == 'S' && label[1] == 'e') { /* "Settings" */
+                        } else if (label[0] == 'E') { /* "Einstellungen" */
                             /* Oeffnet die echten Systemeinstellungen (siehe
                                settings_main.c) - gleiches Muster. */
                             syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_TOGGLE_SETTINGS, 0u, 0u, 0, 0);

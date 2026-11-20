@@ -16,7 +16,7 @@
       (x=0, h=TASKBARGLASS_HEIGHT, y=Bildschirmhoehe-TASKBARGLASS_HEIGHT -
       EXAKT die Geometrie, die shell_main.c beim Erzeugen anfordert; alle
       per Syscall erzeugten Surfaces teilen sich denselben owner_pid, siehe
-      SYSCALL_SINGLE_CLIENT_PID in syscall.h, daher reicht der Besitzer
+      seine echte Prozess-PID aus syscall.c, daher reicht der Besitzer
       allein nicht zur Unterscheidung), OB eine neu erzeugte Surface die
       Taskbar ist, und legt bei Erkennung den gesamten Graphics-Engine-
       Zustand dafuer an (Scene Node, Materialinstanz, Backdrop-Abhaengigkeit,
@@ -79,7 +79,7 @@
    0x10141Cu)`). Separat gepflegt, da ring3/shell_main.c komplett unabhaengig
    vom Kernel-Baum kompiliert (siehe dessen Dateikopf) - keine gemeinsame
    Header-Datei moeglich. */
-#define TASKBARGLASS_HEIGHT    28u
+#define TASKBARGLASS_HEIGHT    44u
 #define TASKBARGLASS_BG_RGB    0x10141Cu
 #define TASKBARGLASS_MAX_WIDTH 1280u
 

@@ -35,7 +35,10 @@
 #define COMPOSITOR_TITLEBAR_RGB        0x17243Au
 #define COMPOSITOR_TITLEBAR_FOCUS_RGB  0x203B67u
 #define COMPOSITOR_GLASS_ALPHA         218u
-#define COMPOSITOR_CORNER_RADIUS       6u
+#define COMPOSITOR_CORNER_RADIUS       20u
+#define COMPOSITOR_SIGNATURE_CORE       5u
+#define COMPOSITOR_SIGNATURE_GLOW      18u
+#define COMPOSITOR_GLASS_TINT_RGB      0x0B1830u
 #define COMPOSITOR_ACCENT_RGB          0x258BFFu
 #define COMPOSITOR_ACCENT_DIM_RGB      0x28547Fu
 #define COMPOSITOR_BORDER_RGB          0x739ED0u
@@ -49,6 +52,65 @@
    ausloest. */
 #define COMPOSITOR_DOCK_MERGE_THRESHOLD 4u
 #define COMPOSITOR_DOCK_MERGE_ALPHA     90u
+
+/* Animierter Uebergang (NPSPEC Liquid-Glass Abschnitt 10.4: "~150-250ms,
+   unterbrechbar") statt des bisherigen Sofort-An/Aus: COMPOSITOR_DOCK_
+   ANIM_STEP ist der Fortschritts-Zuwachs pro Compositor-Redraw in Richtung
+   des Ziels (0 = geloest, 255 = voll angedockt). Bei ~COMPOSITOR_THREAD_
+   INTERVAL_TICKS=2 Ticks/Redraw (~20ms bei 100Hz PIT) ergeben 24 Schritte
+   ~210ms fuer die volle Strecke - innerhalb der geforderten Spanne. */
+#define COMPOSITOR_DOCK_ANIM_STEP       24u
+#define COMPOSITOR_DOCK_ANIM_SLOTS      WINDOW_CAPACITY
+
+typedef struct {
+    uint32_t handle; /* 0 = frei */
+    uint32_t progress;
+    uint32_t last_ox0, last_ox1; /* letzter bekannter Kontaktbereich */
+} compositor_dock_anim_t;
+
+static compositor_dock_anim_t compositor_dock_anim[COMPOSITOR_DOCK_ANIM_SLOTS];
+
+/* Liefert den LAUFENDEN Uebergangs-Fortschritt (0..255) fuer handle und
+   bewegt ihn einen Schritt in Richtung target_docked - rein kosmetischer,
+   pro-Fenster-Animationszustand, KEINE strukturelle Kopplung an die
+   Taskbar (siehe compositor_draw_dock_merge_clip's Dateikopf). Bei
+   target_docked wird [ox0,ox1) als LETZTER bekannter Kontaktbereich
+   gemerkt und ueber out_ox0/out_ox1 zurueckgegeben - auch waehrend des
+   Ausblendens (target_docked==0, Fenster bereits von der Taskbar entfernt)
+   bleibt dieser Bereich erhalten, damit die Bruecke sauber ausblendet
+   statt abrupt zu verschwinden. Ein Handle, das keinen freien Slot mehr
+   findet (alle COMPOSITOR_DOCK_ANIM_SLOTS belegt), bekommt degradiert
+   sofortige Werte statt eines Uebergangs - kein Fehler, nur ein seltener,
+   harmloser Komfortverlust bei sehr vielen gleichzeitig angedockten
+   Fenstern. */
+static uint32_t compositor_dock_anim_step(uint32_t handle, int target_docked,
+                                           uint32_t ox0, uint32_t ox1,
+                                           uint32_t *out_ox0, uint32_t *out_ox1) {
+    uint32_t target = target_docked ? 255u : 0u;
+    int free_idx = -1;
+    for (uint32_t i = 0; i < COMPOSITOR_DOCK_ANIM_SLOTS; ++i) {
+        if (compositor_dock_anim[i].handle == handle) {
+            uint32_t *p = &compositor_dock_anim[i].progress;
+            if (*p < target) { *p += COMPOSITOR_DOCK_ANIM_STEP; if (*p > target) *p = target; }
+            else if (*p > target) { *p = (*p > COMPOSITOR_DOCK_ANIM_STEP) ? *p - COMPOSITOR_DOCK_ANIM_STEP : target; }
+            if (target_docked) { compositor_dock_anim[i].last_ox0 = ox0; compositor_dock_anim[i].last_ox1 = ox1; }
+            if (out_ox0) *out_ox0 = compositor_dock_anim[i].last_ox0;
+            if (out_ox1) *out_ox1 = compositor_dock_anim[i].last_ox1;
+            if (*p == 0u && !target_docked) compositor_dock_anim[i].handle = 0u; /* Slot freigeben */
+            return *p;
+        }
+        if (free_idx < 0 && compositor_dock_anim[i].handle == 0u) free_idx = (int)i;
+    }
+    if (!target_docked) return 0u; /* kein Uebergang noetig, bereits geloest */
+    if (free_idx < 0) { if (out_ox0) *out_ox0 = ox0; if (out_ox1) *out_ox1 = ox1; return target; }
+    compositor_dock_anim[free_idx].handle = handle;
+    compositor_dock_anim[free_idx].progress = COMPOSITOR_DOCK_ANIM_STEP;
+    compositor_dock_anim[free_idx].last_ox0 = ox0;
+    compositor_dock_anim[free_idx].last_ox1 = ox1;
+    if (out_ox0) *out_ox0 = ox0;
+    if (out_ox1) *out_ox1 = ox1;
+    return compositor_dock_anim[free_idx].progress;
+}
 
 typedef struct {
     uint32_t id; /* 0 = frei */
@@ -402,7 +464,7 @@ static void compositor_blit_surface_buffer_clip(uint32_t x, uint32_t y, uint32_t
 /* NPSPEC-COMPOSITOR-DAMAGE-0001 Abschnitt 2 ("Surface Damage Tracker"/
    "Scene Damage Tracker"): konsumiert einmal pro compositor_composite()-
    Aufruf das pro-Surface-Damage aus surface.c (SURFACE-0005,
-   surface_damage_rect/surface_clear_damage) und speist es in die
+   surface_damage_take(), atomar lesend+loeschend) und speist es in die
    Compositor-eigene Damage-Region-Liste ein. Erkennt zusaetzlich ueber
    einen Schnappschuss des letzten bekannten Zustands jeder Surface, wenn
    eine zuvor aktive Surface verborgen/zerstoert wurde (surface.c meldet
@@ -425,13 +487,18 @@ static void compositor_scan_surface_damage(void) {
 
         if (active) {
             uint32_t dx, dy, dw, dh;
-            if (surface_damage_rect(handle, &dx, &dy, &dw, &dh) == 0) {
+            /* surface_damage_take() statt getrenntem _damage_rect()+
+               _clear_damage(): schliesst das SMP-Race-Fenster, in dem ein
+               Commit auf einer anderen vCPU zwischen Lesen und Loeschen
+               vorbeikommt (siehe project_taskbar_redraw_freeze_bug.md -
+               sichtbarstes Symptom war eine Taskbar, die nach dem ersten
+               Boot-Redraw nie wieder sichtbar aktualisiert wurde). */
+            if (surface_damage_take(handle, &dx, &dy, &dw, &dh) == 0) {
                 compositor_damage_add(dx, dy, dw, dh);
                 int decorated = window_is_decorated(handle) && window_is_visible(handle);
                 if (decorated && y >= COMPOSITOR_TITLEBAR_HEIGHT) {
                     compositor_damage_add(x, y - COMPOSITOR_TITLEBAR_HEIGHT, w, COMPOSITOR_TITLEBAR_HEIGHT);
                 }
-                surface_clear_damage(handle);
                 snap->decorated = decorated;
             }
             snap->active = 1;
@@ -546,6 +613,65 @@ static void compositor_draw_titlebar_clip(uint32_t handle, uint32_t x, uint32_t 
     }
 }
 
+/* Zentrale Nova-Liquid-Glass-Dekoration fuer Ring-3-Anwendungsfenster.
+   Die App liefert nur window_accent(); Geometrie, Fokusintensitaet,
+   Reflex und die mehrstufige Signature Edge bleiben Compositor-Aufgabe. */
+static void compositor_draw_glass_frame_clip(uint32_t handle, uint32_t x, uint32_t y,
+                                              uint32_t w, uint32_t h,
+                                              uint32_t cx0, uint32_t cy0,
+                                              uint32_t cx1, uint32_t cy1) {
+    uint32_t accent = window_accent(handle);
+    if (accent == 0u || w < COMPOSITOR_CORNER_RADIUS * 2u ||
+        h < COMPOSITOR_CORNER_RADIUS * 2u) return;
+
+    int focused = handle == window_focused_handle();
+    uint32_t intensity = focused ? 235u : 125u;
+    uint32_t tint_alpha = focused ? 24u : 14u;
+    uint32_t x0 = x > cx0 ? x : cx0;
+    uint32_t y0 = y > cy0 ? y : cy0;
+    uint32_t x1 = x + w < cx1 ? x + w : cx1;
+    uint32_t y1 = y + h < cy1 ? y + h : cy1;
+
+    for (uint32_t row = y0; row < y1; ++row) {
+        uint32_t rel_y = row - y;
+        uint32_t end_fade = 255u;
+        if (rel_y < COMPOSITOR_CORNER_RADIUS) {
+            end_fade = (rel_y * 255u) / COMPOSITOR_CORNER_RADIUS;
+        } else if (rel_y >= h - COMPOSITOR_CORNER_RADIUS) {
+            end_fade = ((h - 1u - rel_y) * 255u) / COMPOSITOR_CORNER_RADIUS;
+        }
+        for (uint32_t col = x0; col < x1; ++col) {
+            uint32_t rel_x = col - x;
+            uint32_t dst = framebuffer_get_pixel(col, row);
+            dst = compositor_blend_rgb(COMPOSITOR_GLASS_TINT_RGB, dst, tint_alpha);
+
+            /* Feiner Glasrahmen und oben links staerkere Reflexion. */
+            if (rel_y <= 1u || rel_x >= w - 2u || rel_y >= h - 2u) {
+                uint32_t edge_alpha = (rel_y <= 1u && rel_x < (w * 2u) / 3u) ? 105u : 48u;
+                dst = compositor_blend_rgb(COMPOSITOR_BORDER_RGB, dst, edge_alpha);
+            }
+
+            /* Signature Edge: heller 5px-Kern, farbige Flaeche und
+               exponentiell angenaeherter innerer Glow bis 18px. */
+            if (rel_x < COMPOSITOR_SIGNATURE_GLOW) {
+                uint32_t a;
+                if (rel_x < COMPOSITOR_SIGNATURE_CORE) {
+                    a = intensity;
+                    if (rel_x == 1u || rel_x == 2u) a = 255u;
+                } else {
+                    uint32_t falloff = COMPOSITOR_SIGNATURE_GLOW - rel_x;
+                    a = (intensity * falloff * falloff) /
+                        ((COMPOSITOR_SIGNATURE_GLOW - COMPOSITOR_SIGNATURE_CORE) *
+                         (COMPOSITOR_SIGNATURE_GLOW - COMPOSITOR_SIGNATURE_CORE));
+                }
+                a = (a * end_fade) / 255u;
+                dst = compositor_blend_rgb(accent, dst, a > 255u ? 255u : a);
+            }
+            framebuffer_set_pixel(col, row, dst);
+        }
+    }
+}
+
 /* NPSPEC Liquid-Glass Abschnitt 10: rein geometrische Kontakterkennung
    zwischen einem Fenster und der sichtbaren, abgerundeten Taskbar-Dock-
    Flaeche (taskbarglass_dock_rect()) - beide Objekte bleiben technisch
@@ -583,8 +709,9 @@ static int compositor_window_touches_taskbar(uint32_t x, uint32_t y, uint32_t w,
    darunterliegenden, okkludierten Fensters - kein eigener Okklusions-Check
    noetig. */
 static void compositor_draw_dock_merge_clip(uint32_t handle, uint32_t x, uint32_t y, uint32_t h,
-                                             uint32_t ox0, uint32_t ox1,
+                                             uint32_t ox0, uint32_t ox1, uint32_t progress,
                                              uint32_t cx0, uint32_t cy0, uint32_t cx1, uint32_t cy1) {
+    if (progress == 0u) return;
     uint32_t dock_x, dock_y, dock_w, dock_h;
     if (taskbarglass_dock_rect(&dock_x, &dock_y, &dock_w, &dock_h) != 0) return;
     (void)x;
@@ -594,7 +721,13 @@ static void compositor_draw_dock_merge_clip(uint32_t handle, uint32_t x, uint32_
 
     uint32_t win_bottom = y + h;
     uint32_t bridge_y0 = (win_bottom < dock_y) ? win_bottom : dock_y;
-    uint32_t bridge_y1 = (win_bottom > dock_y) ? win_bottom : dock_y;
+    uint32_t bridge_y1_full = (win_bottom > dock_y) ? win_bottom : dock_y;
+    if (bridge_y1_full <= bridge_y0) bridge_y1_full = bridge_y0 + 1u;
+    /* Die Bruecke waechst waehrend des Andockens von der Fenster-/Dock-
+       Kontaktlinie aus nach aussen, statt sofort ihre volle Hoehe
+       anzunehmen - zusammen mit der unten skalierten Alpha ergibt das den
+       geforderten weichen Uebergang. */
+    uint32_t bridge_y1 = bridge_y0 + (((bridge_y1_full - bridge_y0) * progress) / 255u);
     if (bridge_y1 <= bridge_y0) bridge_y1 = bridge_y0 + 1u;
 
     uint32_t rx0 = ox0 > cx0 ? ox0 : cx0;
@@ -605,11 +738,12 @@ static void compositor_draw_dock_merge_clip(uint32_t handle, uint32_t x, uint32_
 
     uint32_t focused = window_focused_handle();
     uint32_t accent = (handle == focused) ? COMPOSITOR_ACCENT_RGB : COMPOSITOR_ACCENT_DIM_RGB;
+    uint32_t alpha = (COMPOSITOR_DOCK_MERGE_ALPHA * progress) / 255u;
 
     for (uint32_t row = ry0; row < ry1; ++row) {
         for (uint32_t col = rx0; col < rx1; ++col) {
             uint32_t dst = framebuffer_get_pixel(col, row);
-            framebuffer_set_pixel(col, row, compositor_blend_rgb(accent, dst, COMPOSITOR_DOCK_MERGE_ALPHA));
+            framebuffer_set_pixel(col, row, compositor_blend_rgb(accent, dst, alpha));
         }
     }
 }
@@ -631,7 +765,7 @@ static void compositor_draw_surfaces_clip(uint32_t cx0, uint32_t cy0, uint32_t c
             surface_state(handle) != SURFACE_STATE_ACTIVE) continue;
         uint32_t x, y, w, h;
         if (surface_rect(handle, &x, &y, &w, &h) != 0) continue;
-        uint32_t radius = taskbarglass_is_surface(handle) ? 10u : 0u;
+        uint32_t radius = taskbarglass_is_surface(handle) ? 18u : 0u;
         compositor_blit_surface_buffer_clip(x, y, w, h, surface_buffer_addr(handle),
                                             cx0, cy0, cx1, cy1, handle, radius,
                                             radius != 0u, 0u, 0u);
@@ -653,23 +787,57 @@ static void compositor_draw_surfaces_clip(uint32_t cx0, uint32_t cy0, uint32_t c
         ordered[j] = value;
     }
 
+    /* Mehrstufiger weicher Umgebungsschatten fuer echte Glasfenster.
+       Alle Schatten werden vor den Window-Surfaces gezeichnet, damit sie
+       niemals den Inhalt eines hoeher liegenden Fensters abdunkeln. */
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t handle = ordered[i];
+        if (window_accent(handle) == 0u || taskbarglass_is_surface(handle)) continue;
+        uint32_t sx, sy, sw, sh;
+        if (surface_rect(handle, &sx, &sy, &sw, &sh) != 0) continue;
+        for (uint32_t layer = 4u; layer > 0u; --layer) {
+            uint32_t spread = layer * 4u;
+            uint32_t shadow_x = sx > spread ? sx - spread : 0u;
+            uint32_t shadow_y = sy > spread ? sy - spread : 0u;
+            compositor_blend_rect_clip(shadow_x, shadow_y,
+                                        sw + spread * 2u, sh + spread * 2u,
+                                        COMPOSITOR_SHADOW_RGB, 10u + (4u - layer) * 9u,
+                                        cx0, cy0, cx1, cy1);
+        }
+    }
+
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t handle = ordered[i];
         uint32_t x, y, w, h;
         if (surface_rect(handle, &x, &y, &w, &h) != 0) continue;
-        int rounded = window_is_decorated(handle) && window_mode(handle) != WINDOW_MODE_FULLSCREEN;
-        uint32_t radius = taskbarglass_is_surface(handle) ? 10u
+        int rounded = (window_is_decorated(handle) || window_accent(handle) != 0u) &&
+                      window_mode(handle) != WINDOW_MODE_FULLSCREEN;
+        uint32_t radius = taskbarglass_is_surface(handle) ? 18u
                                                           : (rounded ? COMPOSITOR_CORNER_RADIUS : 0u);
         uint32_t dock_ox0 = 0u, dock_ox1 = 0u;
         int docked = !taskbarglass_is_surface(handle) &&
                      compositor_window_touches_taskbar(x, y, w, h, &dock_ox0, &dock_ox1);
+        uint32_t anim_ox0 = dock_ox0, anim_ox1 = dock_ox1;
+        uint32_t dock_progress = taskbarglass_is_surface(handle) ? 0u
+                                  : compositor_dock_anim_step(handle, docked, dock_ox0, dock_ox1,
+                                                               &anim_ox0, &anim_ox1);
+        dock_ox0 = anim_ox0;
+        dock_ox1 = anim_ox1;
+        /* Die eckige Unterkante (keine Doppel-Rundung) schaltet erst ab
+           Halbzeit des Uebergangs um, statt exakt mit der binaeren
+           Kontakterkennung - dadurch wirkt auch dieser Teil des Effekts
+           weich statt schlagartig. */
+        int square_corners = dock_progress >= 128u;
         compositor_blit_surface_buffer_clip(x, y, w, h, surface_buffer_addr(handle),
                                             cx0, cy0, cx1, cy1, handle, radius,
                                             taskbarglass_is_surface(handle),
-                                            docked ? dock_ox0 : 0u, docked ? dock_ox1 : 0u);
+                                            square_corners ? dock_ox0 : 0u,
+                                            square_corners ? dock_ox1 : 0u);
         compositor_draw_titlebar_clip(handle, x, y, w, h, cx0, cy0, cx1, cy1);
-        if (docked) {
-            compositor_draw_dock_merge_clip(handle, x, y, h, dock_ox0, dock_ox1, cx0, cy0, cx1, cy1);
+        compositor_draw_glass_frame_clip(handle, x, y, w, h, cx0, cy0, cx1, cy1);
+        if (dock_progress != 0u) {
+            compositor_draw_dock_merge_clip(handle, x, y, h, dock_ox0, dock_ox1, dock_progress,
+                                            cx0, cy0, cx1, cy1);
         }
     }
 }

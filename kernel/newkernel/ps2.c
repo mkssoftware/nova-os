@@ -125,8 +125,10 @@ void ps2_controller_initialize(void) {
 /* Scancode-Set-1 (Make-Codes), nur Grundbelegung - siehe ps2.h fuer die
    bewusst nicht abgebildeten Tasten (Funktionstasten, Ziffernblock,
    Pause/Druck, Feststelltaste-Ausnahme CAPSLOCK ist mit drin). Index =
-   Scancode ohne Break-Bit (0x80). */
-static const uint16_t ps2_set1_table[0x3Bu] = {
+   Scancode ohne Break-Bit (0x80). F4 (0x3E) ist die einzige absichtlich
+   abgebildete Funktionstaste (Alt+F4 schliesst das fokussierte Fenster,
+   siehe input.c) - F1-F3 bleiben bewusst unbelegt (kein Bedarf). */
+static const uint16_t ps2_set1_table[0x3Fu] = {
     [0x01] = VKEY_ESCAPE, [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4',
     [0x06] = '5', [0x07] = '6', [0x08] = '7', [0x09] = '8', [0x0A] = '9', [0x0B] = '0',
     [0x0C] = '-', [0x0D] = '=', [0x0E] = VKEY_BACKSPACE, [0x0F] = VKEY_TAB,
@@ -139,6 +141,7 @@ static const uint16_t ps2_set1_table[0x3Bu] = {
     [0x2C] = 'Z', [0x2D] = 'X', [0x2E] = 'C', [0x2F] = 'V', [0x30] = 'B', [0x31] = 'N',
     [0x32] = 'M', [0x33] = ',', [0x34] = '.', [0x35] = '/', [0x36] = VKEY_RSHIFT,
     [0x38] = VKEY_LALT, [0x39] = ' ', [0x3A] = VKEY_CAPSLOCK,
+    [0x3E] = VKEY_F4,
 };
 
 static uint16_t ps2_set1_lookup(uint8_t code) {
@@ -148,8 +151,8 @@ static uint16_t ps2_set1_lookup(uint8_t code) {
 
 /* Erweiterte Scancodes (0xE0-Praefix) - nur die wenigen, die ohne echte
    Layout-Tabelle sinnvoll sind (rechte Modifier, Pfeiltasten, Pos1/Ende/
-   Entf). Numpad-Varianten (0xE0 0x1C = Numpad-Enter usw.) bewusst nicht
-   unterschieden. */
+   Entf, linke Windows/Super-Taste fuer das Startmenue). Numpad-Varianten
+   (0xE0 0x1C = Numpad-Enter usw.) bewusst nicht unterschieden. */
 static uint16_t ps2_set1_extended_lookup(uint8_t code) {
     switch (code) {
         case 0x1Du: return VKEY_RCTRL;
@@ -161,6 +164,7 @@ static uint16_t ps2_set1_extended_lookup(uint8_t code) {
         case 0x47u: return VKEY_HOME;
         case 0x4Fu: return VKEY_END;
         case 0x53u: return VKEY_DELETE;
+        case 0x5Bu: return VKEY_LSUPER;
         default: return VKEY_NONE;
     }
 }
@@ -213,6 +217,7 @@ static void ps2_kbd_track_modifier(uint16_t vkey, int is_break) {
         case VKEY_RCTRL:  bit = INPUT_MOD_RCTRL;  break;
         case VKEY_LALT:   bit = INPUT_MOD_LALT;   break;
         case VKEY_RALT:   bit = INPUT_MOD_RALT;   break;
+        case VKEY_LSUPER: bit = INPUT_MOD_LSUPER; break;
         default: return;
     }
     if (is_break) {

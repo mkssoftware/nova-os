@@ -129,6 +129,15 @@ int surface_damage_rect(uint32_t handle, uint32_t *out_x, uint32_t *out_y,
 /* Setzt das Damage-Rechteck dieser Surface zurueck (vom Compositor nach
    erfolgtem Redraw aufzurufen). 0 = Erfolg, -1 wenn Handle unbekannt. */
 int surface_clear_damage(uint32_t handle);
+/* Wie surface_damage_rect()+surface_clear_damage() nacheinander, aber unter
+   EINER Lock-Haltung (siehe surface.c's surface_damage_lock) - schliesst
+   das Zeitfenster, in dem zwischen dem Lesen und dem Loeschen ein neuer
+   Commit auf einer anderen vCPU unbemerkt vorbeikommt UND dessen frisches
+   Damage anschliessend faelschlich mitgeloescht wuerde, ohne je konsumiert
+   worden zu sein. 0 = Erfolg (*out_* gesetzt, Damage geloescht), -1 wenn
+   Handle unbekannt oder kein Damage vorhanden (nichts geaendert). */
+int surface_damage_take(uint32_t handle, uint32_t *out_x, uint32_t *out_y,
+                         uint32_t *out_w, uint32_t *out_h);
 
 /* Anzahl Slots, die nicht FREE sind (fuer Diagnose/Selbsttest). */
 uint32_t surface_count_in_use(void);

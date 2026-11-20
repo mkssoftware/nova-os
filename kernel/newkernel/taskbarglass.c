@@ -20,9 +20,9 @@
    tatsaechliche Hintergrund ist IMMER diese bekannte Desktop-Farbe). */
 #define TASKBARGLASS_BACKDROP_RGB 0x1E2430u
 #define TASKBARGLASS_TRANSPARENT_RGB 0x00FE01u
-#define TASKBARGLASS_DOCK_MARGIN_X 12u
-#define TASKBARGLASS_DOCK_MARGIN_BOTTOM 4u
-#define TASKBARGLASS_DOCK_RADIUS 8u
+#define TASKBARGLASS_DOCK_MARGIN_X 16u
+#define TASKBARGLASS_DOCK_MARGIN_BOTTOM 6u
+#define TASKBARGLASS_DOCK_RADIUS 18u
 #define TASKBARGLASS_EDGE_RGB 0x4C86C8u
 
 /* Feste, projektweit eindeutige Frame-Scheduler-Ausgabe fuer die Taskbar

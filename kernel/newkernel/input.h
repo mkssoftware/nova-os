@@ -6,10 +6,9 @@
    ps2.h fuer die reine Hardware-Dekodierung) - kennt Events/Fokus/Cursor,
    aber keine PS/2-Portadressen.
 
-   WICHTIG (Scope dieser Sitzung): EIN globaler Ringpuffer (fest 64
-   Eintraege), KEINE getrennten Warteschlangen pro Empfaenger (NPSPEC-
-   INPUT-EVENT-0001 Abschnitt 5, BLOCKED - es gibt bisher nur einen
-   Konsumenten-Thread). Echtes Hit-Testing (NPSPEC-INPUT-EVENT-0002
+   WICHTIG (Scope dieser Sitzung): Ein globaler ISR-Ringpuffer (fest 64
+   Eintraege) speist getrennte, PID-gebundene Client-Warteschlangen.
+   Echtes Hit-Testing (NPSPEC-INPUT-EVENT-0002
    Abschnitt 6) IST umgesetzt: Linksklick loest window_hit_test()/
    window_titlebar_hit_test() + window_focus()/window_raise() aus (Klick-
    Fokuswechsel ist NICHT mehr blockiert, siehe window.h), ein Klick auf
@@ -18,10 +17,10 @@
    VKEY_TAB zyklisiert den Fokus auf reiner Fenster-Ebene
    (input_cycle_focus, NPSPEC-INPUT-FOCUS-0002 TEILWEISE umgesetzt - nur
    Fenster-Reihenfolge, KEIN Nova-UI-Steuerelement-Baum/Tab-Order
-   innerhalb eines Fensters, der existiert nicht). KEIN Pointer Capture
-   (NPSPEC-INPUT-EVENT-0003/NPSPEC-INPUT-FOCUS-0003, BLOCKED - der Drag-
-   Automat oben ist eine feste Spezialbehandlung fuer Titelleisten, kein
-   allgemeiner Capture-Mechanismus fuer beliebige Fensterinhalte), KEINE
+   innerhalb eines Fensters, der existiert nicht). Einfaches Pointer-
+   Capture ist fuer die Dauer einer gedrueckten linken Taste umgesetzt
+   (einschliesslich undekorierter Client-Fenster); komplexe verschachtelte
+   Capture-Semantik bleibt offen. KEINE
    Geste/Mehrfachberuehrung (NPSPEC-INPUT-EVENT-0005, BLOCKED: kein
    Touch-Geraet), KEINE globalen Tastenkombinationen (NPSPEC-INPUT-EVENT-
    0006, BLOCKED: braucht eine Registry+Capability-Pruefung, die noch
@@ -34,13 +33,8 @@
    Zustellung an einen Ring-3-Client: SYSCALL_SERVICE_INPUT (syscall.c,
    analog zu SYSCALL_SERVICE_VFS) pollt input_client_poll() - eine ZWEITE,
    vom rohen ISR-Ringpuffer (input_push_event/input_pop_event) getrennte
-   Warteschlange, in die input_dispatch_one() jedes verarbeitete Event
-   zusaetzlich einreiht. Da es weiterhin nur den EINEN Ring-3-Client gibt
-   (SYSCALL_SINGLE_CLIENT_PID, siehe syscall.h), bekommt dieser Client
-   ALLE Events ungefiltert (kein Hit-Testing/keine Fokus-basierte
-   Filterung vor der Zustellung - NPSPEC-INPUT-EVENT-0001 Abschnitt 5
-   "getrennte Warteschlangen pro Empfaenger" bleibt mit nur einem
-   Empfaenger eine triviale Reduktion, keine echte Umsetzung). */
+   Warteschlangen-Familie, in die input_dispatch_one() Events anhand von
+   oberstem Pointer-Ziel, Capture und Tastaturfokus gezielt einreiht. */
 #ifndef NOVA_INPUT_H
 #define NOVA_INPUT_H
 
@@ -52,6 +46,7 @@
 #define INPUT_MOD_RCTRL  0x08u
 #define INPUT_MOD_LALT   0x10u
 #define INPUT_MOD_RALT   0x20u
+#define INPUT_MOD_LSUPER 0x40u
 
 #define INPUT_MOUSE_BUTTON_LEFT   0x01u
 #define INPUT_MOUSE_BUTTON_RIGHT  0x02u
@@ -115,12 +110,12 @@ uint32_t input_cursor_y(void);
    Warteschlange - wer zuerst pollte, "gewann" jedes Event, unabhaengig
    davon, fuer wen es per Cursor-Position eigentlich gedacht war (siehe
    [[feedback_input_single_queue_race]]). Jetzt: bis zu INPUT_CLIENT_SLOTS
-   eigene, per PID gebundene Warteschlangen - jedes dispatchte Event wird
-   per Broadcast in ALLE aktuell gebundenen Slots UND in den Legacy-Slot 0
-   eingereiht (jeder Client filtert ohnehin selbst per Cursor-Position/
-   Hit-Test, ein Broadcast ist daher sicher und einfacher als echtes
-   Vorab-Routing). */
-#define INPUT_CLIENT_SLOTS 4u
+   eigene, per PID gebundene Warteschlangen. Pointer-Ereignisse werden an
+   den Besitzer des obersten Fensters unter dem Cursor (bei gedrueckter
+   Taste an das gecapturete Fenster), Tastaturereignisse an den Besitzer
+   des fokussierten Fensters geliefert. Slot 0 bleibt nur als Legacy-
+   Beobachtungskanal fuer Kernel-Selbsttests erhalten. */
+#define INPUT_CLIENT_SLOTS 8u
 
 /* Legacy-Verhalten (Slot 0, IMMER gebunden) - fuer Selbsttests und als
    Fallback, wenn der Aufrufer-PID nicht aufloesbar ist (frueh im Boot,
@@ -132,7 +127,7 @@ uint32_t input_client_dropped_count(void);
 
 /* Wie input_client_poll(), aber aus der PER-PID gebundenen Warteschlange
    (erster Aufruf mit einer neuen PID bindet lazy einen freien Slot - der
-   Client bekommt ab dann alle KUENFTIGEN Broadcasts, keine rueckwirkenden).
+   Client bekommt ab dann alle KUENFTIG fuer ihn gerouteten Events, keine rueckwirkenden).
    pid==0 ist gleichbedeutend mit input_client_poll() (Slot 0). Faellt bei
    voller Slot-Tabelle (alle INPUT_CLIENT_SLOTS-1 echten Slots belegt) auf
    Slot 0 zurueck, statt das Event zu verlieren - EIN gemeinsamer

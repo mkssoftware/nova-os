@@ -10,6 +10,13 @@ typedef struct {
     int decorated;
     uint32_t mode;
     uint32_t restore_x, restore_y, restore_w, restore_h;
+    uint32_t accent_rgb;
+    /* Breite/Hoehe bei window_create() - im Gegensatz zu restore_w/h NIE
+       nachtraeglich geaendert. Der Client-GUI-Puffer ist genau fuer
+       diese Flaeche physisch allokiert (ushell_process.c) - input.c's
+       Eckgriff-Resize darf w*h deshalb nie darueber hinaus vergroessern
+       (siehe window_max_size() unten). */
+    uint32_t max_w, max_h;
 } window_record_t;
 
 static window_record_t window_table[WINDOW_CAPACITY];
@@ -54,8 +61,31 @@ int window_create(uint32_t owner_pid, uint32_t x, uint32_t y, uint32_t w,
     window_table[slot].restore_y = y;
     window_table[slot].restore_w = w;
     window_table[slot].restore_h = h;
+    window_table[slot].max_w = w;
+    window_table[slot].max_h = h;
+    window_table[slot].accent_rgb = 0u;
 
     *out_handle = handle;
+    return 0;
+}
+
+int window_set_accent(uint32_t handle, uint32_t accent_rgb) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return -1;
+    window_table[slot].accent_rgb = accent_rgb & 0x00FFFFFFu;
+    return 0;
+}
+
+uint32_t window_accent(uint32_t handle) {
+    int slot = window_find_slot(handle);
+    return (slot < 0) ? 0u : window_table[slot].accent_rgb;
+}
+
+int window_max_size(uint32_t handle, uint32_t *out_w, uint32_t *out_h) {
+    int slot = window_find_slot(handle);
+    if (slot < 0) return -1;
+    *out_w = window_table[slot].max_w;
+    *out_h = window_table[slot].max_h;
     return 0;
 }
 
@@ -287,6 +317,30 @@ uint32_t window_titlebar_hit_test(uint32_t x, uint32_t y) {
     return best_handle;
 }
 
+uint32_t window_resize_corner_hit_test(uint32_t x, uint32_t y) {
+    uint32_t best_handle = 0;
+    uint32_t best_z = 0;
+    for (uint32_t i = 0; i < WINDOW_CAPACITY; ++i) {
+        uint32_t handle = window_table[i].handle;
+        if (handle == 0) continue;
+        if (!window_is_visible(handle)) continue;
+
+        uint32_t wx, wy, ww, wh;
+        if (surface_rect(handle, &wx, &wy, &ww, &wh) != 0) continue;
+        if (ww < WINDOW_RESIZE_GRIP_SIZE || wh < WINDOW_RESIZE_GRIP_SIZE) continue;
+
+        uint32_t grip_x = wx + ww - WINDOW_RESIZE_GRIP_SIZE;
+        uint32_t grip_y = wy + wh - WINDOW_RESIZE_GRIP_SIZE;
+        if (x < grip_x || x >= wx + ww || y < grip_y || y >= wy + wh) continue;
+
+        if (best_handle == 0 || window_table[i].z_order > best_z) {
+            best_handle = handle;
+            best_z = window_table[i].z_order;
+        }
+    }
+    return best_handle;
+}
+
 uint32_t window_control_hit_test(uint32_t handle, uint32_t x, uint32_t y) {
     int slot = window_find_slot(handle);
     if (slot < 0 || !window_table[slot].decorated || !window_is_visible(handle)) return WINDOW_CONTROL_NONE;
@@ -311,6 +365,18 @@ int window_move(uint32_t handle, uint32_t x, uint32_t y) {
     uint32_t cx, cy, cw, ch;
     if (surface_rect(handle, &cx, &cy, &cw, &ch) != 0) return -1;
     return surface_resize(handle, x, y, cw, ch);
+}
+
+/* Aendert nur Breite/Hoehe, Position bleibt unveraendert (Gegenstueck zu
+   window_move oben) - fuer input.c's Eckgriff-Resize (siehe dort). 0 =
+   Erfolg, -1 wenn Handle unbekannt. Keine Groessen-Begrenzung hier (die
+   liegt bewusst beim Aufrufer, siehe input.c's WINDOW_RESIZE_MIN_W/_H -
+   der Client-Puffer begrenzt die obere Grenze, nicht diese Funktion). */
+int window_resize(uint32_t handle, uint32_t w, uint32_t h) {
+    if (window_find_slot(handle) < 0) return -1;
+    uint32_t cx, cy, cw, ch;
+    if (surface_rect(handle, &cx, &cy, &cw, &ch) != 0) return -1;
+    return surface_resize(handle, cx, cy, w, h);
 }
 
 int window_self_test(void) {
@@ -451,6 +517,37 @@ int window_self_test(void) {
     if (surface_rect(drag_win, &mx, &my, &mw, &mh) != 0) return -1;
     if (mx != 60u || my != 70u || mw != 50u || mh != 30u) return -1; /* Groesse unveraendert */
     if (window_move(0xFFFFu, 0u, 0u) == 0) return -1; /* unbekanntes Handle */
+
+    /* Eckgriff-Resize (2026-11-20, NPSPEC-WINDOW-MANAGEMENT-0003-Ergaenzung
+       - siehe window.h): drag_win ist jetzt bei (60,70,50,30). */
+    uint32_t max_w0, max_h0;
+    if (window_max_size(drag_win, &max_w0, &max_h0) != 0) return -1;
+    if (max_w0 != 50u || max_h0 != 30u) return -1; /* Erzeugungsgroesse */
+
+    /* Verkleinern - Position bleibt unveraendert, nur Breite/Hoehe
+       aendern sich. */
+    if (window_resize(drag_win, 30u, 20u) != 0) return -1;
+    uint32_t sx, sy, sw, sh;
+    if (surface_rect(drag_win, &sx, &sy, &sw, &sh) != 0) return -1;
+    if (sx != 60u || sy != 70u || sw != 30u || sh != 20u) return -1;
+
+    /* max_w/max_h bleiben die URSPRUENGLICHE Erzeugungsgroesse - NIE vom
+       Resize selbst veraendert (siehe window_record_t-Kommentar), sonst
+       koennte ein Fenster nach mehreren Verkleinerungen nie mehr auf
+       seine echte Ausgangsgroesse zurueckwachsen. */
+    uint32_t max_w1, max_h1;
+    if (window_max_size(drag_win, &max_w1, &max_h1) != 0) return -1;
+    if (max_w1 != 50u || max_h1 != 30u) return -1;
+
+    /* Eckgriff-Zone liegt jetzt bei [60+30-10,70+20-10) bis
+       [60+30,70+20) = [80,80) bis (90,90). Ein Punkt darin trifft,
+       einer ausserhalb (im restlichen Fensterinhalt) nicht. */
+    if (window_resize_corner_hit_test(85u, 85u) != drag_win) return -1;
+    if (window_resize_corner_hit_test(65u, 75u) != 0u) return -1;
+
+    if (window_resize(0xFFFFu, 10u, 10u) == 0) return -1; /* unbekanntes Handle */
+    uint32_t unknown_w, unknown_h;
+    if (window_max_size(0xFFFFu, &unknown_w, &unknown_h) == 0) return -1;
 
     window_destroy(drag_win);
 

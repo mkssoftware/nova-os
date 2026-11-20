@@ -61,6 +61,9 @@
 #define SYSCALL_CORE_TOGGLE_EXPLORER       8u
 #define SYSCALL_CORE_GET_EXPLORER_VISIBLE  9u
 #define SYSCALL_CORE_YIELD                 13u
+#define SYSCALL_CORE_NOTIFY                14u
+#define NOTIFY_EVENT_FOLDER_CREATED         1u
+#define NOTIFY_EVENT_FILE_DELETED           2u
 
 #define SYSCALL_SERVICE_GUI       2u
 #define GUI_OP_CREATE_SURFACE     1u
@@ -69,6 +72,8 @@
 #define GUI_OP_DESTROY            4u
 #define GUI_OP_HIDE               6u
 #define GUI_OP_MOVE               7u
+#define GUI_OP_GET_RECT           8u
+#define GUI_OP_SET_APPEARANCE     9u
 
 #define SYSCALL_SERVICE_VFS       3u
 #define VFS_OP_LOOKUP             1u
@@ -173,12 +178,12 @@ typedef struct {
 #define WIN_X 60u
 #define WIN_Y 60u
 #define WIN_W 320u
-#define WIN_H 200u
+#define WIN_H 220u
 
-#define HEADER_H   24u
-#define TOOLBAR_H  18u
-#define FOOTER_H   20u
-#define ROW_H      18u
+#define HEADER_H   36u
+#define TOOLBAR_H  28u
+#define FOOTER_H   24u
+#define ROW_H      20u
 #define CLOSE_BTN_SIZE 14u
 #define TOOLBAR_NEWDIR_X 4u
 #define TOOLBAR_NEWDIR_W 84u
@@ -411,6 +416,10 @@ static void explorer_new_folder(void) {
                             NOVAFS_TYPE_DIRECTORY, &new_handle) == 0) {
                 vfs_close(new_handle);
                 explorer_list_current_directory();
+                /* Toast NUR nach echtem Erfolg (siehe syscall.h-Kommentar
+                   zu SYSCALL_CORE_NOTIFY) - niemals vorab/optimistisch. */
+                syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_NOTIFY,
+                           NOTIFY_EVENT_FOLDER_CREATED, 0u, 0, 0);
             }
             return;
         }
@@ -434,24 +443,26 @@ static void explorer_delete_selected(void) {
     for (uint32_t c = 0u; c < name_len; ++c) name_dst[c] = rows[selected_row].entry.name[c];
     if (vfs_delete(current_handle, NEW_NAME_ADDR, name_len) == 0) {
         explorer_list_current_directory();
+        syscall_io(SYSCALL_SERVICE_CORE, SYSCALL_CORE_NOTIFY,
+                   NOTIFY_EVENT_FILE_DELETED, 0u, 0, 0);
     }
 }
 
 static void draw_explorer(render2d_surface_t *surf) {
-    render2d_fill_rect(surf, 0u, 0u, WIN_W, WIN_H, COLOR_BODY_BG);
+    render2d_fill_rect(surf, 0u, 0u, surf->width, surf->height, COLOR_BODY_BG);
 
-    render2d_fill_rect(surf, 0u, 0u, WIN_W, HEADER_H, COLOR_HEADER_BG);
+    render2d_fill_rect(surf, 0u, 0u, surf->width, HEADER_H, COLOR_HEADER_BG);
     render2d_draw_text(surf, 8u, (HEADER_H - 16u) / 2u, "Dateiexplorer", COLOR_TEXT, COLOR_HEADER_BG, 0u);
-    render2d_fill_rect(surf, WIN_W - CLOSE_BTN_SIZE - 6u, (HEADER_H - CLOSE_BTN_SIZE) / 2u,
+    render2d_fill_rect(surf, surf->width - CLOSE_BTN_SIZE - 6u, (HEADER_H - CLOSE_BTN_SIZE) / 2u,
                         CLOSE_BTN_SIZE, CLOSE_BTN_SIZE, COLOR_CLOSE_BTN);
-    render2d_draw_text(surf, WIN_W - CLOSE_BTN_SIZE - 6u + 3u, (HEADER_H - 16u) / 2u, "x",
+    render2d_draw_text(surf, surf->width - CLOSE_BTN_SIZE - 6u + 3u, (HEADER_H - 16u) / 2u, "x",
                         COLOR_TEXT, COLOR_CLOSE_BTN, 0u);
 
     /* Toolbar: zwei echte Aktionen (siehe Dateikopf-Kommentar). "Loeschen"
        wird nur dann im aktiven Button-Ton gezeichnet, wenn eine loeschbare
        Datei ausgewaehlt ist - eine echte, zustandsabhaengige Darstellung,
        kein rein dekorativer Unterschied. */
-    render2d_fill_rect(surf, 0u, HEADER_H, WIN_W, TOOLBAR_H, COLOR_TOOLBAR_BG);
+    render2d_fill_rect(surf, 0u, HEADER_H, surf->width, TOOLBAR_H, COLOR_TOOLBAR_BG);
     render2d_fill_rect(surf, TOOLBAR_NEWDIR_X, HEADER_H + 2u, TOOLBAR_NEWDIR_W, TOOLBAR_H - 4u, COLOR_BTN_BG);
     render2d_draw_text(surf, TOOLBAR_NEWDIR_X + 4u, HEADER_H + 2u, "+Ordner", COLOR_TEXT, COLOR_BTN_BG, 0u);
     int can_delete = (selected_row >= 0 && (uint32_t)selected_row < row_count &&
@@ -464,7 +475,7 @@ static void draw_explorer(render2d_surface_t *surf) {
     uint32_t list_top = HEADER_H + TOOLBAR_H;
     uint32_t visible_row = 0u;
     if (nav_depth > 0u) {
-        render2d_fill_rect(surf, 0u, list_top, WIN_W, ROW_H, COLOR_BODY_BG);
+        render2d_fill_rect(surf, 0u, list_top, surf->width, ROW_H, COLOR_BODY_BG);
         render2d_draw_text(surf, 8u, list_top + (ROW_H - 16u) / 2u, "..", COLOR_ACCENT, COLOR_BODY_BG, 0u);
         ++visible_row;
     }
@@ -473,7 +484,7 @@ static void draw_explorer(render2d_surface_t *surf) {
         uint32_t y = list_top + visible_row * ROW_H;
         uint32_t bg = ((int)i == selected_row) ? COLOR_SELECTED
                       : ((visible_row % 2u) ? COLOR_ROW_ALT : COLOR_BODY_BG);
-        render2d_fill_rect(surf, 0u, y, WIN_W, ROW_H, bg);
+        render2d_fill_rect(surf, 0u, y, surf->width, ROW_H, bg);
 
         char name_buf[48];
         uint32_t copy_len = rows[i].entry.name_len;
@@ -483,16 +494,16 @@ static void draw_explorer(render2d_surface_t *surf) {
         render2d_draw_text(surf, 8u, y + (ROW_H - 16u) / 2u, name_buf, COLOR_TEXT, bg, 0u);
 
         if (rows[i].entry.object_type == NOVAFS_TYPE_DIRECTORY) {
-            render2d_draw_text(surf, WIN_W - 70u, y + (ROW_H - 16u) / 2u, "<DIR>", COLOR_ACCENT, bg, 0u);
+            render2d_draw_text(surf, surf->width - 70u, y + (ROW_H - 16u) / 2u, "<DIR>", COLOR_ACCENT, bg, 0u);
         } else {
             char size_buf[12];
             format_uint(rows[i].entry.size_lo, size_buf, sizeof(size_buf));
-            render2d_draw_text(surf, WIN_W - 70u, y + (ROW_H - 16u) / 2u, size_buf, COLOR_TEXT_SEC, bg, 0u);
+            render2d_draw_text(surf, surf->width - 70u, y + (ROW_H - 16u) / 2u, size_buf, COLOR_TEXT_SEC, bg, 0u);
         }
         ++visible_row;
     }
 
-    render2d_fill_rect(surf, 0u, WIN_H - FOOTER_H, WIN_W, FOOTER_H, COLOR_HEADER_BG);
+    render2d_fill_rect(surf, 0u, surf->height - FOOTER_H, surf->width, FOOTER_H, COLOR_HEADER_BG);
     if (selected_row >= 0 && (uint32_t)selected_row < row_count) {
         char name_buf[48];
         uint32_t copy_len = rows[selected_row].entry.name_len;
@@ -501,19 +512,30 @@ static void draw_explorer(render2d_surface_t *surf) {
         name_buf[copy_len] = '\0';
         char size_buf[12];
         format_uint(rows[selected_row].entry.size_lo, size_buf, sizeof(size_buf));
-        render2d_draw_text(surf, 8u, WIN_H - FOOTER_H + (FOOTER_H - 16u) / 2u, name_buf,
+        render2d_draw_text(surf, 8u, surf->height - FOOTER_H + (FOOTER_H - 16u) / 2u, name_buf,
                             COLOR_TEXT_SEC, COLOR_HEADER_BG, 0u);
-        render2d_draw_text(surf, WIN_W - 100u, WIN_H - FOOTER_H + (FOOTER_H - 16u) / 2u, size_buf,
+        render2d_draw_text(surf, surf->width - 100u, surf->height - FOOTER_H + (FOOTER_H - 16u) / 2u, size_buf,
                             COLOR_TEXT_SEC, COLOR_HEADER_BG, 0u);
     } else {
         char count_buf[16] = "Eintraege: ";
         char num_buf[12];
         uint32_t total = row_count + ((nav_depth > 0u) ? 1u : 0u);
         format_uint(total, num_buf, sizeof(num_buf));
-        render2d_draw_text(surf, 8u, WIN_H - FOOTER_H + (FOOTER_H - 16u) / 2u, count_buf,
+        render2d_draw_text(surf, 8u, surf->height - FOOTER_H + (FOOTER_H - 16u) / 2u, count_buf,
                             COLOR_TEXT_SEC, COLOR_HEADER_BG, 0u);
-        render2d_draw_text(surf, 8u + 11u * 8u, WIN_H - FOOTER_H + (FOOTER_H - 16u) / 2u, num_buf,
+        render2d_draw_text(surf, 8u + 11u * 8u, surf->height - FOOTER_H + (FOOTER_H - 16u) / 2u, num_buf,
                             COLOR_TEXT_SEC, COLOR_HEADER_BG, 0u);
+    }
+
+    /* Eckgriff-Markierung (2026-11-20) - rein visueller Hinweis, dass die
+       untere rechte Ecke per Maus ziehbar ist (window.c's
+       WINDOW_RESIZE_GRIP_SIZE=10, hier als drei diagonale Punkte
+       nachgebildet, da render2d keine Diagonal-Linien kennt). Ohne
+       diesen Hinweis waere die Eckgriff-Zone unsichtbar und damit fuer
+       den Nutzer nicht auffindbar. */
+    for (uint32_t d = 0u; d < 3u; ++d) {
+        render2d_fill_rect(surf, surf->width - 4u - d * 3u, surf->height - 4u - d * 3u,
+                            2u, 2u, COLOR_TEXT_SEC);
     }
 }
 
@@ -533,6 +555,11 @@ void explorer_start(void) {
     uint32_t create_esi = WIN_W | (WIN_H << 16);
     syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_CREATE_SURFACE, create_edx, create_esi, &edi, 0);
     uint32_t surface_handle = edi;
+
+    /* Nur Rolle/Akzent anmelden; Rundung, Glasrahmen, Reflexion und die
+       cyanblaue Signature Edge zeichnet zentral der Compositor. */
+    syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_SET_APPEARANCE,
+               surface_handle, COLOR_ACCENT, 0, 0);
 
     syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_ATTACH_BUFFER, surface_handle, 0u, 0, 0);
 
@@ -560,6 +587,16 @@ void explorer_start(void) {
     uint32_t win_x = WIN_X, win_y = WIN_Y;
     uint32_t dragging = 0u;
     uint32_t drag_offset_x = 0u, drag_offset_y = 0u;
+    /* Laufende Fenstergroesse (2026-11-20, Eckgriff-Resize per Maus,
+       siehe GUI_OP_GET_RECT in syscall.h): beginnt bei WIN_W/WIN_H (der
+       Erzeugungsgroesse, siehe win_x/win_y-Kommentar oben), wird aber
+       jeden Umlauf gegen den tatsaechlichen Surface-Zustand geprueft -
+       input.c's input_dispatch_one kann die Surface jederzeit per
+       window_resize() veraendern, ausgeloest durch den Eckgriff-Drag,
+       OHNE dass dieser Prozess etwas davon weiss, bis er selbst
+       nachfragt. Nur auf ECHTE Groessenaenderung neu zeichnen, nicht
+       jeden Umlauf blind. */
+    uint32_t win_w = WIN_W, win_h = WIN_H;
 
     for (;;) {
         uint32_t visible;
@@ -584,15 +621,29 @@ void explorer_start(void) {
         uint32_t cursor_x = input_args->cursor_x;
         uint32_t cursor_y = input_args->cursor_y;
 
+        {
+            uint32_t rect_w, rect_h;
+            syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_GET_RECT, surface_handle, 0u, &rect_w, &rect_h);
+            if ((rect_w != win_w || rect_h != win_h) && rect_w != 0u && rect_h != 0u) {
+                win_w = rect_w;
+                win_h = rect_h;
+                surf.width = win_w;
+                surf.height = win_h;
+                surf.stride = win_w;
+                draw_explorer(&surf);
+                syscall_io(SYSCALL_SERVICE_GUI, GUI_OP_COMMIT, surface_handle, 0u, 0, 0);
+            }
+        }
+
         if ((buttons & 1u) != 0u && (prev_buttons & 1u) == 0u &&
-            cursor_x >= win_x && cursor_x < win_x + WIN_W &&
-            cursor_y >= win_y && cursor_y < win_y + WIN_H) {
+            cursor_x >= win_x && cursor_x < win_x + win_w &&
+            cursor_y >= win_y && cursor_y < win_y + win_h) {
             uint32_t local_x = cursor_x - win_x;
             uint32_t local_y = cursor_y - win_y;
             int redraw = 0;
 
             if (local_y < HEADER_H) {
-                if (local_x >= WIN_W - CLOSE_BTN_SIZE - 6u && local_x < WIN_W - 6u) {
+                if (local_x >= win_w - CLOSE_BTN_SIZE - 6u && local_x < win_w - 6u) {
                     /* Schliessen = Verbergen (wie das Startmenue per Toggle),
                        nicht mehr dauerhaftes GUI_OP_DESTROY - der Nutzer kann
                        den Explorer ueber das Startmenue erneut oeffnen. */
@@ -616,7 +667,7 @@ void explorer_start(void) {
                     explorer_delete_selected();
                     redraw = 1;
                 }
-            } else if (local_y < WIN_H - FOOTER_H) {
+            } else if (local_y < win_h - FOOTER_H) {
                 uint32_t visible_row = (local_y - HEADER_H - TOOLBAR_H) / ROW_H;
                 if (nav_depth > 0u) {
                     if (visible_row == 0u) {

@@ -77,6 +77,7 @@
 #include "desktop_shell.h"
 #include "syscall.h"
 #include "serial.h"
+#include "security.h"
 
 /* Layout ALLER DREI Prozesse - MUSS mit ushell/shell_main.c,
    ushell/startmenu_main.c UND ushell/icons_main.c uebereinstimmen (dort
@@ -104,9 +105,9 @@
    genau DIESE eine, fest verdrahtete virtuelle Adresse auf. */
 #define USHELL_GUI_BUFFER_VADDR RING3_GUI_BUFFER_VADDR
 
-#define STARTMENU_WIDTH  160u
-#define STARTMENU_ITEM_H 20u
-#define STARTMENU_ENTRY_COUNT 4u
+#define STARTMENU_WIDTH  280u
+#define STARTMENU_ITEM_H 36u
+#define STARTMENU_ENTRY_COUNT 3u
 #define STARTMENU_HEIGHT ((STARTMENU_ENTRY_COUNT + 1u) * STARTMENU_ITEM_H)
 
 typedef struct {
@@ -129,7 +130,7 @@ static ushell_instance_t settings_instance;
    siehe dortigen Kommentar zur bewussten Verkleinerung wegen des
    Bootstrap-PMM-Kapazitaetslimits). */
 #define EXPLORER_WIN_W 320u
-#define EXPLORER_WIN_H 200u
+#define EXPLORER_WIN_H 220u
 #define EXPLORER_WIN_X 60u
 #define EXPLORER_WIN_Y 60u
 
@@ -137,7 +138,7 @@ static ushell_instance_t settings_instance;
    Kommentar zur bewussten Verkleinerung wegen des Bootstrap-PMM-
    Kapazitaetslimits). */
 #define SETTINGS_WIN_W 280u
-#define SETTINGS_WIN_H 150u
+#define SETTINGS_WIN_H 180u
 #define SETTINGS_WIN_X 540u
 #define SETTINGS_WIN_Y 60u
 
@@ -369,6 +370,20 @@ int ushell_process_initialize(void) {
         serial_puts("NOVA: USHELL spawn Explorer, freie PMM-Seiten="); serial_put_hex32(pmm_frame_count()); serial_puts("\r\n");
         if (ushell_spawn(&explorer_instance, explorer_buffer_bytes, EXPLORER_RO_SIZE) != 0) {
             serial_puts("NOVA: USHELL spawn Explorer fehlgeschlagen\r\n"); return -1;
+        }
+        /* Der VFS-Syscallpfad verwendet jetzt die echte Prozess-PID statt
+           der frueheren festen Kernel-PID 1. Der Explorer ist der einzige
+           Desktopprozess mit Dateisystemzugriff und erhaelt deshalb
+           explizit genau hier seine FS-Rechte. SYSTEM_WRITE bleibt fuer
+           den aktuellen Explorer erforderlich, weil seine Startansicht
+           die NovaFS-Wurzel ist und dort echte Ordneroperationen anbietet;
+           sobald der UI-Namespace auf /Benutzer begrenzt wird, kann dieses
+           Recht wieder entfallen. */
+        if (security_grant(explorer_instance.pid,
+                           SECURITY_CAP_FS_READ | SECURITY_CAP_FS_WRITE |
+                           SECURITY_CAP_FS_SYSTEM_WRITE) != 0) {
+            serial_puts("NOVA: USHELL Explorer-Dateisystemrechte fehlgeschlagen\r\n");
+            return -1;
         }
     }
 

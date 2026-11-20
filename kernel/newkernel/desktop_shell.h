@@ -46,7 +46,7 @@
 #define SHELL_STATE_READY         1u
 #define SHELL_STATE_ACTIVE        2u
 
-#define TASKBAR_HEIGHT 28u
+#define TASKBAR_HEIGHT 44u
 
 #define START_MENU_CAPACITY 8u
 #define START_MENU_WIDTH    160u
