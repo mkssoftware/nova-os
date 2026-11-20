@@ -76,6 +76,8 @@
 #include "fsindex.h"
 #include "crypto.h"
 #include "compat.h"
+#include "nef.h"
+#include "nef_loader.h"
 #include "power.h"
 #include "thermal.h"
 #include "fs.h"
@@ -537,6 +539,12 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
 
     compat_initialize();
     report("NOVA: Compatibility Layer Selftest", compat_self_test() == 0);
+
+    /* Nova Executable Format (NEF) 1.0 - Phase 2 (Binaerformat-Spezifi-
+       kation: Header/Section-/Extension-Directory, Serialisierung,
+       Validierung inkl. W^X-Durchsetzung) - siehe nef.h fuer den vollen
+       Scope-Hinweis. Noch KEIN Loader/Prozessstart (spaetere Phase). */
+    report("NOVA: NEF Format Selftest", nef_self_test() == 0);
 
     power_extended_initialize();
     report("NOVA: Power Management Selftest", power_extended_self_test() == 0);
@@ -1188,6 +1196,16 @@ void kmain(uint32_t boot_magic, uint32_t bib_physical_address) {
     int ring3_ok = ring3_initialize() == 0;
     report("NOVA: Ring-3-Bootstrap (GDT/TSS/User-Pages) Initialize", ring3_ok);
     report("NOVA: Ring-3-Bootstrap Selftest", ring3_ok && ring3_self_test() == 0);
+
+    /* NEF 1.0 Loader (Phase 4, siehe nef_loader.h) - braucht die oben
+       bereits initialisierten vfsapi.h/security.h/scheduler.h/ring3.h-
+       Subsysteme (GDT/TSS fuer RING3_CODE_SELECTOR/_DATA_SELECTOR MUSS
+       bereits stehen). Baut+laedt+spawnt+prueft+baut wieder VOLLSTAENDIG
+       ab - belegt daher NACH diesem Aufruf keine dauerhaften Ressourcen
+       und laeuft bewusst VOR ushell_process_initialize() (das ohnehin
+       knapp am Bootstrap-PMM-Limit liegt, siehe
+       project_pmm_capacity_increase.md). */
+    report("NOVA: NEF Loader Selftest", ring3_ok && nef_loader_self_test() == 0);
 
     /* Userspace-Shell: Taskbar UND Startmenue (siehe ushell_process.h) -
        zwei unabhaengige Prozesse, je ein ECHTER, praeemptiv geplanter

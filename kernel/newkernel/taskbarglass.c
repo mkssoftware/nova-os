@@ -303,7 +303,16 @@ int taskbarglass_self_test(void) {
        Start-Button-Pruefung verwendet daher bewusst Zeile 1 statt Zeile 0,
        um den Reflex nicht mit echtem, unveraendertem Client-Inhalt zu
        verwechseln. */
-    if (test_buffer[200u + 20u] != 0x2D5FA0u) return -1;
+    /* Sample-Punkt (40,5) statt frueher (20,1) (2026-11-20 angepasst,
+       nachdem TASKBARGLASS_DOCK_RADIUS auf 18 erhoeht wurde): die
+       Rundungs-Kreisformel oben schneidet bei radius=18 am Punkt (20,1)
+       jetzt tatsaechlich ab (dx^2+dy^2=425 > 18^2=324) - (20,1) lag nur
+       beim alten, kleineren Radius=8 sicher innerhalb. (40,5) liegt mit
+       dx^2+dy^2=193 <= 324 klar innerhalb der Rundung UND entspricht
+       eher der echten Start-Icon-Position (shell_main.c zeichnet den
+       Stern ab y=5, Zentrum bei x=34) als der frueher gewaehlte,
+       unnoetig eckennahe Testpunkt. */
+    if (test_buffer[5u * 200u + 40u] != 0x2D5FA0u) return -1;
     int any_substituted = 0;
     for (uint32_t x = 70u; x < 200u; ++x) {
         if (test_buffer[x] != TASKBARGLASS_BG_RGB) { any_substituted = 1; break; }

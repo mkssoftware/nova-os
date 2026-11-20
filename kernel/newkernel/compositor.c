@@ -1148,7 +1148,14 @@ int compositor_self_test(void) {
     static uint32_t win_pixels[30 * 4];
     for (uint32_t i = 0; i < 30u * 4u; ++i) win_pixels[i] = 0x654321u;
     uint32_t win_handle;
-    if (window_create(1u, 10u, 30u, 30u, 4u, 1, &win_handle) != 0) return -1;
+    /* y=10+COMPOSITOR_TITLEBAR_HEIGHT statt frueher dem festen Wert 30
+       (2026-11-20 angepasst, nachdem COMPOSITOR_TITLEBAR_HEIGHT auf 48
+       erhoeht wurde) - bei y<COMPOSITOR_TITLEBAR_HEIGHT gibt es oberhalb
+       des Fensters keinen Platz fuer eine Titelleiste, sie wird dann
+       bewusst gar nicht gezeichnet (siehe compositor_draw_titlebar_clip's
+       "y >= COMPOSITOR_TITLEBAR_HEIGHT"-Guard) - der Scan unten (10 bis
+       10+COMPOSITOR_TITLEBAR_HEIGHT) erwartet genau diese Lage. */
+    if (window_create(1u, 10u, 10u + COMPOSITOR_TITLEBAR_HEIGHT, 30u, 4u, 1, &win_handle) != 0) return -1;
     if (surface_attach_buffer(win_handle, (uint32_t)(uintptr_t)win_pixels) != 0) return -1;
     if (surface_commit(win_handle) != 0) return -1;
 

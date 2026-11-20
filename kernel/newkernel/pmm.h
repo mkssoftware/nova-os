@@ -12,7 +12,24 @@
    nicht mehr ausreichend. 2048 Eintraege bleiben sicher innerhalb der
    ohnehin auf 16 MiB begrenzten Bootstrap-Identity-Map und vermeiden, dass
    der vollstaendige Userspace-Desktop nur wegen der alten Tabellenkapazitaet
-   ausfaellt. */
+   ausfaellt.
+
+   WICHTIG (2026-11-20, per echtem Boot-Test widerlegt): ein Versuch, dieses
+   Limit auf 2304 zu erhoehen, um den (siehe project_taskbar_redraw_
+   freeze_bug.md-Nachbarbefund) durch die Liquid-Glass-Groessenerhoehungen
+   ausgeloesten Taskbar-Spawn-Fehlschlag zu beheben, zeigte KEINE Wirkung
+   (freie Seiten vor dem Explorer-Spawn stiegen nur von 0xE9 auf 0xE8 -
+   praktisch unveraendert). Der echte Flaschenhals ist NICHT diese
+   Tabellenkapazitaet, sondern pmm.c's Rahmen-Scan selbst, der JEDE Region
+   hart bei PMM_BOOTSTRAP_IDENTITY_LIMIT (16 MiB) kappt, UNABHAENGIG von
+   diesem Wert - es gibt schlicht nicht mehr freie, bereits identity-
+   gemappte Rahmen unterhalb von 16 MiB. Eine echte Behebung braucht
+   PMM_BOOTSTRAP_IDENTITY_LIMIT selbst (plus die entsprechende Erweiterung
+   der Identity-Map in paging_initialize()) - eine Aenderung mit echtem
+   Absturzrisiko (siehe feedback_bss_paging_limit.md fuer den bereits
+   einmal gefundenen "Rahmen ausserhalb der Identity-Map"-Bug), bewusst
+   NICHT in dieser Aenderung vorgenommen. Siehe project_pmm_capacity_
+   increase.md fuer die vollstaendige Diagnose. */
 #define PMM_MAX_FRAMES 2048u
 #define PMM_NUMA_UNKNOWN 0xFFFFFFFFu
 

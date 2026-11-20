@@ -489,18 +489,23 @@ int window_self_test(void) {
     /* Titelleisten-Hit-Test (NPSPEC-WINDOW-DECORATION-0002) + window_move
        (Grundlage fuer input.c's Fenster-Drag per Titelleiste). */
     uint32_t drag_win;
-    if (window_create(1u, 30u, 40u, 50u, 30u, 1, &drag_win) != 0) return -1; /* decorated */
+    /* y=100 statt frueher 40 (2026-11-20 angepasst, nachdem
+       WINDOW_TITLEBAR_HEIGHT auf 48 erhoeht wurde) - bei y<TITLEBAR_
+       HEIGHT gibt es oberhalb des Fensters keinen Platz fuer eine
+       Titelleiste, window_titlebar_hit_test() liefert dann bewusst
+       NIE einen Treffer (siehe dortigen "kein Platz oberhalb"-Guard). */
+    if (window_create(1u, 30u, 100u, 50u, 30u, 1, &drag_win) != 0) return -1; /* decorated */
     static uint32_t drag_pixels[50 * 30];
     if (surface_attach_buffer(drag_win, (uint32_t)(uintptr_t)drag_pixels) != 0) return -1;
     if (surface_commit(drag_win) != 0) return -1;
 
     /* Punkt in der Titelleiste (oberhalb des Fensterrechtecks) trifft. */
-    if (window_titlebar_hit_test(40u, 25u) != drag_win) return -1;
+    if (window_titlebar_hit_test(40u, 80u) != drag_win) return -1;
     /* Punkt im Fensterinhalt selbst ist KEIN Titelleisten-Treffer. */
-    if (window_titlebar_hit_test(40u, 50u) != 0u) return -1;
+    if (window_titlebar_hit_test(40u, 110u) != 0u) return -1;
 
     /* Kleine Fenster zeigen keine ueberlappenden Controls. */
-    if (window_control_hit_test(drag_win, 75u, 25u) != WINDOW_CONTROL_NONE) return -1;
+    if (window_control_hit_test(drag_win, 75u, 80u) != WINDOW_CONTROL_NONE) return -1;
 
     uint32_t control_win;
     if (window_create(1u, 100u, 100u, 100u, 40u, 1, &control_win) != 0) return -1;
