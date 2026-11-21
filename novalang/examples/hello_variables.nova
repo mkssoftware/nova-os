@@ -1,0 +1,12 @@
+' hello_variables.nova - NovaLang v0.2 Testprogramm: Dim/String-Verkettung
+' (compile-time ausgewertet, siehe NOVALANG_SPEC_v0.2.md)
+Module HelloVariables
+    Function Main() As Int32
+        Dim greeting As String = "Hello"
+        Dim name As String = "NovaLang"
+        Dim message As String = greeting & " " & name & "!"
+        Console.WriteLine(message)
+        Console.WriteLine("Second line works too")
+        Return 0
+    End Function
+End Module

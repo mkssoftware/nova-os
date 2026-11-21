@@ -9,6 +9,29 @@ static uint32_t pmm_frame_numa_nodes[PMM_MAX_FRAMES];
 static uint32_t pmm_frame_count_value = 0;
 static uint32_t pmm_reserved_end = 0;
 
+/* Dedizierte, NIE einzeln fragmentierte Reserve fuer pmm_alloc_contiguous()
+   (2026-11-21, project_pmm_capacity_increase.md): nach dem Anheben von
+   PMM_BOOTSTRAP_IDENTITY_LIMIT auf 64 MiB gab es zwar zehntausende freie
+   Rahmen insgesamt, aber KEINEN einzigen 69-Seiten-Lauf mehr - die vielen
+   einzelnen pmm_alloc_page()-Aufrufe aus ueber 200 Boot-Selbsttests (jeder
+   fuer sich harmlos) hatten den gesamten Pool bis dahin bereits auf
+   4-KiB-Granularitaet durchmischt. Reine Seitenzahl loest also KEINE
+   Fragmentierung. Fix: die obersten PMM_CONTIG_ARENA_BYTES der Identity-
+   Map werden in pmm_initialize() aus dem normalen, von pmm_alloc_page()
+   erreichbaren Pool herausgenommen und bleiben bis zum ersten pmm_alloc_
+   contiguous()-Fallback (siehe dort) UNBERUEHRT - garantiert einen
+   pristinen zusammenhaengenden Bereich fuer grosse GUI-Puffer, unabhaengig
+   davon, wie zerstueckelt der Rest des Boots den allgemeinen Pool
+   hinterlaesst. Reiner Bump-Zeiger (kein Freigeben/Wiederverwenden
+   innerhalb der Arena) - ausreichend, weil die bisherigen Verwender
+   (Taskbar/Explorer/Einstellungen/Startmenue/Icons-GUI-Puffer) ihre
+   Puffer fuer die gesamte Laufzeit des Desktops behalten, nie freigeben.
+   pmm_free_page() auf einen Arena-Rahmen ist trotzdem sicher (siehe
+   dort) - er wandert dann einfach dauerhaft in den allgemeinen Pool. */
+#define PMM_CONTIG_ARENA_BYTES (4u * 1024u * 1024u)
+static uint32_t pmm_contig_arena_base = 0;
+static uint32_t pmm_contig_arena_used = 0;
+
 /* TODO: durch echtes ACPI/SRAT-Lookup ersetzen, sobald das ACPI-Subsystem
    portiert ist (ASM: acpi_srat_memory_domain_lookup). */
 static uint32_t acpi_srat_memory_domain_lookup(uint32_t physical_address) {
@@ -81,6 +104,41 @@ int pmm_initialize(void) {
         }
     }
 
+    /* Contiguous-Arena reservieren (siehe Kommentar bei den statischen
+       Variablen oben) - NUR, wenn die obersten PMM_CONTIG_ARENA_BYTES
+       tatsaechlich als echtes, nutzbares RAM im normalen Scan oben
+       gefunden wurden (keine blinde Annahme ueber reservierte Bereiche -
+       ein fehlender Treffer ist kein Fehler, pmm_alloc_contiguous()
+       faellt dann einfach auf die reine Pool-Suche zurueck). */
+    pmm_contig_arena_base = 0;
+    pmm_contig_arena_used = 0;
+    if (PMM_BOOTSTRAP_IDENTITY_LIMIT > PMM_CONTIG_ARENA_BYTES) {
+        uint32_t candidate = PMM_BOOTSTRAP_IDENTITY_LIMIT - PMM_CONTIG_ARENA_BYTES;
+        uint32_t arena_frames = PMM_CONTIG_ARENA_BYTES / PMM_PAGE_SIZE;
+        uint32_t all_present = 1;
+        for (uint32_t i = 0; i < arena_frames; ++i) {
+            uint32_t want = candidate + i * PMM_PAGE_SIZE;
+            uint32_t exists = 0;
+            for (uint32_t j = 0; j < pmm_frame_count_value; ++j) {
+                if (pmm_frames[j] == want) { exists = 1; break; }
+            }
+            if (!exists) { all_present = 0; break; }
+        }
+        if (all_present) {
+            for (uint32_t i = 0; i < arena_frames; ++i) {
+                uint32_t want = candidate + i * PMM_PAGE_SIZE;
+                for (uint32_t j = 0; j < pmm_frame_count_value; ++j) {
+                    if (pmm_frames[j] == want) {
+                        --pmm_frame_count_value;
+                        pmm_frames[j] = pmm_frames[pmm_frame_count_value];
+                        pmm_frame_numa_nodes[j] = pmm_frame_numa_nodes[pmm_frame_count_value];
+                        break;
+                    }
+                }
+            }
+            pmm_contig_arena_base = candidate;
+        }
+    }
     return (pmm_frame_count_value >= 2) ? 0 : -1;
 }
 
@@ -240,5 +298,25 @@ int pmm_alloc_contiguous(uint32_t count, uint32_t *out_first_page) {
         *out_first_page = base;
         return 0;
     }
+
+    /* Fallback: die dedizierte, NIE einzeln fragmentierte Arena am oberen
+       Ende der Identity-Map (siehe pmm_initialize() und die statischen
+       Variablen oben) - greift NUR, wenn die flexible Suche oben (wegen
+       Fragmentierung durch viele einzelne pmm_alloc_page()-Aufrufe)
+       nichts findet. Bewusst NICHT die bevorzugte erste Anlaufstelle:
+       so bleibt pmm_self_test()s bestehende Pruefung (4 Rahmen aus dem
+       normalen Pool, Zaehler faellt um genau 4) unveraendert gueltig -
+       vier zusammenhaengende Rahmen findet die obige Suche in der Praxis
+       ohnehin fast immer, nur die SELTENEN, GROSSEN Anfragen (GUI-Puffer)
+       brauchen die Arena ueberhaupt. */
+    uint64_t need_bytes = (uint64_t)count * (uint64_t)PMM_PAGE_SIZE;
+    if (pmm_contig_arena_base != 0 &&
+        (uint64_t)pmm_contig_arena_used + need_bytes <= (uint64_t)PMM_CONTIG_ARENA_BYTES) {
+        uint32_t base = pmm_contig_arena_base + pmm_contig_arena_used;
+        pmm_contig_arena_used += (uint32_t)need_bytes;
+        *out_first_page = base;
+        return 0;
+    }
+
     return -1;
 }

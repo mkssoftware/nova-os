@@ -1,0 +1,18 @@
+' hello_syscall.nova - NovaLang v0.4 Testprogramm: genereller Syscall-
+' Aufruf aus NovaLang-Code (siehe NOVALANG_SPEC_v0.4.md). Ruft
+' SYSCALL_CORE_YIELD (service=1, operation=13) direkt per SysCall(...)
+' auf statt ueber einen hartkodierten Compiler-Sonderfall wie bei
+' Console.WriteLine - und prueft den tatsaechlichen Rueckgabewert
+' (SYSCALL_STATUS_OK = 0).
+Module HelloSyscall
+    Function Main() As Int32
+        Dim result As Integer = 999
+        result = SysCall(1, 13, 0, 0)
+        If result = 0 Then
+            Console.WriteLine("generic syscall returned OK")
+        Else
+            Console.WriteLine("generic syscall returned unexpected status")
+        End If
+        Return 0
+    End Function
+End Module

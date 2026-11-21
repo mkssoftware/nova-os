@@ -116,6 +116,27 @@
 #define SYSCALL_CORE_TOGGLE_AUTOHIDE        15u
 #define SYSCALL_CORE_GET_AUTOHIDE_ENABLED   16u
 
+/* NovaLang-Bootstrap (2026-11-21, novalang/specifications/ Phase A-Fund):
+   bis hierher gab es KEINEN Ring-3-Syscall fuer freie Textausgabe -
+   SYSCALL_CORE_NOTIFY (oben) gibt bewusst nur eine feste Enum-Liste
+   fester Meldungen aus, kein roher Pointer. NovaLangs erstes End-to-End-
+   Testprogramm ("Hello NovaLang", Masterauftrag Abschnitt 28) braucht
+   aber echte, vom Programm selbst gewaehlte Textausgabe fuer Console.
+   WriteLine() - deshalb dieser neue, bewusst minimale Syscall: EDX =
+   Pointer auf die Bytes (Ring-3-Adresse, per syscall_validate_user_
+   range() geprueft, NIE ungeprueft dereferenziert), ESI = Laenge.
+   Schreibt die Bytes 1:1 (keine automatische Formatierung/kein
+   automatischer Zeilenumbruch - der Aufrufer haengt "\r\n" selbst an,
+   falls gewuenscht, wie es NovaLangs Codegen fuer WriteLine tut) auf
+   die serielle Konsole (serial.c, SMP-sicher per dortigem Spinlock).
+   Laenge wird hart auf SYSCALL_DEBUG_WRITE_MAX_LEN gekappt (DoS-Schutz:
+   ein einzelner Syscall darf den Kernel nicht beliebig lange blockieren,
+   siehe syscall.c-Dispatch). KEINE Capability-Pruefung (analog YIELD/
+   NOTIFY: reine Diagnose-/Debugausgabe, kein privilegierter Zugriff auf
+   fremde Ressourcen, anders als z.B. SHUTDOWN). */
+#define SYSCALL_CORE_DEBUG_WRITE             17u
+#define SYSCALL_DEBUG_WRITE_MAX_LEN         1024u
+
 /* NPSPEC-DISPLAY-ARCH-0003/0004 (Display-Protokoll/Client-Kommunikation),
    reduziert auf einen festen Satz Operationen ueber denselben int-0x80-
    Dispatch-Mechanismus wie SYSCALL_SERVICE_CORE (NICHT ueber die globale

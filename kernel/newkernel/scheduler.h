@@ -68,8 +68,38 @@
    ushell/settings_main.c, 2026-11-19 - diesmal VORAB angehoben statt
    erst nach einem fehlschlagenden Boot-Test, da das Muster inzwischen
    bekannt ist) - jeder weitere dauerhafte Ring-3-Prozess braucht einen
-   eigenen Slot. */
-#define SCHEDULER_THREAD_COUNT 13u
+   eigenen Slot.
+
+   2026-11-21 auf 20 angehoben: die 5 dauerhaften NEF-Testprogramme
+   (Hello Nova/Library/Memory/File/Thread Test, siehe kmain.c und
+   project_nef_executable_format.md) brauchten je einen weiteren Slot -
+   ECHTER, durch Boot-Test gefundener Vorfall (NICHT theoretisch): der
+   Explorer-Spawn scheiterte scheinbar an PMM-Fragmentierung (siehe
+   project_pmm_capacity_increase.md), bis eine gezielte Diagnose in
+   ushell_process.c (serial_puts bei jedem goto cleanup;) den WAHREN
+   Grund zeigte - `scheduler_claim_dynamic_user_slot` lieferte -1, weil
+   alle 13 Slots bereits durch die NEF-Testprozesse + die beiden
+   statischen Scheduler-Threads + den dynamischen Thread-Test belegt
+   waren. Lehrstueck: ein scheinbar passender erster Befund (PMM-Leck +
+   Fragmentierung, beide echt und sinnvoll behoben) ist nicht automatisch
+   die Ursache DES konkreten Symptoms - erst die Fehlerursache direkt an
+   der Fehlerstelle protokollieren, dann schliessen, nicht umgekehrt. */
+/* 2026-11-21 (spaeter am selben Tag) auf 40 angehoben: der NovaLang-
+   Entwicklungsauftrag (novalang/, Masterauftrag "NovaLang 1.0"/
+   "NovaShell 1.0") fuegt laufend WEITERE dauerhafte Testprogramme hinzu
+   (jedes neue novac-Testprogramm bekommt einen eigenen Scheduler-Slot,
+   genau wie die NEF-Testprogramme oben) - diesmal bewusst mit groesserer
+   Reserve statt wieder nur +1, um das wiederholte "Boot schlaegt fehl,
+   Konstante um eins erhoehen"-Muster nicht fuer jedes einzelne neue
+   Testprogramm zu wiederholen. `scheduler_contexts[]` und die
+   parallelen Arrays (thread_cpu_affinity/thread_running_on/
+   thread_directory_phys/thread_kernel_stack_top) sind weiterhin FESTE
+   C-Arrays, keine dynamisch wachsende Tabelle wie `process.c`s
+   `process_table` (siehe project_general_allocator.md) - eine echte
+   dynamische Konvertierung waere der sauberere Langzeit-Fix, ist aber
+   bewusst NICHT Teil dieser Aenderung (Scope-Grenze, keine
+   Ueberkonstruktion mitten in einer anderen Aufgabe). */
+#define SCHEDULER_THREAD_COUNT 40u
 #define SCHEDULER_FRAME_SIZE   68u
 /* Wie SCHEDULER_FRAME_SIZE, aber fuer einen Slot, der NACH Ring 3 wechselt
    (siehe scheduler_claim_dynamic_user_slot) - 8 Byte groesser, weil ein

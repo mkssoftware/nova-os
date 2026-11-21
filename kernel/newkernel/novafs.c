@@ -1827,7 +1827,7 @@ static void novafs_build_test_superblock(uint8_t *sb, uint32_t total, uint32_t g
                                      first_free);
 }
 
-int novafs_self_test(void) {
+static int novafs_self_test_impl(void) {
     static const uint8_t check_string[9] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
     if (~crc32c_update(0xFFFFFFFFu, check_string, 9u) != 0xE3069283u) return -1;
 
@@ -1889,6 +1889,21 @@ int novafs_self_test(void) {
     }
 
     return 0;
+}
+
+/* Echter, durch Boot-Diagnose gefundener Bug (2026-11-21, siehe
+   feedback_novafs_selftest_pmm_leak.md): novafs_self_test_impl() oben
+   allozierte 3 PMM-Seiten (nfs_test_block1/2/63) fuer sein synthetisches
+   Testvolume, gab sie aber bei KEINEM Rueckkehrpfad wieder frei - bei
+   JEDEM Boot gingen so 3 Seiten dauerhaft verloren. Dieser duenne
+   Wrapper raeumt UNABHAENGIG vom Testergebnis (Erfolg oder jeder der
+   vier Fehlerpfade oben) auf, bevor er den Status weiterreicht. */
+int novafs_self_test(void) {
+    int rc = novafs_self_test_impl();
+    if (nfs_test_block1) { pmm_free_page((uint32_t)(uintptr_t)nfs_test_block1); nfs_test_block1 = 0; }
+    if (nfs_test_block2) { pmm_free_page((uint32_t)(uintptr_t)nfs_test_block2); nfs_test_block2 = 0; }
+    if (nfs_test_block63) { pmm_free_page((uint32_t)(uintptr_t)nfs_test_block63); nfs_test_block63 = 0; }
+    return rc;
 }
 
 /* ===================================================================== */
@@ -1954,7 +1969,7 @@ static int novafs_tree_test_write(void *record, uint32_t lba_lo, uint32_t lba_hi
     return -1;
 }
 
-int novafs_tree_self_test(void) {
+static int novafs_tree_self_test_impl(void) {
     uint32_t total = 64u;
 
     uint8_t *sb1 = novafs_tree_test_block(1u);
@@ -2087,6 +2102,21 @@ int novafs_tree_self_test(void) {
     return 0;
 }
 
+/* Echter, durch Boot-Diagnose gefundener Bug (2026-11-21, siehe
+   feedback_novafs_selftest_pmm_leak.md): novafs_tree_test_block() oben
+   alloziert bis zu NOVAFS_TREE_TEST_MAX_BLOCKS PMM-Seiten fuer sein
+   synthetisches Testvolume, aber KEIN Rueckkehrpfad von novafs_tree_
+   self_test_impl() gab sie je wieder frei. Dieser Wrapper raeumt
+   UNABHAENGIG vom Testergebnis auf. */
+int novafs_tree_self_test(void) {
+    int rc = novafs_tree_self_test_impl();
+    for (uint32_t i = 0; i < nfs_tree_test_block_count; ++i) {
+        pmm_free_page((uint32_t)(uintptr_t)nfs_tree_test_block_pages[i]);
+    }
+    nfs_tree_test_block_count = 0;
+    return rc;
+}
+
 /* ===================================================================== */
 /* Selbsttest Verzeichnisse/Pfade (Batch 5) - eigenstaendiges Fixture:   */
 /* Wurzel (ObjectID 1) -> Verzeichnis "System" (ObjectID 10) -> Datei    */
@@ -2153,7 +2183,7 @@ static void novafs_path_test_build_dirent(uint8_t *out, uint32_t parent, uint32_
     for (uint32_t i = 0; i < name_len; ++i) out[NFS_D_NAME + i] = (uint8_t)name[i];
 }
 
-int novafs_path_self_test(void) {
+static int novafs_path_self_test_impl(void) {
     uint32_t total = 64u;
 
     uint8_t *sb1 = novafs_path_test_block(1u);
@@ -2261,6 +2291,18 @@ int novafs_path_self_test(void) {
     return 0;
 }
 
+/* Echter, durch Boot-Diagnose gefundener Bug (2026-11-21, siehe
+   feedback_novafs_selftest_pmm_leak.md): siehe novafs_tree_self_test()
+   oben fuer die volle Begruendung - derselbe Leak-/Wrapper-Fix. */
+int novafs_path_self_test(void) {
+    int rc = novafs_path_self_test_impl();
+    for (uint32_t i = 0; i < nfs_path_test_block_count; ++i) {
+        pmm_free_page((uint32_t)(uintptr_t)nfs_path_test_block_pages[i]);
+    }
+    nfs_path_test_block_count = 0;
+    return rc;
+}
+
 /* ===================================================================== */
 /* Selbsttest Verzeichnislistung (Batch 6) - eigenstaendiges Fixture:     */
 /* Wurzel (ObjectID 1) hat zwei Kinder ("System"=10, "readme.txt"=12),   */
@@ -2308,7 +2350,7 @@ static int novafs_dir_test_read(void *record, uint32_t lba_lo, uint32_t lba_hi, 
     return -1;
 }
 
-int novafs_dir_self_test(void) {
+static int novafs_dir_self_test_impl(void) {
     uint32_t total = 64u;
 
     uint8_t *sb1 = novafs_dir_test_block(1u);
@@ -2405,6 +2447,18 @@ int novafs_dir_self_test(void) {
     return 0;
 }
 
+/* Echter, durch Boot-Diagnose gefundener Bug (2026-11-21, siehe
+   feedback_novafs_selftest_pmm_leak.md): siehe novafs_tree_self_test()
+   oben fuer die volle Begruendung - derselbe Leak-/Wrapper-Fix. */
+int novafs_dir_self_test(void) {
+    int rc = novafs_dir_self_test_impl();
+    for (uint32_t i = 0; i < nfs_dir_test_block_count; ++i) {
+        pmm_free_page((uint32_t)(uintptr_t)nfs_dir_test_block_pages[i]);
+    }
+    nfs_dir_test_block_count = 0;
+    return rc;
+}
+
 /* ===================================================================== */
 /* Selbsttest Extents/Dateidaten (Batch 7) - eigenstaendiges Fixture:    */
 /* Datei (ObjectID 20, 5000 Byte) mit genau EINEM Extent fuer den        */
@@ -2452,7 +2506,7 @@ static int novafs_extent_test_read(void *record, uint32_t lba_lo, uint32_t lba_h
     return -1;
 }
 
-int novafs_extent_self_test(void) {
+static int novafs_extent_self_test_impl(void) {
     uint32_t total = 64u;
 
     uint8_t *sb1 = novafs_extent_test_block(1u);
@@ -2554,6 +2608,18 @@ int novafs_extent_self_test(void) {
     return 0;
 }
 
+/* Echter, durch Boot-Diagnose gefundener Bug (2026-11-21, siehe
+   feedback_novafs_selftest_pmm_leak.md): siehe novafs_tree_self_test()
+   oben fuer die volle Begruendung - derselbe Leak-/Wrapper-Fix. */
+int novafs_extent_self_test(void) {
+    int rc = novafs_extent_self_test_impl();
+    for (uint32_t i = 0; i < nfs_extent_test_block_count; ++i) {
+        pmm_free_page((uint32_t)(uintptr_t)nfs_extent_test_block_pages[i]);
+    }
+    nfs_extent_test_block_count = 0;
+    return rc;
+}
+
 /* ===================================================================== */
 /* Selbsttest Transaction Log + Writes (Batch 8) - eigenstaendiges       */
 /* Fixture: leere Datei (ObjectID 50) in einem frisch "formatierten"     */
@@ -2616,7 +2682,7 @@ static int novafs_write_test_flush(void *record) {
     return 0;
 }
 
-int novafs_write_self_test(void) {
+static int novafs_write_self_test_impl(void) {
     uint32_t total = 64u;
     uint32_t bitmap_blocks = 1u;
     uint32_t journal_block = bitmap_blocks + 2u;
@@ -2721,6 +2787,20 @@ int novafs_write_self_test(void) {
     }
 
     return 0;
+}
+
+/* Echter, durch Boot-Diagnose gefundener Bug (2026-11-21, siehe
+   feedback_novafs_selftest_pmm_leak.md): siehe novafs_tree_self_test()
+   oben fuer die volle Begruendung - derselbe Leak-/Wrapper-Fix. Dieser
+   Test allozierte bis zu NOVAFS_WRITE_TEST_MAX_BLOCKS=48 Seiten - der
+   mit Abstand groesste Einzelbeitrag zum insgesamt gefundenen Leck. */
+int novafs_write_self_test(void) {
+    int rc = novafs_write_self_test_impl();
+    for (uint32_t i = 0; i < nfs_write_test_block_count; ++i) {
+        pmm_free_page((uint32_t)(uintptr_t)nfs_write_test_block_pages[i]);
+    }
+    nfs_write_test_block_count = 0;
+    return rc;
 }
 
 /* ===================================================================== */
@@ -2839,7 +2919,7 @@ int novafs_build_test_volume(uint8_t *(*accessor)(uint32_t block_number),
     return 0;
 }
 
-int novafs_lifecycle_self_test(void) {
+static int novafs_lifecycle_self_test_impl(void) {
     uint32_t total = 64u;
 
     if (novafs_build_test_volume(novafs_lifecycle_test_block, total, 60u, 61u, 62u) != 0) {
@@ -2937,4 +3017,18 @@ int novafs_lifecycle_self_test(void) {
     }
 
     return 0;
+}
+
+/* Echter, durch Boot-Diagnose gefundener Bug (2026-11-21, siehe
+   feedback_novafs_selftest_pmm_leak.md): siehe novafs_tree_self_test()
+   oben fuer die volle Begruendung - derselbe Leak-/Wrapper-Fix. Dieser
+   Test allozierte bis zu NOVAFS_LIFECYCLE_TEST_MAX_BLOCKS=48 Seiten -
+   der zweitgroesste Einzelbeitrag zum insgesamt gefundenen Leck. */
+int novafs_lifecycle_self_test(void) {
+    int rc = novafs_lifecycle_self_test_impl();
+    for (uint32_t i = 0; i < nfs_lifecycle_test_block_count; ++i) {
+        pmm_free_page((uint32_t)(uintptr_t)nfs_lifecycle_test_block_pages[i]);
+    }
+    nfs_lifecycle_test_block_count = 0;
+    return rc;
 }

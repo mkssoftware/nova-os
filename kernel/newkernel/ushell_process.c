@@ -183,9 +183,10 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint
     uint32_t buffer_pages = 0;
     uint32_t kstack_page = 0;
     uint32_t pid = 0;
+    const char *fail_reason = "none";
 
     uint32_t dir_phys;
-    if (paging_create_address_space(&dir_phys) != 0) return -1;
+    if (paging_create_address_space(&dir_phys) != 0) { serial_puts("NOVA: ushell_spawn Fehlerursache=paging_create_address_space\r\n"); return -1; }
 
     /* Der GUI-Puffer wird BEWUSST ZUERST alloziert, VOR den vielen
        einzelnen Code-/Stack-/Args-Seiten (2026-11-19, durch echten
@@ -200,7 +201,7 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint
        Einzelseiten. Die seltenste, anspruchsvollste Ressource zuerst zu
        sichern behebt das zuverlaessig, ohne den PMM selbst zu aendern. */
     buffer_pages = (gui_buffer_bytes + PMM_PAGE_SIZE - 1u) / PMM_PAGE_SIZE;
-    if (pmm_alloc_contiguous(buffer_pages, &buffer_first_page) != 0) { buffer_pages = 0; goto cleanup; }
+    if (pmm_alloc_contiguous(buffer_pages, &buffer_first_page) != 0) { buffer_pages = 0; fail_reason = "gui_buffer_contiguous"; goto cleanup; }
     {
         uint8_t *buffer_dst = (uint8_t *)(uintptr_t)buffer_first_page;
         for (uint32_t i = 0; i < buffer_pages * PMM_PAGE_SIZE; ++i) buffer_dst[i] = 0;
@@ -209,14 +210,14 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint
         if (paging_map_page_into(dir_phys, USHELL_GUI_BUFFER_VADDR + i * PMM_PAGE_SIZE,
                                   buffer_first_page + i * PMM_PAGE_SIZE,
                                   PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
-            goto cleanup;
+            fail_reason = "gui_buffer_map"; goto cleanup;
         }
     }
 
     for (uint32_t i = 0; i < USHELL_CODE_PAGES; ++i) {
         uint32_t numa;
         uint32_t page = pmm_alloc_page(&numa);
-        if (page == 0) goto cleanup;
+        if (page == 0) { fail_reason = "code_page_alloc"; goto cleanup; }
         code_pages[i] = page;
         code_pages_count = i + 1u;
 
@@ -233,7 +234,7 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint
         uint32_t page_flags = PAGING_PAGE_PRESENT | PAGING_PAGE_USER;
         if (blob_offset >= ro_size) page_flags |= PAGING_PAGE_WRITE;
         if (paging_map_page_into(dir_phys, USHELL_CODE_VADDR + blob_offset, page, page_flags) != 0) {
-            goto cleanup;
+            fail_reason = "code_page_map"; goto cleanup;
         }
     }
 
@@ -241,28 +242,28 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint
         uint32_t numa;
         stack_page = pmm_alloc_page(&numa);
     }
-    if (stack_page == 0) goto cleanup;
+    if (stack_page == 0) { fail_reason = "stack_page_alloc"; goto cleanup; }
     {
         uint8_t *stack_dst = (uint8_t *)(uintptr_t)stack_page;
         for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) stack_dst[i] = 0;
     }
     if (paging_map_page_into(dir_phys, USHELL_STACK_VADDR, stack_page,
                               PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
-        goto cleanup;
+        fail_reason = "stack_page_map"; goto cleanup;
     }
 
     {
         uint32_t numa;
         args_page = pmm_alloc_page(&numa);
     }
-    if (args_page == 0) goto cleanup;
+    if (args_page == 0) { fail_reason = "args_page_alloc"; goto cleanup; }
     {
         uint8_t *args_dst = (uint8_t *)(uintptr_t)args_page;
         for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) args_dst[i] = 0;
     }
     if (paging_map_page_into(dir_phys, USHELL_ARGS_VADDR, args_page,
                               PAGING_PAGE_PRESENT | PAGING_PAGE_WRITE | PAGING_PAGE_USER) != 0) {
-        goto cleanup;
+        fail_reason = "args_page_map"; goto cleanup;
     }
 
     /* Eigener Kernel-Stack (ESP0) fuer diesen Slot (siehe ring3.h/
@@ -277,7 +278,7 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint
         uint32_t kstack_numa;
         kstack_page = pmm_alloc_page(&kstack_numa);
     }
-    if (kstack_page == 0) goto cleanup;
+    if (kstack_page == 0) { fail_reason = "kstack_page_alloc"; goto cleanup; }
     {
         uint8_t *kstack_dst = (uint8_t *)(uintptr_t)kstack_page;
         for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) kstack_dst[i] = 0;
@@ -285,14 +286,14 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint
     uint32_t kernel_stack_top = kstack_page + PMM_PAGE_SIZE - 16u;
 
     pid = process_create(0x4 /* PROCESS_FLAG_USERSPACE, siehe ring3.c */, dir_phys);
-    if (pid == 0) goto cleanup;
+    if (pid == 0) { fail_reason = "process_create"; goto cleanup; }
 
     {
         uint32_t slot;
         if (scheduler_claim_dynamic_user_slot(USHELL_CODE_VADDR + inst->entry_offset, USHELL_STACK_TOP,
                                                RING3_CODE_SELECTOR, RING3_DATA_SELECTOR,
                                                -1, dir_phys, kernel_stack_top, &slot) != 0) {
-            goto cleanup;
+            fail_reason = "scheduler_claim_slot"; goto cleanup;
         }
         inst->scheduler_slot = slot;
     }
@@ -303,6 +304,7 @@ static int ushell_spawn(ushell_instance_t *inst, uint32_t gui_buffer_bytes, uint
     return 0;
 
 cleanup:
+    serial_puts("NOVA: ushell_spawn Fehlerursache="); serial_puts(fail_reason); serial_puts("\r\n");
     /* Jede bereits zugeteilte physische Seite zurueckgeben (siehe
        Dateikopf: das Page-Directory selbst bleibt die eine bewusste
        Ausnahme). Reihenfolge ist unkritisch - pmm_free_page() nimmt

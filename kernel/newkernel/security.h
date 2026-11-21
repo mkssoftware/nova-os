@@ -31,7 +31,22 @@
 #define SECURITY_CAP_FS_SYSTEM_WRITE    0x00080000u
 #define SECURITY_KERNEL_CAPS            0x000FFFFFu
 
-#define SECURITY_CAPACITY 4u /* = PROCESS_CAPACITY */
+/* GESCHICHTE (2026-11-21, project_pmm_capacity_increase.md/Nutzerfrage "kann
+   der PMM nicht dynamisch sein?"): war hartcodiert auf 4u mit dem Kommentar
+   "= PROCESS_CAPACITY" - der aber schon damals veraltet war, da process.h's
+   PROCESS_CAPACITY laengst auf 7u angehoben worden war, ohne diese Konstante
+   hier mit anzuheben. Exakt dasselbe Drift-Muster wie beim PMM_MAX_FRAMES/
+   PMM_BOOTSTRAP_IDENTITY_LIMIT-Vorfall: zwei Konstanten, die zusammenbleiben
+   MUESSEN, sind unabhaengig auseinandergelaufen. Gefunden, weil die 5 neuen
+   permanenten NEF-Testprozesse (siehe SCHEDULER_THREAD_COUNT-Kommentar in
+   scheduler.h) jeweils per security_grant() einen Tabellenplatz belegen,
+   sobald sie Capabilities != 0 anfordern - das fuellte alle 4 Plaetze
+   (Kernel-PID 1 + mehrere Testprozesse), BEVOR der Explorer seine
+   Dateisystemrechte erhalten konnte (ushell_process.c). Da security.h kein
+   process.h inkludiert, bleibt dies eine eigene Konstante statt eines
+   echten #define-Verweises - deshalb bewusst grosszuegig mit Reserve
+   angehoben, nicht nur auf den aktuellen Bedarf. */
+#define SECURITY_CAPACITY 20u
 
 /* Gewaehrt PID 1 (Kernel) alle SECURITY_KERNEL_CAPS. */
 void security_initialize(void);

@@ -1,0 +1,22 @@
+' hello_if.nova - NovaLang v0.3 Testprogramm: echte Laufzeit-Integer-
+' Variablen, Zuweisung, Addition und If/Else (siehe NOVALANG_SPEC_v0.3.md)
+Module HelloIf
+    Function Main() As Int32
+        Dim counter As Integer = 5
+        counter = counter + 10
+        If counter = 15 Then
+            Console.WriteLine("counter is 15, as expected")
+        Else
+            Console.WriteLine("unexpected value")
+        End If
+
+        Dim limit As Integer = 100
+        If counter > limit Then
+            Console.WriteLine("counter exceeds limit")
+        Else
+            Console.WriteLine("counter is within limit")
+        End If
+
+        Return 0
+    End Function
+End Module

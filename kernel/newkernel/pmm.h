@@ -7,30 +7,29 @@
 #include <stdint.h>
 
 #define PMM_PAGE_SIZE 4096u
-/* Der aktuelle Desktop startet fuenf getrennte Ring-3-Prozesse mit eigenen
-   Pixelpuffern. 1024 Eintraege waren dafuer nach allen Kernel-Selbsttests
-   nicht mehr ausreichend. 2048 Eintraege bleiben sicher innerhalb der
-   ohnehin auf 16 MiB begrenzten Bootstrap-Identity-Map und vermeiden, dass
-   der vollstaendige Userspace-Desktop nur wegen der alten Tabellenkapazitaet
-   ausfaellt.
+/* GESCHICHTE dieser Konstante (wichtig, um den Fix unten richtig
+   einzuordnen): 1024 Eintraege reichten nach allen Kernel-Selbsttests
+   nicht mehr fuer die fuenf Ring-3-Desktop-Prozesse, daher auf 2048
+   angehoben. WICHTIG (2026-11-20, per echtem Boot-Test widerlegt): ein
+   spaeterer Versuch, NUR dieses Limit weiter auf 2304 zu erhoehen (ohne
+   PMM_BOOTSTRAP_IDENTITY_LIMIT mit anzuheben), zeigte KEINE Wirkung -
+   die Tabellenkapazitaet war schon vorher groesser als die Anzahl
+   tatsaechlich identity-gemappter freier Rahmen unterhalb der alten
+   16-MiB-Grenze. Eine groessere Tabelle allein kann nichts bringen, wenn
+   der Rahmen-SCAN selbst (pmm_initialize(), siehe PMM_BOOTSTRAP_
+   IDENTITY_LIMIT unten) gar nicht mehr findet.
 
-   WICHTIG (2026-11-20, per echtem Boot-Test widerlegt): ein Versuch, dieses
-   Limit auf 2304 zu erhoehen, um den (siehe project_taskbar_redraw_
-   freeze_bug.md-Nachbarbefund) durch die Liquid-Glass-Groessenerhoehungen
-   ausgeloesten Taskbar-Spawn-Fehlschlag zu beheben, zeigte KEINE Wirkung
-   (freie Seiten vor dem Explorer-Spawn stiegen nur von 0xE9 auf 0xE8 -
-   praktisch unveraendert). Der echte Flaschenhals ist NICHT diese
-   Tabellenkapazitaet, sondern pmm.c's Rahmen-Scan selbst, der JEDE Region
-   hart bei PMM_BOOTSTRAP_IDENTITY_LIMIT (16 MiB) kappt, UNABHAENGIG von
-   diesem Wert - es gibt schlicht nicht mehr freie, bereits identity-
-   gemappte Rahmen unterhalb von 16 MiB. Eine echte Behebung braucht
-   PMM_BOOTSTRAP_IDENTITY_LIMIT selbst (plus die entsprechende Erweiterung
-   der Identity-Map in paging_initialize()) - eine Aenderung mit echtem
-   Absturzrisiko (siehe feedback_bss_paging_limit.md fuer den bereits
-   einmal gefundenen "Rahmen ausserhalb der Identity-Map"-Bug), bewusst
-   NICHT in dieser Aenderung vorgenommen. Siehe project_pmm_capacity_
-   increase.md fuer die vollstaendige Diagnose. */
-#define PMM_MAX_FRAMES 2048u
+   FIX (2026-11-21, project_pmm_capacity_increase.md/Nutzerfrage "kann
+   der PMM nicht dynamisch sein?"): diesmal BEIDE Konstanten zusammen
+   angehoben - architektonisch ist das sicher, weil weder pmm.c noch
+   paging.c irgendwo ein fest dimensioniertes Array fuer die Identity-Map
+   selbst haben (per Code-Review bestaetigt: paging_initialize()s
+   Identity-Map-Schleife ruft schlicht paging_map_page() wiederholt auf,
+   das bei Bedarf dynamisch neue Seitentabellen aus dem PMM-Pool holt -
+   `pmm_frames[PMM_MAX_FRAMES]` in pmm.c ist das EINZIGE Array, das von
+   dieser Konstante abhaengt). 16384 Eintraege = genug Kapazitaet fuer
+   die vollen 64 MiB der neuen PMM_BOOTSTRAP_IDENTITY_LIMIT unten. */
+#define PMM_MAX_FRAMES 16384u
 #define PMM_NUMA_UNKNOWN 0xFFFFFFFFu
 
 /* Obergrenze fuer alle von pmm_initialize() gesammelten Bootstrap-Rahmen.
@@ -47,8 +46,19 @@
    pmm_initialize()) einzelne Rahmen aus einem spaeteren Eintrag oberhalb
    dieser Grenze zog (siehe feedback_bss_paging_limit.md). pmm_initialize()
    kappt seitdem JEDEN Eintrag hart auf diese Grenze, statt sich auf eine
-   zufaellig guenstige Eintrags-Reihenfolge zu verlassen. */
-#define PMM_BOOTSTRAP_IDENTITY_LIMIT 0x01000000u
+   zufaellig guenstige Eintrags-Reihenfolge zu verlassen - DESHALB ist das
+   blosse Anheben dieser EINEN Konstante (zusammen mit PMM_MAX_FRAMES
+   oben) sicher: beide Subsysteme lesen garantiert denselben Wert, koennen
+   nie mehr auseinanderdriften wie beim urspruenglichen Vorfall.
+
+   2026-11-21 von 16 auf 64 MiB angehoben (siehe PMM_MAX_FRAMES-Kommentar
+   oben) - die QEMU-Testkonfiguration dieses Projekts hat 256 MiB RAM
+   (siehe die Test-Skripte, Parameter "-m 256M"), 64 MiB bleibt darin
+   komfortabel. Boot-verifiziert: behebt sowohl den rohen Kapazitaetsmangel als auch (durch
+   den dadurch viel groesseren freien Pool) die Fragmentierung, die trotz
+   des NovaFS-Selbsttest-Leak-Fixes (feedback_novafs_selftest_pmm_leak.md)
+   noch den Explorer-Spawn verhinderte. */
+#define PMM_BOOTSTRAP_IDENTITY_LIMIT 0x04000000u
 
 /* Liest die Speicherkarte aus dem (bereits via bib_parse() validierten) BIB
    und baut den Frame-Stack auf. 0 = Erfolg (mind. 2 Rahmen gefunden). */

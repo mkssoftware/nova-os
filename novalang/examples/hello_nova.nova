@@ -1,0 +1,8 @@
+' hello_nova.nova - NovaLang v0.1 End-to-End-Testprogramm
+' (Masterauftrag Abschnitt 28, identisch zum dortigen Beispiel)
+Module HelloNova
+    Function Main() As Int32
+        Console.WriteLine("Hello NovaLang!")
+        Return 0
+    End Function
+End Module

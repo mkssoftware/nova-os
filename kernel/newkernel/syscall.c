@@ -798,6 +798,22 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
         return frame_ptr;
     }
 
+    if (operation == SYSCALL_CORE_DEBUG_WRITE) {
+        uint32_t text_addr = frame_read(frame_ptr, FRAME_OFF_EDX);
+        uint32_t text_len = frame_read(frame_ptr, FRAME_OFF_ESI);
+        if (text_len > SYSCALL_DEBUG_WRITE_MAX_LEN) text_len = SYSCALL_DEBUG_WRITE_MAX_LEN;
+        if (syscall_validate_user_range(text_addr, text_len) != 0) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_POINTER);
+            return frame_ptr;
+        }
+        const char *text = (const char *)(uintptr_t)text_addr;
+        for (uint32_t i = 0; i < text_len; ++i) serial_putc(text[i]);
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
     if (operation == SYSCALL_CORE_SHUTDOWN) {
         /* NPSPEC-SECURITY-CAPABILITY-0001: nur der Prozess, dem per
            syscall_grant_shutdown_capability() das Shutdown-Capability
