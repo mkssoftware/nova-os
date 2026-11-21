@@ -505,19 +505,123 @@ static int cmd_dump(int argc, char **argv) {
     return 0;
 }
 
+/* Sucht die SIGNATURES-Section (type/file_size bereits passend) in einer
+   bereits per nef_validate_header() als strukturell gueltig bestaetigten
+   Datei. 0 = gefunden (*out gesetzt), -1 sonst. */
+static int find_signature_section(const uint8_t *buf, const nef_header_t *hdr,
+                                   nef_section_entry_t *out) {
+    for (uint32_t i = 0; i < hdr->section_count; ++i) {
+        uint64_t off = hdr->section_dir_offset + (uint64_t)i * NEF_SECTION_ENTRY_SIZE;
+        nef_section_entry_t sec;
+        nef_section_entry_parse(buf + off, &sec);
+        if (sec.type == NEF_SECTION_SIGNATURES && sec.file_size == NEF_SIGNATURE_DIGEST_SIZE) {
+            *out = sec;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Echte Dev-Signatur (HMAC-SHA-256, siehe nef.h fuer die ehrliche
+   Einordnung "symmetrisch, keine PKI") - erwartet, dass die Zieldatei
+   bereits eine SIGNATURES-Section (32 Platzhalter-Byte, z.B. per
+   `nef link --section SIGNATURES:r:0:1:zero32.bin` angelegt, ueblicherweise
+   als LETZTE Section) enthaelt - die Signatur deckt per Konvention immer
+   genau [0, Dateioffset-dieser-Section) ab, siehe nef.h. Schreibt den
+   berechneten Digest in diese 32 Byte UND setzt NEF_FLAG_SIGNED im
+   Header - beides in-place, KEINE Grossenaenderung/Section-Directory-
+   Verschiebung noetig. */
 static int cmd_sign(int argc, char **argv) {
-    (void)argc; (void)argv;
-    fprintf(stderr, "nef: sign ist noch NICHT implementiert (Phase 5 des NEF-Masterauftrags -"
-                    " kryptografische Signaturen brauchen zuerst die Signature-Block-Spezifikation).\n"
-                    "Dies ist eine ehrliche Ablehnung, kein vorgetaeuschter Erfolg.\n");
-    return 2;
+    if (argc < 1) die("Verwendung: nef sign <input.nef>");
+    long len;
+    uint8_t *buf = read_file(argv[0], &len);
+
+    nef_header_t hdr;
+    int err = NEF_VALIDATE_OK;
+    if (nef_validate_header(buf, (uint32_t)len, &hdr, &err) != 0) {
+        fprintf(stderr, "nef: sign fehlgeschlagen - Datei ist strukturell UNGUELTIG: ");
+        validate_err_name_print(err);
+        free(buf);
+        return 1;
+    }
+
+    nef_section_entry_t sig_sec;
+    if (find_signature_section(buf, &hdr, &sig_sec) != 0) {
+        fprintf(stderr, "nef: sign fehlgeschlagen - keine SIGNATURES-Section (%u Byte, Typ %u) "
+                        "in dieser Datei. Zuerst per `nef link --section SIGNATURES:r:0:1:<32-Byte-"
+                        "Platzhalterdatei>` als LETZTE Section anlegen.\n",
+                NEF_SIGNATURE_DIGEST_SIZE, NEF_SECTION_SIGNATURES);
+        free(buf);
+        return 1;
+    }
+
+    /* REIHENFOLGE KRITISCH: NEF_FLAG_SIGNED liegt selbst INNERHALB des
+       signierten Bereichs [0, sig_sec.file_offset) (Header ist Byte 0..96)
+       - das Flag MUSS VOR der Digest-Berechnung gesetzt UND serialisiert
+       werden, sonst signiert man Bytes, die man danach noch veraendert,
+       und die eigene Verifikation schlaegt sofort fehl (so im ersten
+       Versuch dieser Aenderung real passiert, per nef verify entdeckt). */
+    hdr.format_flags |= NEF_FLAG_SIGNED;
+    if (nef_header_serialize(&hdr, buf, (uint32_t)len) != 0) {
+        fprintf(stderr, "nef: sign fehlgeschlagen - Header liess sich nicht neu serialisieren.\n");
+        free(buf);
+        return 1;
+    }
+
+    uint8_t digest[NEF_SIGNATURE_DIGEST_SIZE];
+    nef_compute_signature(buf, (uint32_t)sig_sec.file_offset, digest);
+    for (uint32_t i = 0; i < NEF_SIGNATURE_DIGEST_SIZE; ++i) {
+        buf[(uint32_t)sig_sec.file_offset + i] = digest[i];
+    }
+
+    write_file(argv[0], buf, len);
+    free(buf);
+    printf("Signiert (HMAC-SHA-256, Dev-Schluessel, deckt [0, 0x%lX) ab).\n",
+           (unsigned long)sig_sec.file_offset);
+    return 0;
 }
 
 static int cmd_verify(int argc, char **argv) {
-    (void)argc; (void)argv;
-    fprintf(stderr, "nef: verify (Signaturpruefung) ist noch NICHT implementiert (Phase 5).\n"
-                    "Dies ist eine ehrliche Ablehnung, kein vorgetaeuschter Erfolg.\n");
-    return 2;
+    if (argc < 1) die("Verwendung: nef verify <input.nef>");
+    long len;
+    uint8_t *buf = read_file(argv[0], &len);
+
+    nef_header_t hdr;
+    int err = NEF_VALIDATE_OK;
+    if (nef_validate_header(buf, (uint32_t)len, &hdr, &err) != 0) {
+        fprintf(stderr, "nef: verify fehlgeschlagen - Datei ist strukturell UNGUELTIG: ");
+        validate_err_name_print(err);
+        free(buf);
+        return 1;
+    }
+
+    nef_section_entry_t secs[MAX_SECTIONS];
+    uint32_t n = hdr.section_count;
+    if (n > (uint32_t)MAX_SECTIONS) n = (uint32_t)MAX_SECTIONS;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint64_t off = hdr.section_dir_offset + (uint64_t)i * NEF_SECTION_ENTRY_SIZE;
+        nef_section_entry_parse(buf + off, &secs[i]);
+    }
+
+    int rc = nef_verify_signature(buf, (uint32_t)len, &hdr, secs, n);
+    free(buf);
+    switch (rc) {
+        case NEF_SIG_OK:
+            printf("GUELTIG signiert (HMAC-SHA-256, Dev-Schluessel).\n");
+            return 0;
+        case NEF_SIG_ERR_NOT_SIGNED:
+            printf("UNSIGNIERT (NEF_FLAG_SIGNED nicht gesetzt).\n");
+            return 1;
+        case NEF_SIG_ERR_NO_SECTION:
+            printf("UNGUELTIG: keine SIGNATURES-Section gefunden.\n");
+            return 1;
+        case NEF_SIG_ERR_MISMATCH:
+            printf("UNGUELTIG: Digest stimmt nicht (Datei wurde nach dem Signieren veraendert).\n");
+            return 1;
+        default:
+            printf("UNGUELTIG: unbekannter Fehlercode %d.\n", rc);
+            return 1;
+    }
 }
 
 static int cmd_test(int argc, char **argv) {

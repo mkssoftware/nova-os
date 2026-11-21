@@ -271,6 +271,195 @@ void nef_extension_entry_parse(const uint8_t *buf, nef_extension_entry_t *out) {
 
 /* ---- Selbsttest ------------------------------------------------------ */
 
+/* ---- Signaturen (Phase 5) - echtes SHA-256/HMAC-SHA-256 -------------- */
+
+/* Fester Dev-Schluessel, siehe nef.h fuer die ehrliche Einordnung
+   (symmetrisch, oeffentlich im Binary sichtbar, KEINE PKI). 32 Byte
+   reiner Zufallswert aus dieser Sitzung - jeder gebaute Kernel/
+   `nef.exe` MUSS denselben Wert verwenden, sonst scheitert jede
+   Signaturpruefung bereits am naechsten, unveraenderten Build. */
+const uint8_t NEF_DEV_SIGNING_KEY[32] = {
+    0x4e,0x45,0x46,0x31,0x2d,0x44,0x45,0x56,0x2d,0x53,0x49,0x47,0x4e,0x2d,0x4b,0x45,
+    0x59,0x2d,0x32,0x30,0x32,0x36,0x2d,0x31,0x31,0x2d,0x32,0x30,0x2d,0x01,0x02,0x03
+};
+
+static inline uint32_t sha256_rotr(uint32_t x, uint32_t n) {
+    return (x >> n) | (x << (32u - n));
+}
+
+static const uint32_t sha256_k[64] = {
+    0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
+    0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
+    0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
+    0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
+    0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
+    0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
+    0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
+    0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u
+};
+
+/* Eine 64-Byte-Blockkompression (FIPS 180-4 Abschnitt 6.2.2). */
+static void sha256_compress(uint32_t h[8], const uint8_t block[64]) {
+    uint32_t w[64];
+    for (uint32_t i = 0; i < 16u; ++i) {
+        w[i] = ((uint32_t)block[i * 4u] << 24) | ((uint32_t)block[i * 4u + 1u] << 16) |
+               ((uint32_t)block[i * 4u + 2u] << 8) | (uint32_t)block[i * 4u + 3u];
+    }
+    for (uint32_t i = 16; i < 64u; ++i) {
+        uint32_t s0 = sha256_rotr(w[i - 15u], 7u) ^ sha256_rotr(w[i - 15u], 18u) ^ (w[i - 15u] >> 3u);
+        uint32_t s1 = sha256_rotr(w[i - 2u], 17u) ^ sha256_rotr(w[i - 2u], 19u) ^ (w[i - 2u] >> 10u);
+        w[i] = w[i - 16u] + s0 + w[i - 7u] + s1;
+    }
+
+    uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+    uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (uint32_t i = 0; i < 64u; ++i) {
+        uint32_t s1 = sha256_rotr(e, 6u) ^ sha256_rotr(e, 11u) ^ sha256_rotr(e, 25u);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t temp1 = hh + s1 + ch + sha256_k[i] + w[i];
+        uint32_t s0 = sha256_rotr(a, 2u) ^ sha256_rotr(a, 13u) ^ sha256_rotr(a, 22u);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = s0 + maj;
+        hh = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+    h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+}
+
+/* Streaming-Zustand bewusst NICHT oeffentlich (nef.h braucht nur den
+   Einzelaufruf-Wrapper nef_sha256() plus HMAC) - haelt den vollen
+   Nachrichteninhalt NIE auf einmal im Speicher (kein kalloc()/variable
+   Stack-Allokation fuer beliebig grosse Eingaben noetig). */
+typedef struct {
+    uint32_t h[8];
+    uint8_t buffer[64];
+    uint32_t buffer_len;
+    uint64_t total_len;
+} sha256_ctx_t;
+
+static void sha256_init(sha256_ctx_t *ctx) {
+    ctx->h[0] = 0x6a09e667u; ctx->h[1] = 0xbb67ae85u; ctx->h[2] = 0x3c6ef372u; ctx->h[3] = 0xa54ff53au;
+    ctx->h[4] = 0x510e527fu; ctx->h[5] = 0x9b05688cu; ctx->h[6] = 0x1f83d9abu; ctx->h[7] = 0x5be0cd19u;
+    ctx->buffer_len = 0u;
+    ctx->total_len = 0u;
+}
+
+static void sha256_update(sha256_ctx_t *ctx, const uint8_t *data, uint32_t len) {
+    ctx->total_len += (uint64_t)len;
+    uint32_t offset = 0u;
+
+    if (ctx->buffer_len > 0u) {
+        uint32_t need = 64u - ctx->buffer_len;
+        uint32_t take = (len < need) ? len : need;
+        for (uint32_t i = 0; i < take; ++i) ctx->buffer[ctx->buffer_len + i] = data[i];
+        ctx->buffer_len += take;
+        offset += take;
+        if (ctx->buffer_len == 64u) {
+            sha256_compress(ctx->h, ctx->buffer);
+            ctx->buffer_len = 0u;
+        }
+    }
+
+    while (offset + 64u <= len) {
+        sha256_compress(ctx->h, data + offset);
+        offset += 64u;
+    }
+
+    uint32_t remaining = len - offset;
+    for (uint32_t i = 0; i < remaining; ++i) ctx->buffer[ctx->buffer_len + i] = data[offset + i];
+    ctx->buffer_len += remaining;
+}
+
+static void sha256_final(sha256_ctx_t *ctx, uint8_t out[NEF_SIGNATURE_DIGEST_SIZE]) {
+    uint8_t pad[128];
+    for (uint32_t i = 0; i < 128u; ++i) pad[i] = 0u;
+    uint32_t pad_len = ctx->buffer_len;
+    for (uint32_t i = 0; i < pad_len; ++i) pad[i] = ctx->buffer[i];
+    pad[pad_len] = 0x80u;
+
+    uint32_t blocks = (pad_len < 56u) ? 1u : 2u;
+    uint64_t bit_len = ctx->total_len * 8u; /* Multiplikation, KEINE Division */
+    uint32_t len_off = blocks * 64u - 8u;
+    for (uint32_t i = 0; i < 8u; ++i) {
+        pad[len_off + i] = (uint8_t)(bit_len >> (56u - 8u * i));
+    }
+    for (uint32_t i = 0; i < blocks; ++i) sha256_compress(ctx->h, pad + i * 64u);
+
+    for (uint32_t i = 0; i < 8u; ++i) {
+        out[i * 4u] = (uint8_t)(ctx->h[i] >> 24);
+        out[i * 4u + 1u] = (uint8_t)(ctx->h[i] >> 16);
+        out[i * 4u + 2u] = (uint8_t)(ctx->h[i] >> 8);
+        out[i * 4u + 3u] = (uint8_t)(ctx->h[i]);
+    }
+}
+
+void nef_sha256(const uint8_t *data, uint32_t len, uint8_t out[NEF_SIGNATURE_DIGEST_SIZE]) {
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, data, len);
+    sha256_final(&ctx, out);
+}
+
+void nef_hmac_sha256(const uint8_t *key, uint32_t key_len, const uint8_t *data, uint32_t len,
+                      uint8_t out[NEF_SIGNATURE_DIGEST_SIZE]) {
+    uint8_t key_block[64];
+    for (uint32_t i = 0; i < 64u; ++i) key_block[i] = 0u;
+    if (key_len > 64u) {
+        nef_sha256(key, key_len, key_block); /* fuellt die ersten 32 Byte, Rest bleibt 0 */
+    } else {
+        for (uint32_t i = 0; i < key_len; ++i) key_block[i] = key[i];
+    }
+
+    uint8_t ipad[64], opad[64];
+    for (uint32_t i = 0; i < 64u; ++i) {
+        ipad[i] = (uint8_t)(key_block[i] ^ 0x36u);
+        opad[i] = (uint8_t)(key_block[i] ^ 0x5cu);
+    }
+
+    uint8_t inner[NEF_SIGNATURE_DIGEST_SIZE];
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, ipad, 64u);
+    sha256_update(&ctx, data, len);
+    sha256_final(&ctx, inner);
+
+    sha256_init(&ctx);
+    sha256_update(&ctx, opad, 64u);
+    sha256_update(&ctx, inner, NEF_SIGNATURE_DIGEST_SIZE);
+    sha256_final(&ctx, out);
+}
+
+void nef_compute_signature(const uint8_t *buf, uint32_t signed_len,
+                            uint8_t out[NEF_SIGNATURE_DIGEST_SIZE]) {
+    nef_hmac_sha256(NEF_DEV_SIGNING_KEY, sizeof(NEF_DEV_SIGNING_KEY), buf, signed_len, out);
+}
+
+int nef_verify_signature(const uint8_t *buf, uint32_t buf_len, const nef_header_t *hdr,
+                          const nef_section_entry_t *sections, uint32_t section_count) {
+    if ((hdr->format_flags & NEF_FLAG_SIGNED) == 0u) return NEF_SIG_ERR_NOT_SIGNED;
+
+    for (uint32_t i = 0; i < section_count; ++i) {
+        if (sections[i].type != NEF_SECTION_SIGNATURES) continue;
+        if (sections[i].file_size != NEF_SIGNATURE_DIGEST_SIZE) continue;
+        /* Bereits durch nef_validate_header() ueberlaufsicher gegen
+           buf_len geprueft - direkter Zugriff hier ist sicher. */
+        uint32_t sig_offset = (uint32_t)sections[i].file_offset;
+        if ((uint64_t)sig_offset + NEF_SIGNATURE_DIGEST_SIZE > buf_len) continue;
+
+        uint8_t expected[NEF_SIGNATURE_DIGEST_SIZE];
+        nef_compute_signature(buf, sig_offset, expected);
+
+        int mismatch = 0;
+        for (uint32_t b = 0; b < NEF_SIGNATURE_DIGEST_SIZE; ++b) {
+            if (buf[sig_offset + b] != expected[b]) { mismatch = 1; break; }
+        }
+        return mismatch ? NEF_SIG_ERR_MISMATCH : NEF_SIG_OK;
+    }
+    return NEF_SIG_ERR_NO_SECTION;
+}
+
 int nef_self_test(void) {
     /* 1) Runder Roundtrip: Header + eine CODE-Section serialisieren,
        dann wieder validieren - muss vollstaendig gueltig sein. */
@@ -405,6 +594,127 @@ int nef_self_test(void) {
         int err2 = NEF_VALIDATE_OK;
         if (nef_validate_header(img2, sizeof(img2), &p2, &err2) == 0) return -1;
         if (err2 != NEF_VALIDATE_ERR_SECTION_OVERLAP) return -1;
+    }
+
+    /* 9) Signatur-Rundweg: Image signieren, Verifikation muss gueltig
+       sein; eine einzelne verfaelschte Byte VOR der Signatur-Section
+       MUSS die Verifikation zum Scheitern bringen. */
+    {
+        static uint8_t simg[NEF_HEADER_SIZE + NEF_SECTION_ENTRY_SIZE * 2u + 16u +
+                             NEF_SIGNATURE_DIGEST_SIZE];
+        for (uint32_t i = 0; i < sizeof(simg); ++i) simg[i] = 0u;
+
+        nef_header_t sh;
+        sh.version_major = NEF_VERSION_MAJOR_CURRENT;
+        sh.version_minor = NEF_VERSION_MINOR_CURRENT;
+        sh.header_size = NEF_HEADER_SIZE;
+        sh.file_size = sizeof(simg);
+        sh.format_flags = NEF_FLAG_EXECUTABLE | NEF_FLAG_SIGNED;
+        sh.target_arch = NEF_ARCH_X86_32;
+        sh.abi_id = NEF_ABI_NOVA_NATIVE;
+        sh.min_os_version = 0u;
+        sh.entry_point_ref = 0x00500000u;
+        sh.section_dir_offset = NEF_HEADER_SIZE;
+        sh.section_count = 2u;
+        sh.extension_dir_offset = NEF_HEADER_SIZE + NEF_SECTION_ENTRY_SIZE * 2u + 16u +
+                                   NEF_SIGNATURE_DIGEST_SIZE;
+        sh.extension_count = 0u;
+        sh.manifest_ref = 0u;
+        sh.signature_dir_ref = 0u;
+        sh.integrity_ref = 0u;
+        if (nef_header_serialize(&sh, simg, sizeof(simg)) != 0) return -1;
+
+        nef_section_entry_t code_sec;
+        code_sec.type = NEF_SECTION_CODE;
+        code_sec.flags = NEF_SEC_FLAG_READ | NEF_SEC_FLAG_EXEC;
+        code_sec.file_offset = NEF_HEADER_SIZE + NEF_SECTION_ENTRY_SIZE * 2u;
+        code_sec.file_size = 16u;
+        code_sec.vaddr = 0x00500000u;
+        code_sec.vsize = 16u;
+        code_sec.alignment = 4096u;
+        nef_section_entry_serialize(&code_sec, simg + NEF_HEADER_SIZE);
+
+        nef_section_entry_t sig_sec;
+        sig_sec.type = NEF_SECTION_SIGNATURES;
+        sig_sec.flags = NEF_SEC_FLAG_READ;
+        sig_sec.file_offset = code_sec.file_offset + code_sec.file_size;
+        sig_sec.file_size = NEF_SIGNATURE_DIGEST_SIZE;
+        sig_sec.vaddr = 0u;
+        sig_sec.vsize = NEF_SIGNATURE_DIGEST_SIZE;
+        sig_sec.alignment = 1u;
+        nef_section_entry_serialize(&sig_sec, simg + NEF_HEADER_SIZE + NEF_SECTION_ENTRY_SIZE);
+
+        uint8_t digest[NEF_SIGNATURE_DIGEST_SIZE];
+        nef_compute_signature(simg, (uint32_t)sig_sec.file_offset, digest);
+        for (uint32_t i = 0; i < NEF_SIGNATURE_DIGEST_SIZE; ++i) {
+            simg[(uint32_t)sig_sec.file_offset + i] = digest[i];
+        }
+
+        nef_header_t sparsed;
+        int serr = NEF_VALIDATE_OK;
+        if (nef_validate_header(simg, sizeof(simg), &sparsed, &serr) != 0) return -1;
+        if (serr != NEF_VALIDATE_OK) return -1;
+
+        nef_section_entry_t ssecs[2];
+        nef_section_entry_parse(simg + (uint32_t)sparsed.section_dir_offset, &ssecs[0]);
+        nef_section_entry_parse(simg + (uint32_t)sparsed.section_dir_offset + NEF_SECTION_ENTRY_SIZE,
+                                 &ssecs[1]);
+        if (nef_verify_signature(simg, sizeof(simg), &sparsed, ssecs, sparsed.section_count) !=
+            NEF_SIG_OK) {
+            return -1;
+        }
+
+        /* Negativtest: ein Byte VOR der Signatur-Section verfaelschen -
+           muss die Verifikation zum Scheitern bringen. */
+        simg[0] ^= 0xFFu; /* Teil des Magic, aber VOR sig_sec.file_offset */
+        if (nef_verify_signature(simg, sizeof(simg), &sparsed, ssecs, sparsed.section_count) ==
+            NEF_SIG_OK) {
+            return -1;
+        }
+        simg[0] ^= 0xFFu; /* zurueck auf gueltig */
+        if (nef_verify_signature(simg, sizeof(simg), &sparsed, ssecs, sparsed.section_count) !=
+            NEF_SIG_OK) {
+            return -1;
+        }
+    }
+
+    /* 10) SHA-256/HMAC-SHA-256 gegen bekannte, oeffentliche Testvektoren
+       (FIPS 180-4 Anhang B.1 bzw. RFC 4231 Testfall 1) - unabhaengig von
+       der NEF-eigenen Signaturlogik oben, prueft NUR die Primitiven
+       selbst. */
+    {
+        static const uint8_t expected_empty[NEF_SIGNATURE_DIGEST_SIZE] = {
+            0xe3,0xb0,0xc4,0x42,0x98,0xfc,0x1c,0x14,0x9a,0xfb,0xf4,0xc8,0x99,0x6f,0xb9,0x24,
+            0x27,0xae,0x41,0xe4,0x64,0x9b,0x93,0x4c,0xa4,0x95,0x99,0x1b,0x78,0x52,0xb8,0x55
+        };
+        uint8_t got[NEF_SIGNATURE_DIGEST_SIZE];
+        nef_sha256((const uint8_t *)"", 0u, got);
+        for (uint32_t i = 0; i < NEF_SIGNATURE_DIGEST_SIZE; ++i) {
+            if (got[i] != expected_empty[i]) return -1;
+        }
+
+        static const uint8_t expected_abc[NEF_SIGNATURE_DIGEST_SIZE] = {
+            0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
+            0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad
+        };
+        nef_sha256((const uint8_t *)"abc", 3u, got);
+        for (uint32_t i = 0; i < NEF_SIGNATURE_DIGEST_SIZE; ++i) {
+            if (got[i] != expected_abc[i]) return -1;
+        }
+
+        /* RFC 4231 Testfall 1: Key = 20 Byte 0x0b, Data = "Hi There". */
+        static const uint8_t hmac_key[20] = {
+            0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,
+            0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b
+        };
+        static const uint8_t expected_hmac[NEF_SIGNATURE_DIGEST_SIZE] = {
+            0xb0,0x34,0x4c,0x61,0xd8,0xdb,0x38,0x53,0x5c,0xa8,0xaf,0xce,0xaf,0x0b,0xf1,0x2b,
+            0x88,0x1d,0xc2,0x00,0xc9,0x83,0x3d,0xa7,0x26,0xe9,0x37,0x6c,0x2e,0x32,0xcf,0xf7
+        };
+        nef_hmac_sha256(hmac_key, sizeof(hmac_key), (const uint8_t *)"Hi There", 8u, got);
+        for (uint32_t i = 0; i < NEF_SIGNATURE_DIGEST_SIZE; ++i) {
+            if (got[i] != expected_hmac[i]) return -1;
+        }
     }
 
     return 0;

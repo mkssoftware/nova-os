@@ -279,6 +279,116 @@ void nef_extension_entry_parse(const uint8_t *buf, nef_extension_entry_t *out);
 int nef_validate_header(const uint8_t *buf, uint32_t buf_len, nef_header_t *out_hdr,
                          int *out_err);
 
+/* ---- Signaturen (Phase 5) -------------------------------------------- */
+
+/* Echte Kryptografie, KEINE Vortaeuschung - aber ehrlich eine SYMMETRISCHE
+   Dev-Signatur (HMAC-SHA-256 mit einem fest im Kernel/Werkzeug einge-
+   betteten Schluessel), KEINE asymmetrische PKI mit Zertifikatskette.
+   Deckungsgleich mit dem bereits bestehenden Vorbild dieses Projekts:
+   `scripts/build-nki.ps1`s "DevSign scheme=1" fuer den NKI-Kernel-
+   Container ist ebenfalls eine Dev-Signatur, kein Produktions-PKI.
+   Eine echte asymmetrische Kette (eigener Public-/Private-Key, siehe
+   trustanchor.h) ist bewusst NICHT Teil dieser Phase - dafuer fehlt
+   diesem Kernel noch eine funktionierende Public-Key-Primitive (crypto.h
+   hat aktuell nur symmetrische Schluessel/RNG, siehe project_nef_
+   executable_format.md Phase-1-Analyse).
+
+   Deckungs-Konvention (KEIN vom Angreifer waehlbares Feld, bewusst KEIN
+   extra "covered_length" im Dateiformat): die Signatur deckt IMMER genau
+   die Bytes [0, Dateioffset-der-SIGNATURES-Section) ab - alles, was
+   strukturell vor der Signatur-Section selbst in der Datei steht
+   (Header+Section-Directory+Extension-Directory+alle anderen Section-
+   Payloads, wenn die SIGNATURES-Section wie von `nef_main.c`s `link`
+   ueblich als letzte Section platziert wird). Die SIGNATURES-Section
+   selbst enthaelt NUR den 32-Byte-Digest (file_size=32, vaddr=0 - reine
+   Metadaten, nicht in den Prozess-Adressraum gemappt). */
+#define NEF_SIGNATURE_DIGEST_SIZE 32u
+
+/* Fester Dev-Signierschluessel - identisch in nef.c (Kernel UND
+   Host-Werkzeug, siehe Dateikopf-Hinweis "dual-compilable"). Oeffentlich
+   sichtbar (keine echte Vertraulichkeit moeglich, da er im Klartext in
+   JEDEM gebauten Binary - Kernel wie `nef.exe` - steckt) - die Sicherheit
+   dieser Phase beruht NICHT auf Schluesselgeheimhaltung, sondern nur auf
+   Integritaetspruefung gegen versehentliche/zufaellige Verfaelschung.
+   Eine echte Vertrauenskette braucht asymmetrische Kryptografie (siehe
+   oben) und bleibt einer spaeteren Phase vorbehalten. */
+extern const uint8_t NEF_DEV_SIGNING_KEY[32];
+
+/* Echtes SHA-256 (FIPS 180-4), echtes HMAC-SHA-256 (RFC 2104) - keine
+   Zufallskomponente, deterministisch, durch bekannte Testvektoren in
+   nef_self_test() verifiziert. */
+void nef_sha256(const uint8_t *data, uint32_t len, uint8_t out[NEF_SIGNATURE_DIGEST_SIZE]);
+void nef_hmac_sha256(const uint8_t *key, uint32_t key_len, const uint8_t *data, uint32_t len,
+                      uint8_t out[NEF_SIGNATURE_DIGEST_SIZE]);
+
+/* Berechnet die Dev-Signatur fuer buf[0, signed_len) - signed_len MUSS
+   der Dateioffset der SIGNATURES-Section sein (siehe Konvention oben). */
+void nef_compute_signature(const uint8_t *buf, uint32_t signed_len,
+                            uint8_t out[NEF_SIGNATURE_DIGEST_SIZE]);
+
+#define NEF_SIG_OK                0
+#define NEF_SIG_ERR_NOT_SIGNED    1  /* NEF_FLAG_SIGNED nicht gesetzt */
+#define NEF_SIG_ERR_NO_SECTION    2  /* keine (gueltige) SIGNATURES-Section gefunden */
+#define NEF_SIG_ERR_MISMATCH      3  /* Digest stimmt nicht */
+
+/* Sucht die SIGNATURES-Section in sections[0..section_count) und prueft
+   die Dev-Signatur gegen buf[0, buf_len) - erwartet hdr bereits per
+   nef_validate_header() strukturell gueltig (Section-Ranges geprueft).
+   0 = gueltig signiert, sonst ein NEF_SIG_ERR_*-Code. */
+int nef_verify_signature(const uint8_t *buf, uint32_t buf_len, const nef_header_t *hdr,
+                          const nef_section_entry_t *sections, uint32_t section_count);
+
+/* ---- Dynamisches Linken (Phase 5, Minimalversion) --------------------
+
+   Dieser Kernel hat KEINEN gemeinsam genutzten Adressraum zwischen
+   Prozessen (jeder Prozess bekommt sein eigenes Page-Directory, siehe
+   paging_create_address_space in paging.h) - eine "Bibliothek" ist
+   daher keine systemweit geteilte Ressource, sondern wird PRO
+   importierendem Prozess PRIVAT in dessen eigenen Adressraum
+   nachgemappt (jeder Prozess bekommt seine eigene physische Kopie der
+   Bibliotheks-Sections - kein Speicher wird zwischen Prozessen
+   tatsaechlich geteilt, trotz NEF_SEC_FLAG_SHARED, das fuer eine
+   spaetere Phase mit echtem Seiten-Teilen reserviert bleibt).
+
+   Aufloesung erfolgt per ORDINAL (Positions-Index in der EXPORTS-
+   Tabelle), NICHT per Namen - kein Namens-Hashing/keine Stringtabelle
+   in dieser Minimalversion. Genau EINE Bibliotheksdatei pro Executable
+   wird unterstuetzt (kein Abhaengigkeitsgraph mehrerer Bibliotheken
+   untereinander, keine transitiven Importe - eine Bibliothek mit einer
+   eigenen nichtleeren IMPORTS-Section wird vom Loader abgelehnt). Das
+   ist bewusst die kleinste echte, funktionierende Form von dynamischem
+   Linken fuer dieses Prozessmodell - kein Vortaeuschen, aber auch keine
+   Ueberkonstruktion ueber den tatsaechlichen Bedarf hinaus. Eine
+   spaetere Phase kann dies auf Namen+mehrere Bibliotheken+echtes
+   Seiten-Teilen erweitern.
+
+   EXPORTS-Section (einer Bibliothek, NEF_FLAG_DYNAMIC_LIBRARY statt
+   NEF_FLAG_EXECUTABLE gesetzt): ein Array von NEF_EXPORT_ENTRY_SIZE-
+   Byte-Eintraegen, je ein little-endian u64 = die ABSOLUTE virtuelle
+   Adresse der exportierten Funktion/Daten (innerhalb der eigenen
+   Section-vaddr-Konvention der Bibliothek, die beim Laden UNVERAENDERT
+   in den importierenden Adressraum uebernommen wird - keine Rebasing-
+   Logik noetig, da dieser Kernel ohnehin nie an einer anderen Adresse
+   laedt als im Header angegeben). Ordinal = Index in diesem Array
+   (0-basiert). file_size MUSS ein Vielfaches von NEF_EXPORT_ENTRY_SIZE
+   sein.
+
+   IMPORTS-Section (eines Executables): ein Array von NEF_IMPORT_ENTRY_
+   SIZE-Byte-Eintraegen {ordinal: u32, iat_vaddr: u64} - "schreibe die
+   aufgeloeste Adresse von Export #ordinal als little-endian u32 nach
+   iat_vaddr im EIGENEN (gerade entstehenden) Adressraum des
+   Executables" (klassisches Import-Adresstabellen-Patching, wie PE/ELF
+   es im Prinzip auch tun). file_size MUSS ein Vielfaches von NEF_
+   IMPORT_ENTRY_SIZE sein.
+
+   MANIFEST-Section (eines Executables MIT nichtleerer IMPORTS-Section):
+   GENAU NEF_LIBRARY_PATH_MAX Byte - ein NUL-gepaddeter ASCII-Pfad
+   (NovaFS, absolut) zur zu ladenden Bibliotheksdatei. Diese Minimal-
+   version kennt nur GENAU EINEN solchen Pfad pro Executable. */
+#define NEF_EXPORT_ENTRY_SIZE 8u
+#define NEF_IMPORT_ENTRY_SIZE 12u
+#define NEF_LIBRARY_PATH_MAX 64u
+
 int nef_self_test(void); /* 0 = ok */
 
 #endif

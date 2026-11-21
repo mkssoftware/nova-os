@@ -11,21 +11,28 @@
    claim_dynamic_user_slot, dieselbe Infrastruktur wie ushell_process.c)
    und kontrollierter Rueckgabewert bei jedem Fehlerpfad.
 
+   Dynamisches Linken (Phase 5, Minimalversion - siehe nef.h fuer das
+   vollstaendige IMPORTS/EXPORTS/MANIFEST-Format): EIN Executable kann
+   EINE Bibliotheksdatei (NEF_FLAG_DYNAMIC_LIBRARY) per Ordinal-
+   Aufloesung importieren - die Bibliothek wird privat in denselben
+   Adressraum nachgemappt, ihre EXPORTS-Tabelle wird gegen die IMPORTS-
+   Tabelle des Executables aufgeloest, die Zieladressen werden direkt in
+   die bereits gemappten Speicherseiten des Executables geschrieben
+   (IAT-Patching). KEIN Namens-basiertes Symbol-Lookup, KEINE transitiven
+   Importe (eine Bibliothek mit eigenen Importen wird abgelehnt), KEIN
+   echtes Seiten-Teilen zwischen mehreren Prozessen, die dieselbe
+   Bibliothek importieren (jeder bekommt seine eigene physische Kopie).
+
    Bewusste Scope-Grenze dieser Phase (ehrlich, keine vorgetaeuschte
    Unterstuetzung - siehe Masterauftrag "keine Dummy-Implementierungen"):
-   IMPORTS/EXPORTS/RELOCATIONS/TLS-Sections mit Inhalt (file_size>0 ODER
-   vsize>0) werden MIT EINEM EIGENEN FEHLERCODE abgelehnt, NICHT
-   stillschweigend uebersprungen oder als Erfolg vorgetaeuscht. Grund:
-   nef.h definiert fuer diese vier Sections bisher nur den rohen
-   Section-Typ, aber KEIN Eintragsformat (kein Symbol-/Relokations-
-   Record-Layout, keine Modul-Registry fuer Importaufloesung ueber
-   mehrere geladene NEF-Images hinweg) - das zu entwerfen ist eine
-   eigene, groessere Design-Entscheidung (Masterauftrag Abschnitt 4+9:
-   dynamisches Linken/TLS), bewusst NICHT in dieser Phase erfunden,
-   sondern einer spaeteren Phase vorbehalten. Dieser Loader fuehrt daher
-   vorerst ausschliesslich vollstaendig statisch gelinkte, direkt
-   ausfuehrbare NEF-Images aus (CODE/RODATA/DATA/BSS) - exakt das, was
-   nef_main.c's `build`/`link`-Unterbefehle heute erzeugen koennen.
+   RELOCATIONS/TLS-Sections mit Inhalt (file_size>0 ODER vsize>0) werden
+   weiterhin MIT EINEM EIGENEN FEHLERCODE abgelehnt, NICHT stillschweigend
+   uebersprungen. Relocations sind fuer dieses Prozessmodell (Sections
+   werden IMMER exakt an der im Header angegebenen vaddr gemappt, nie an
+   einer anderen Basis - kein ASLR, keine Rebasing-Notwendigkeit) derzeit
+   kein echter Bedarf; TLS braucht zusaetzlich ein Segment-Register-Setup
+   (GS-Basis pro Thread), das dieser Kernel noch nicht hat. Beides bleibt
+   einer spaeteren Phase vorbehalten, statt hier erfunden zu werden.
 
    Architektur-Grenze (wie bei nef.c/ushell_process.c dokumentiert):
    NEF_SEC_FLAG_EXEC steuert NUR, ob nef_validate_section() eine Section
@@ -81,6 +88,29 @@
 #define NEF_LOAD_ERR_MAP                  (-17) /* paging_map_page_into fehlgeschlagen */
 #define NEF_LOAD_ERR_PROCESS              (-18) /* process_create fehlgeschlagen (Tabelle voll) */
 #define NEF_LOAD_ERR_SCHEDULER            (-19) /* scheduler_claim_dynamic_user_slot fehlgeschlagen */
+#define NEF_LOAD_ERR_SIGNATURE_INVALID    (-20) /* NEF_FLAG_SIGNED gesetzt, aber nef_verify_signature() != OK */
+#define NEF_LOAD_ERR_CAPABILITY_DENIED    (-21) /* CAPABILITIES-Section fordert Rechte, die loader_pid selbst nicht hat */
+#define NEF_LOAD_ERR_IMPORT_FORMAT        (-22) /* IMPORTS-file_size kein Vielfaches von NEF_IMPORT_ENTRY_SIZE */
+#define NEF_LOAD_ERR_LIBRARY_MANIFEST     (-23) /* IMPORTS nichtleer, aber keine 64-Byte-MANIFEST-Section mit Bibliothekspfad */
+#define NEF_LOAD_ERR_LIBRARY_OPEN         (-24) /* Bibliotheksdatei nicht oeffenbar/lesbar */
+#define NEF_LOAD_ERR_LIBRARY_INVALID      (-25) /* Bibliotheksdatei strukturell ungueltig oder Arch/ABI-Mismatch */
+#define NEF_LOAD_ERR_LIBRARY_NOT_DYNAMIC  (-26) /* Bibliotheksdatei hat NEF_FLAG_DYNAMIC_LIBRARY nicht gesetzt */
+#define NEF_LOAD_ERR_LIBRARY_TRANSITIVE   (-27) /* Bibliothek hat selbst eine nichtleere IMPORTS-Section (nicht unterstuetzt) */
+#define NEF_LOAD_ERR_EXPORT_MISSING       (-28) /* Bibliothek hat keine (gueltige) EXPORTS-Section */
+#define NEF_LOAD_ERR_IMPORT_UNRESOLVED    (-29) /* Ordinal >= Export-Anzahl der Bibliothek */
+#define NEF_LOAD_ERR_LIBRARY_OVERLAP      (-30) /* Bibliotheks-Sections ueberlappen Executable-Sections im Adressraum */
+#define NEF_LOAD_ERR_IAT_PATCH            (-31) /* iat_vaddr liegt nicht in einer gemappten, zusammenhaengenden Seite */
+
+/* CAPABILITIES-Section (Phase 5, Masterauftrag Abschnitt 8): genau 4
+   Byte (vaddr=0, reine Metadaten) - eine little-endian uint32_t-
+   Bitmaske aus security.h's SECURITY_CAP_*-Konstanten. nef_load_and_
+   spawn() gewaehrt diese Rechte dem NEUEN Prozess per security_grant()
+   NUR, wenn loader_pid SELBST bereits JEDES angeforderte Bit haelt
+   (security_check(), fail-closed) - ein geladenes Programm kann also
+   NIE mehr Rechte bekommen als der Prozess, der es laedt (klassisches
+   Confinement-Prinzip, keine Rechteausweitung). Fehlt die Section
+   komplett, bekommt der neue Prozess KEINE zusaetzlichen Capabilities
+   (0 ist kein Fehler - viele Programme brauchen keine). */
 
 /* Beschreibt einen per nef_load_and_spawn() gestarteten Prozess - genug
    Zustand, um ihn spaeter VOLLSTAENDIG wieder abzubauen (nef_unload()).
