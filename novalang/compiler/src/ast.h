@@ -14,24 +14,36 @@ typedef enum NcStmtKind {
     STMT_RETURN,
     STMT_ASSIGN_INT, /* "x = IntExpr" (nur fuer bereits per Dim deklarierte Integer-Variablen) */
     STMT_IF,
-    STMT_ASSIGN_SYSCALL /* "x = SysCall(service, operation, arg1, arg2)", siehe NOVALANG_SPEC_v0.4.md */
+    STMT_ASSIGN_SYSCALL, /* "x = SysCall(service, operation, arg1, arg2)", siehe NOVALANG_SPEC_v0.4.md */
+    STMT_POKE /* "PokeInt(buffer, byteOffset, value)", siehe NOVALANG_SPEC_v0.5.md */
 } NcStmtKind;
 
-/* Ein Operand von SysCall(...) - absichtlich nur Literal/Variable (kein
-   verschachtelter Ausdruck, siehe NOVALANG_SPEC_v0.4.md Abschnitt 3 fuer
-   die Begruendung der Registerkonflikt-Vermeidung). */
+/* Ein Operand von SysCall(...)/PokeInt(...) - absichtlich nur Literal/
+   Variable/"AddressOf(Puffer)" (letzteres wird VOM PARSER sofort zu
+   einem Literal aufgeloest, siehe parser.c - Pufferadressen stehen zur
+   Compile-Zeit fest, es gibt keine Laufzeit-Zeigerarithmetik). Kein
+   verschachtelter Ausdruck - siehe NOVALANG_SPEC_v0.4.md Abschnitt 3
+   fuer die Begruendung der Registerkonflikt-Vermeidung bei SysCall. */
 typedef struct NcSysArg {
     int      is_var;
+    int      is_peek;   /* 1 = PeekInt(...), hat Vorrang vor is_var/literal */
+    uint32_t peek_addr;
     int64_t  literal;
     uint32_t var_index;
 } NcSysArg;
 
 /* Ein einzelner Term in einer Int-Expression ("+"/"-"-verkettete Folge von
    Literalen/Variablen, siehe NOVALANG_SPEC_v0.3.md). op ist '+' oder '-'
-   fuer alle Terme AUSSER dem ersten (dessen op ignoriert wird). */
+   fuer alle Terme AUSSER dem ersten (dessen op ignoriert wird).
+   is_peek (v0.5): "PeekInt(buffer, byteOffset)" - liest 4 Byte aus einer
+   zur Compile-Zeit bekannten absoluten Adresse (peek_addr), genau wie
+   is_var aus einer Variablenadresse liest, nur mit direkt eingebetteter
+   Adresse statt Var-Index. */
 typedef struct NcIntTerm {
     char       op;         /* '+' oder '-', ignoriert beim ersten Term */
     int        is_var;     /* 0 = Literal (in `literal`), 1 = Variable (in `var_index`) */
+    int        is_peek;    /* 1 = PeekInt(...) - hat Vorrang vor is_var/literal */
+    uint32_t   peek_addr;
     int64_t    literal;
     uint32_t   var_index;
     struct NcIntTerm *next;
@@ -58,6 +70,12 @@ typedef struct NcStmt {
 
     /* STMT_ASSIGN_SYSCALL - teilt sich assign_var_index mit STMT_ASSIGN_INT */
     NcSysArg   syscall_args[4]; /* service, operation, arg1, arg2 */
+
+    /* STMT_POKE: "PokeInt(buffer, byteOffset, value)" - poke_addr ist
+       bereits die fertige absolute Adresse (Pufferadresse + Offset,
+       vom Parser berechnet). */
+    uint32_t   poke_addr;
+    NcSysArg   poke_value;
 
     /* STMT_IF */
     uint32_t   if_lhs_var_index;
@@ -89,6 +107,30 @@ typedef struct NcModule {
     char      *int_var_names[64];
     int64_t    int_var_initial[64];
     uint32_t   int_var_count;
+
+    /* Byte-Puffer fuer Syscall-Argument-Structs (v0.5, siehe
+       NOVALANG_SPEC_v0.5.md): "Dim buf As Buffer(N)" reserviert N
+       zero-initialisierte Bytes in einer EIGENEN DATA-Unterregion
+       (siehe codegen_x86.h NC_DATA_BUFFER_REGION_OFFSET) - getrennt von
+       den Integer-Variablen-Slots, damit die Reihenfolge von Integer-
+       und Buffer-"Dim"-Anweisungen keine Adressen verschiebt.
+       buf_byte_offset[i] ist relativ zum Beginn der Pufferregion. */
+    char      *buf_names[16];
+    uint32_t   buf_byte_offset[16];
+    uint32_t   buf_size[16];
+    uint32_t   buf_count;
+
+    /* "PokeString(buf, byteOffset, \"literal\")" (v0.5, siehe
+       NOVALANG_SPEC_v0.5.md) - schreibt compile-time-bekannte String-
+       Bytes (z.B. einen VFS-Pfad) in einen Puffer. Rein eine Daten-
+       Initialisierung (wie der Dim-Integer-Initialwert), KEIN Laufzeit-
+       Statement - deshalb hier auf Modulebene statt als NcStmt, wird
+       direkt beim Parsen aufgeloest und am Ende des Codegens auf die
+       bereits mit Nullen gefuellte Pufferregion angewendet. */
+    char      *patch_bytes[16];
+    uint32_t   patch_addr[16];
+    uint32_t   patch_len[16];
+    uint32_t   patch_count;
 } NcModule;
 
 #endif

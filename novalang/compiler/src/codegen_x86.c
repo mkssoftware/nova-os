@@ -9,9 +9,6 @@
 #define NC_SYSCALL_ABI_VERSION   1u
 #define NC_SYSCALL_CORE_YIELD    13u
 #define NC_SYSCALL_CORE_DEBUG_WRITE 17u
-/* Max. nutzbare RODATA-Byte im validierten Fenster [NC_RODATA_VADDR,
-   NC_RODATA_VADDR+0x4000) - siehe syscall.h USER_ADDRESS_MAX. */
-#define NC_RODATA_WINDOW_SIZE 0x4000u
 
 typedef struct NcBuf {
     uint8_t *data;
@@ -142,18 +139,24 @@ static uint32_t int_var_addr(uint32_t var_index) {
 }
 
 /* Wertet expr nach EAX aus - echte Laufzeit-Addition/Subtraktion, kein
-   Constant Folding: jeder Term erzeugt tatsaechlich ausgefuehrten Code. */
+   Constant Folding: jeder Term erzeugt tatsaechlich ausgefuehrten Code.
+   is_peek (v0.5) liest von einer compile-time-bekannten Pufferadresse
+   statt einer Variablenadresse - fuer EAX-Operationen identisch zu
+   is_var (beide sind nur "lies/addiere/subtrahiere von [addr]"), daher
+   hier einheitlich behandelt. */
 static void emit_int_expr(NcBuf *code, NcIntTerm *expr) {
-    if (!expr->is_var) emit_mov_imm32(code, REG_EAX, (uint32_t)expr->literal);
+    if (expr->is_peek) emit_eax_memop32(code, OP_MOV_EAX_FROM_MEM, expr->peek_addr);
+    else if (!expr->is_var) emit_mov_imm32(code, REG_EAX, (uint32_t)expr->literal);
     else emit_eax_memop32(code, OP_MOV_EAX_FROM_MEM, int_var_addr(expr->var_index));
 
     for (NcIntTerm *t = expr->next; t; t = t->next) {
+        uint32_t addr = t->is_peek ? t->peek_addr : int_var_addr(t->var_index);
         if (t->op == '+') {
-            if (!t->is_var) emit_add_eax_imm32(code, (uint32_t)t->literal);
-            else emit_eax_memop32(code, OP_ADD_EAX_MEM, int_var_addr(t->var_index));
+            if (t->is_peek || t->is_var) emit_eax_memop32(code, OP_ADD_EAX_MEM, addr);
+            else emit_add_eax_imm32(code, (uint32_t)t->literal);
         } else {
-            if (!t->is_var) emit_sub_eax_imm32(code, (uint32_t)t->literal);
-            else emit_eax_memop32(code, OP_SUB_EAX_MEM, int_var_addr(t->var_index));
+            if (t->is_peek || t->is_var) emit_eax_memop32(code, OP_SUB_EAX_MEM, addr);
+            else emit_sub_eax_imm32(code, (uint32_t)t->literal);
         }
     }
 }
@@ -183,7 +186,7 @@ static int emit_stmt_list(NcBuf *code, NcBuf *rodata, NcStmt *stmts) {
     for (NcStmt *st = stmts; st; st = st->next) {
         if (st->kind == STMT_WRITELINE) {
             uint32_t str_total_len = st->string_len + 2u; /* + "\r\n" */
-            if (rodata->len + str_total_len > NC_RODATA_WINDOW_SIZE) return -1; /* v0.1-Limit */
+            if (rodata->len + str_total_len > NC_RODATA_MAX_SIZE) return -1; /* siehe codegen_x86.h */
             uint32_t str_vaddr = NC_RODATA_VADDR + rodata->len;
             buf_push_bytes(rodata, st->string_arg, st->string_len);
             buf_push_u8(rodata, '\r');
@@ -210,12 +213,21 @@ static int emit_stmt_list(NcBuf *code, NcBuf *rodata, NcStmt *stmts) {
             NcSysArg *a = st->syscall_args; /* [0]=service [1]=operation [2]=arg1 [3]=arg2 */
             static const uint8_t arg_reg[4] = { REG_EAX, REG_EBX, REG_EDX, REG_ESI };
             for (int i = 0; i < 4; ++i) {
-                if (a[i].is_var) emit_mov_reg_from_mem32(code, arg_reg[i], int_var_addr(a[i].var_index));
+                if (a[i].is_peek) emit_mov_reg_from_mem32(code, arg_reg[i], a[i].peek_addr);
+                else if (a[i].is_var) emit_mov_reg_from_mem32(code, arg_reg[i], int_var_addr(a[i].var_index));
                 else emit_mov_imm32(code, arg_reg[i], (uint32_t)a[i].literal);
             }
             emit_mov_imm32(code, REG_ECX, NC_SYSCALL_ABI_VERSION);
             emit_int80(code);
             emit_eax_memop32(code, OP_MOV_MEM_FROM_EAX, int_var_addr(st->assign_var_index));
+        } else if (st->kind == STMT_POKE) {
+            /* PokeInt(buffer, byteOffset, value) - schreibt 4 Byte an
+               eine compile-time-bekannte absolute Adresse (poke_addr,
+               siehe parser.c). */
+            if (st->poke_value.is_peek) emit_eax_memop32(code, OP_MOV_EAX_FROM_MEM, st->poke_value.peek_addr);
+            else if (st->poke_value.is_var) emit_eax_memop32(code, OP_MOV_EAX_FROM_MEM, int_var_addr(st->poke_value.var_index));
+            else emit_mov_imm32(code, REG_EAX, (uint32_t)st->poke_value.literal);
+            emit_eax_memop32(code, OP_MOV_MEM_FROM_EAX, st->poke_addr);
         } else if (st->kind == STMT_IF) {
             if (emit_if(code, rodata, st) != 0) return -1;
         } else { /* STMT_RETURN */
@@ -261,6 +273,20 @@ int nc_codegen_x86(const NcModule *mod,
     if (emit_stmt_list(&code, &rodata, fn->body) != 0) {
         free(code.data); free(rodata.data); free(data.data);
         return -1;
+    }
+
+    /* Puffer-Unterregion (v0.5, siehe codegen_x86.h): liegt FEST bei
+       NC_BUFFER_VADDR = NC_RODATA_VADDR + NC_RODATA_MAX_SIZE, unabhaengig
+       von der tatsaechlichen String-Laenge - die RODATA-Section wird
+       deshalb bis dorthin mit Nullen aufgefuellt, dann folgen die
+       zero-initialisierten Pufferbytes selbst. Nur wenn tatsaechlich
+       Puffer deklariert wurden (sonst bleibt die Section so klein wie
+       bisher). */
+    if (mod->buf_count > 0u) {
+        uint32_t buf_total = 0u;
+        for (uint32_t i = 0; i < mod->buf_count; ++i) buf_total += mod->buf_size[i];
+        while (rodata.len < NC_RODATA_MAX_SIZE) buf_push_u8(&rodata, 0u);
+        for (uint32_t i = 0; i < buf_total; ++i) buf_push_u8(&rodata, 0u);
     }
 
     *out_code_buf = code.data; *out_code_len = code.len;

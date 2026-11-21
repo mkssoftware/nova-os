@@ -1,4 +1,5 @@
 #include "parser.h"
+#include "codegen_x86.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -44,6 +45,21 @@ static int find_int_var(NcParser *p, const char *name, uint32_t len) {
         }
     }
     return -1;
+}
+
+/* Byte-Puffer fuer Syscall-Argument-Structs (v0.5, siehe
+   NOVALANG_SPEC_v0.5.md) - "Dim buf As Buffer(N)". */
+static int find_buffer(NcParser *p, const char *name, uint32_t len) {
+    for (uint32_t i = 0; i < p->mod->buf_count; ++i) {
+        if (strlen(p->mod->buf_names[i]) == len &&
+            strncmp(p->mod->buf_names[i], name, len) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+static uint32_t buffer_addr(NcParser *p, int idx) {
+    return NC_BUFFER_VADDR + p->mod->buf_byte_offset[idx];
 }
 
 static void fail(NcParser *p, const char *msg) {
@@ -141,18 +157,71 @@ static char *parse_string_expr(NcParser *p, uint32_t *out_len) {
     return result;
 }
 
+/* Erkennt "AddressOf(buf)" (loest sofort zu einem compile-time-
+   konstanten Literal auf - Pufferadressen stehen fest, es gibt keine
+   Laufzeit-Zeigerarithmetik) oder "PeekInt(buf, byteOffset)" (liest 4
+   Byte aus einer compile-time-bekannten absoluten Adresse) - siehe
+   NOVALANG_SPEC_v0.5.md. Rueckgabe: 1 = erkannt+verarbeitet
+   (out_is_peek/out_peek_addr/out_literal gesetzt), 0 = keiner der
+   beiden Spezialfaelle (Aufrufer parst normal weiter), -1 = Fehler
+   INNERHALB eines erkannten Spezialfalls. */
+static int try_parse_special_term(NcParser *p, int *out_is_peek, uint32_t *out_peek_addr, int64_t *out_literal) {
+    if (is_ident(p, "AddressOf")) {
+        advance(p);
+        expect_kind(p, TOK_LPAREN, "'('");
+        if (p->failed) return -1;
+        if (p->cur.kind != TOK_IDENT) { fail(p, "Puffername erwartet (AddressOf)"); return -1; }
+        int idx = find_buffer(p, p->cur.text, p->cur.len);
+        if (idx < 0) { fail(p, "unbekannter Puffer (nicht per 'Dim ... As Buffer' definiert)"); return -1; }
+        advance(p);
+        expect_kind(p, TOK_RPAREN, "')'");
+        if (p->failed) return -1;
+        *out_is_peek = 0;
+        *out_literal = (int64_t)buffer_addr(p, idx);
+        return 1;
+    }
+    if (is_ident(p, "PeekInt")) {
+        advance(p);
+        expect_kind(p, TOK_LPAREN, "'('");
+        if (p->failed) return -1;
+        if (p->cur.kind != TOK_IDENT) { fail(p, "Puffername erwartet (PeekInt)"); return -1; }
+        int idx = find_buffer(p, p->cur.text, p->cur.len);
+        if (idx < 0) { fail(p, "unbekannter Puffer (nicht per 'Dim ... As Buffer' definiert)"); return -1; }
+        advance(p);
+        expect_kind(p, TOK_COMMA, "','");
+        if (p->failed) return -1;
+        if (p->cur.kind != TOK_INT) { fail(p, "Ganzzahl-Byteoffset erwartet (PeekInt)"); return -1; }
+        int64_t offset = p->cur.int_val;
+        if (offset < 0 || offset + 4 > (int64_t)p->mod->buf_size[idx]) { fail(p, "PeekInt-Offset ausserhalb des Puffers"); return -1; }
+        advance(p);
+        expect_kind(p, TOK_RPAREN, "')'");
+        if (p->failed) return -1;
+        *out_is_peek = 1;
+        *out_peek_addr = buffer_addr(p, idx) + (uint32_t)offset;
+        return 1;
+    }
+    return 0;
+}
+
 /* IntExpr := IntTerm (("+" | "-") IntTerm)*
-   IntTerm := IntLiteral | Ident (muss eine bereits per Dim definierte
-   Integer-Variable sein). Anders als StringExpr NICHT compile-time
-   ausgewertet - liefert eine Kette von NcIntTerm fuer den Codegenerator
-   (echte Laufzeit-Arithmetik, siehe NOVALANG_SPEC_v0.3.md). */
+   IntTerm := IntLiteral | Ident | "AddressOf(...)" | "PeekInt(...)".
+   Ident muss eine bereits per Dim definierte Integer-Variable sein.
+   Anders als StringExpr NICHT compile-time ausgewertet - liefert eine
+   Kette von NcIntTerm fuer den Codegenerator (echte Laufzeit-
+   Arithmetik, siehe NOVALANG_SPEC_v0.3.md). */
 static NcIntTerm *parse_int_expr(NcParser *p) {
     NcIntTerm *head = NULL, *tail = NULL;
     char op = '+';
     for (;;) {
         NcIntTerm *term = (NcIntTerm *)calloc(1, sizeof(NcIntTerm));
         term->op = op;
-        if (p->cur.kind == TOK_INT) {
+        int is_peek = 0; uint32_t peek_addr = 0; int64_t lit = 0;
+        int special = try_parse_special_term(p, &is_peek, &peek_addr, &lit);
+        if (special < 0) { free(term); return NULL; }
+        if (special == 1) {
+            if (is_peek) { term->is_peek = 1; term->peek_addr = peek_addr; }
+            else { term->is_var = 0; term->literal = lit; }
+        } else if (p->cur.kind == TOK_INT) {
             term->is_var = 0;
             term->literal = p->cur.int_val;
             advance(p);
@@ -163,7 +232,7 @@ static NcIntTerm *parse_int_expr(NcParser *p) {
             term->var_index = (uint32_t)idx;
             advance(p);
         } else {
-            fail(p, "Ganzzahlliteral oder Variable erwartet");
+            fail(p, "Ganzzahlliteral, Variable, AddressOf(...) oder PeekInt(...) erwartet");
             free(term);
             return NULL;
         }
@@ -234,9 +303,18 @@ static NcStmt *parse_return(NcParser *p) {
     return st;
 }
 
-/* Ein Operand von SysCall(...) - bewusst nur Literal/Variable, kein
-   verschachtelter Ausdruck (siehe NOVALANG_SPEC_v0.4.md). */
+/* Ein Operand von SysCall(...)/PokeInt(...) - Literal/Variable/
+   "AddressOf(...)"/"PeekInt(...)", bewusst KEIN verschachtelter
+   Ausdruck (siehe NOVALANG_SPEC_v0.4.md Abschnitt 3). */
 static int parse_sys_arg(NcParser *p, NcSysArg *out) {
+    int is_peek = 0; uint32_t peek_addr = 0; int64_t lit = 0;
+    int special = try_parse_special_term(p, &is_peek, &peek_addr, &lit);
+    if (special < 0) return -1;
+    if (special == 1) {
+        if (is_peek) { out->is_peek = 1; out->peek_addr = peek_addr; }
+        else { out->is_var = 0; out->literal = lit; }
+        return 0;
+    }
     if (p->cur.kind == TOK_INT) {
         out->is_var = 0;
         out->literal = p->cur.int_val;
@@ -251,8 +329,81 @@ static int parse_sys_arg(NcParser *p, NcSysArg *out) {
         advance(p);
         return 0;
     }
-    fail(p, "Ganzzahlliteral oder Variable erwartet (SysCall-Argument)");
+    fail(p, "Ganzzahlliteral, Variable, AddressOf(...) oder PeekInt(...) erwartet (SysCall-Argument)");
     return -1;
+}
+
+/* PokeStmt := "PokeInt" "(" Ident "," IntLiteral "," SysArg ")" NEWLINE
+   - schreibt 4 Byte an eine compile-time-bekannte absolute Adresse
+   (Puffername + Byteoffset), siehe NOVALANG_SPEC_v0.5.md. */
+static NcStmt *parse_poke(NcParser *p) {
+    advance(p); /* "PokeInt" */
+    expect_kind(p, TOK_LPAREN, "'('");
+    if (p->failed) return NULL;
+    if (p->cur.kind != TOK_IDENT) { fail(p, "Puffername erwartet (PokeInt)"); return NULL; }
+    int idx = find_buffer(p, p->cur.text, p->cur.len);
+    if (idx < 0) { fail(p, "unbekannter Puffer (nicht per 'Dim ... As Buffer' definiert)"); return NULL; }
+    advance(p);
+    expect_kind(p, TOK_COMMA, "','");
+    if (p->failed) return NULL;
+    if (p->cur.kind != TOK_INT) { fail(p, "Ganzzahl-Byteoffset erwartet (PokeInt)"); return NULL; }
+    int64_t offset = p->cur.int_val;
+    if (offset < 0 || offset + 4 > (int64_t)p->mod->buf_size[idx]) { fail(p, "PokeInt-Offset ausserhalb des Puffers"); return NULL; }
+    advance(p);
+    expect_kind(p, TOK_COMMA, "','");
+    if (p->failed) return NULL;
+    NcSysArg value;
+    memset(&value, 0, sizeof(value));
+    if (parse_sys_arg(p, &value) != 0) return NULL;
+    expect_kind(p, TOK_RPAREN, "')'");
+    if (p->failed) return NULL;
+    expect_kind(p, TOK_NEWLINE, "Zeilenende");
+    if (p->failed) return NULL;
+
+    NcStmt *st = (NcStmt *)calloc(1, sizeof(NcStmt));
+    st->kind = STMT_POKE;
+    st->poke_addr = buffer_addr(p, idx) + (uint32_t)offset;
+    st->poke_value = value;
+    return st;
+}
+
+/* "PokeString(buf, byteOffset, StringExpr)" - schreibt compile-time-
+   bekannte String-Bytes in einen Puffer (siehe NOVALANG_SPEC_v0.5.md).
+   Erzeugt KEINEN Statement-Knoten (reine Daten-Initialisierung, wie
+   String-"Dim") - traegt sich direkt in mod->patch_* ein. */
+static void parse_poke_string(NcParser *p) {
+    advance(p); /* "PokeString" */
+    expect_kind(p, TOK_LPAREN, "'('");
+    if (p->failed) return;
+    if (p->cur.kind != TOK_IDENT) { fail(p, "Puffername erwartet (PokeString)"); return; }
+    int idx = find_buffer(p, p->cur.text, p->cur.len);
+    if (idx < 0) { fail(p, "unbekannter Puffer (nicht per 'Dim ... As Buffer' definiert)"); return; }
+    advance(p);
+    expect_kind(p, TOK_COMMA, "','");
+    if (p->failed) return;
+    if (p->cur.kind != TOK_INT) { fail(p, "Ganzzahl-Byteoffset erwartet (PokeString)"); return; }
+    int64_t offset = p->cur.int_val;
+    advance(p);
+    expect_kind(p, TOK_COMMA, "','");
+    if (p->failed) return;
+    uint32_t slen = 0;
+    char *str = parse_string_expr(p, &slen);
+    if (p->failed || !str) return;
+    if (offset < 0 || offset + (int64_t)slen > (int64_t)p->mod->buf_size[idx]) {
+        fail(p, "PokeString ueberschreitet den Puffer");
+        free(str);
+        return;
+    }
+    expect_kind(p, TOK_RPAREN, "')'");
+    if (p->failed) { free(str); return; }
+    expect_kind(p, TOK_NEWLINE, "Zeilenende");
+    if (p->failed) { free(str); return; }
+
+    if (p->mod->patch_count >= 16u) { fail(p, "zu viele PokeString-Aufrufe (v0.5-Limit 16)"); free(str); return; }
+    p->mod->patch_bytes[p->mod->patch_count] = str;
+    p->mod->patch_addr[p->mod->patch_count] = buffer_addr(p, idx) + (uint32_t)offset;
+    p->mod->patch_len[p->mod->patch_count] = slen;
+    p->mod->patch_count++;
 }
 
 /* SysCallAssignStmt := Ident "=" "SysCall" "(" SysArg "," SysArg ","
@@ -382,7 +533,8 @@ static NcStmt *parse_if(NcParser *p) {
 static void parse_dim(NcParser *p) {
     advance(p); /* "Dim" */
     if (p->cur.kind != TOK_IDENT) { fail(p, "Variablenname erwartet"); return; }
-    if (find_symbol(p, p->cur.text, p->cur.len) || find_int_var(p, p->cur.text, p->cur.len) >= 0) {
+    if (find_symbol(p, p->cur.text, p->cur.len) || find_int_var(p, p->cur.text, p->cur.len) >= 0 ||
+        find_buffer(p, p->cur.text, p->cur.len) >= 0) {
         fail(p, "Variable bereits definiert (keine Neudeklaration/-zuweisung per Dim)");
         return;
     }
@@ -418,8 +570,30 @@ static void parse_dim(NcParser *p) {
         p->mod->int_var_names[p->mod->int_var_count] = name;
         p->mod->int_var_initial[p->mod->int_var_count] = initial;
         p->mod->int_var_count++;
+    } else if (is_ident(p, "Buffer")) {
+        /* "Dim buf As Buffer(N)" - N zero-initialisierte Byte in der
+           Puffer-Unterregion (siehe NOVALANG_SPEC_v0.5.md), fuer
+           Syscall-Argument-Structs. KEIN "=" (anders als String/
+           Integer) - ein Puffer hat keinen sinnvollen Literalwert. */
+        advance(p);
+        expect_kind(p, TOK_LPAREN, "'('");
+        if (p->failed) { free(name); return; }
+        if (p->cur.kind != TOK_INT || p->cur.int_val <= 0) { fail(p, "positive Ganzzahl-Puffergroesse erwartet"); free(name); return; }
+        uint32_t size = (uint32_t)p->cur.int_val;
+        advance(p);
+        expect_kind(p, TOK_RPAREN, "')'");
+        expect_kind(p, TOK_NEWLINE, "Zeilenende");
+        if (p->failed) { free(name); return; }
+        if (p->mod->buf_count >= 16u) { fail(p, "zu viele Puffer (v0.5-Limit 16)"); free(name); return; }
+        uint32_t used = 0;
+        for (uint32_t i = 0; i < p->mod->buf_count; ++i) used += p->mod->buf_size[i];
+        if (used + size > NC_BUFFER_REGION_SIZE) { fail(p, "Puffer-Region voll (v0.5-Limit 4 KiB gesamt)"); free(name); return; }
+        p->mod->buf_names[p->mod->buf_count] = name;
+        p->mod->buf_byte_offset[p->mod->buf_count] = used;
+        p->mod->buf_size[p->mod->buf_count] = size;
+        p->mod->buf_count++;
     } else {
-        fail(p, "'String' oder 'Integer' erwartet");
+        fail(p, "'String', 'Integer' oder 'Buffer' erwartet");
         free(name);
     }
 }
@@ -445,10 +619,12 @@ static NcStmt *parse_stmt_list(NcParser *p, int allow_else_stop) {
             st = parse_return(p);
         } else if (p->cur.kind == TOK_KW_IF) {
             st = parse_if(p);
+        } else if (is_ident(p, "PokeInt")) {
+            st = parse_poke(p);
         } else if (p->cur.kind == TOK_IDENT && find_int_var(p, p->cur.text, p->cur.len) >= 0) {
             st = parse_assign(p);
         } else {
-            fail(p, "Anweisung erwartet (Dim/Console.WriteLine/Return/If/Zuweisung)");
+            fail(p, "Anweisung erwartet (Dim/Console.WriteLine/Return/If/Zuweisung/PokeInt)");
             return head;
         }
         if (p->failed) return head;
