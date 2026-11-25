@@ -290,33 +290,67 @@ static uint32_t parse_sec_flags(const char *s) {
     return f;
 }
 
+/* Prueft, ob s eine VOLLSTAENDIG als Zahl lesbare, nicht-leere Zeichenkette
+   ist (dezimal oder "0x..."-hex) - im Unterschied zu parse_u64() (strtoull
+   mit NULL-endptr), das z. B. bei "\Users\foo" einfach 0 zurueckgeben wuerde
+   und so ein Windows-Pfadfragment faelschlich als Zahl akzeptieren wuerde. */
+static int is_full_number(const char *s, uint64_t *out_value) {
+    if (*s == '\0') return 0;
+    char *endptr = NULL;
+    uint64_t v = (uint64_t)strtoull(s, &endptr, 0);
+    if (endptr == s || *endptr != '\0') return 0;
+    *out_value = v;
+    return 1;
+}
+
+/* Spec-Format: TYP:FLAGS:VADDR:ALIGN:DATEI[:VSIZE]. Die urspruengliche
+   Implementierung spaltete naiv bei JEDEM Doppelpunkt - das zerstoerte
+   absolute Windows-Pfade im DATEI-Feld ("C:\Users\..." wurde als eigenes
+   Feld "C" + Rest fehlinterpretiert, "nef: Fehler: kann 'C' nicht lesen").
+   Fix: nur die ersten 4 Felder (TYP/FLAGS/VADDR/ALIGN) ueber die ersten 4
+   Doppelpunkte abspalten; der Rest ist DATEI[:VSIZE]. Ob ein optionales
+   VSIZE-Suffix vorhanden ist, wird NICHT durch Zaehlen weiterer Doppelpunkte
+   entschieden (ein Windows-Pfad kann selbst einen Laufwerksbuchstaben-
+   Doppelpunkt enthalten), sondern dadurch, ob der Teil NACH dem LETZTEN
+   Doppelpunkt vollstaendig als Zahl lesbar ist. */
 static void parse_section_spec(const char *spec, pending_section_t *out) {
     char buf[1024];
     size_t n = strlen(spec);
     if (n >= sizeof(buf)) die("--section-Angabe zu lang");
     memcpy(buf, spec, n + 1);
 
-    char *parts[6] = {0};
-    int count = 0;
-    char *tok = buf;
+    char *parts[4] = {0};
     char *p = buf;
-    while (count < 6) {
+    for (int i = 0; i < 4; i++) {
         char *colon = strchr(p, ':');
-        parts[count++] = tok = p;
-        if (!colon) break;
+        if (!colon) die("--section braucht TYP:FLAGS:VADDR:ALIGN:DATEI[:VSIZE]");
+        parts[i] = p;
         *colon = '\0';
         p = colon + 1;
-        tok = p;
     }
-    if (count < 5) die("--section braucht TYP:FLAGS:VADDR:ALIGN:DATEI[:VSIZE]");
+    char *rest = p; /* DATEI[:VSIZE] - kann selbst Doppelpunkte enthalten */
+    if (*rest == '\0') die("--section braucht TYP:FLAGS:VADDR:ALIGN:DATEI[:VSIZE]");
+
+    char *file_field = rest;
+    uint64_t explicit_vsize = 0;
+    int has_vsize = 0;
+    char *last_colon = strrchr(rest, ':');
+    if (last_colon != NULL) {
+        uint64_t v;
+        if (is_full_number(last_colon + 1, &v)) {
+            *last_colon = '\0';
+            explicit_vsize = v;
+            has_vsize = 1;
+        }
+    }
 
     memset(&out->entry, 0, sizeof(out->entry));
     out->entry.type = parse_sec_type(parts[0]);
     out->entry.flags = parse_sec_flags(parts[1]);
     out->entry.vaddr = parse_u64(parts[2]);
     out->entry.alignment = (uint32_t)parse_u64(parts[3]);
-    out->data = read_file(parts[4], &out->data_len);
-    out->entry.vsize = (count >= 6) ? parse_u64(parts[5]) : (uint64_t)out->data_len;
+    out->data = read_file(file_field, &out->data_len);
+    out->entry.vsize = has_vsize ? explicit_vsize : (uint64_t)out->data_len;
 }
 
 /* ---- Subcommands ------------------------------------------------------ */

@@ -9,6 +9,40 @@ static uint32_t pmm_frame_numa_nodes[PMM_MAX_FRAMES];
 static uint32_t pmm_frame_count_value = 0;
 static uint32_t pmm_reserved_end = 0;
 
+/* Doppel-Freigabe-Erkennung (2026-11-24, siehe KERNEL_GAP_ANALYSIS.md
+   Abschnitt 2.3-Nachtrag/feedback_paging_destroy_address_space_corruption.md):
+   1 Bit pro moeglichem Rahmen innerhalb von PMM_BOOTSTRAP_IDENTITY_LIMIT
+   (= PMM_MAX_FRAMES Bits = 2 KiB), gesetzt genau dann, wenn dieser Rahmen
+   gerade im Freispeicher (pmm_frames) liegt. O(1) statt eines linearen
+   Scans ueber pmm_frames bei JEDER pmm_free_page()-Operation - ein
+   erster Versuch mit linearem Scan hat beim Boot-Test echte,
+   zeitkritische Selbsttests (Task-Deadline/Thread-Manager) durch die
+   dadurch verursachte zusaetzliche Boot-Laufzeit zum Fehlschlagen
+   gebracht, siehe o.g. Memory-Eintrag. */
+static uint8_t pmm_free_bitmap[(PMM_MAX_FRAMES + 7u) / 8u];
+
+static inline uint32_t pmm_bitmap_index(uint32_t page) {
+    return page / PMM_PAGE_SIZE;
+}
+
+static inline int pmm_bitmap_test(uint32_t page) {
+    uint32_t index = pmm_bitmap_index(page);
+    if (index >= PMM_MAX_FRAMES) return 0;
+    return (pmm_free_bitmap[index / 8u] >> (index % 8u)) & 1u;
+}
+
+static inline void pmm_bitmap_set(uint32_t page) {
+    uint32_t index = pmm_bitmap_index(page);
+    if (index >= PMM_MAX_FRAMES) return;
+    pmm_free_bitmap[index / 8u] |= (uint8_t)(1u << (index % 8u));
+}
+
+static inline void pmm_bitmap_clear(uint32_t page) {
+    uint32_t index = pmm_bitmap_index(page);
+    if (index >= PMM_MAX_FRAMES) return;
+    pmm_free_bitmap[index / 8u] &= (uint8_t)~(1u << (index % 8u));
+}
+
 /* Dedizierte, NIE einzeln fragmentierte Reserve fuer pmm_alloc_contiguous()
    (2026-11-21, project_pmm_capacity_increase.md): nach dem Anheben von
    PMM_BOOTSTRAP_IDENTITY_LIMIT auf 64 MiB gab es zwar zehntausende freie
@@ -45,6 +79,7 @@ uint32_t pmm_frame_count(void) {
 
 int pmm_initialize(void) {
     pmm_frame_count_value = 0;
+    for (uint32_t i = 0; i < sizeof(pmm_free_bitmap); ++i) pmm_free_bitmap[i] = 0;
 
     const bib_kernel_info_t *kernel = bib_kernel();
     if (!kernel->has_kernel) {
@@ -94,6 +129,7 @@ int pmm_initialize(void) {
             }
             pmm_frames[pmm_frame_count_value] = page;
             pmm_frame_numa_nodes[pmm_frame_count_value] = acpi_srat_memory_domain_lookup(page);
+            pmm_bitmap_set(page);
             ++pmm_frame_count_value;
 
             uint64_t next_page = (uint64_t)page + PMM_PAGE_SIZE;
@@ -129,6 +165,7 @@ int pmm_initialize(void) {
                 uint32_t want = candidate + i * PMM_PAGE_SIZE;
                 for (uint32_t j = 0; j < pmm_frame_count_value; ++j) {
                     if (pmm_frames[j] == want) {
+                        pmm_bitmap_clear(want);
                         --pmm_frame_count_value;
                         pmm_frames[j] = pmm_frames[pmm_frame_count_value];
                         pmm_frame_numa_nodes[j] = pmm_frame_numa_nodes[pmm_frame_count_value];
@@ -149,6 +186,7 @@ uint32_t pmm_alloc_page(uint32_t *out_numa_node) {
     }
     --pmm_frame_count_value;
     uint32_t page = pmm_frames[pmm_frame_count_value];
+    pmm_bitmap_clear(page);
     if (out_numa_node) *out_numa_node = pmm_frame_numa_nodes[pmm_frame_count_value];
     return page;
 }
@@ -160,6 +198,7 @@ uint32_t pmm_alloc_page_strict(uint32_t node, uint32_t *out_numa_node) {
             continue;
         }
         uint32_t page = pmm_frames[i];
+        pmm_bitmap_clear(page);
         uint32_t last = pmm_frame_count_value - 1;
         if (i != last) {
             pmm_frames[i] = pmm_frames[last];
@@ -188,11 +227,35 @@ int pmm_free_page(uint32_t page) {
     if (page < pmm_reserved_end) {
         return -1;
     }
+    /* Obergrenze (2026-11-24, Nachtrag zur Doppel-Freigabe-Erkennung
+       unten): vorher gab es HIER keine Pruefung gegen
+       PMM_BOOTSTRAP_IDENTITY_LIMIT - ein Aufrufer-Bug, der eine Adresse
+       ausserhalb des echten Identity-Map-/PMM-Bereichs freigibt (z.B.
+       eine MMIO- oder Framebuffer-Adresse statt eines echten Datenrahmens),
+       waere blind akzeptiert und spaeter von pmm_alloc_page() an einen
+       voellig unbeteiligten Aufrufer als vermeintlich normaler Rahmen
+       weitergereicht worden - ein plausibler Mechanismus fuer die in
+       feedback_paging_destroy_address_space_corruption.md beschriebene,
+       weit entfernte Speicherkorruption. */
+    if (page >= PMM_BOOTSTRAP_IDENTITY_LIMIT) {
+        return -1;
+    }
     if (pmm_frame_count_value >= PMM_MAX_FRAMES) {
+        return -1;
+    }
+    /* Doppel-Freigabe-Erkennung (2026-11-24, siehe KERNEL_GAP_ANALYSIS.md
+       Abschnitt 2.3-Nachtrag/feedback_paging_destroy_address_space_
+       corruption.md): O(1) per Bitmap statt eines linearen Scans ueber
+       pmm_frames - ein erster Versuch mit linearem Scan hat echte,
+       zeitkritische Selbsttests (Task-Deadline/Thread-Manager) durch die
+       dadurch verursachte zusaetzliche Boot-Laufzeit zum Fehlschlagen
+       gebracht. */
+    if (pmm_bitmap_test(page)) {
         return -1;
     }
     pmm_frames[pmm_frame_count_value] = page;
     pmm_frame_numa_nodes[pmm_frame_count_value] = acpi_srat_memory_domain_lookup(page);
+    pmm_bitmap_set(page);
     ++pmm_frame_count_value;
     return 0;
 }
@@ -217,6 +280,16 @@ int pmm_self_test(void) {
     if (pmm_free_page(page_b) != 0) return -1;
     if (pmm_free_page(page_a) != 0) return -1;
     if (pmm_frame_count_value != initial_count) return -1;
+
+    /* Doppel-Freigabe muss abgelehnt werden, OHNE den Stack zu verdoppeln
+       (siehe feedback_paging_destroy_address_space_corruption.md - genau
+       dieser fehlende Schutz machte eine echte Speicherkorruption erst
+       Boot-Schritte spaeter sichtbar statt sofort hier). */
+    uint32_t page_c = pmm_alloc_page(&numa_a);
+    if (page_c == 0) return -1;
+    if (pmm_free_page(page_c) != 0) return -1;
+    if (pmm_free_page(page_c) == 0) return -1; /* zweite Freigabe MUSS scheitern */
+    if (pmm_frame_count_value != initial_count) return -1; /* kein Duplikat im Stack */
 
     /* pmm_alloc_contiguous(): vier Rahmen muessen als EIN zusammenhaengender
        Lauf (aufsteigend, je PMM_PAGE_SIZE auseinander) zurueckkommen, und
@@ -288,6 +361,7 @@ int pmm_alloc_contiguous(uint32_t count, uint32_t *out_first_page) {
             uint32_t want = base + k * PMM_PAGE_SIZE;
             for (uint32_t j = 0; j < pmm_frame_count_value; ++j) {
                 if (pmm_frames[j] == want) {
+                    pmm_bitmap_clear(want);
                     --pmm_frame_count_value;
                     pmm_frames[j] = pmm_frames[pmm_frame_count_value];
                     pmm_frame_numa_nodes[j] = pmm_frame_numa_nodes[pmm_frame_count_value];

@@ -15,6 +15,8 @@
 #include "process.h"
 #include "object.h"
 #include "kalloc.h"
+#include "security.h"
+#include "ipc.h"
 #include <stddef.h>
 
 typedef struct {
@@ -186,6 +188,32 @@ int process_reap(uint32_t pid) {
     if (!rec || rec->state != PROCESS_STATE_TERMINATED) {
         return -1;
     }
+
+    /* NPSPEC-PROZESS-LIFECYCLE-0001-Nachtrag (KERNEL_GAP_ANALYSIS.md
+       Abschnitt 2.3): process_terminate()/process_reap() gaben bisher
+       KEINE der bei process_create() belegten Ressourcen frei. Die
+       beiden hier verfuegbaren Primitive werden jetzt tatsaechlich
+       aufgerufen - object_release() balanciert den object_create() aus
+       process_create(), security_forget() gibt den security.c-
+       Tabellenplatz (falls dieser Prozess je security_grant() erhalten
+       hat) wirklich frei, statt ihn mit geloeschten Caps dauerhaft
+       belegt zu lassen. */
+    object_release(rec->handle);
+    security_forget(rec->pid);
+    ipc_endpoint_release_owner(rec->pid);
+
+    /* Adressraum-/Seitenverwaltungsfreigabe (Page-Directory + gemappte
+       Seiten aus ring3.c) bleibt BEWUSST ein offener Folgepunkt: ein
+       erster paging_destroy_address_space()-Versuch (2026-11-24) hat
+       sich im isolierten Boot-Test als Ursache einer spaeten, latenten
+       Speicherkorruption erwiesen (Page Fault, CR2 weit ausserhalb des
+       konfigurierten RAM, Stunden nach der eigentlichen Freigabe, siehe
+       KERNEL_GAP_ANALYSIS.md Abschnitt 2.3-Nachtrag) - Ursache trotz
+       mehrfacher Code-Durchsicht nicht mit vertretbarem Aufwand sicher
+       gefunden. Rueckgaengig gemacht, um die Boot-Baseline nicht zu
+       gefaehrden (Projektregel: niemals eine Aenderung behalten, die den
+       Boot bricht, auch wenn die Ursache noch unklar ist). */
+
     *rec = (process_record_t){0};
     --process_count_value;
     return 0;
@@ -222,6 +250,18 @@ int process_manager_self_test(void) {
     if (process_resume(test_pid) != 0) return -1;
     if (process_state(test_pid) != PROCESS_STATE_RUNNING) return -1;
 
+    /* Beweist den neuen IPC-Endpoint-Reaper (ipc_endpoint_release_owner(),
+       siehe process_reap() oben): ein vom Testprozess gehaltener, offener
+       Endpoint MUSS beim Reap automatisch geschlossen werden - vorher
+       blieb er fuer immer offen (ipc.h-Kommentar "bewusst entkoppelt...
+       ein kuenftiger Reaper-Mechanismus kann ipc_endpoint_close() fuer
+       jeden vom terminierten Prozess gehaltenen Endpoint aufrufen"). */
+    uint32_t leak_ep_id = 0;
+    if (ipc_endpoint_create(test_pid, 0, &leak_ep_id) != 0) return -1;
+    ipc_endpoint_info_t leak_info;
+    if (ipc_endpoint_info(leak_ep_id, &leak_info) != 0) return -1;
+    if (leak_info.state != IPC_ENDPOINT_STATE_OPEN) return -1;
+
     if (process_terminate(test_pid, 0x2A) != 0) return -1;
     if (process_state(test_pid) != PROCESS_STATE_TERMINATED) return -1;
     if (process_exit_status(test_pid) != 0x2A) return -1;
@@ -232,6 +272,9 @@ int process_manager_self_test(void) {
     if (process_count_value != count_before_reap - 1u) return -1;
     if (process_lookup(test_pid) != 0) return -1; /* Slot wirklich frei */
     if (process_exit_status(test_pid) != 0) return -1; /* mit Slot verschwunden */
+
+    if (ipc_endpoint_info(leak_ep_id, &leak_info) != 0) return -1; /* Introspection bleibt moeglich */
+    if (leak_info.state != IPC_ENDPOINT_STATE_CLOSED) return -1; /* aber jetzt wirklich geschlossen */
 
     /* Beweist die eigentliche Aenderung dieser Session: mehr Prozesse
        anlegen, als die urspruengliche PROCESS_CAPACITY jemals erlaubt

@@ -125,6 +125,13 @@ int ipc_endpoint_info(uint32_t endpoint_id, ipc_endpoint_info_t *out_info);
    IPC_ERR_NOT_FOUND/_CLOSED/_DENIED sonst. */
 int ipc_endpoint_check_sender(uint32_t endpoint_id, uint32_t sender_pid);
 
+/* Schliesst JEDEN noch OPEN-en Endpoint, dessen owner_pid == pid ist (siehe
+   Kommentar oben: "ein kuenftiger Reaper-Mechanismus kann ipc_endpoint_
+   close() fuer jeden vom terminierten Prozess gehaltenen Endpoint
+   aufrufen"). Fuer process_reap() gedacht. pid==0 ist ein Noop (kein
+   Prozess, trifft sonst faelschlich freie/kernel-eigene Endpoints). */
+void ipc_endpoint_release_owner(uint32_t pid);
+
 #define DEVICE_CAPACITY     8u
 #define DEVICE_STATE_ACTIVE 1u
 #define OBJECT_TYPE_DEVICE  6u

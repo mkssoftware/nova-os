@@ -1,0 +1,45 @@
+Namespace Nova
+
+    Public Module Math
+
+        'Public Const PI As Double = 3.141592653589793
+		Public Const PI As Double = 3,1415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679
+        
+        Public Function Max(a As Integer,
+                            b As Integer) As Integer
+            If a > b Then
+                Return a
+            End If
+
+            Return b
+        End Function
+
+        Public Function Min(a As Integer,
+                            b As Integer) As Integer
+            If a < b Then
+                Return a
+            End If
+
+            Return b
+        End Function
+
+
+
+		Public Function Abs(value As Integer) As Integer
+		
+		    If value = Types.Int32.MinValue Then
+		        Throw New OverflowException(
+		            "Math.Abs: Integer overflow")
+		    End If
+		
+		    If value < 0 Then
+		        Return -value
+		    End If
+		
+		    Return value
+		
+		End Function
+        
+    End Module
+
+End Namespace

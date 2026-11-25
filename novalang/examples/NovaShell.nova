@@ -1,0 +1,513 @@
+' NovaShell.nova - der eigentliche NovaShell 1.0 (Nutzer-Masterauftrag,
+' siehe project_novashell.md), ERSTER echter Baustein (nicht mehr nur
+' ein Compiler-Testprogramm wie hello_*.nova). Installiert am echten
+' Zielpfad /System/Apps/Shell/NovaShell.nef (siehe kmain.c - legt dafuer
+' die Verzeichnisse /System, /System/Apps, /System/Apps/Shell per
+' echtem VFS_OP_CREATE an, falls sie noch nicht existieren).
+'
+' Diese Version beweist END-TO-END, dass alle in v0.1-0.15
+' geschaffenen Bausteine zu einer echten Shell zusammenpassen:
+'  1. Begruessung: ECHTES VFS_OP_LOOKUP+VFS_OP_READ von
+'     /System/Apps/Shell/greeting.txt (keine hartkodierte Zeichenkette -
+'     der Masterauftrag verlangt eine KONFIGURIERBARE Begruessungsdatei),
+'     MIT echter Platzhalter-Ersetzung (v0.15, siehe
+'     NOVALANG_SPEC_v0.15.md): "${OS_VERSION}" wird im Dateiinhalt
+'     gesucht (lineare Suche, CheckPlaceholderAt()) und durch die echte
+'     Versionszeichenkette ersetzt - braucht PeekByte/PeekInt mit
+'     LAUFZEIT-Offset-Variable (NEU in v0.15, symmetrisch zu v0.12s
+'     PokeInt/PokeByte-Erweiterung), um an einer zur Compile-Zeit NICHT
+'     bekannten Fundstelle zu lesen/kopieren.
+'  2. CommandIsHelp(): ein ECHTER Befehls-Dispatch-Baustein (Byte-fuer-
+'     Byte-Vergleich der eingegebenen Zeile gegen ein Literal) - der
+'     Anfang des fuer ~29 Befehle benoetigten Musters. ps2.c liefert
+'     Buchstaben IMMER als Grossbuchstaben (siehe NOVALANG_SPEC_v0.11.md)
+'     - Befehle werden deshalb grossgeschrieben erkannt ("HELP").
+'  3. Eine ECHTE Live-Polling-Eingabeschleife (SysCall(4,1,...) JEDE
+'     Iteration neu, nicht wie in v0.12 eine feste synthetische Folge) -
+'     wiederverwendet ProcessOneVkeyLine() aus v0.12s ProcessOneVkey-
+'     Muster. Diese Testumgebung kann weiterhin KEINE echten
+'     Tastendruecke per QMP injizieren (siehe NOVALANG_SPEC_v0.10.md/
+'     v0.11.md) - die Schleife ist deshalb auf wenige Iterationen
+'     begrenzt (sonst wuerde ein echter NIE eintretender Tastendruck den
+'     Boot fuer immer blockieren) und meldet ehrlich, dass keine echte
+'     Taste erfasst wurde, statt etwas vorzutaeuschen.
+'  4. DoListRoot() (v0.16): ECHTER `ls`-Befehl - VFS_OP_LOOKUP("/") +
+'     wiederholtes VFS_OP_READ_DIRECTORY (Index 0,1,2,...) bis zum
+'     ersten Fehlschlag (leere Liste/Index ausserhalb). Jeder
+'     Eintragsname liegt in `vfsapi_dir_entry_t` bei Byte-Offset 20 -
+'     da `Console.WriteBuffer` nur einen BENANNTEN Puffer ab Offset 0
+'     ausgeben kann, wird der Name per PeekByte/PokeByte (beide mit
+'     Laufzeit-Offset, v0.15) in einen eigenen kleinen Puffer kopiert.
+'     Wird deterministisch direkt aufgerufen (nicht nur hinter Live-
+'     Eingabe versteckt) - eine echte VFS-Verzeichnisauflistung
+'     braucht keine Tastatur, um boot-verifizierbar zu sein.
+Module NovaShell
+    Function Main() As Int32
+        Console.WriteLine("NovaShell 1.0 (work in progress) starting")
+
+        Dim pathbuf As Buffer(40)
+        PokeString(pathbuf, 0, "/System/Apps/Shell/greeting.txt")
+
+        Dim lookupargs As Buffer(20)
+        PokeInt(lookupargs, 0, 0)
+        PokeInt(lookupargs, 4, AddressOf(pathbuf))
+        PokeInt(lookupargs, 8, 31)
+        PokeInt(lookupargs, 12, 0)
+        PokeInt(lookupargs, 16, 0)
+        Dim lookupResult As Integer = 999
+        lookupResult = SysCall(3, 1, AddressOf(lookupargs), 0)
+
+        If lookupResult = 0 Then
+            Dim greetHandle As Integer = 0
+            greetHandle = PeekInt(lookupargs, 16)
+
+            Dim greetbuf As Buffer(200)
+            Dim ioargs As Buffer(20)
+            PokeInt(ioargs, 0, greetHandle)
+            PokeInt(ioargs, 4, AddressOf(greetbuf))
+            PokeInt(ioargs, 8, 0)
+            PokeInt(ioargs, 12, 200)
+            PokeInt(ioargs, 16, 0)
+            Dim readResult As Integer = 999
+            readResult = SysCall(3, 2, AddressOf(ioargs), 0)
+
+            If readResult = 0 Then
+                Dim transferred As Integer = 0
+                transferred = PeekInt(ioargs, 16)
+
+                Dim versionbuf As Buffer(8)
+                PokeString(versionbuf, 0, "1.0")
+                Dim versionLen As Integer = 3
+
+                Dim outbuf As Buffer(220)
+                Dim placeholderPos As Integer = 0
+                Dim searchPos As Integer = 0
+                Dim searchLimit As Integer = 0
+                searchLimit = transferred - 13
+                Dim stillSearching As Integer = 1
+                Dim matchHere As Integer = 0
+
+                While searchPos <= searchLimit
+                    If stillSearching = 1 Then
+                        matchHere = CheckPlaceholderAt(searchPos)
+                        If matchHere = 1 Then
+                            placeholderPos = searchPos
+                            stillSearching = 0
+                        End If
+                    End If
+                    searchPos = searchPos + 1
+                End While
+
+                If stillSearching = 0 Then
+                    Dim srcPos As Integer = 0
+                    Dim dstPos As Integer = 0
+                    Dim copyByte As Integer = 0
+
+                    srcPos = 0
+                    dstPos = 0
+                    While srcPos < placeholderPos
+                        copyByte = PeekByte(greetbuf, srcPos)
+                        PokeByte(outbuf, dstPos, copyByte)
+                        srcPos = srcPos + 1
+                        dstPos = dstPos + 1
+                    End While
+
+                    Dim verSrcPos As Integer = 0
+                    While verSrcPos < versionLen
+                        copyByte = PeekByte(versionbuf, verSrcPos)
+                        PokeByte(outbuf, dstPos, copyByte)
+                        verSrcPos = verSrcPos + 1
+                        dstPos = dstPos + 1
+                    End While
+
+                    srcPos = placeholderPos + 13
+                    While srcPos < transferred
+                        copyByte = PeekByte(greetbuf, srcPos)
+                        PokeByte(outbuf, dstPos, copyByte)
+                        srcPos = srcPos + 1
+                        dstPos = dstPos + 1
+                    End While
+
+                    Console.WriteBuffer(outbuf, dstPos)
+                    Console.WriteLine("")
+                    Console.WriteLine("greeting placeholder substituted")
+                Else
+                    Console.WriteBuffer(greetbuf, transferred)
+                    Console.WriteLine("")
+                    Console.WriteLine("greeting had no placeholder")
+                End If
+            Else
+                Console.WriteLine("greeting read failed")
+            End If
+        Else
+            Console.WriteLine("greeting lookup failed")
+        End If
+
+        Dim listDummy As Integer = 0
+        listDummy = DoListRoot()
+
+        Dim line As Buffer(32)
+        Dim lineLen As Integer = 0
+        Dim done As Integer = 0
+        Dim ch As Integer = 0
+
+        PokeByte(line, 0, 72)
+        PokeByte(line, 1, 69)
+        PokeByte(line, 2, 76)
+        PokeByte(line, 3, 80)
+        lineLen = 4
+        Dim helpCheck1 As Integer = 0
+        helpCheck1 = CommandIsHelp()
+        If helpCheck1 = 1 Then
+            Console.WriteLine("command match HELP ok")
+        Else
+            Console.WriteLine("command match HELP failed")
+        End If
+
+        lineLen = 0
+        Dim helpCheck2 As Integer = 0
+        helpCheck2 = CommandIsHelp()
+        If helpCheck2 = 0 Then
+            Console.WriteLine("command match empty correctly rejected")
+        Else
+            Console.WriteLine("command match empty incorrectly accepted")
+        End If
+
+        Dim pollbuf As Buffer(40)
+        Dim iter As Integer = 0
+        Dim maxIter As Integer = 10
+        Dim pr As Integer = 999
+        Dim hasEv As Integer = 0
+        Dim vkeyVal As Integer = 0
+        Dim dummy2 As Integer = 0
+
+        While iter < maxIter
+            If done = 0 Then
+                pr = SysCall(4, 1, AddressOf(pollbuf), 0)
+                If pr = 0 Then
+                    hasEv = PeekInt(pollbuf, 0)
+                    If hasEv <> 0 Then
+                        vkeyVal = PeekInt(pollbuf, 12)
+                        dummy2 = ProcessOneVkeyLine(vkeyVal)
+                    End If
+                End If
+            End If
+            iter = iter + 1
+        End While
+
+        Console.WriteLine("live input loop finished")
+
+        Dim isHelp As Integer = 0
+        isHelp = CommandIsHelp()
+        Dim isExit As Integer = 0
+        isExit = CommandIsExit()
+        Dim isLs As Integer = 0
+        isLs = CommandIsLs()
+
+        If isHelp = 1 Then
+            Console.WriteLine("help command recognized from live input")
+        Else
+            If isExit = 1 Then
+                Console.WriteLine("exit command recognized (keine echte Terminierung implementiert)")
+            Else
+                If isLs = 1 Then
+                    Dim lsDummy As Integer = 0
+                    lsDummy = DoListRoot()
+                Else
+                    If lineLen = 0 Then
+                        Console.WriteLine("no real keypress captured (headless boot, as expected)")
+                    Else
+                        Console.WriteLine("captured real keypress(es), no recognized command")
+                    End If
+                End If
+            End If
+        End If
+
+        Return 0
+    End Function
+
+    ' ProcessOneVkeyLine (v0.13, wiederverwendetes Muster aus v0.12s
+    ' ProcessOneVkey): Enter setzt "done", Backspace dekrementiert
+    ' lineLen, jede andere druckbare Taste wird angehaengt.
+    Function ProcessOneVkeyLine(vk As Integer) As Int32
+        If done = 0 Then
+            If vk = 259 Then
+                done = 1
+            Else
+                If vk = 257 Then
+                    If lineLen > 0 Then
+                        lineLen = lineLen - 1
+                    End If
+                Else
+                    ch = VkeyToAscii(vk)
+                    If ch <> 0 Then
+                        PokeByte(line, lineLen, ch)
+                        lineLen = lineLen + 1
+                    End If
+                End If
+            End If
+        End If
+        Return 0
+    End Function
+
+    ' VkeyToAscii (siehe NOVALANG_SPEC_v0.11.md) - druckbarer ASCII-
+    ' Bereich [32,126] 1:1 durchgereicht, vier Steuertasten abgebildet.
+    Function VkeyToAscii(vkey As Integer) As Int32
+        If vkey >= 32 Then
+            If vkey <= 126 Then
+                Return vkey
+            End If
+        End If
+        If vkey = 256 Then
+            Return 27
+        End If
+        If vkey = 257 Then
+            Return 8
+        End If
+        If vkey = 258 Then
+            Return 9
+        End If
+        If vkey = 259 Then
+            Return 13
+        End If
+        Return 0
+    End Function
+
+    ' CheckPlaceholderAt (v0.15, siehe NOVALANG_SPEC_v0.15.md): prueft,
+    ' ob ab startPos in greetbuf das Literal "${OS_VERSION}" (13 Byte)
+    ' steht. "mp" (die tatsaechliche Peek-Adresse je Byte) wird JEDE
+    ' Iteration per normaler Integer-Arithmetik neu berechnet (startPos+i)
+    ' und DANN als Laufzeit-Offset-Variable an PeekByte uebergeben - ein
+    ' PeekByte-Aufruf selbst kennt nur EINE Variable als Offset, keine
+    ' Ausdruecke (siehe NOVALANG_SPEC_v0.4.md Abschnitt 3 zur bewussten
+    ' SysArg-Einschraenkung), deshalb die Zwischenvariable "mp".
+    Function CheckPlaceholderAt(startPos As Integer) As Int32
+        Dim ok As Integer = 1
+        Dim mp As Integer = 0
+        Dim c As Integer = 0
+
+        ' WICHTIG (siehe feedback_novalang_dim_initial_is_static.md):
+        ' "Dim ok As Integer = 1" ist ein EINMALIGER Startwert fuer die
+        ' .data-Section, KEIN bei jedem Funktionsaufruf neu ausgefuehrter
+        ' Reset - diese Function wird vom Aufrufer (siehe Main) aber
+        ' WIEDERHOLT aufgerufen (einmal pro Suchposition). Ohne diesen
+        ' expliziten Laufzeit-Reset bliebe "ok" nach dem ERSTEN
+        ' Nicht-Treffer fuer immer 0.
+        ok = 1
+
+        mp = startPos
+        c = PeekByte(greetbuf, mp)
+        If c <> 36 Then
+            ok = 0
+        End If
+
+        mp = startPos + 1
+        c = PeekByte(greetbuf, mp)
+        If c <> 123 Then
+            ok = 0
+        End If
+
+        mp = startPos + 2
+        c = PeekByte(greetbuf, mp)
+        If c <> 79 Then
+            ok = 0
+        End If
+
+        mp = startPos + 3
+        c = PeekByte(greetbuf, mp)
+        If c <> 83 Then
+            ok = 0
+        End If
+
+        mp = startPos + 4
+        c = PeekByte(greetbuf, mp)
+        If c <> 95 Then
+            ok = 0
+        End If
+
+        mp = startPos + 5
+        c = PeekByte(greetbuf, mp)
+        If c <> 86 Then
+            ok = 0
+        End If
+
+        mp = startPos + 6
+        c = PeekByte(greetbuf, mp)
+        If c <> 69 Then
+            ok = 0
+        End If
+
+        mp = startPos + 7
+        c = PeekByte(greetbuf, mp)
+        If c <> 82 Then
+            ok = 0
+        End If
+
+        mp = startPos + 8
+        c = PeekByte(greetbuf, mp)
+        If c <> 83 Then
+            ok = 0
+        End If
+
+        mp = startPos + 9
+        c = PeekByte(greetbuf, mp)
+        If c <> 73 Then
+            ok = 0
+        End If
+
+        mp = startPos + 10
+        c = PeekByte(greetbuf, mp)
+        If c <> 79 Then
+            ok = 0
+        End If
+
+        mp = startPos + 11
+        c = PeekByte(greetbuf, mp)
+        If c <> 78 Then
+            ok = 0
+        End If
+
+        mp = startPos + 12
+        c = PeekByte(greetbuf, mp)
+        If c <> 125 Then
+            ok = 0
+        End If
+
+        Return ok
+    End Function
+
+    ' CommandIsHelp (v0.13, siehe NOVALANG_SPEC_v0.13.md): Byte-fuer-Byte-
+    ' Vergleich der aktuellen Eingabezeile gegen das Literal "HELP" - der
+    ' Anfang des Befehls-Dispatch-Musters fuer die ~29 Pflichtbefehle.
+    Function CommandIsHelp() As Int32
+        If lineLen = 4 Then
+            Dim a0 As Integer = 0
+            Dim a1 As Integer = 0
+            Dim a2 As Integer = 0
+            Dim a3 As Integer = 0
+            a0 = PeekByte(line, 0)
+            a1 = PeekByte(line, 1)
+            a2 = PeekByte(line, 2)
+            a3 = PeekByte(line, 3)
+            If a0 = 72 Then
+                If a1 = 69 Then
+                    If a2 = 76 Then
+                        If a3 = 80 Then
+                            Return 1
+                        End If
+                    End If
+                End If
+            End If
+        End If
+        Return 0
+    End Function
+
+    ' CommandIsExit (v0.16): Byte-fuer-Byte-Vergleich gegen "EXIT" (4 Byte).
+    Function CommandIsExit() As Int32
+        If lineLen = 4 Then
+            Dim e0 As Integer = 0
+            Dim e1 As Integer = 0
+            Dim e2 As Integer = 0
+            Dim e3 As Integer = 0
+            e0 = PeekByte(line, 0)
+            e1 = PeekByte(line, 1)
+            e2 = PeekByte(line, 2)
+            e3 = PeekByte(line, 3)
+            If e0 = 69 Then
+                If e1 = 88 Then
+                    If e2 = 73 Then
+                        If e3 = 84 Then
+                            Return 1
+                        End If
+                    End If
+                End If
+            End If
+        End If
+        Return 0
+    End Function
+
+    ' CommandIsLs (v0.16): Byte-fuer-Byte-Vergleich gegen "LS" (2 Byte).
+    Function CommandIsLs() As Int32
+        If lineLen = 2 Then
+            Dim l0 As Integer = 0
+            Dim l1 As Integer = 0
+            l0 = PeekByte(line, 0)
+            l1 = PeekByte(line, 1)
+            If l0 = 76 Then
+                If l1 = 83 Then
+                    Return 1
+                End If
+            End If
+        End If
+        Return 0
+    End Function
+
+    ' DoListRoot (v0.16, siehe NOVALANG_SPEC_v0.16.md): echter `ls`-
+    ' Befehl - listet die NovaFS-Wurzel per VFS_OP_LOOKUP("/") +
+    ' wiederholtem VFS_OP_READ_DIRECTORY auf. Jeder Eintragsname wird
+    ' aus vfsapi_dir_entry_t (Name-Feld bei Byte-Offset 20, siehe
+    ' vfsapi.h) in einen eigenen Puffer kopiert, da Console.WriteBuffer
+    ' nur ab Offset 0 eines BENANNTEN Puffers ausgeben kann.
+    Function DoListRoot() As Int32
+        Dim rootPathBuf As Buffer(4)
+        PokeString(rootPathBuf, 0, "/")
+
+        Dim rootLookupArgs As Buffer(20)
+        PokeInt(rootLookupArgs, 0, 0)
+        PokeInt(rootLookupArgs, 4, AddressOf(rootPathBuf))
+        PokeInt(rootLookupArgs, 8, 1)
+        PokeInt(rootLookupArgs, 12, 0)
+        PokeInt(rootLookupArgs, 16, 0)
+        Dim rootLookupResult As Integer = 999
+        rootLookupResult = SysCall(3, 1, AddressOf(rootLookupArgs), 0)
+
+        If rootLookupResult = 0 Then
+            Dim rootHandle As Integer = 0
+            rootHandle = PeekInt(rootLookupArgs, 16)
+
+            Console.WriteLine("NovaFS root directory listing:")
+
+            Dim dirArgs As Buffer(12)
+            Dim dirEntryBuf As Buffer(280)
+            Dim nameOut As Buffer(260)
+            Dim dirIndex As Integer = 0
+            Dim dirDone As Integer = 0
+            Dim dirResult As Integer = 999
+            Dim maxEntries As Integer = 20
+            Dim nameLen As Integer = 0
+            Dim copyIdx As Integer = 0
+            Dim srcOffset As Integer = 0
+            Dim nameByte As Integer = 0
+
+            dirIndex = 0
+            dirDone = 0
+            While dirIndex < maxEntries
+                If dirDone = 0 Then
+                    PokeInt(dirArgs, 0, rootHandle)
+                    PokeInt(dirArgs, 4, dirIndex)
+                    PokeInt(dirArgs, 8, AddressOf(dirEntryBuf))
+                    dirResult = SysCall(3, 5, AddressOf(dirArgs), 0)
+                    If dirResult = 0 Then
+                        nameLen = PeekInt(dirEntryBuf, 8)
+                        copyIdx = 0
+                        While copyIdx < nameLen
+                            srcOffset = 20 + copyIdx
+                            nameByte = PeekByte(dirEntryBuf, srcOffset)
+                            PokeByte(nameOut, copyIdx, nameByte)
+                            copyIdx = copyIdx + 1
+                        End While
+                        Console.WriteBuffer(nameOut, nameLen)
+                        Console.WriteLine("")
+                    Else
+                        dirDone = 1
+                    End If
+                End If
+                dirIndex = dirIndex + 1
+            End While
+        Else
+            Console.WriteLine("root directory lookup failed")
+        End If
+
+        Return 0
+    End Function
+End Module

@@ -1,0 +1,41 @@
+<Window x:Class="NovaStudio.UI.LanguageReferenceDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="NovaLang-Sprachreferenz" Width="640" Height="520"
+        Style="{StaticResource NovaWindowStyle}"
+        WindowStartupLocation="CenterOwner">
+    <!--
+        Echte Referenz, keine erfundene Dokumentation: jede Zeile hier
+        entspricht einem tatsaechlich im Compiler (novalang/compiler/src/
+        lexer.h, parser.c) erkannten Schluesselwort/Builtin - identische
+        Liste wie Syntax/NovaLang.xshd. Keine Funktionen aufgelistet, die
+        der Compiler nicht kennt.
+    -->
+    <Border BorderBrush="{StaticResource WindowBorderBrush}" BorderThickness="1" Padding="16">
+        <DockPanel>
+            <TextBlock DockPanel.Dock="Top" Text="NovaLang-Sprachreferenz"
+                       FontSize="18" Margin="0,0,0,4"/>
+            <TextBlock DockPanel.Dock="Top"
+                       Text="Direkt aus novalang/compiler/src/lexer.h + parser.c abgeglichen - keine erfundenen Funktionen."
+                       Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,0,0,12" TextWrapping="Wrap"/>
+            <Button DockPanel.Dock="Bottom" Content="Schließen" Click="OnCloseClick"
+                    HorizontalAlignment="Right" Padding="14,6" Margin="0,12,0,0"/>
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <TextBlock Text="Schlüsselwörter (reserviert)" FontSize="14" FontWeight="SemiBold" Margin="0,8,0,4"/>
+                    <ItemsControl x:Name="KeywordsList"/>
+
+                    <TextBlock Text="Typnamen (kontextuell nach 'As')" FontSize="14" FontWeight="SemiBold" Margin="0,16,0,4"/>
+                    <ItemsControl x:Name="TypesList"/>
+
+                    <TextBlock Text="Builtins / Syscall-Hilfsfunktionen" FontSize="14" FontWeight="SemiBold" Margin="0,16,0,4"/>
+                    <ItemsControl x:Name="BuiltinsList"/>
+
+                    <TextBlock Text="Hinweis" FontSize="14" FontWeight="SemiBold" Margin="0,16,0,4"/>
+                    <TextBlock Text="Kommentare beginnen mit ' (einfaches Anführungszeichen), nicht //. Der Rückgabetyp einer Function muss 'Int32' lauten, kein anderer Typ wird unterstützt (per echtem novac.exe-Fehlertext verifiziert)."
+                               TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}"/>
+                </StackPanel>
+            </ScrollViewer>
+        </DockPanel>
+    </Border>
+</Window>

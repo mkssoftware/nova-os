@@ -1,169 +1,409 @@
 [2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
 BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
-NOVA: Kernel Entry
-NOVA: Logging ABI 1.0, strukturierter Ring- und Reservepuffer bereit
-NOVA: BOOT phase=0x00000000 last_phase=0xFFFFFFFF
-NOVA: Panic Reporter ABI 1.1 bereit
-NOVA: Crash Dump ABI 1.0, reservierter Minimal-Dump-Pfad bereit
-NOVA: BOOT phase=0x00000001 last_phase=0x00000000
-NOVA: ACPI RSDP mit Pruefsumme validiert
-NOVA: ACPI MADT, erkannte CPUs (hex): 0x00000002
-NOVA: ACPI SRAT nicht validiert oder nicht verfuegbar, NUMA unbekannt
-NOVA: BOOT phase=0x00000002 last_phase=0x00000001
-NOVA: NBHP/BIB v1 validiert
-NOVA: Kernel Build-ID aus NBHP/BIB importiert
-NOVA: BOOT phase=0x00000003 last_phase=0x00000002
-NOVA: PMM NUMA ABI 1.1, Preferred und Strict Allocation aktiv
-NOVA: BOOT phase=0x00000004 last_phase=0x00000003
-NOVA: BOOT phase=0x00000005 last_phase=0x00000004
-NOVA: Heap ABI 1.0 und Schreibtest bereit
-NOVA: Object Manager ABI 1.0 bereit
-NOVA: Component Manager ABI 1.0 bereit
-NOVA: Paging ABI 1.0 und Speichertest bereit
-NOVA: BOOT phase=0x00000006 last_phase=0x00000005
-NOVA: IDT, PIC und PIT 100 Hz aktiv
-NOVA: Semantic Types v1, Registry, Kompatibilitaet und Typed Contracts bereit
-NOVA: Semantic Core bereit
-NOVA: ObjectID ABI bereit
-NOVA: Filesystem Object Registry bereit
-NOVA: Filesystem Object Enumeration bereit
-NOVA: Filesystem Object Projection Konsistenz bereit
-NOVA: Filesystem Object Pfadaufloesung bereit
-NOVA: Filesystem Volume Registry bereit
-NOVA: Capability Registry bereit
-NOVA: Capability Authority Rechtepruefung bereit
-NOVA: Capability Lifecycle Lookup und Revoke bereit
-NOVA: Namespace Core bereit: / System Benutzer Apps Volumes Boot
-NOVA: ObjectID Registry Lookup bereit
-NOVA: Namespace Lookup bereit
-NOVA: Namespace Pfadaufloesung bereit
-NOVA: Namespace Introspection bereit
-NOVA: Namespace Enumeration bereit
-NOVA: ObjectID Projection Map bereit
-NOVA: Projection Introspection bereit
-NOVA: Kernel Object Handle ABI bereit
-NOVA: Handle Object-Registry Bindung bereit
-NOVA: Handle Rechtevalidierung gegen Capabilities bereit
-NOVA: Namespace Pfad zu Handle bereit
-NOVA: Global State ABI 1.0, Versionen und Unknown-State-Pruefung bereit
-NOVA: Transaction ABI 1.0, Begin-Prepare-Commit-Verify bereit
-NOVA: IPC ABI 1.0 FIFO bereit
-NOVA: Service Manager ABI 1.0 bereit
-NOVA: Process Manager ABI 1.0 bereit
-NOVA: Task Scope ABI 1.0, Hierarchie und Cancellation aktiv
-NOVA: Task ABI 1.0, Lifecycle und kooperative Cancellation aktiv
-NOVA: Task Deadline ABI 1.0, Parent-Clamp und Miss-Policy aktiv
-NOVA: Task Group ABI 1.0, WaitAll, FailFast und Drain aktiv
-NOVA: Async IO ABI 1.0, Completion, Deadline und Backpressure aktiv
-NOVA: IO Completion Queue ABI 1.0, FIFO und Batch aktiv
-NOVA: Shared Buffer ABI 1.0, IO-Lease und Copy-Fallback aktiv
-NOVA: HAL Topology ABI 1.0, Busse, Devices und IOMMU-Gruppen aktiv
-NOVA: HAL Topology, normalisierte CPU-Threads (hex): 0x00000002
-NOVA: HAL CPUID Hierarchy, Packages/Core/Threads (hex): 0x00000001/0x00000002/0x00000002
-NOVA: IOMMU ABI 1.0, Domains, Gruppen und Fault-Zuordnung aktiv
-NOVA: DMA Mapping ABI 1.0, Pinning und sicherer Fallback aktiv
-NOVA: Scatter Gather ABI 1.0, Segmente und Lifetime aktiv
-NOVA: DMA Scatter Gather ABI 1.0, Split und Providerlimits aktiv
-NOVA: DMA IOMMU Lifecycle fuer linear und Scatter Gather aktiv
-NOVA: IOMMU Fault beendet DMA und IO Request kontrolliert
-NOVA: IO Scheduler ABI 1.0, Prioritaet, Deadline und Fairness aktiv
-NOVA: IO QoS ABI 1.0, Admission, Degradation und Accounting aktiv
-NOVA: Security ABI 1.0 Capabilities aktiv
-NOVA: Boot Health Authority ABI 1.0 capabilitygeschuetzt bereit
-NOVA: CPU Manager Initialisierung abgeschlossen
-NOVA: CPU Manager ABI 1.0, BSP-Topologie und per-CPU-Daten aktiv
-NOVA: CPU Manager bezieht Package, Core und Thread aus HAL Topology
-NOVA: Module Loader ABI 1.0, Trust-, ABI- und W^X-Pruefung bereit
-NOVA: BOOT phase=0x00000007 last_phase=0x00000006
-NOVA: Thread Manager ABI 1.0 bereit
-NOVA: Scheduler ABI 1.0 und zwei Threads aktiv
-NOVA: SMP-Grundlage ABI 1.0, BSP-Barriere und lokaler TLB-Pfad bereit
-NOVA: BOOT phase=0x00000008 last_phase=0x00000007
-NOVA: Device Manager ABI 1.0 und Bootgeraete aktiv
-NOVA: Storage SATA-Datentraeger Port 0x00000000 DeviceID 0x677B94E3 Sektoren 0x00030021
-NOVA: Storage ABI 1.0, AHCI-Controller (Polling) aktiv, Datentraeger 0x00000001
-NOVA: Storage DMA-Lesetest und Bereichspruefung bereit
-NOVA: Boot Health Milestone KernelInitialized aggregiert
-NOVA: BOOT phase=0x00000009 last_phase=0x00000008
-NOVA: VFS ABI 1.0, Mount-Namespace und Bootstrap-Root bereit
-NOVA: NovaFS 1.0 Systemvolume gemountet, Generation 0x00000002 VolumeID 0x8B6F7CD3871D4A4B
-NOVA: NovaFS Root-Layout konsistent mit Semantic-Core-ObjectIDs
-NOVA: NovaFS persistenter Bootzaehler 0x00000001
-NOVA: NovaFS Lese-/Schreibtest mit Extents, Teilbloecken und Blockgrenze bereit
-NOVA: NovaFS ist persistentes SystemRoot unter /
-NOVA: Boot Health SystemRoot bereit, wartet auf Trust
-NOVA: Network ABI 1.0, IPv4/IPv6 UDP, ICMP und TCP bereit
-NOVA: Power Manager ABI 1.0 und Shutdown-Pfad bereit
-NOVA: Display Server ABI 1.0, Firmware-Framebuffer uebernommen
-NOVA: BOOT phase=0x0000000A last_phase=0x00000009
-NOVA: x86-32 Userspace, TSS und System-Call ABI 1.0 bereit
-NOVA: BOOT phase=0x0000000B last_phase=0x0000000A
-NOVA: Kernel Context und Framebuffer aktiv
-NOVA_KERNEL_READY
-NOVA: Userspace Process.QuerySelf erfolgreich
-NOVA: Process.OpenSelf Handle typ- und rechtegeprueft
-NOVA: Userspace Thread.QuerySelf erfolgreich
-NOVA: Thread.OpenSelf Handle typ- und rechtegeprueft
-NOVA: Userspace IPC Inline-Roundtrip atomar erfolgreich
-NOVA: Typed IPC, fremder Type und Version sicher abgewiesen
-NOVA: Semantic Validation, ungueltiger Wert strukturiert abgewiesen
-NOVA: Userspace VFS.OpenRoot Handle erfolgreich
-NOVA: Userspace VFS.Lookup Pfad '/' erfolgreich
-NOVA: Userspace Handle geschlossen, alter Wert ungueltig
-NOVA: Userspace VFS.Lookup auf NovaFS erfolgreich
-NOVA: Userspace VFS.Query erfolgreich
-NOVA: Userspace VFS.Read erfolgreich
-NOVA: Userspace Handle geschlossen, alter Wert ungueltig
-NOVA: Userspace VFS.ReadDirectory erfolgreich
-NOVA: Userspace Handle geschlossen, alter Wert ungueltig
-NOVA: VFS Schreibzugriff ausserhalb /Benutzer ohne System-Write-Authority abgewiesen
-NOVA: Userspace VFS.Create erfolgreich
-NOVA: Userspace VFS.Write erfolgreich
-NOVA: Userspace Handle geschlossen, alter Wert ungueltig
-NOVA: Explorer zeigt NovaFS-Verzeichnis aus Ring 3, Eintraege 0x00000001
-NOVA: Userspace Handle geschlossen, alter Wert ungueltig
-NOVA: Userspace Power.QuerySystem capability-geprueft
-NOVA: Userspace Power.WakeAcquire zeitlich begrenzt
-NOVA: Userspace Power.WakeRelease validiert
-NOVA: Userspace Power.SetProfile capability-geprueft
-NOVA: Userspace Power.RequestState ohne Capability abgewiesen
-NOVA: Userspace IPv4/IPv6 Datagramm-Socketobjekt erstellt
-NOVA: Userspace Socket an IPv4 127.0.0.1 Port 9000 gebunden
-NOVA: Ueberlanges Loopback-Datagramm sicher abgewiesen
-NOVA: IPv4/UDP Loopback-Datagramm in begrenzte Queue eingestellt
-NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK
-NOVA: IPv4/UDP Loopback mit Header- und Pruefsummenvalidierung erfolgreich
-NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK
-NOVA: Userspace TCP-Stream-Socketobjekt erstellt
-NOVA: TCP-Stream mit IPv4 127.0.0.1 Port 9000 verbunden
-NOVA: TCP-Streamdaten in begrenzte Sendewarteschlange eingestellt
-NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK
-NOVA: TCP-Streamdaten geordnet aus Empfangswarteschlange gelesen
-NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK
-NOVA: Userspace TCP-Stream-Socketobjekt erstellt
-NOVA: TCP-Listener an IPv4 127.0.0.1 Port 9000 gebunden
-NOVA: TCP-Listener mit begrenztem Backlog aktiv
-NOVA: TCP-Verbindung als separates Socket-Handle akzeptiert
-NOVA: Nichtblockierende Loopback-Queue meldet WOULD_BLOCK
-NOVA: Userspace Network.Query capability-geprueft
-NOVA: Userspace Raw-Socket ohne Capability abgewiesen
-NOVA: Userspace Logging.Query capability-geprueft
-NOVA: Userspace neuesten atomar publizierten Logrecord gelesen
-NOVA: Userspace Display.QueryPrimary ohne MMIO-Adresse erfolgreich
-NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert
-NOVA: Shared Service Page im Userspace validiert
-NOVA: Input-Router-Ereignis an Ring-3-System-UI zugestellt
-NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert
-NOVA: Input-Router-Ereignis an Ring-3-System-UI zugestellt
-NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert
-NOVA: Input-Router-Ereignis an Ring-3-System-UI zugestellt
-NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert
-NOVA: Input-Router-Ereignis an Ring-3-System-UI zugestellt
-NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert
-NOVA: Input-Router-Ereignis an Ring-3-System-UI zugestellt
-NOVA: Desktop, Startmenue, Ribbon und Taskleiste aus Ring-3-Szene praesentiert
-NOVA: Power Shutdown REQUEST
-NOVA: Power Shutdown FREEZE_USERSPACE
-NOVA: Power Shutdown SYNC_STORAGE
-NOVA: Power Shutdown STOP_DEVICES
-NOVA: Power Shutdown PLATFORM_OFF
+[11ms] NOVA: Kernel-Kern gebootet
+ [15ms] 
+DEADBEEF[17ms] 
+[18ms] NOVA: Serial Logging (SMP-sicher) Selftest ok
+[26ms] NOVA: Logging Selftest ok
+[28ms] NOVA: Global State Bootstrap Selftest ok
+[33ms] NOVA: Transaction Bootstrap Selftest ok
+[37ms] NOVA: BOOT phase=0x00000000 last_phase=0xFFFFFFFF
+[42ms] NOVA: Panic Manager Selftest ok
+[47ms] NOVA: Crash Dump Selftest ok
+[51ms] NOVA: Watchdog Selftest ok
+[55ms] NOVA: Circuit Breaker Selftest ok
+[58ms] NOVA: Fault Detection Selftest ok
+[60ms] NOVA: Supervised Restart Selftest ok
+[62ms] NOVA: Resource Accounting Selftest ok
+[64ms] NOVA: Failover Manager Selftest ok
+[66ms] NOVA: Fault Containment Selftest ok
+[68ms] NOVA: Checkpoint/Restore Selftest ok
+[70ms] NOVA: BOOT phase=0x00000001 last_phase=0x00000000
+[74ms] NOVA: BIP Parse ok
+[74ms] NOVA: Code Integrity (NKI Signatur) ok
+[77ms] NOVA: Framebuffer Initialize ok
+[90ms] NOVA: Display Manager Selftest ok
+[102ms] NOVA: Surface Manager Selftest ok
+[127ms] NOVA: Window Manager Selftest ok
+[2351ms] NOVA: Compositor Selftest ok
+[2613ms] NOVA: Desktop Show ok
+[2617ms] NOVA: Boot Splash Selftest ok
+[2686ms] NOVA: Boot Splash Show ok
+[2693ms] NOVA: Desktop angezeigt - Hintergrund-Subsysteme laden jetzt weiter
+[2694ms] NOVA: BOOT phase=0x0000000C last_phase=0x00000001
+[2696ms] NOVA: Distributed Initialize ok
+[2697ms] NOVA: Distributed Selftest ok
+[2698ms] NOVA: Distributed Register Node(node 1) ok
+[2699ms] NOVA: Distributed Register Node(node 2, replica) ok
+[2701ms] NOVA: Distributed Send RPC(node 1) ok
+[2702ms] NOVA: Distributed Replicate ok
+[3035ms] NOVA: Physical Memory Manager Initialize ok
+[3040ms] NOVA: Physical Memory Manager Selftest ok
+[3043ms] NOVA: Heap Selftest ok
+[3050ms] NOVA: Paging Initialize ok
+[3053ms] NOVA: Paging Selftest ok
+[3057ms] NOVA: Frame Allocator Selftest ok
+[3061ms] NOVA: Page Table Manager Selftest ok
+[3080ms] NOVA: Virtual Address Space Selftest ok
+[3084ms] NOVA: TLB Management Selftest ok
+[3090ms] NOVA: Memory Protection Selftest ok
+[3102ms] NOVA: Memory Mapping Selftest ok
+[3110ms] NOVA: Demand Paging Selftest ok
+[3124ms] NOVA: Memory Pool Selftest ok
+[3156ms] NOVA: Memory Pressure Selftest ok
+[3165ms] NOVA: Memory Reclaim Selftest ok
+[3183ms] NOVA: Shared Memory Selftest ok
+[3187ms] NOVA: Swap Selftest ok
+[3193ms] NOVA: Memory Compression Selftest ok
+[3199ms] NOVA: Memory Deduplication Selftest ok
+[3204ms] NOVA: NUMA Topology Selftest ok
+[3206ms] NOVA: Out-of-Memory Selftest ok
+[3208ms] NOVA: Copy-on-Write Selftest ok
+[3211ms] NOVA: ASLR Selftest ok
+[3213ms] NOVA: Slab Selftest ok
+[3218ms] NOVA: General Kernel Allocator Selftest ok
+[3221ms] NOVA: Object Manager Selftest ok
+[3240ms] NOVA: Handle Manager Selftest ok
+[3242ms] NOVA: Component Manager Selftest ok
+[3251ms] NOVA: Process Manager Selftest ok
+[3256ms] NOVA: Architecture-Model Selftest ok
+[3259ms] NOVA: Boot Manager Selftest ok
+[3261ms] NOVA: ABI Manager Selftest ok
+[3263ms] NOVA: ABI Manager Register Syscall + Negotiate ok
+[3268ms] NOVA: Semantic Manager Selftest ok
+[3284ms] NOVA: Semantic Manager Register + Query + Validate ok
+[3304ms] NOVA: Semantic Core Bootstrap Selftest ok
+[3309ms] NOVA: Execution Selftest ok
+[3310ms] NOVA: Execution Register Contract + Check Deadline ok
+[3312ms] NOVA: Privacy Extension Selftest ok
+[3319ms] NOVA: Verify Selftest ok
+[3322ms] NOVA: Transaction Manager Selftest ok
+[3323ms] NOVA: Transaction Manager Begin + Commit ok
+[3325ms] NOVA: Autonomy Manager Selftest ok
+[3327ms] NOVA: Data Move Selftest ok
+[3328ms] NOVA: State Manager Selftest ok
+[3330ms] NOVA: State Manager Register + Set Desired + Reconcile ok
+[3332ms] NOVA: Identity Manager Initialize ok
+[3336ms] NOVA: Identity Manager Selftest ok
+[3339ms] NOVA: Resource Manager Selftest ok
+[3342ms] NOVA: Realtime Manager Initialize ok
+[3344ms] NOVA: Realtime Manager Selftest ok
+[3345ms] NOVA: Realtime Manager Register Task + Deadline Check ok
+[3348ms] NOVA: Distributed Communications Selftest ok
+[3350ms] NOVA: Trust Manager Initialize ok
+[3351ms] NOVA: Trust Manager Selftest ok
+[3357ms] NOVA: Nova Object Subsystem Selftest ok
+[3359ms] NOVA: Globalization Selftest ok
+[3361ms] NOVA: Driver Discovery Selftest ok
+[3381ms] NOVA: Driver Discovery PCI Scan ok
+[3383ms] NOVA: Update Manager Selftest ok
+[3386ms] NOVA: Storage Block Layer Selftest ok
+[3389ms] NOVA: UI Subsystem Selftest ok
+[3392ms] NOVA: UI Window Create + Compositor Frame ok
+[3400ms] NOVA: Application Model Selftest ok
+[3402ms] NOVA: Text Subsystem Selftest ok
+[3405ms] NOVA: Text Bidi Classify + Security Check ok
+[3410ms] NOVA: Filesystem-Index Selftest ok
+[3418ms] NOVA: Crypto Subsystem Selftest ok
+[3423ms] NOVA: Compatibility Layer Selftest ok
+[3447ms] NOVA: NEF Format Selftest ok
+[3450ms] NOVA: Power Management Selftest ok
+[3454ms] NOVA: Thermal Manager Selftest ok
+[3461ms] NOVA: Filesystem Subsystem Selftest ok
+[3466ms] NOVA: Font Manager Selftest ok
+[3473ms] NOVA: Render2D Selftest ok
+[3557ms] NOVA: SVG Icon Renderer Selftest ok
+[3569ms] NOVA: Material System Selftest ok
+[3573ms] NOVA: Material-Standardtypen Selftest ok
+[3581ms] NOVA: Material-Effekt-Pipeline Selftest ok
+[3608ms] NOVA: Material-Animation Selftest ok
+[3629ms] NOVA: Material-Integration Selftest ok
+[3636ms] NOVA: Material-Performance Selftest ok
+[3649ms] NOVA: Material-Erweiterbarkeit Selftest ok
+[3691ms] NOVA: Graphics State Architecture Selftest ok
+[3743ms] NOVA: Scene Graph Selftest ok
+[3752ms] NOVA: Render Engine Selftest ok
+[3792ms] NOVA: Render Graph Selftest ok
+[3804ms] NOVA: Damage Tracking Selftest ok
+[3843ms] NOVA: Composition Layer Selftest ok
+[3865ms] NOVA: Display Protocol Selftest ok
+[3881ms] NOVA: Frame Scheduler Selftest ok
+[3891ms] NOVA: Material-Aware Rendering Selftest ok
+[3912ms] NOVA: Incremental Liquid Glass Selftest ok
+[3921ms] NOVA: Graphics Optimization Selftest ok
+[3937ms] NOVA: Graphics Performance Selftest ok
+[4074ms] NOVA: Taskbar Liquid Glass Selftest ok
+[4081ms] NOVA: Network Stack Selftest ok
+[4087ms] NOVA: Program Manager Selftest ok
+[4096ms] NOVA: Interrupt Subsystem Selftest ok
+[4122ms] NOVA: Timer Subsystem Selftest ok
+[4400ms] NOVA: Input System Selftest ok
+[4410ms] NOVA: Time Subsystem Selftest ok
+[4411ms] NOVA: Deferred Work Queue Selftest ok
+[4413ms] NOVA: IPC Queue Selftest ok
+[4418ms] NOVA: IPC Endpoint Manager Selftest ok
+[4431ms] NOVA: RPC Manager Selftest ok
+[4442ms] NOVA: IPC Channel Manager Selftest ok
+[4456ms] NOVA: IPC PubSub Manager Selftest ok
+[4464ms] NOVA: IPC Event Bus Manager Selftest ok
+[4466ms] NOVA: Device Manager Selftest ok
+[4468ms] NOVA: Driver Framework Selftest ok
+[4472ms] NOVA: VFS Bootstrap Selftest ok
+[4475ms] NOVA: Service Manager Selftest ok
+[4478ms] NOVA: NVMe Controller Selftest ok
+[4687ms] NOVA: AHCI Storage Selftest ok
+[4687ms] NOVA: AHCI Datentraeger=00000001 Sektoren[0]=00028021
+[4700ms] NOVA: GPT Partition Scanner Selftest ok
+[4717ms] NOVA: GPT NovaFS-Partitionssuche=00000000 ErsteLBA=00020000 Sektoren=00008000
+[4727ms] NOVA: NovaFS Superblock-Sondierung=00000000 Bloecke=00001000 Generation=00000002
+[4737ms] NOVA: NovaFS Superblock+Bitmap Selftest ok
+[4795ms] NOVA: NovaFS B+-Tree Kern Selftest ok
+[4816ms] NOVA: NovaFS Pfadaufloesung Selftest ok
+[4834ms] NOVA: NovaFS Verzeichnislistung Selftest ok
+[4851ms] NOVA: NovaFS Extent/Read Selftest ok
+[4914ms] NOVA: NovaFS Journal+Write Selftest ok
+[4990ms] NOVA: NovaFS Objekt-Lifecycle Selftest ok
+[5017ms] NOVA: Desktop-Wallpaper Selftest ok
+[6143ms] NOVA: Desktop-Wallpaper aus NovaFS geladen=00000000
+[6153ms] NOVA: Scheduler Frame Selftest ok
+[6159ms] NOVA: Work Stealing Selftest ok
+[6165ms] NOVA: RT Scheduler Selftest ok
+[6171ms] NOVA: Fair Scheduler Selftest ok
+[6175ms] NOVA: QoS Scheduler Selftest ok
+[6190ms] NOVA: ACPI RSDP gueltig
+[6193ms] NOVA: ACPI HAL Selftest ok
+[6197ms] NOVA: Early Security Entropy Selftest ok
+[6201ms] NOVA: USB xHCI Selftest ok
+[6218ms] NOVA: Kernel Object Graph Selftest ok
+[6226ms] NOVA: Event Bus Selftest ok
+[6238ms] NOVA: Diagnostics Framework Selftest ok
+[6241ms] NOVA: Trace Ring Selftest ok
+[6244ms] NOVA: Performance Counters Selftest ok
+[6250ms] NOVA: Structured Log Ring Selftest ok
+[6258ms] NOVA: Introspection Registry Selftest ok
+[6260ms] NOVA: Sampling Profiler Selftest ok
+[6264ms] NOVA: Capability Core Selftest ok
+[6272ms] NOVA: Unified Object API Selftest ok
+[6274ms] NOVA: Capability Framework Selftest ok
+[6283ms] NOVA: CAP-Integration Selftest ok
+[6293ms] NOVA: Versioned Kernel Service ABI Selftest ok
+[6295ms] NOVA: Security Capability Manager Selftest ok
+[6389ms] NOVA: VFS-Syscall-Layer Selftest ok
+[6393ms] NOVA: Security Audit Log Selftest ok
+[6398ms] NOVA: Mandatory Access Control Selftest ok
+[6399ms] NOVA: Discretionary Access Control Selftest ok
+[6405ms] NOVA: Role-Based Access Control Selftest ok
+[6420ms] NOVA: Integration Pipelines Selftest ok
+[6422ms] NOVA: Power Manager ABI Selftest ok
+[6427ms] NOVA: Progressive Readiness Selftest ok
+[6429ms] NOVA: Exception Manager ABI 1.0 bereit
+[6431ms] NOVA: Exception Manager Selftest OK (14/14)
+[6433ms] NOVA: Exception Manager Selftest ok
+[6435ms] NOVA: SYSENTER verfuegbar und konfiguriert
+[6503ms] NOVA: System Call Interface Selbsttest OK (7/7)
+[6504ms] NOVA: System Call Interface Selftest ok
+[6506ms] NOVA: CSPRNG Entropy Pool Selftest ok
+[6508ms] NOVA: CPU Idle State Management Selftest ok
+[6512ms] NOVA: Thermal Throttle Policy Selftest ok
+[6515ms] NOVA: Identity Registry Selftest ok
+[6519ms] NOVA: Trust Anchor Chain Selftest ok
+[6521ms] NOVA: Adaptive Feedback Loop Selftest ok
+[6523ms] NOVA: Resource Admission Control Selftest ok
+[6525ms] NOVA: Execution Contract Selftest ok
+[6527ms] NOVA: RT Temporal Isolation Selftest ok
+[6529ms] NOVA: Privacy Label Policy Selftest ok
+[6531ms] NOVA: Retry Manager Selftest ok
+[6532ms] NOVA: Recovery Mode Manager Selftest ok
+[6534ms] NOVA: Runtime Verification Monitor Selftest ok
+[6537ms] NOVA: Self-Healing Selftest ok
+[6538ms] NOVA: System State Graph Selftest ok
+[6542ms] NOVA: Finite State Machine Selftest ok
+[6545ms] NOVA: Transaction Rollback Journal Selftest ok
+[6546ms] NOVA: Fault Injection Framework Selftest ok
+[6548ms] NOVA: Fault Classification Selftest ok
+[6550ms] NOVA: Recovery Policy Manager Selftest ok
+[6554ms] NOVA: Resilience Verification Selftest ok
+[6556ms] NOVA: State Snapshot Selftest ok
+[6558ms] NOVA: State History Ring Selftest ok
+[6560ms] NOVA: State Reconciliation Selftest ok
+[6562ms] NOVA: Transaction Log Selftest ok
+[6563ms] NOVA: Transaction Barrier Selftest ok
+[6565ms] NOVA: Transaction Compensation Selftest ok
+[6567ms] NOVA: Redundancy Manager Selftest ok
+[6569ms] NOVA: Chaos Engine Selftest ok
+[6571ms] NOVA: Resilience Isolation Selftest ok
+[6573ms] NOVA: Resource Accounting Selftest ok
+[6578ms] NOVA: Resource Guarantee Selftest ok
+[6580ms] NOVA: Resource Reclaim Selftest ok
+[6582ms] NOVA: Self-Diagnosis Selftest ok
+[6586ms] NOVA: Self-Configuration Selftest ok
+[6589ms] NOVA: Adaptive Prediction Selftest ok
+[6594ms] NOVA: Self-Optimization Selftest ok
+[6597ms] NOVA: Self-Protection Selftest ok
+[6601ms] NOVA: Resource Reservation Selftest ok
+[6606ms] NOVA: Autonomy Constraint Engine Selftest ok
+[6611ms] NOVA: Autonomy Policy Manager Selftest ok
+[6617ms] NOVA: Adaptive Scheduler Selftest ok
+[6620ms] NOVA: State Versioning Selftest ok
+[6624ms] NOVA: State Actual Store Selftest ok
+[6628ms] NOVA: State Desired Store Selftest ok
+[6632ms] NOVA: Transaction Resource Manager Selftest ok
+[6635ms] NOVA: Transaction System Coordinator Selftest ok
+[6639ms] NOVA: Resource Arbitration Selftest ok
+[6643ms] NOVA: Adaptive Cache Manager Selftest ok
+[6647ms] NOVA: Adaptive Power Manager Selftest ok
+[6655ms] NOVA: Policy Learning Engine Selftest ok
+[6661ms] NOVA: Prediction Error Tracker Selftest ok
+[6665ms] NOVA: Adaptive Prefetch Engine Selftest ok
+[6671ms] NOVA: Adaptive Preload Manager Selftest ok
+[6675ms] NOVA: Adaptive Storage Manager Selftest ok
+[6679ms] NOVA: Adaptive Network Manager Selftest ok
+[6687ms] NOVA: User Override Manager Selftest ok
+[6691ms] NOVA: Resource Deadline Manager Selftest ok
+[6696ms] NOVA: Resource Economy Manager Selftest ok
+[6701ms] NOVA: Resource Energy Manager Selftest ok
+[6705ms] NOVA: Resource Latency Monitor Selftest ok
+[6709ms] NOVA: State Global Store Selftest ok
+[6714ms] NOVA: Transaction Config Manager Selftest ok
+[6720ms] NOVA: Tx MultiService Coordinator Selftest ok
+[6725ms] NOVA: Temporal Invariant Verifier Selftest ok
+[6730ms] NOVA: Information Flow Verifier Selftest ok
+[6734ms] NOVA: Capability Safety Verifier Selftest ok
+[6737ms] NOVA: Memory Safety Verifier Selftest ok
+[6746ms] NOVA: Synchronisation Bootstrap Selftest ok
+[6752ms] NOVA: Synchronisation Erweiterung (Mutex/Cond/WQ/RCU) Selftest ok
+[6758ms] NOVA: Futex Selftest ok
+[6762ms] NOVA: Deadlock Detection Selftest ok
+[6765ms] NOVA: Priority Inheritance Mutex Selftest ok
+[6768ms] NOVA: Interrupt Manager 1.0 Selftest ok
+[6771ms] NOVA: Kernel Module Loader Selftest ok
+[6773ms] NOVA: Task Scope Manager Initialize ok
+[6780ms] NOVA: Task Scope Manager Selftest ok
+[6794ms] NOVA: Task Manager Selftest ok
+[6803ms] NOVA: Task Deadline Manager Selftest ok
+[6809ms] NOVA: Task Group Manager Selftest ok
+[6812ms] NOVA: Thread Manager Initialize ok
+[6818ms] NOVA: Thread Manager Selftest ok
+[6821ms] NOVA: Compositor Thread Start ok
+[6827ms] NOVA: Input Thread Start ok
+[6847ms] NOVA: Desktop Shell Selftest ok
+[6851ms] NOVA: Desktop Shell Show ok
+[6853ms] NOVA: Desktop Shell Thread Start ok
+[6856ms] NOVA: Progressive Readiness Thread Start ok
+[6870ms] NOVA: SMP/AP-Aktivierung Initialize ok
+[6931ms] NOVA: SMP/AP-Aktivierung Selftest ok
+[6933ms] NOVA: SMP Online-APs=00000001
+[6940ms] NOVA: Ring-3-Bootstrap (GDT/TSS/User-Pages) Initialize ok
+[6944ms] NOVA: Ring-3-Bootstrap Selftest ok
+[7107ms] NOVA: NEF Loader Selftest ok
+[7123ms] NOVA: NEF Testprogramm 'Hello Nova' auf NovaFS anlegen ok
+[7129ms] NOVA: NEF Testprogramm 'Hello Nova' spawnen ok
+[7160ms] NOVA: NEF Testprogramm 'Library Test' auf NovaFS anlegen ok
+[7174ms] NOVA: NEF Testprogramm 'Library Test' spawnen ok
+[7178ms] NOVA: NEF Testprogramm 'Library Test' Import aufgeloest ok
+[7195ms] NOVA: NEF Testprogramm 'Memory Test' auf NovaFS anlegen ok
+[7202ms] NOVA: NEF Testprogramm 'Memory Test' spawnen ok
+[7208ms] NOVA: NEF Testprogramm 'Memory Test' Speicherinhalt korrekt ok
+[7225ms] NOVA: NEF Testprogramm 'File Test' auf NovaFS anlegen ok
+[7233ms] NOVA: NEF Testprogramm 'File Test' spawnen ok
+[7236ms] NOVA: NEF Testprogramm 'File Test' Capabilities gewaehrt ok
+[7247ms] NOVA: NEF Testprogramm 'Thread Test' zweite Instanz spawnen ok
+[7252ms] NOVA: NEF Testprogramm 'Thread Test' Prozessisolation ok
+[7268ms] NOVA: NovaLang Testprogramm 'Hello NovaLang' auf NovaFS anlegen ok
+[7276ms] NOVA: NovaLang Testprogramm 'Hello NovaLang' spawnen ok
+[7295ms] NOVA: NovaLang Testprogramm 'Hello Variables' auf NovaFS anlegen ok
+[7308ms] NOVA: NovaLang Testprogramm 'Hello Variables' spawnen ok
+[7329ms] NOVA: NovaLang Testprogramm 'Hello If' auf NovaFS anlegen ok
+[7338ms] NOVA: NovaLang Testprogramm 'Hello If' spawnen ok
+[7355ms] NOVA: NovaLang Testprogramm 'Hello Syscall' auf NovaFS anlegen ok
+[7363ms] NOVA: NovaLang Testprogramm 'Hello Syscall' spawnen ok
+[7380ms] NOVA: NovaLang Testprogramm 'Hello Vfs' auf NovaFS anlegen ok
+[7390ms] NOVA: NovaLang Testprogramm 'Hello Vfs' spawnen ok
+[7407ms] NOVA: NovaLang Testprogramm 'Hello While' auf NovaFS anlegen ok
+[7415ms] NOVA: NovaLang Testprogramm 'Hello While' spawnen ok
+[7432ms] NOVA: NovaLang Testprogramm 'Hello Bytes' auf NovaFS anlegen ok
+[7440ms] NOVA: NovaLang Testprogramm 'Hello Bytes' spawnen ok
+[7457ms] NOVA: NovaShell - Verzeichnis /System anlegen ok
+[7470ms] NOVA: NovaShell - Verzeichnis /System/Apps anlegen ok
+[7486ms] NOVA: NovaShell - Verzeichnis /System/Apps/Shell anlegen ok
+[7505ms] NOVA: NovaShell - greeting.txt anlegen ok
+[7549ms] NOVA: NovaShell - NovaShell.nef anlegen ok
+[7578ms] NOVA: NovaShell - spawnen ok
+[7581ms] NOVA: USHELL spawn Explorer, freie PMM-Seiten=000024DE
+[7596ms] NOVA: USHELL spawn Einstellungen, freie PMM-Seiten=00002483
+[7609ms] NOVA: USHELL spawn Taskbar, freie PMM-Seiten=0000243B
+[7640ms] NOVA: USHELL spawn Startmenue, freie PMM-Seiten=000023EE
+[7651ms] NOVA: USHELL spawn Desktop-Icons, freie PMM-Seiten=000023B0
+[7661ms] NOVA: Userspace-Shell Prozesse Initialize ok
+[7667ms] NOVA: Userspace-Shell Prozesse Selftest ok
+[7670ms] NOVA: BOOT phase=0x0000000D last_phase=0x0000000C
+[8365ms] NOVA: Boot-Splash beendet - echter Desktop sichtbar
+[8368ms] NOVA: alle bisherigen Subsysteme vollstaendig verifiziert
+[8371ms] NOVA_KERNEL_READY
+[8373ms] NOVA: Ring 3 Userspace aktiv - SYSCALL_CORE_READY empfangen
+[8378ms] NOVA: Ring 3 -> Ring 0 per SYSCALL_CORE_EXIT zurueckgekehrt
+[8383ms] NOVA: Progressive Readiness abgeschlossen - Netzwerk=00000002 Power=00000002
+[8389ms] NOVA: Praeemptiver Taskwechsel aktiv - Thread 1 lief
+[8403ms] NOVA: Praeemptiver Taskwechsel aktiv - Thread 2 lief
+[8418ms] NOVA: Praeemptiver Taskwechsel aktiv - dynamischer Thread lief
+[8442ms] NOVA: Display-Server zeigt echten Client-Inhalt - Framebuffer-Pixel=00FF0000
+Hello NovaLang!
+Hello NovaLang!
+Second line works too
+counter is 15, as expected
+counter is within limit
+vfs lookup via syscall succeeded
+loop iteration
+loop iteration
+Hello Bytes!
+peekbyte roundtrip ok
+spawn via syscall succeeded
+spawned process has nonzero pid
+NovaShell 1.0 (work in progress) starting
+generic syscall returned OK
+input poll ok
+input poll ok
+input poll ok
+input poll loop finished
+input queue empty as expected (headless boot)
+vkey letter A translated ok
+vkey digit 5 translated ok
+vkey enter translated ok
+vkey backspace translated ok
+vkey arrow correctly non-printable
+repl line loop finished
+repl line length correct
+loop iteration
+loop iteration
+loop iteration
+loop finished
+zero-iteration while correctly skipped
+add ok
+nested call ok
+Welcome to NovaOS 1.0 - NovaShell (work in progress)
+
+greeting placeholder substituted
+repl line first char correct
+repl line second char correct after backspace+retype
+H!
+repl line echoed above
+NovaFS root directory listing:
+hello_while.nef
+hello_novalang.nef
+hello_bytes.nef
+hello_nova.nef
+libtest.nef
+file_test.nef
+hello_vfs.nef
+hello_syscall.nef
+library_test.nef
+System
+hello_variables.nef
+memory_test.nef
+hello_if.nef
+Benutzer
+command match HELP ok
+command match empty correctly rejected
+live input loop finished
+no real keypress captured (headless boot, as expected)
+[13835ms] NOVA: GUI-Input-Syscall liefert echtes Event an Ring-3-Client - Typ=00000000 Vkey=00000051

@@ -1,72 +1,6 @@
 #include "studio.h"
 
 /* =========================================================================
- * In-memory DLGTEMPLATE builder
- * (avoids the need for a .rc resource file)
- * ====================================================================== */
-struct DlgBuilder {
-    std::vector<BYTE> buf;
-    int itemCount = 0;
-
-    void addW(WORD w) {
-        buf.push_back((BYTE)(w & 0xFF));
-        buf.push_back((BYTE)((w >> 8) & 0xFF));
-    }
-    void addD(DWORD d) {
-        buf.push_back((BYTE)(d       & 0xFF));
-        buf.push_back((BYTE)((d>>8)  & 0xFF));
-        buf.push_back((BYTE)((d>>16) & 0xFF));
-        buf.push_back((BYTE)((d>>24) & 0xFF));
-    }
-    void addS(short s) { addW((WORD)s); }
-    void addWStr(const wchar_t *s) {
-        if (!s) { addW(0); return; }
-        for (; *s; ++s) addW((WORD)*s);
-        addW(0);
-    }
-    void align4() { while (buf.size() & 3) buf.push_back(0); }
-
-    /* Begin: DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU */
-    void beginDialog(int nItems, short x, short y, short cx, short cy,
-                     const wchar_t *title, const wchar_t *font = L"Segoe UI",
-                     WORD fontSize = 9) {
-        DWORD style = DS_MODALFRAME | DS_SETFONT | WS_POPUP |
-                      WS_CAPTION | WS_SYSMENU;
-        addD(style);         /* style */
-        addD(0);             /* exStyle */
-        addW((WORD)nItems);  /* cdit */
-        addS(x); addS(y); addS(cx); addS(cy);
-        addW(0);             /* menu: none */
-        addW(0);             /* window class: default */
-        addWStr(title);      /* title */
-        addW(fontSize);      /* font size */
-        addWStr(font);       /* font name */
-    }
-
-    /* Add a control (DLGITEMTEMPLATE) */
-    void addItem(DWORD style, DWORD exStyle,
-                 short x, short y, short cx, short cy,
-                 WORD id, WORD classAtom, const wchar_t *text) {
-        align4();
-        addD(style);
-        addD(exStyle);
-        addS(x); addS(y); addS(cx); addS(cy);
-        addW(id);
-        addW(0xFFFF); addW(classAtom);  /* predefined class */
-        addWStr(text);
-        addW(0);  /* extra data: none */
-        itemCount++;
-    }
-
-    DLGTEMPLATE *ptr() { return (DLGTEMPLATE*)buf.data(); }
-};
-
-/* Predefined Win32 control class atoms */
-static const WORD CLS_BUTTON = 0x0080;
-static const WORD CLS_EDIT   = 0x0081;
-static const WORD CLS_STATIC = 0x0082;
-
-/* =========================================================================
  * Find / Replace (Windows common dialogs – modeless)
  * ====================================================================== */
 void DoFind() {
@@ -149,6 +83,57 @@ void DoGoToLine() {
 
     if (r == IDOK && g_gotoLine > 0)
         EditorGoToLine(g_gotoLine);
+}
+
+/* =========================================================================
+ * Projektweite Suche (NPSPEC-STUDIO-EDITOR-0001-Nachtrag)
+ * ====================================================================== */
+static wchar_t g_projectSearchQuery[256] = {};
+
+static INT_PTR CALLBACK ProjectSearchDlgProc(HWND hDlg, UINT uMsg, WPARAM wp, LPARAM lp) {
+    switch (uMsg) {
+    case WM_INITDIALOG:
+        SetFocus(GetDlgItem(hDlg, 101));
+        return FALSE;
+
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK) {
+            GetDlgItemTextW(hDlg, 101, g_projectSearchQuery, 256);
+            EndDialog(hDlg, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDCANCEL) {
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+void DoProjectSearch() {
+    DlgBuilder d;
+    d.beginDialog(4, 50, 50, 220, 52, L"Projektweite Suche");
+
+    d.addItem(WS_CHILD | WS_VISIBLE | SS_LEFT,
+              0, 5, 12, 50, 10, 0xFFFF, CLS_STATIC, L"Suchtext:");
+
+    d.addItem(WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP,
+              WS_EX_CLIENTEDGE, 60, 10, 150, 12, 101, CLS_EDIT, L"");
+
+    d.addItem(WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON | WS_TABSTOP,
+              0, 55, 32, 50, 14, IDOK, CLS_BUTTON, L"Suchen");
+
+    d.addItem(WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP,
+              0, 115, 32, 65, 14, IDCANCEL, CLS_BUTTON, L"Abbrechen");
+
+    g_projectSearchQuery[0] = L'\0';
+    INT_PTR r = DialogBoxIndirectParamW(
+        GetModuleHandleW(nullptr), d.ptr(),
+        g_hMain, ProjectSearchDlgProc, 0);
+
+    if (r == IDOK && g_projectSearchQuery[0] != L'\0')
+        RunProjectSearch(g_projectSearchQuery);
 }
 
 /* =========================================================================
@@ -282,7 +267,7 @@ bool DoNewProject() {
         "      <Config name=\"Debug\"   optimize=\"false\" debugSymbols=\"true\"/>\n"
         "      <Config name=\"Release\" optimize=\"true\"  debugSymbols=\"false\"/>\n"
         "    </Configurations>\n"
-        "    <Target>x86_64</Target>\n"
+        "    <Target>x86_32</Target>\n"
         "    <Output>Build/</Output>\n"
         "  </Build>\n"
         "  <Sources>\n"
@@ -326,9 +311,11 @@ bool DoNewProject() {
     }
 
     /* Open project in studio */
-    g_project.name     = g_newProjectName;
-    g_project.rootPath = projDir;
-    g_project.open     = true;
+    g_project.name      = g_newProjectName;
+    g_project.rootPath  = projDir;
+    g_project.open      = true;
+    g_project.sources   = { novaPath };
+    g_project.entryFile = novaPath;
 
     ExplorerSetRoot(projDir);
     EditorOpenFile(novaPath);

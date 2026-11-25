@@ -101,7 +101,33 @@ int driver_pci_scan(void) {
                     /* AHCI meldet sein MMIO-Register-Set als ABAR in BAR5
                        (Offset 0x24), nicht in BAR0 wie NVMe/xHCI. */
                     uint32_t bar_offset = (class24 == PCI_CLASS_AHCI) ? 0x24u : 0x10u;
-                    uint32_t bar0 = pci_config_read32(rec->pci_bus_addr | bar_offset) & 0xFFFFF000u;
+                    uint32_t bar_raw = pci_config_read32(rec->pci_bus_addr | bar_offset);
+                    uint32_t bar0 = bar_raw & 0xFFFFF000u;
+                    /* Bits[2:1]==2 -> 64-Bit-BAR (High-Dword in der
+                       Folge-Dword). GEFUNDEN waehrend des USB-EP0-Boot-
+                       Tests (2026-11-24, siehe KERNEL_GAP_ANALYSIS.md
+                       Abschnitt 2.8-Nachtrag): QEMU/OVMF platzieren einen
+                       64-Bit-faehigen xHCI-BAR unter q35 standardmaessig
+                       OBERHALB 4 GiB. Die alte Maskierung ignorierte das
+                       High-Dword komplett und lieferte eine falsche,
+                       abgeschnittene 32-Bit-Adresse (hier: 0x4000 statt
+                       der wahren Adresse 0xC0_00004000) - mit dieser
+                       Adresse gemappte MMIO-Zugriffe laesen/schreiben
+                       unvorhersehbaren Speicher statt echter Register.
+                       Dieser 32-Bit-Kernel kann physische Adressen >4 GiB
+                       grundsaetzlich nicht abbilden - bei nicht-null
+                       High-Dword bar0 bewusst auf 0 setzen, damit
+                       nachgelagerter Code (xhci_init_controller() etc.,
+                       bereits vorhandene "bar0==0 -> kein Controller"-
+                       Pruefung) den Controller korrekt als unerreichbar
+                       behandelt statt mit einer falschen Adresse zu
+                       arbeiten. */
+                    if ((bar_raw & 0x00000006u) == 0x00000004u) {
+                        uint32_t bar_hi = pci_config_read32(rec->pci_bus_addr | (bar_offset + 4u));
+                        if (bar_hi != 0) {
+                            bar0 = 0;
+                        }
+                    }
                     rec->bar0 = bar0;
                     rec->flags |= DISC_FLAG_MMIO;
                     rec->state = DRV_LC_MATCHED;

@@ -1,0 +1,16 @@
+Namespace Nova.Types
+
+    Public Structure Int32
+
+        Public Const MinValue As Integer = -2147483647 - 1
+        Public Const MaxValue As Integer = 2147483647
+
+        Public Const Zero As Integer = 0
+        Public Const One As Integer = 1
+
+        Public Const Size As Integer = 4
+        Public Const BitSize As Integer = 32
+
+    End Structure
+
+End Namespace

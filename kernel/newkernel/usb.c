@@ -1,6 +1,6 @@
 /* NovaOS C-Kernel - USB-Stack: xHCI-Controller, USB-Core (Port aus
-   usb32.inc). Siehe usb.h fuer den Hinweis zu den permanent gestubbten
-   Control-Transfer-Funktionen (bereits im alten ASM so). */
+   usb32.inc). Siehe usb.h fuer den aktuellen Implementierungsstand (echte
+   EP0-Control-Transfers, Bulk/BOT weiterhin offen). */
 #include "usb.h"
 #include "driver.h"
 #include "paging.h"
@@ -42,6 +42,25 @@
 
 #define XHCI_CMD_RING_DEPTH 16u
 #define XHCI_EVT_RING_DEPTH 16u
+#define XHCI_EP_RING_DEPTH  16u
+
+/* TRB-Typen (xHCI-Spec 6.4.6), nur die hier tatsaechlich verwendeten. */
+#define XHCI_TRB_TYPE_SHIFT       10u
+#define XHCI_TRB_TYPE_SETUP       2u
+#define XHCI_TRB_TYPE_DATA        3u
+#define XHCI_TRB_TYPE_STATUS      4u
+#define XHCI_TRB_TYPE_ENABLE_SLOT 9u
+#define XHCI_TRB_TYPE_ADDR_DEV    11u
+#define XHCI_TRB_TYPE_TRANSFER_EV 32u
+#define XHCI_TRB_TYPE_CMD_COMPL   33u
+
+#define XHCI_TRB_CYCLE   0x00000001u
+#define XHCI_TRB_TC      0x00000002u /* Toggle Cycle (nur Link-TRB) */
+#define XHCI_TRB_IOC     0x00000020u
+#define XHCI_TRB_IDT     0x00000040u /* Immediate Data (nur Setup-TRB) */
+#define XHCI_TRB_DIR_IN  0x00010000u /* Bit16: Data-/Status-Stage-Richtung */
+
+#define XHCI_CMD_DB 0u /* Doorbell-Array-Index 0 = Host Controller Commands */
 
 #define USB_DESC_INTERFACE 4u
 #define USB_DESC_ENDPOINT  5u
@@ -84,6 +103,7 @@ typedef struct {
     uint32_t evt_ring;
     uint32_t erst;
     uint32_t cmd_tail;
+    uint32_t cmd_cycle;
     uint32_t evt_head;
     uint32_t evt_phase;
     uint32_t db_base;
@@ -110,16 +130,19 @@ typedef struct {
     uint32_t driver;
     void *blkdev;
     uint32_t bot_tag;
+    uint32_t dev_ctx;    /* Device-Context-Seite (von DCBAA[slot] referenziert) */
+    uint32_t in_ctx;     /* Input-Context-Seite (fuer Address-Device-Kommando) */
+    uint32_t ep0_ring;   /* EP0-Transfer-Ring (eigene Seite pro Geraet) */
+    uint32_t ep0_enqueue;
+    uint32_t ep0_cycle;
 } usb_device_t;
 
 static xhci_ctrl_t usb_controllers[XHCI_CAPACITY];
 static usb_device_t usb_devices[USB_DEV_CAPACITY];
 static uint32_t usb_ctrl_count = 0;
 static uint32_t usb_dev_count = 0;
-static uint32_t usb_next_addr = 1;
 static uint32_t usb_msc_block_size = 512;
 static uint32_t usb_msc_block_cnt_lo = 0;
-static uint32_t usb_bot_next_tag = 1;
 static int usb_core_ready = 0;
 static uint8_t usb_ctrl_buf[USB_CTRL_BUF_SIZE];
 
@@ -133,26 +156,210 @@ static inline void io_fence(void) {
     __asm__ volatile ("outb %0, %1" : : "a"((uint8_t)0), "Nd"((uint16_t)0x80));
 }
 
-/* Im Boot-Polling-Kontext: echte EP0-Interaktion via xHCI-Transfer-Rings
-   ist noch nicht implementiert (wie im alten ASM). Gibt immer -1 zurueck,
-   bis der Transfer-Ring-Mechanismus existiert. */
-static int usb_control_read_descriptor(uint32_t usb_addr, uint32_t length, uint32_t desc_type) {
-    (void)usb_addr;
-    (void)length;
-    (void)desc_type;
-    return -1;
+/* --------------------------------------------------------------------- */
+/* Echte xHCI-Command-Ring- und EP0-Transfer-Ring-Engine (ersetzt die      */
+/* bisherigen permanenten ASM-Stubs, siehe usb.h).                        */
+/* --------------------------------------------------------------------- */
+
+/* Reicht genau 1 Command-TRB ein (Link-TRB-Wrap inkl. Cycle-Bit-Toggle
+   identisch zum bereits bestehenden Ring-Aufbau in xhci_init_controller).
+   Ruft danach das Host-Controller-Doorbell. *out_trb_addr ist die
+   physische Adresse des eingereihten TRB - dient als Korrelations-
+   schluessel fuer das zugehoerige Command-Completion-Event. */
+static void xhci_cmd_ring_submit(xhci_ctrl_t *ctrl, uint32_t dw0, uint32_t dw1, uint32_t dw2,
+                                  uint32_t dw3_no_cycle, uint32_t *out_trb_addr) {
+    uint32_t trb = ctrl->cmd_ring + ctrl->cmd_tail * XHCI_TRB_SIZE;
+    *(volatile uint32_t *)(trb + 0) = dw0;
+    *(volatile uint32_t *)(trb + 4) = dw1;
+    *(volatile uint32_t *)(trb + 8) = dw2;
+    *(volatile uint32_t *)(trb + 12) = dw3_no_cycle | ctrl->cmd_cycle;
+    if (out_trb_addr) *out_trb_addr = trb;
+
+    ++ctrl->cmd_tail;
+    if (ctrl->cmd_tail >= XHCI_CMD_RING_DEPTH) {
+        uint8_t *link_trb = (uint8_t *)(ctrl->cmd_ring + XHCI_CMD_RING_DEPTH * XHCI_TRB_SIZE);
+        uint32_t link_dw3 = (XHCI_TRB_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_TC;
+        *(volatile uint32_t *)(link_trb + 12) = link_dw3 | ctrl->cmd_cycle;
+        ctrl->cmd_tail = 0;
+        ctrl->cmd_cycle ^= 1u;
+    }
+
+    io_fence();
+    mmio_write32(ctrl->db_base, XHCI_CMD_DB * 4u, 0);
 }
 
-static int usb_set_address(usb_device_t *dev, uint32_t addr) {
-    (void)dev;
-    (void)addr;
+/* Liest genau EIN neues Event aus dem Event-Ring (Cycle-Bit-Vergleich mit
+   der aktuellen Producer-Cycle-State-Erwartung), aktualisiert ERDP. 0 =
+   ein Event wurde geliefert, -1 = Ring ist leer (kein neues Event). */
+static int xhci_poll_event(xhci_ctrl_t *ctrl, uint32_t *dw0, uint32_t *dw1, uint32_t *dw2, uint32_t *dw3) {
+    uint8_t *trb = (uint8_t *)(ctrl->evt_ring + ctrl->evt_head * XHCI_TRB_SIZE);
+    uint32_t d3 = *(volatile uint32_t *)(trb + 12);
+    if ((d3 & XHCI_TRB_CYCLE) != ctrl->evt_phase) return -1;
+
+    *dw0 = *(volatile uint32_t *)(trb + 0);
+    *dw1 = *(volatile uint32_t *)(trb + 4);
+    *dw2 = *(volatile uint32_t *)(trb + 8);
+    *dw3 = d3;
+
+    ++ctrl->evt_head;
+    if (ctrl->evt_head >= XHCI_EVT_RING_DEPTH) {
+        ctrl->evt_head = 0;
+        ctrl->evt_phase ^= 1u;
+    }
+
+    uint32_t ir0 = ctrl->base + mmio_read32(ctrl->base, XHCI_RTSOFF) + 0x20u;
+    uint32_t erdp = ctrl->evt_ring + ctrl->evt_head * XHCI_TRB_SIZE;
+    mmio_write32(ir0, 0x18u, erdp | 1u);
+    mmio_write32(ir0, 0x1Cu, 0);
     return 0;
 }
 
-static int usb_set_configuration(usb_device_t *dev, uint32_t config_value) {
-    (void)dev;
-    (void)config_value;
+/* Wartet (Tick- UND Spin-begrenzt, Muster identisch zu ahci_wait_mmio) auf
+   ein Event vom gegebenen Typ, dessen TRB-Pointer-Feld (DWORD0) exakt
+   match_ptr entspricht - so lassen sich Befehle/Transfers eindeutig ihrem
+   eigenen Completion-Event zuordnen, auch wenn dazwischen andere Events
+   (z.B. Port-Status-Change) eintreffen. 0 = Treffer (*out_dw2/_dw3
+   gefuellt), -1 = Timeout. */
+static int xhci_wait_event(xhci_ctrl_t *ctrl, uint32_t trb_type, uint32_t match_ptr,
+                            uint32_t timeout_ticks, uint32_t *out_dw2, uint32_t *out_dw3) {
+    uint32_t start = timer_get_ticks();
+    uint32_t spins = 2000000u;
+    for (;;) {
+        uint32_t dw0, dw1, dw2, dw3;
+        if (xhci_poll_event(ctrl, &dw0, &dw1, &dw2, &dw3) == 0) {
+            uint32_t type = (dw3 >> XHCI_TRB_TYPE_SHIFT) & 0x3Fu;
+            if (type == trb_type && dw0 == match_ptr) {
+                if (out_dw2) *out_dw2 = dw2;
+                if (out_dw3) *out_dw3 = dw3;
+                return 0;
+            }
+            /* Fremdes Event (z.B. Port-Status-Change) - ignorieren, aber
+               NICHT per continue die Timeout-Pruefung unten uebergehen:
+               ein Strom fremder Events wuerde sonst das Warten unbegrenzt
+               verlaengern (gefunden+behoben waehrend des Boot-Tests - ein
+               echter Haenger, kein Short-Packet-Fall). */
+        } else if (spins-- == 0) {
+            return -1;
+        }
+        if (timer_get_ticks() - start >= timeout_ticks) return -1;
+        __asm__ volatile ("pause");
+    }
+}
+
+static int xhci_enable_slot(xhci_ctrl_t *ctrl, uint32_t *out_slot_id) {
+    uint32_t trb_addr = 0;
+    uint32_t dw3 = (XHCI_TRB_TYPE_ENABLE_SLOT << XHCI_TRB_TYPE_SHIFT);
+    xhci_cmd_ring_submit(ctrl, 0, 0, 0, dw3, &trb_addr);
+
+    uint32_t evt_dw2, evt_dw3;
+    if (xhci_wait_event(ctrl, XHCI_TRB_TYPE_CMD_COMPL, trb_addr, 500u, &evt_dw2, &evt_dw3) != 0) return -1;
+    if ((evt_dw2 >> 24) != 1u) return -1; /* Completion Code 1 = Success */
+    *out_slot_id = evt_dw3 >> 24;
     return 0;
+}
+
+static int xhci_address_device(xhci_ctrl_t *ctrl, uint32_t slot_id, uint32_t input_ctx) {
+    uint32_t trb_addr = 0;
+    uint32_t dw3 = (XHCI_TRB_TYPE_ADDR_DEV << XHCI_TRB_TYPE_SHIFT) | (slot_id << 24);
+    xhci_cmd_ring_submit(ctrl, input_ctx, 0, 0, dw3, &trb_addr);
+
+    uint32_t evt_dw2, evt_dw3;
+    if (xhci_wait_event(ctrl, XHCI_TRB_TYPE_CMD_COMPL, trb_addr, 500u, &evt_dw2, &evt_dw3) != 0) return -1;
+    return ((evt_dw2 >> 24) == 1u) ? 0 : -1;
+}
+
+/* Liefert den sicheren EP0-Max-Packet-Size-Default je Port-Speed (PORTSC-
+   Speed-ID == Slot-Context-Speed-ID, beide nach derselben xHCI-Tabelle
+   kodiert). Fuer Full-Speed bewusst der garantiert gueltige Minimalwert 8
+   (reale Geraete erlauben 8/16/32/64, aber ein zu KLEIN gewaehlter Wert
+   ist immer korrekt, nur weniger effizient - ein zu GROSSER waere ein
+   Protokollfehler). Low-/High-/SuperSpeed haben jeweils nur einen
+   gueltigen Wert, keine Mehrdeutigkeit. Keine Evaluate-Context-
+   Verfeinerung in diesem Umfang (siehe KERNEL_GAP_ANALYSIS.md). */
+static uint32_t xhci_default_ep0_max_packet(uint32_t speed) {
+    switch (speed) {
+        case 2u: return 8u;   /* Low-Speed */
+        case 1u: return 8u;   /* Full-Speed: sicherer Minimalwert */
+        case 3u: return 64u;  /* High-Speed */
+        case 4u: return 512u; /* SuperSpeed */
+        default: return 8u;
+    }
+}
+
+/* Reiht genau 1 TRB in den EP0-Transfer-Ring des Geraets ein (gleiches
+   Link-TRB-Wrap-Muster wie beim Command-Ring, aber pro Geraet statt
+   pro Controller). */
+static void xhci_ep0_ring_submit(usb_device_t *dev, uint32_t dw0, uint32_t dw1, uint32_t dw2,
+                                  uint32_t dw3_no_cycle, uint32_t *out_trb_addr) {
+    uint32_t trb = dev->ep0_ring + dev->ep0_enqueue * XHCI_TRB_SIZE;
+    *(volatile uint32_t *)(trb + 0) = dw0;
+    *(volatile uint32_t *)(trb + 4) = dw1;
+    *(volatile uint32_t *)(trb + 8) = dw2;
+    *(volatile uint32_t *)(trb + 12) = dw3_no_cycle | dev->ep0_cycle;
+    if (out_trb_addr) *out_trb_addr = trb;
+
+    ++dev->ep0_enqueue;
+    if (dev->ep0_enqueue >= XHCI_EP_RING_DEPTH) {
+        uint8_t *link_trb = (uint8_t *)(dev->ep0_ring + XHCI_EP_RING_DEPTH * XHCI_TRB_SIZE);
+        uint32_t link_dw3 = (XHCI_TRB_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_TC;
+        *(volatile uint32_t *)(link_trb + 12) = link_dw3 | dev->ep0_cycle;
+        dev->ep0_enqueue = 0;
+        dev->ep0_cycle ^= 1u;
+    }
+}
+
+/* Fuehrt einen vollstaendigen Standard-Control-Transfer auf EP0 aus
+   (Setup-Stage + optionale Data-Stage + Status-Stage, xHCI-Spec 4.11.2.2).
+   buffer muss bei wLength!=0 ein physisch adressierbarer, fuer die
+   Transferrichtung gueltiger Puffer sein (hier immer usb_ctrl_buf). 0 =
+   Erfolg (Completion Code Success ODER Short Packet - bei GET_DESCRIPTOR
+   mit groesserem wLength als die tatsaechliche Deskriptorlaenge normal
+   und kein Fehler), -1 sonst. */
+static int xhci_control_transfer(xhci_ctrl_t *ctrl, usb_device_t *dev, uint8_t bmRequestType,
+                                  uint8_t bRequest, uint16_t wValue, uint16_t wIndex, uint16_t wLength,
+                                  void *buffer, int data_in) {
+    uint32_t setup_dw0 = bmRequestType | ((uint32_t)bRequest << 8) | ((uint32_t)wValue << 16);
+    uint32_t setup_dw1 = wIndex | ((uint32_t)wLength << 16);
+    uint32_t trt = (wLength == 0u) ? 0u : (data_in ? 3u : 2u); /* TRT: 2=OUT-Data,3=IN-Data */
+    uint32_t setup_dw3 = (XHCI_TRB_TYPE_SETUP << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_IDT | (trt << 16);
+    uint32_t setup_trb = 0;
+    xhci_ep0_ring_submit(dev, setup_dw0, setup_dw1, 8u, setup_dw3, &setup_trb);
+
+    uint32_t last_trb = setup_trb;
+    if (wLength != 0u) {
+        uint32_t data_dw3 = (XHCI_TRB_TYPE_DATA << XHCI_TRB_TYPE_SHIFT) | (data_in ? XHCI_TRB_DIR_IN : 0u);
+        uint32_t data_trb = 0;
+        xhci_ep0_ring_submit(dev, (uint32_t)(uintptr_t)buffer, 0, wLength, data_dw3, &data_trb);
+        last_trb = data_trb;
+    }
+
+    /* Status-Stage-Richtung ist immer entgegengesetzt zur Datenphase; ohne
+       Datenphase (wLength==0) immer IN (xHCI-Spec 4.11.2.2). */
+    uint32_t status_dir = (wLength == 0u) ? XHCI_TRB_DIR_IN : (data_in ? 0u : XHCI_TRB_DIR_IN);
+    uint32_t status_dw3 = (XHCI_TRB_TYPE_STATUS << XHCI_TRB_TYPE_SHIFT) | status_dir | XHCI_TRB_IOC;
+    uint32_t status_trb = 0;
+    xhci_ep0_ring_submit(dev, 0, 0, 0, status_dw3, &status_trb);
+    last_trb = status_trb;
+
+    io_fence();
+    mmio_write32(ctrl->db_base, dev->slot * 4u, 1u); /* DCI=1 fuer EP0 */
+
+    uint32_t evt_dw2 = 0, evt_dw3 = 0;
+    if (xhci_wait_event(ctrl, XHCI_TRB_TYPE_TRANSFER_EV, last_trb, 500u, &evt_dw2, &evt_dw3) != 0) return -1;
+    uint32_t completion_code = evt_dw2 >> 24;
+    if (completion_code != 1u && completion_code != 13u) return -1; /* 13 = Short Packet */
+    return 0;
+}
+
+static int usb_control_read_descriptor(xhci_ctrl_t *ctrl, usb_device_t *dev, uint32_t length, uint32_t desc_type) {
+    if (length > USB_CTRL_BUF_SIZE) length = USB_CTRL_BUF_SIZE;
+    return xhci_control_transfer(ctrl, dev, 0x80u, 6u /* GET_DESCRIPTOR */,
+                                  (uint16_t)(desc_type << 8), 0, (uint16_t)length, usb_ctrl_buf, 1);
+}
+
+static int usb_set_configuration(xhci_ctrl_t *ctrl, usb_device_t *dev, uint32_t config_value) {
+    return xhci_control_transfer(ctrl, dev, 0x00u, 9u /* SET_CONFIGURATION */,
+                                  (uint16_t)config_value, 0, 0, 0, 0);
 }
 
 static int usb_parse_config_descriptor(usb_device_t *dev) {
@@ -201,52 +408,36 @@ static int usb_parse_config_descriptor(usb_device_t *dev) {
     return 0;
 }
 
-/* Permanenter Polling-Stub (siehe usb.h). */
-static int usb_bot_reset(void) { return 0; }
-static int usb_scsi_inquiry(void) { return 0; }
-static int usb_scsi_test_unit_ready(void) { return 0; }
-static int usb_scsi_read_capacity(void) {
-    usb_msc_block_size = 512;
-    usb_msc_block_cnt_lo = 1;
-    return 0;
-}
+/* Echte Bulk-Transfers (CBW/Daten/CSW ueber Bulk-Endpoint-Transfer-Ringe,
+   analog zum oben neu eingefuehrten EP0-Mechanismus) sind NICHT Teil
+   dieses Umfangs (nur EP0-Control-Transfers, siehe KERNEL_GAP_ANALYSIS.md
+   Abschnitt 2.8). Diese Funktionen gaben VORHER Fake-Erfolg zurueck, ohne
+   jemals wirklich mit dem Geraet zu sprechen (vom Master-Auftrag
+   verbotener Dummy-Code) - jetzt ehrlich -1, bis ein echter Bulk-
+   Transfer-Mechanismus existiert. usb_msc_init() bricht dadurch VOR der
+   Block-Device-Registrierung ab: es wird nie ein fingiertes USB-
+   Massenspeicher-Geraet registriert. */
+static int usb_bot_reset(void) { return -1; }
+static int usb_scsi_inquiry(void) { return -1; }
+static int usb_scsi_test_unit_ready(void) { return -1; }
+static int usb_scsi_read_capacity(void) { return -1; }
 
 static int usb_blk_read(void *record, uint32_t lba_lo, uint32_t lba_hi, uint32_t count, void *buffer) {
-    (void)lba_hi;
-    (void)buffer;
-    uint8_t cbw[BOT_CBW_SIZE] = {0};
-    *(uint32_t *)(cbw + 0) = BOT_CBW_SIGNATURE;
-    *(uint32_t *)(cbw + 4) = usb_bot_next_tag++;
-    *(uint32_t *)(cbw + 8) = count * usb_msc_block_size;
-    cbw[12] = 0x80u; /* Data-In */
-    cbw[13] = 0;
-    cbw[14] = 10;
-    cbw[15] = SCSI_READ10;
-    uint32_t lba_be = __builtin_bswap32(lba_lo);
-    *(uint32_t *)(cbw + 17) = lba_be;
-
-    /* Bulk OUT (CBW), Bulk IN (Daten), Bulk IN (CSW): Polling-Stub, Erfolg
-       simulieren (siehe usb.h). */
     (void)record;
-    return 0;
+    (void)lba_lo;
+    (void)lba_hi;
+    (void)count;
+    (void)buffer;
+    return -1;
 }
 
 static int usb_blk_write(void *record, uint32_t lba_lo, uint32_t lba_hi, uint32_t count, void *buffer) {
-    (void)lba_hi;
-    (void)buffer;
-    uint8_t cbw[BOT_CBW_SIZE] = {0};
-    *(uint32_t *)(cbw + 0) = BOT_CBW_SIGNATURE;
-    *(uint32_t *)(cbw + 4) = usb_bot_next_tag++;
-    *(uint32_t *)(cbw + 8) = count * usb_msc_block_size;
-    cbw[12] = 0x00u; /* Data-Out */
-    cbw[13] = 0;
-    cbw[14] = 10;
-    cbw[15] = SCSI_WRITE10;
-    uint32_t lba_be = __builtin_bswap32(lba_lo);
-    *(uint32_t *)(cbw + 17) = lba_be;
-
     (void)record;
-    return 0;
+    (void)lba_lo;
+    (void)lba_hi;
+    (void)count;
+    (void)buffer;
+    return -1;
 }
 
 static void usb_msc_init(usb_device_t *dev) {
@@ -290,11 +481,15 @@ static void usb_bind_class_driver(usb_device_t *dev) {
     }
 }
 
+/* Echte xHCI-Geraete-Enumeration (ersetzt die bisherige, strukturell
+   unerreichbare Kette aus usb.h beschriebenen Stubs): Enable Slot ->
+   Device-/Input-Context+EP0-Ring anlegen -> Address Device (der xHC
+   fuehrt SET_ADDRESS dabei selbst aus, Software waehlt die Adresse bei
+   xHCI NICHT selbst) -> Standard-Deskriptoren lesen -> Konfigurieren. */
 static void usb_core_enumerate_device(xhci_ctrl_t *ctrl, uint32_t speed, uint32_t port) {
-    (void)ctrl;
     usb_device_t *dev = 0;
     for (uint32_t i = 0; i < USB_DEV_CAPACITY; ++i) {
-        if (usb_devices[i].state == USB_DEV_POWERED && usb_devices[i].addr == 0) {
+        if (usb_devices[i].state == USB_DEV_POWERED) {
             dev = &usb_devices[i];
             break;
         }
@@ -306,28 +501,70 @@ static void usb_core_enumerate_device(xhci_ctrl_t *ctrl, uint32_t speed, uint32_
     dev->speed = speed;
     dev->state = USB_DEV_DEFAULT;
 
-    if (usb_control_read_descriptor(0, 8, 1) != 0) goto failed;
+    uint32_t slot_id = 0;
+    if (xhci_enable_slot(ctrl, &slot_id) != 0) goto failed;
+    dev->slot = slot_id;
 
-    uint8_t ep0_max = usb_ctrl_buf[7];
-    if (ep0_max == 0) goto failed;
-    dev->ctrl_ep_max = ep0_max;
+    uint32_t numa;
+    uint32_t dev_ctx = pmm_alloc_page(&numa);
+    if (dev_ctx == 0) goto failed;
+    for (uint32_t i = 0; i < PMM_PAGE_SIZE / 4u; ++i) ((uint32_t *)dev_ctx)[i] = 0;
+    dev->dev_ctx = dev_ctx;
+    *(volatile uint32_t *)(ctrl->dcbaa + slot_id * 8u) = dev_ctx;
+    *(volatile uint32_t *)(ctrl->dcbaa + slot_id * 8u + 4u) = 0;
 
-    uint32_t new_addr = usb_next_addr++;
-    dev->addr = new_addr;
-    if (usb_set_address(dev, new_addr) != 0) goto failed;
+    uint32_t ep0_ring = pmm_alloc_page(&numa);
+    if (ep0_ring == 0) goto failed;
+    for (uint32_t i = 0; i < PMM_PAGE_SIZE; ++i) ((uint8_t *)ep0_ring)[i] = 0;
+    dev->ep0_ring = ep0_ring;
+    dev->ep0_enqueue = 0;
+    dev->ep0_cycle = 1;
+
+    uint32_t in_ctx = pmm_alloc_page(&numa);
+    if (in_ctx == 0) goto failed;
+    for (uint32_t i = 0; i < PMM_PAGE_SIZE / 4u; ++i) ((uint32_t *)in_ctx)[i] = 0;
+    dev->in_ctx = in_ctx;
+
+    uint32_t ep0_max_packet = xhci_default_ep0_max_packet(speed);
+
+    /* Input Control Context (Offset 0, 32 Byte): A0|A1 (Slot+EP0 hinzufuegen). */
+    *(volatile uint32_t *)(in_ctx + 4u) = 0x00000003u;
+
+    /* Slot Context (Offset 32): Speed[23:20], Context Entries[31:27]=1,
+       Root Hub Port Number[15:8]. */
+    uint32_t slot_ctx = in_ctx + 32u;
+    *(volatile uint32_t *)(slot_ctx + 0u) = (speed << 20) | (1u << 27);
+    *(volatile uint32_t *)(slot_ctx + 4u) = (port << 8);
+
+    /* EP0-Kontext (Offset 64 = Slot + EP-Index 1*32): CErr=3[2:1],
+       EP Type=4 Control[5:3], Max Packet Size[31:16], TR Dequeue Ptr+DCS,
+       Average TRB Length=8. */
+    uint32_t ep0_ctx = in_ctx + 64u;
+    *(volatile uint32_t *)(ep0_ctx + 4u) = (3u << 1) | (4u << 3) | (ep0_max_packet << 16);
+    *(volatile uint32_t *)(ep0_ctx + 8u) = ep0_ring | 1u;
+    *(volatile uint32_t *)(ep0_ctx + 12u) = 0;
+    *(volatile uint32_t *)(ep0_ctx + 16u) = 8u;
+
+    if (xhci_address_device(ctrl, slot_id, in_ctx) != 0) goto failed;
+    dev->addr = slot_id; /* interner Marker, KEINE echte USB-Adresse - die
+                            vergibt bei Address-Device(BSR=0) der xHC selbst. */
     dev->state = USB_DEV_ADDRESSED;
 
-    if (usb_control_read_descriptor(new_addr, 18, 1) != 0) goto failed;
-    if (usb_control_read_descriptor(new_addr, 9, 2) != 0) goto failed;
+    if (usb_control_read_descriptor(ctrl, dev, 8, 1) != 0) goto failed;
+    uint8_t ep0_max = usb_ctrl_buf[7];
+    if (ep0_max != 0) dev->ctrl_ep_max = ep0_max;
+
+    if (usb_control_read_descriptor(ctrl, dev, 18, 1) != 0) goto failed;
+    if (usb_control_read_descriptor(ctrl, dev, 9, 2) != 0) goto failed;
 
     uint16_t total_length = *(const uint16_t *)(usb_ctrl_buf + 2);
     if (total_length > USB_CTRL_BUF_SIZE) total_length = USB_CTRL_BUF_SIZE;
-    if (usb_control_read_descriptor(new_addr, total_length, 2) != 0) goto failed;
+    if (usb_control_read_descriptor(ctrl, dev, total_length, 2) != 0) goto failed;
 
     if (usb_parse_config_descriptor(dev) != 0) goto failed;
 
     uint8_t config_value = usb_ctrl_buf[5];
-    if (usb_set_configuration(dev, config_value) != 0) goto failed;
+    if (usb_set_configuration(ctrl, dev, config_value) != 0) goto failed;
     dev->config_val = config_value;
     dev->state = USB_DEV_CONFIGURED;
 
@@ -337,10 +574,28 @@ static void usb_core_enumerate_device(xhci_ctrl_t *ctrl, uint32_t speed, uint32_
     return;
 
 failed:
+    /* Slot/Speicher werden bewusst NICHT wieder freigegeben (kein Disable-
+       Slot-Kommando) - ein eigenstaendiger Folgepunkt, analog zum bereits
+       in ipc.c behobenen Endpoint-Reaper-Muster, siehe
+       KERNEL_GAP_ANALYSIS.md. Kein Sicherheitsrisiko fuer den Boot-Pfad:
+       nur bei tatsaechlich angeschlossenen, aber fehlschlagenden USB-
+       Geraeten betroffen. */
     dev->state = USB_DEV_POWERED;
 }
 
 static void xhci_enumerate_ports(xhci_ctrl_t *ctrl) {
+    /* Generelle Settle-Zeit VOR dem ersten CCS-Check: war Port-Power schon
+       vor dem Start an (bei emulierten Controllern oft der Fall), griff
+       bisher GAR KEIN Debounce - der CCS-Check kam dann moeglicherweise
+       fruehER als das Backend sein "verbunden"-Signal setzt (bei QEMU
+       real beobachtet: USB-Tastatur wurde dadurch nie erkannt, nicht weil
+       die Enumeration fehlerhaft war, sondern weil der Port-Scan schlicht
+       zu frueh lief). Einmalig pro Controller, nicht pro Port. */
+    uint32_t settle_target = timer_get_ticks() + 10; /* ~100ms */
+    while (timer_get_ticks() < settle_target) {
+        __asm__ volatile ("pause");
+    }
+
     for (uint32_t port = 0; port < ctrl->max_ports; ++port) {
         uint32_t portsc_addr = ctrl->op_base + XHCI_PORTSC_OFF + port * XHCI_PORTSC_SIZE;
 
@@ -451,6 +706,7 @@ static int xhci_init_controller(uint32_t pci_bus_addr, uint32_t bar0) {
     *(uint32_t *)(link_trb + 8) = 0;
     *(uint32_t *)(link_trb + 12) = (XHCI_TRB_LINK << 10) | 0x02u | 0x01u; /* Type=Link, TC=1, Cycle=1 */
     ctrl->cmd_tail = 0;
+    ctrl->cmd_cycle = 1;
 
     /* Schritt 6: Event Ring Segment Table + Event Ring. */
     uint32_t erst = pmm_alloc_page(&numa);

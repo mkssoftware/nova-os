@@ -1,0 +1,84 @@
+<?xml version="1.0"?>
+<!--
+  Hervorhebungsdefinition fuer NovaLang (siehe novalang/compiler/src/lexer.c
+  und parser.c). Deckt NUR tatsaechlich vom Compiler erkannte Schluesselwoerter
+  und Builtins ab:
+  - echte reservierte Woerter (TOK_KW_* in lexer.h): Module, End, Function,
+    As, Return, Dim, If, Then, Else, While
+  - kontextuelle Typnamen (is_ident()-Pruefungen in parser.c, lexikalisch
+    normale Identifier, hier nur zur Lesbarkeit eingefaerbt): String,
+    Integer, Buffer
+  - kontextuelle Builtins (ebenfalls is_ident()-Pruefungen in parser.c):
+    WriteLine, WriteBuffer, AddressOf, PeekInt, PeekByte, PokeString,
+    PokeInt, PokeByte, Console, SysCall
+  Kommentarzeichen ist ' (einfaches Anfuehrungszeichen am Zeilenanfang/
+  irgendwo in der Zeile), NICHT // - siehe NOVALANG_SPEC_v0.*.md.
+  Die Farben entsprechen exakt den Hex-Werten aus Themes/Colors.xaml
+  (GUI-Designspezifikation Abschnitt 12).
+-->
+<SyntaxDefinition name="NovaLang" extensions=".nova"
+                   xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+  <Color name="Keyword" foreground="#75C8F5" />
+  <Color name="TypeName" foreground="#62E3C6" />
+  <Color name="Builtin" foreground="#E8D8A0" />
+  <Color name="Comment" foreground="#83D36D" />
+  <Color name="String" foreground="#E6B87D" />
+  <Color name="Number" foreground="#B7DFA0" />
+  <Color name="Operator" foreground="#C5CAD7" />
+  <Color name="Bracket" foreground="#D6DAE5" />
+
+  <RuleSet>
+    <Span color="Comment" begin="'" />
+    <Span color="String">
+      <Begin>"</Begin>
+      <End>"</End>
+      <RuleSet>
+        <Span begin="\\" end="." />
+      </RuleSet>
+    </Span>
+
+    <Keywords color="Keyword">
+      <Word>Module</Word>
+      <Word>End</Word>
+      <Word>Function</Word>
+      <Word>As</Word>
+      <Word>Return</Word>
+      <Word>Dim</Word>
+      <Word>If</Word>
+      <Word>Then</Word>
+      <Word>Else</Word>
+      <Word>While</Word>
+    </Keywords>
+
+    <Keywords color="TypeName">
+      <Word>String</Word>
+      <Word>Integer</Word>
+      <Word>Buffer</Word>
+    </Keywords>
+
+    <Keywords color="Builtin">
+      <Word>WriteLine</Word>
+      <Word>WriteBuffer</Word>
+      <Word>AddressOf</Word>
+      <Word>PeekInt</Word>
+      <Word>PeekByte</Word>
+      <Word>PokeString</Word>
+      <Word>PokeInt</Word>
+      <Word>PokeByte</Word>
+      <Word>Console</Word>
+      <Word>SysCall</Word>
+    </Keywords>
+
+    <Rule color="Number">
+      \b\d+\b
+    </Rule>
+
+    <Rule color="Operator">
+      [=+\-*/&amp;&lt;&gt;]+
+    </Rule>
+
+    <Rule color="Bracket">
+      [\(\)]
+    </Rule>
+  </RuleSet>
+</SyntaxDefinition>

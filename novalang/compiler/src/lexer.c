@@ -30,7 +30,8 @@ static NcTokenKind keyword_kind(const char *text, uint32_t len) {
         {"Module", TOK_KW_MODULE}, {"End", TOK_KW_END},
         {"Function", TOK_KW_FUNCTION}, {"As", TOK_KW_AS},
         {"Return", TOK_KW_RETURN}, {"Dim", TOK_KW_DIM},
-        {"If", TOK_KW_IF}, {"Then", TOK_KW_THEN}, {"Else", TOK_KW_ELSE}
+        {"If", TOK_KW_IF}, {"Then", TOK_KW_THEN}, {"Else", TOK_KW_ELSE},
+        {"While", TOK_KW_WHILE}
     };
     for (unsigned i = 0; i < sizeof(kws) / sizeof(kws[0]); ++i) {
         uint32_t wl = (uint32_t)strlen(kws[i].word);

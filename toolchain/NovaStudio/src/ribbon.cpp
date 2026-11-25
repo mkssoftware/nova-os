@@ -39,6 +39,7 @@ enum RbnIcon {
     RI_ABOUT,
     RI_DEBUG_START, RI_DEBUG_STOP,
     RI_GIT_COMMIT, RI_GIT_PUSH, RI_GIT_PULL, RI_GIT_MORE,
+    RI_SYSCALLS, RI_CAPS,
     RI_COUNT
 };
 
@@ -87,6 +88,7 @@ static void InitTabs() {
     s_tabs.push_back({ L"Start", {
         { L"Projekt", {
             { IDM_FILE_NEW_PROJECT,   L"Neues\nProjekt",      RI_NEWPROJ,      true  },
+            { IDM_FILE_OPEN_PROJECT,  L"Projekt\nöffnen",     RI_OPENPROJ,     true  },
             { IDM_FILE_NEW,           L"Neue\nDatei",         RI_NEW,          true  },
             { IDM_FILE_OPEN,          L"Öffnen",              RI_OPEN,         true  },
             { IDM_FILE_SAVE,          L"Speichern",           RI_SAVE,         true  },
@@ -120,6 +122,7 @@ static void InitTabs() {
     s_tabs.push_back({ L"Bearbeiten", {
         { L"Suchen", {
             { IDM_EDIT_FIND,          L"Suchen",              RI_FIND,         true  },
+            { IDM_EDIT_FIND_PROJECT,  L"Im Projekt\nsuchen",  RI_FIND,         true  },
             { IDM_EDIT_REPLACE,       L"Ersetzen",            RI_REPLACE,      true  },
             { IDM_EDIT_GOTO,          L"Gehe zu\nZeile",      RI_GOTO,         true  },
         }},
@@ -180,6 +183,10 @@ static void InitTabs() {
 
     /* === Tab 6: Extras === */
     s_tabs.push_back({ L"Extras", {
+        { L"Werkzeuge", {
+            { IDM_TOOLS_SYSCALLS,     L"Syscall\nBrowser",    RI_SYSCALLS,     true  },
+            { IDM_TOOLS_CAPS,         L"Capability\nManager", RI_CAPS,         true  },
+        }},
         { L"Optionen", {
             { IDM_VIEW_DARKMODE,      L"Dunkles\nDesign",     RI_DARKMODE,     true  },
             { IDM_VIEW_LIGHTMODE,     L"Helles\nDesign",      RI_LIGHTMODE,    true  },
@@ -504,6 +511,35 @@ static void DrawRbnIcon(HDC hdc, int x, int y, int sz, RbnIcon ico, COLORREF fg)
             int y2 = cy + (int)((r*2)*sin(ang));
             MoveToEx(hdc, x1, y1, nullptr); LineTo(hdc, x2, y2);
         }
+        break;
+    }
+
+    case RI_SYSCALLS: {
+        /* Liste mit Zahlenspalte - Symbol fuer "nummerierte Konstanten
+           aus einer Header-Datei durchsuchen". */
+        SEL_T();
+        int lh = sz/5;
+        for (int i = 0; i < 4; i++) {
+            int ly = y + sz/8 + i*lh;
+            MoveToEx(hdc, x+sz/3, ly, nullptr); LineTo(hdc, x+sz*7/8, ly);
+        }
+        SEL_K();
+        for (int i = 0; i < 4; i++) {
+            int ly = y + sz/8 + i*lh;
+            Ellipse(hdc, x+sz/8, ly-2, x+sz/8+4, ly+2);
+        }
+        break;
+    }
+
+    case RI_CAPS: {
+        /* Einfaches Schloss-Symbol - Capability/Sicherheit. */
+        SEL_K();
+        Rectangle(hdc, x+sz/4, y+sz/2, x+sz*3/4, y+sz*7/8);
+        SEL_T();
+        Arc(hdc, x+sz*3/10, y+sz/8, x+sz*7/10, y+sz*5/8,
+            x+sz*3/10, y+sz*3/8, x+sz*7/10, y+sz*3/8);
+        SEL_FG();
+        Ellipse(hdc, x+sz/2-2, y+sz*5/8, x+sz/2+2, y+sz*5/8+4);
         break;
     }
 

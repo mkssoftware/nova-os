@@ -21,6 +21,8 @@
 #include "desktop_shell.h"
 #include "taskbarglass.h"
 #include "pmm.h"
+#include "nef_loader.h"
+#include "security.h"
 
 static int syscall_mgr_initialized = 0;
 /* Sichtbarkeits-Flag fuer das Startmenue (siehe SYSCALL_CORE_TOGGLE_
@@ -701,6 +703,22 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
     }
 
     if (operation == SYSCALL_CORE_TOGGLE_START_MENU) {
+        /* KERNEL_GAP_ANALYSIS.md Abschnitt 2.2: erste zentrale
+           Capability-Pruefung im CORE-Dispatch fuer eine Operation, die
+           GLOBALEN, von ALLEN Prozessen sichtbaren UI-Zustand mutiert -
+           vorher konnte jeder Ring-3-Prozess (auch ein spaeter geladenes,
+           nicht-System-NEF) das Startmenue/den Explorer/die Einstellungen
+           fremder Prozesse umschalten. SECURITY_CAP_DISPLAY_SYSTEM_UI
+           wird bewusst wiederverwendet (security.h, bisher ungenutzt)
+           statt eines neuen Bits - passt semantisch genau und wird den
+           fuenf echten System-UI-Prozessen (Taskbar/Startmenue/Explorer/
+           Einstellungen/Icons) bei ihrem Spawn gewaehrt (siehe
+           ushell_process.c). */
+        if (!security_check(caller_pid, SECURITY_CAP_DISPLAY_SYSTEM_UI)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         syscall_start_menu_visible = !syscall_start_menu_visible;
         ++syscall_stats_successful;
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
@@ -715,6 +733,11 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
     }
 
     if (operation == SYSCALL_CORE_TOGGLE_EXPLORER) {
+        if (!security_check(caller_pid, SECURITY_CAP_DISPLAY_SYSTEM_UI)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         syscall_explorer_visible = !syscall_explorer_visible;
         ++syscall_stats_successful;
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
@@ -729,6 +752,11 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
     }
 
     if (operation == SYSCALL_CORE_TOGGLE_SETTINGS) {
+        if (!security_check(caller_pid, SECURITY_CAP_DISPLAY_SYSTEM_UI)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         syscall_settings_visible = !syscall_settings_visible;
         ++syscall_stats_successful;
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
@@ -743,6 +771,11 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
     }
 
     if (operation == SYSCALL_CORE_TOGGLE_AUTOHIDE) {
+        if (!security_check(caller_pid, SECURITY_CAP_DISPLAY_SYSTEM_UI)) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_CAP);
+            return frame_ptr;
+        }
         syscall_taskbar_autohide_enabled = !syscall_taskbar_autohide_enabled;
         ++syscall_stats_successful;
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
@@ -809,6 +842,40 @@ uint32_t syscall_dispatch(uint32_t frame_ptr) {
         }
         const char *text = (const char *)(uintptr_t)text_addr;
         for (uint32_t i = 0; i < text_len; ++i) serial_putc(text[i]);
+        ++syscall_stats_successful;
+        frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
+        return frame_ptr;
+    }
+
+    if (operation == SYSCALL_CORE_SPAWN) {
+        uint32_t args_addr = frame_read(frame_ptr, FRAME_OFF_EDX);
+        if (syscall_validate_user_range(args_addr, sizeof(syscall_spawn_args_t)) != 0) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_POINTER);
+            return frame_ptr;
+        }
+        syscall_spawn_args_t *args = (syscall_spawn_args_t *)(uintptr_t)args_addr;
+        if (syscall_validate_user_range(args->path_addr, args->path_len) != 0) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_POINTER);
+            return frame_ptr;
+        }
+        /* loader_pid = caller_pid (NICHT 1/Kernel) - Confinement, siehe
+           syscall.h-Kommentar: der aufrufende Prozess kann dem neuen
+           Programm nie mehr Capabilities verschaffen als er selbst hat
+           (nef_load_and_spawn() prueft das bereits intern per
+           security_check()), und braucht selbst SECURITY_CAP_FS_READ,
+           um die Zieldatei ueberhaupt zu oeffnen. */
+        nef_process_t new_proc;
+        int load_err = 0, validate_err = 0;
+        int rc = nef_load_and_spawn(caller_pid, (const char *)(uintptr_t)args->path_addr,
+                                     args->path_len, &new_proc, &load_err, &validate_err);
+        if (rc != 0) {
+            ++syscall_stats_failed;
+            frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)rc);
+            return frame_ptr;
+        }
+        args->result_pid = new_proc.pid;
         ++syscall_stats_successful;
         frame_write(frame_ptr, FRAME_OFF_EAX, (uint32_t)SYSCALL_STATUS_OK);
         return frame_ptr;

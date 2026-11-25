@@ -1,0 +1,16 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+    <!-- Schriftarten/-groessen aus Abschnitt 21 der GUI-Designspezifikation. -->
+    <FontFamily x:Key="NovaUIFontFamily">Segoe UI Variable, Segoe UI</FontFamily>
+    <FontFamily x:Key="NovaEditorFontFamily">Cascadia Code, Consolas</FontFamily>
+
+    <sys:Double x:Key="FontSizeApplicationTitle">18</sys:Double>
+    <sys:Double x:Key="FontSizeRibbonTab">14</sys:Double>
+    <sys:Double x:Key="FontSizePanelHeader">14</sys:Double>
+    <sys:Double x:Key="FontSizeNormal">13</sys:Double>
+    <sys:Double x:Key="FontSizeRibbonLabel">12</sys:Double>
+    <sys:Double x:Key="FontSizeStatusBar">12</sys:Double>
+    <sys:Double x:Key="FontSizeEditor">14</sys:Double>
+    <sys:Double x:Key="FontSizeTableContent">12</sys:Double>
+</ResourceDictionary>

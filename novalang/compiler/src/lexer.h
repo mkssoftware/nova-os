@@ -36,7 +36,8 @@ typedef enum NcTokenKind {
     TOK_KW_DIM,
     TOK_KW_IF,
     TOK_KW_THEN,
-    TOK_KW_ELSE
+    TOK_KW_ELSE,
+    TOK_KW_WHILE
 } NcTokenKind;
 
 typedef struct NcToken {

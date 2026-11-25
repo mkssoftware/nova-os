@@ -1,0 +1,76 @@
+' hello_bytes.nova - NovaLang v0.7 Testprogramm: echte Laufzeit-"Strings"
+' als Byte-Puffer (siehe NOVALANG_SPEC_v0.7.md). Baut "Hello Bytes!\r\n"
+' BYTEWEISE per PokeByte zusammen (kein compile-time-String-Literal),
+' gibt den Puffer mit einer LAUFZEIT-Laenge (Variable, nicht aus einem
+' Literal abgeleitet) per Console.WriteBuffer aus, und prueft PeekByte
+' als Rueckleseweg.
+'
+' v0.8-ERGAENZUNG (bewusst IM SELBEN Programm, nicht als eigene Datei):
+' beweist zusaetzlich den neuen SYSCALL_CORE_SPAWN (siehe
+' NOVALANG_SPEC_v0.8.md). Grund fuer die Zusammenlegung: NovaFS'
+' B-Baum-Einfuegefunktion (novafs_tree_insert_simple) implementiert noch
+' KEIN Blatt-Splitting - boot-verifiziert gefunden, dass das 9. NEUE
+' NovaLang-Testprogramm in einem einzigen Boot-Durchlauf bereits am
+' "Blatt voll"-Fall scheiterte (siehe project_novalang_toolchain.md).
+' Statt eine neue NovaFS-Datei anzulegen, haengt dieser Test deshalb an
+' ein BEREITS bestehendes Programm an.
+Module HelloBytes
+    Function Main() As Int32
+        Dim buf As Buffer(16)
+        Dim len As Integer = 0
+
+        PokeByte(buf, 0, 72)   ' 'H'
+        PokeByte(buf, 1, 101)  ' 'e'
+        PokeByte(buf, 2, 108)  ' 'l'
+        PokeByte(buf, 3, 108)  ' 'l'
+        PokeByte(buf, 4, 111)  ' 'o'
+        PokeByte(buf, 5, 32)   ' ' '
+        PokeByte(buf, 6, 66)   ' 'B'
+        PokeByte(buf, 7, 121)  ' 'y'
+        PokeByte(buf, 8, 116)  ' 't'
+        PokeByte(buf, 9, 101)  ' 'e'
+        PokeByte(buf, 10, 115) ' 's'
+        PokeByte(buf, 11, 33)  ' '!'
+        PokeByte(buf, 12, 13)  ' \r
+        PokeByte(buf, 13, 10)  ' \n
+        len = 14
+
+        Console.WriteBuffer(buf, len)
+
+        Dim readback As Integer = 0
+        readback = PeekByte(buf, 0)
+        If readback = 72 Then
+            Console.WriteLine("peekbyte roundtrip ok")
+        Else
+            Console.WriteLine("peekbyte roundtrip failed")
+        End If
+
+        Dim pathbuf As Buffer(16)
+        Dim argsbuf As Buffer(12)
+        Dim spawnresult As Integer = 999
+
+        PokeString(pathbuf, 0, "/hello_nova.nef")
+
+        PokeInt(argsbuf, 0, AddressOf(pathbuf))
+        PokeInt(argsbuf, 4, 15)
+        PokeInt(argsbuf, 8, 0)
+
+        spawnresult = SysCall(1, 18, AddressOf(argsbuf), 0)
+
+        If spawnresult = 0 Then
+            Console.WriteLine("spawn via syscall succeeded")
+        Else
+            Console.WriteLine("spawn via syscall failed")
+        End If
+
+        Dim newpid As Integer = 0
+        newpid = PeekInt(argsbuf, 8)
+        If newpid > 0 Then
+            Console.WriteLine("spawned process has nonzero pid")
+        Else
+            Console.WriteLine("spawned process pid unexpectedly zero")
+        End If
+
+        Return 0
+    End Function
+End Module

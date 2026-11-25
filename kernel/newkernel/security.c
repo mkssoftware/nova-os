@@ -49,6 +49,18 @@ int security_check(uint32_t pid, uint32_t required_caps) {
     return 0;
 }
 
+int security_forget(uint32_t pid) {
+    if (pid == 0) return 0; /* 0 ist "kein Prozess", trifft sonst faelschlich freie Slots */
+    for (uint32_t i = 0; i < SECURITY_CAPACITY; ++i) {
+        if (security_table[i].pid == pid) {
+            security_table[i] = (security_record_t){0};
+            --security_count;
+            return 0;
+        }
+    }
+    return 0;
+}
+
 void security_initialize(void) {
     for (uint32_t i = 0; i < SECURITY_CAPACITY; ++i) security_table[i] = (security_record_t){0};
     security_count = 0;

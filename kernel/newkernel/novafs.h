@@ -103,6 +103,15 @@ int novafs_cursor_advance(void);
    Transaktions-/Journal-Klammer). */
 int novafs_tree_insert_simple(const novafs_tree_t *tree, const uint8_t *item);
 
+/* Wie novafs_tree_insert_simple(), aber mit ECHTEM B+-Baum-Split (neues
+   Blatt/ggf. neue innere Knoten/ggf. neue Wurzel), wenn das per
+   novafs_cursor_seek() positionierte Blatt bereits voll ist (siehe
+   feedback_novafs_root_directory_full.md) - der fuer produktiven Code
+   zu verwendende Einfuege-Einstiegspunkt (novafs_create()/
+   novafs_rename()/Extent-Wachstum nutzen diesen, NICHT _simple()).
+   0 = Erfolg. */
+int novafs_tree_insert(const novafs_tree_t *tree, const uint8_t *item);
+
 int novafs_tree_self_test(void); /* 0 = ok */
 
 /* ===================================================================== */

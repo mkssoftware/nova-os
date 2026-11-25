@@ -1,0 +1,32 @@
+﻿<Application x:Class="NovaStudio.UI.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:NovaStudio.UI"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- ECHTER, per Screenshot+Visual-Tree-Dump diagnostizierter
+                     Bugfix: ohne dieses explizite Merge bleibt Fluent.Ribbon
+                     komplett leer (0 Hoehe, 0 Kindelemente im Visual Tree) -
+                     die ThemeInfo-Attribut-basierte automatische Themes/
+                     Generic.xaml-Auflösung, auf die sich WPF normalerweise
+                     verlassen laesst, greift fuer dieses Paket unter
+                     net8.0-windows aus unbekanntem Grund NICHT. Isoliert
+                     reproduziert in einem minimalen Testfenster OHNE jede
+                     eigene Anpassung (kein WindowChrome, kein eigener Style,
+                     keine eigenen Resources) - also ein Problem des Pakets
+                     selbst, nicht unserer Nutzung. MUSS vor NovaDark.xaml
+                     stehen, damit unsere eigenen Ribbon-Anpassungen (falls
+                     spaeter noetig) Vorrang haben. -->
+                <ResourceDictionary Source="pack://application:,,,/Fluent;component/Themes/Generic.xaml"/>
+                <!-- Gleiche Lehre wie beim Fluent.Ribbon-Fund (siehe
+                     IMPLEMENTATION_STATUS.md): AvalonDock explizit sein
+                     eigenes Generic.xaml mergen, statt auf WPFs
+                     automatische ThemeInfo-Aufloesung zu vertrauen. -->
+                <ResourceDictionary Source="pack://application:,,,/AvalonDock;component/Themes/Generic.xaml"/>
+                <ResourceDictionary Source="Themes/NovaDark.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

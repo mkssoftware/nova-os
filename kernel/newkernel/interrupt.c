@@ -7,6 +7,8 @@
 #include "taskdeadline.h"
 #include "resilience.h"
 #include "ps2.h"
+#include "exception.h"
+#include "panic.h"
 
 typedef struct {
     uint16_t offset_low;
@@ -100,12 +102,31 @@ uint32_t interrupt_dispatch_c(uint32_t vector, uint32_t frame_ptr) {
         return frame_ptr;
     }
     if (vector < 32) {
-        /* Exception ohne Exception-Manager (noch nicht portiert). */
-        serial_puts("NOVA: EXCEPTION (kein Exception-Manager aktiv) - HALT\r\n");
-        for (;;) {
-            __asm__ volatile ("cli");
-            __asm__ volatile ("hlt");
-        }
+        /* KERNEL_GAP_ANALYSIS.md Abschnitt "Exception-/Panic-Handling"
+           (2026-11-24): exception.h dokumentiert bewusst, dass der volle
+           exception_manager_dispatch() (inkl. Userspace-Thread-Beendigung
+           + Scheduler-Interaktion) NICHT angebunden ist, da er echten,
+           hier noch fehlenden Taskwechsel voraussetzt - das bleibt so
+           (nicht Teil dieser Aenderung, siehe exception.h-Kopfkommentar).
+           Bis dahin HIELT dieser Pfad die gesamte Maschine nur mit einer
+           einzigen generischen Zeile an, OHNE jede Diagnose (kein EIP,
+           kein CR2, keine Fehlerklasse) - exc_build_record()/kernel_panic()
+           existieren bereits vollstaendig und eigenstaendig getestet
+           (exception.c/panic.c), wurden aber nie von hier aus aufgerufen.
+           Jetzt: echter strukturierter Crash-Report (Fehlercode/
+           Kategorie/EIP/CR2/Boot-Phase/CPU/Security-State, siehe
+           panic.c:kernel_panic) statt der bisherigen reinen Textzeile -
+           das Verhalten (anhalten) bleibt fuer DIESEN Schritt identisch,
+           nur die Diagnose wird real. */
+        exception_record_t exc_record;
+        exc_build_record(&exc_record, (const uint32_t *)(uintptr_t)frame_ptr, vector);
+        serial_puts("NOVA: CPU-Exception vector=");
+        serial_put_hex32(vector);
+        serial_puts(" ursprung=");
+        serial_puts((exc_record.flags & EXC_FLAG_ORIGIN_USER) ? "RING3" : "RING0");
+        serial_puts("\r\n");
+        kernel_panic(exc_record.code, exc_record.category,
+                     "NOVA: CPU-Exception ohne Prozessabbruch-Mechanismus - ganzes System angehalten");
     }
     if (vector == 0x80) {
         /* Echter Syscall-Dispatch (siehe syscall.c): wertet Service/Op/ABI

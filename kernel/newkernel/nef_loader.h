@@ -128,6 +128,14 @@ typedef struct {
     uint32_t scheduler_slot;    /* 0xFFFFFFFFu = kein Slot belegt */
     uint32_t pages[NEF_LOADER_MAX_TRACKED_PAGES];
     uint32_t page_count;
+    uint32_t stack_vaddr;       /* Virtuelle Adresse der Stack-Seite dieses
+                                   Prozesses (siehe nef_loader.c) - fuer
+                                   KERNEL_GAP_ANALYSIS.md Abschnitt 2.1:
+                                   erlaubt einem Aufrufer (z. B. einem
+                                   Isolations-Selbsttest), gezielt dieselbe
+                                   virtuelle Adresse in zwei verschiedenen
+                                   ECHTEN Prozess-Adressraeumen zu
+                                   vergleichen, statt sie zu erraten. */
 } nef_process_t;
 
 /* Laedt die NEF-Datei unter path (path_len Byte, KEIN Nullterminator)

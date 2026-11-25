@@ -1,0 +1,11 @@
+{
+  "Name": "StdLibary",
+  "MainFile": "main.nova",
+  "RequestedCapabilities": [
+    "SECURITY_CAP_IPC",
+    "SECURITY_CAP_DISPLAY_SYSTEM_UI",
+    "SECURITY_CAP_POWER_PROFILE",
+    "SECURITY_CAP_MEMORY",
+    "SECURITY_CAP_POWER_SHUTDOWN"
+  ]
+}

@@ -200,6 +200,16 @@ int ipc_endpoint_check_sender(uint32_t endpoint_id, uint32_t sender_pid) {
     return 0;
 }
 
+void ipc_endpoint_release_owner(uint32_t pid) {
+    if (pid == 0) return;
+    for (uint32_t i = 0; i < IPC_ENDPOINT_CAPACITY; ++i) {
+        if (ipc_endpoints[i].state == IPC_ENDPOINT_STATE_OPEN &&
+            ipc_endpoints[i].owner_pid == pid) {
+            ipc_endpoints[i].state = IPC_ENDPOINT_STATE_CLOSED;
+        }
+    }
+}
+
 int ipc_endpoint_info(uint32_t endpoint_id, ipc_endpoint_info_t *out_info) {
     ipc_endpoint_t *ep = ipc_endpoint_find(endpoint_id);
     if (!ep) return IPC_ERR_NOT_FOUND;

@@ -202,6 +202,7 @@ int nef_load_and_spawn(uint32_t loader_pid, const char *path, uint32_t path_len,
         out_proc->directory_phys = 0u;
         out_proc->scheduler_slot = 0xFFFFFFFFu;
         out_proc->page_count = 0u;
+        out_proc->stack_vaddr = 0u;
     }
     if (out_proc == 0) return set_err(out_err, NEF_LOAD_ERR_OPEN);
 
@@ -527,6 +528,7 @@ int nef_load_and_spawn(uint32_t loader_pid, const char *path, uint32_t path_len,
     out_proc->pid = pid;
     out_proc->directory_phys = dir_phys;
     out_proc->scheduler_slot = slot;
+    out_proc->stack_vaddr = stack_vaddr;
     return set_err(out_err, NEF_LOAD_OK);
 }
 

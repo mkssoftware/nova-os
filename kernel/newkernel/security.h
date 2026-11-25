@@ -58,5 +58,11 @@ int security_grant(uint32_t pid, uint32_t caps);
 int security_revoke(uint32_t pid, uint32_t caps);
 /* 1 = erlaubt, 0 = verweigert (pid unbekannt oder Caps fehlen). */
 int security_check(uint32_t pid, uint32_t required_caps);
+/* Gibt den Tabellenplatz einer PID vollstaendig frei (pid=0, caps=0),
+   statt nur die Caps zu loeschen (security_revoke liess den Slot und
+   damit den SECURITY_CAPACITY-Verbrauch bestehen) - fuer Aufruf bei
+   echtem Prozessende (process_reap()). 0 = Erfolg (auch wenn pid nicht
+   gefunden wurde - es gibt dann nichts zu vergessen), nie -1. */
+int security_forget(uint32_t pid);
 
 #endif

@@ -1,0 +1,506 @@
+<Window x:Class="NovaStudio.UI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:fluent="urn:fluent-ribbon"
+        xmlns:avalonEdit="http://icsharpcode.net/sharpdevelop/avalonedit"
+        xmlns:xcad="https://github.com/Dirkster99/AvalonDock"
+        Title="Nova Studio"
+        Width="1648" Height="928"
+        Style="{StaticResource NovaWindowStyle}"
+        WindowStyle="None"
+        AllowsTransparency="False"
+        ResizeMode="CanResizeWithGrip">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="42" ResizeBorderThickness="5"
+                      CornerRadius="14" GlassFrameThickness="1" UseAeroCaptionButtons="False"/>
+    </WindowChrome.WindowChrome>
+
+    <Border BorderBrush="{StaticResource WindowBorderBrush}" BorderThickness="1" CornerRadius="14">
+        <Grid Background="{StaticResource WindowBackgroundBrush}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="42"/>
+                <RowDefinition Height="38"/>
+                <RowDefinition Height="112"/>
+                <RowDefinition Height="8"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="34"/>
+            </Grid.RowDefinitions>
+
+            <!-- ================= Titelleiste (Abschnitt 5) ================= -->
+            <Border Grid.Row="0" Background="{StaticResource TitleBarGradientBrush}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Orientation="Horizontal" Margin="10,0,0,0" VerticalAlignment="Center">
+                        <Path x:Name="NovaLogo" Width="30" Height="30" Stretch="Uniform"
+                              Data="M15,1 L18,11 L29,11 L20,17 L23,28 L15,21 L7,28 L10,17 L1,11 L12,11 Z">
+                            <Path.Fill>
+                                <RadialGradientBrush>
+                                    <GradientStop Color="#FFFFFF" Offset="0"/>
+                                    <GradientStop Color="{StaticResource AccentPrimaryColor}" Offset="0.5"/>
+                                    <GradientStop Color="{StaticResource AccentGlowColor}" Offset="1"/>
+                                </RadialGradientBrush>
+                            </Path.Fill>
+                            <Path.Effect>
+                                <DropShadowEffect Color="{StaticResource AccentGlowColor}" BlurRadius="10" ShadowDepth="0" Opacity="0.6"/>
+                            </Path.Effect>
+                        </Path>
+                        <TextBlock Text="Nova Studio" FontSize="18" FontWeight="SemiBold"
+                                   Foreground="{StaticResource PrimaryTextBrush}"
+                                   VerticalAlignment="Center" Margin="10,0,0,0"/>
+                        <TextBlock x:Name="DocumentTitleText" Text=" – (kein Projekt geöffnet)"
+                                   FontSize="14" Foreground="{StaticResource SecondaryTextBrush}"
+                                   VerticalAlignment="Center" Margin="2,2,0,0"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" WindowChrome.IsHitTestVisibleInChrome="True">
+                        <Button x:Name="MinimizeButton" Width="42" Height="42" Click="OnMinimizeClick"
+                                Style="{StaticResource TitleBarButtonStyle}">
+                            <Path Data="M0,0 L10,0" Stroke="White" StrokeThickness="1" Margin="0,6,0,0"/>
+                        </Button>
+                        <Button x:Name="MaximizeButton" Width="42" Height="42" Click="OnMaximizeClick"
+                                Style="{StaticResource TitleBarButtonStyle}">
+                            <Path Data="M0,0 L10,0 L10,10 L0,10 Z" Stroke="White" StrokeThickness="1"/>
+                        </Button>
+                        <Button x:Name="CloseButton" Width="42" Height="42" Click="OnCloseClick"
+                                Style="{StaticResource TitleBarCloseButtonStyle}">
+                            <Path Data="M0,0 L10,10 M0,10 L10,0" Stroke="White" StrokeThickness="1"/>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ================= Ribbon (Abschnitt 6/7) ================= -->
+            <!-- Kein fluent:Backstage: ein leeres Backstage-Element zeigte
+                 nur einen zweiten, funktionslosen "Datei"-Button neben dem
+                 bereits echten "Datei"-Tab (dessen Buttons alle Backstage-
+                 Funktionalität bereits abdecken) - ein leerer Backstage-
+                 Bereich waere selbst eine Art Attrappen-UI gewesen. -->
+            <fluent:Ribbon Grid.Row="1" Grid.RowSpan="2" x:Name="MainRibbon"
+                           SelectedTabItem="{Binding ElementName=StartTab}">
+                <fluent:RibbonTabItem Header="Datei">
+                    <fluent:RibbonGroupBox Header="Datei">
+                        <fluent:Button Header="Neu" SizeDefinition="Large" Click="OnNewFileClick"/>
+                        <fluent:Button Header="Öffnen" SizeDefinition="Large" Click="OnOpenFileClick"/>
+                        <fluent:Button Header="Speichern" SizeDefinition="Large" Click="OnSaveClick"/>
+                        <fluent:Button Header="Alle speichern" SizeDefinition="Small" Click="OnSaveAllClick"/>
+                        <fluent:Button Header="Speichern als" SizeDefinition="Small" Click="OnSaveAsClick"/>
+                    </fluent:RibbonGroupBox>
+                    <fluent:RibbonGroupBox Header="Projekt">
+                        <!-- .nproj dient bewusst auch als "Projektmappe" (siehe NovaProject.cs) -
+                             ein eigenes .nsln-Mehrprojekt-Format waere ohne Mehrdatei-Linken
+                             im Compiler reine Attrappe. -->
+                        <fluent:Button Header="Projekt öffnen" SizeDefinition="Large" Click="OnOpenProjectClick"/>
+                        <fluent:Button Header="Neues Projekt" SizeDefinition="Large" Click="OnNewProjectClick"/>
+                    </fluent:RibbonGroupBox>
+                    <fluent:RibbonGroupBox Header="Beenden">
+                        <fluent:Button Header="Beenden" SizeDefinition="Large" Click="OnExitClick"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem x:Name="StartTab" Header="Start">
+                    <fluent:RibbonGroupBox Header="Zwischenablage">
+                        <fluent:Button Header="Einfügen" SizeDefinition="Large" Click="OnPasteClick"/>
+                        <fluent:Button Header="Ausschneiden" SizeDefinition="Small" Click="OnCutClick"/>
+                        <fluent:Button Header="Kopieren" SizeDefinition="Small" Click="OnCopyClick"/>
+                        <fluent:Button Header="Einfügen" SizeDefinition="Small" Click="OnPasteClick"/>
+                    </fluent:RibbonGroupBox>
+                    <fluent:RibbonGroupBox Header="Bearbeiten">
+                        <fluent:Button Header="Rückgängig" SizeDefinition="Large" Click="OnUndoClick"/>
+                        <fluent:Button Header="Wiederholen" SizeDefinition="Large" Click="OnRedoClick"/>
+                        <fluent:Button Header="Suchen" SizeDefinition="Large" Click="OnFindClick"/>
+                        <fluent:Button Header="Ersetzen" SizeDefinition="Large" Click="OnReplaceClick"/>
+                    </fluent:RibbonGroupBox>
+                    <fluent:RibbonGroupBox Header="Code">
+                        <fluent:Button Header="Code formatieren" SizeDefinition="Large" IsEnabled="False"
+                                       ToolTip="Noch nicht implementiert - braucht einen Code-Formatter im NovaLang-Compiler"/>
+                        <fluent:Button Header="Kommentar" SizeDefinition="Small" Click="OnCommentClick"/>
+                        <fluent:Button Header="Kommentar entfernen" SizeDefinition="Small" Click="OnUncommentClick"/>
+                        <fluent:Button Header="Einrücken" SizeDefinition="Small" IsEnabled="False"/>
+                        <fluent:Button Header="Ausrücken" SizeDefinition="Small" IsEnabled="False"/>
+                    </fluent:RibbonGroupBox>
+                    <fluent:RibbonGroupBox Header="Navigation">
+                        <fluent:Button Header="Gehe zu Definition" SizeDefinition="Large" IsEnabled="False"
+                                       ToolTip="Noch nicht implementiert - braucht einen NovaLang Language Server"/>
+                        <fluent:Button Header="Alle Verweise" SizeDefinition="Large" IsEnabled="False"/>
+                        <fluent:Button Header="Symbol umbenennen" SizeDefinition="Large" IsEnabled="False"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem Header="Projekt">
+                    <fluent:RibbonGroupBox Header="Projekt">
+                        <!-- Echtes Minimal-Projektformat (.nproj) - siehe NovaProject.cs:
+                             ein Projekt = Name + eine Hauptdatei, da novac.exe nur eine
+                             .nova-Datei pro Aufruf uebersetzt. Kein Mehrprojekt-Linken. -->
+                        <fluent:Button Header="Neues Projekt" SizeDefinition="Large" Click="OnNewProjectClick"/>
+                        <fluent:Button Header="Projekt öffnen" SizeDefinition="Large" Click="OnOpenProjectClick"/>
+                        <fluent:Button Header="Projekt schließen" SizeDefinition="Large" Click="OnCloseProjectClick"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem Header="Erstellen">
+                    <fluent:RibbonGroupBox Header="Erstellen">
+                        <fluent:Button Header="Erstellen" SizeDefinition="Large" Click="OnBuildClick"/>
+                        <fluent:Button Header="Bereinigen" SizeDefinition="Large" Click="OnCleanClick"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem Header="Debuggen">
+                    <!-- Ehrlich deaktiviert statt vorgetaeuscht: dieser
+                         Kernel hat kein Debug-Protokoll (kein GDB-Stub, kein
+                         Breakpoint-/Register-/Speicher-Interface aus Ring 3
+                         heraus ansprechbar) - ein Play/Breakpoint-Button
+                         ohne echte Gegenseite waere reine Attrappe
+                         (Abschnitt 23 des Auftrags: keine Dummy-Funktionen). -->
+                    <fluent:RibbonGroupBox Header="Debuggen">
+                        <fluent:Button Header="Debuggen starten" SizeDefinition="Large" IsEnabled="False"
+                                       ToolTip="Noch nicht implementiert - NovaOS-Kernel hat kein Debug-Protokoll (kein Breakpoint-/Register-/Speicher-Interface), siehe DEBUGGER.md"/>
+                        <fluent:Button Header="Haltepunkt umschalten" SizeDefinition="Small" IsEnabled="False"
+                                       ToolTip="Noch nicht implementiert - siehe 'Debuggen starten'"/>
+                        <fluent:Button Header="Einzelschritt" SizeDefinition="Small" IsEnabled="False"
+                                       ToolTip="Noch nicht implementiert - siehe 'Debuggen starten'"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem Header="Bibliothek">
+                    <!-- Echte Referenz direkt aus dem Compiler-Quellcode
+                         abgeglichen (siehe LanguageReferenceDialog.xaml.cs) -
+                         kein Standardbibliotheks-Paketmanager (es gibt keine
+                         NovaLang-Pakete), nur Sprachreferenz. -->
+                    <fluent:RibbonGroupBox Header="NovaLang">
+                        <fluent:Button Header="Sprachreferenz anzeigen" SizeDefinition="Large" Click="OnShowLanguageReferenceClick"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem Header="Testen">
+                    <!-- Ehrlich deaktiviert: es gibt kein Testrunner-/
+                         Assertion-Framework fuer NovaLang - ein "Tests
+                         ausfuehren"-Knopf ohne echte Testinfrastruktur
+                         dahinter waere reine Attrappe. -->
+                    <fluent:RibbonGroupBox Header="Tests">
+                        <fluent:Button Header="Alle Tests ausführen" SizeDefinition="Large" IsEnabled="False"
+                                       ToolTip="Noch nicht implementiert - es existiert kein Testrunner-/Assertion-Framework für NovaLang"/>
+                        <fluent:Button Header="Test-Explorer" SizeDefinition="Large" IsEnabled="False"
+                                       ToolTip="Noch nicht implementiert - siehe 'Alle Tests ausführen'"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem Header="Designer">
+                    <!-- Ehrlich deaktiviert: NovaOS hat kein GUI-Markup-
+                         Format und keinen visuellen Canvas-Editor - ein
+                         "Designer öffnen"-Knopf ohne echtes Zielformat
+                         waere reine Attrappe. -->
+                    <fluent:RibbonGroupBox Header="Designer">
+                        <fluent:Button Header="Oberfläche entwerfen" SizeDefinition="Large" IsEnabled="False"
+                                       ToolTip="Noch nicht implementiert - NovaOS hat kein GUI-Markup-Format und keinen visuellen Canvas-Editor"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem Header="NovaOS">
+                    <!-- Startet echt qemu-system-x86_64 mit genau denselben
+                         Parametern wie qemu-test/start-qemu.cmd (siehe
+                         OnNovaOsStartQemuClick in MainWindow.xaml.cs) - kein
+                         eigener Emulator, kein simulierter Boot. -->
+                    <fluent:RibbonGroupBox Header="Emulator">
+                        <fluent:Button Header="In QEMU starten" SizeDefinition="Large" Click="OnNovaOsStartQemuClick"/>
+                        <fluent:Button Header="QEMU beenden" SizeDefinition="Large" Click="OnNovaOsStopQemuClick"/>
+                        <fluent:Button Header="Serial-Log anzeigen" SizeDefinition="Small" Click="OnNovaOsShowSerialLogClick"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem Header="Git">
+                    <!-- Ruft den im System installierten git-Client echt auf
+                         (siehe RunProcess in MainWindow.xaml.cs) - kein
+                         simuliertes Ergebnis, keine eigene Git-Logik. -->
+                    <fluent:RibbonGroupBox Header="Repository">
+                        <fluent:Button Header="Status" SizeDefinition="Large" Click="OnGitStatusClick"/>
+                        <fluent:Button Header="Diff" SizeDefinition="Large" Click="OnGitDiffClick"/>
+                        <fluent:Button Header="Log" SizeDefinition="Large" Click="OnGitLogClick"/>
+                    </fluent:RibbonGroupBox>
+                    <fluent:RibbonGroupBox Header="Änderungen">
+                        <fluent:Button Header="Commit" SizeDefinition="Large" Click="OnGitCommitClick"/>
+                    </fluent:RibbonGroupBox>
+                    <fluent:RibbonGroupBox Header="Remote">
+                        <fluent:Button Header="Pull" SizeDefinition="Large" Click="OnGitPullClick"/>
+                        <fluent:Button Header="Push" SizeDefinition="Large" Click="OnGitPushClick"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem Header="Tools">
+                    <!-- Echter Wrapper um tools/nef/nef.exe inspect/validate/
+                         dump - keine eigene NEF-Parser-Implementierung in
+                         NovaStudio selbst. -->
+                    <fluent:RibbonGroupBox Header="NEF">
+                        <fluent:Button Header="NEF-Datei inspizieren" SizeDefinition="Large" Click="OnNefInspectClick"/>
+                        <fluent:Button Header="NEF-Datei validieren" SizeDefinition="Large" Click="OnNefValidateClick"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+                <fluent:RibbonTabItem Header="Ansicht">
+                    <fluent:RibbonGroupBox Header="Fensterbereiche">
+                        <fluent:ToggleButton x:Name="ToggleExplorerButton" Header="Projektmappen-Explorer"
+                                              SizeDefinition="Large" IsChecked="True" Click="OnToggleExplorerClick"/>
+                        <fluent:ToggleButton x:Name="TogglePropertiesButton" Header="Eigenschaften / Symbolbrowser"
+                                              SizeDefinition="Large" IsChecked="True" Click="OnTogglePropertiesClick"/>
+                        <fluent:ToggleButton x:Name="ToggleOutputButton" Header="Ausgabebereich"
+                                              SizeDefinition="Large" IsChecked="True" Click="OnToggleOutputClick"/>
+                    </fluent:RibbonGroupBox>
+                    <fluent:RibbonGroupBox Header="Editor-Zoom">
+                        <fluent:Button Header="Vergrößern" SizeDefinition="Small" Click="OnZoomInClick"/>
+                        <fluent:Button Header="Verkleinern" SizeDefinition="Small" Click="OnZoomOutClick"/>
+                        <fluent:Button Header="Zurücksetzen" SizeDefinition="Small" Click="OnZoomResetClick"/>
+                    </fluent:RibbonGroupBox>
+                    <fluent:RibbonGroupBox Header="Fenster">
+                        <fluent:Button Header="Vollbild" SizeDefinition="Large" Click="OnToggleFullScreenClick"/>
+                    </fluent:RibbonGroupBox>
+                </fluent:RibbonTabItem>
+            </fluent:Ribbon>
+
+            <!-- ================= Arbeitsbereich (Abschnitt 8, frei andockbar/
+                 verschiebbar/schwebend wie bei Visual Studio) ================= -->
+            <!-- xcad:DockingManager ersetzt das feste Grid-Layout: jedes
+                 Werkzeugfenster ist jetzt per Ziehen am Tab frei andockbar
+                 (an jede Seite), als eigenes schwebendes Fenster lösbar
+                 (Float), per Reissnagel auto-einklappbar und per ×
+                 schliessbar - echte Bibliothek (Dirkster.AvalonDock), keine
+                 selbstgebaute Attrappen-Docking-Logik. Der Editor-Bereich
+                 bleibt EIN gemeinsames LayoutDocument (ein einziges
+                 AvalonEdit-Steuerelement fuer alle offenen Dateien, Inhalt
+                 wird beim Tab-Wechsel synchronisiert, siehe
+                 OnDocumentTabSelectionChanged) - echtes paralleles
+                 Side-by-side-Bearbeiten zweier Dateien wird dadurch bewusst
+                 NICHT unterstuetzt (ehrliche Grenze, siehe
+                 IMPLEMENTATION_STATUS.md). -->
+            <xcad:DockingManager Grid.Row="4" x:Name="DockManager" Margin="10,0,10,0"
+                                  Background="{StaticResource WindowBackgroundBrush}">
+                <xcad:LayoutRoot>
+                    <xcad:LayoutPanel Orientation="Horizontal">
+                        <xcad:LayoutAnchorablePane DockWidth="305">
+                            <!-- Projektmappen-Explorer (Abschnitt 9) -->
+                            <xcad:LayoutAnchorable x:Name="ExplorerAnchorable" Title="Projektmappen-Explorer" CanClose="False">
+                                <Border Background="{StaticResource PanelBackgroundBrush}">
+                                    <TreeView x:Name="SolutionExplorerTree" Margin="4"
+                                              MouseDoubleClick="OnExplorerDoubleClick">
+                                        <!-- Echte Dateisystem-Operationen (siehe
+                                             MainWindow.xaml.cs, Abschnitt "Explorer-
+                                             Kontextmenue") - kein reines Deko-Menue. -->
+                                        <TreeView.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="Neue Datei..." Click="OnExplorerNewFileClick"/>
+                                                <MenuItem Header="Neuer Ordner..." Click="OnExplorerNewFolderClick"/>
+                                                <Separator/>
+                                                <MenuItem Header="Umbenennen..." Click="OnExplorerRenameClick"/>
+                                                <MenuItem Header="Löschen" Click="OnExplorerDeleteClick"/>
+                                                <Separator/>
+                                                <MenuItem Header="Aktualisieren" Click="OnExplorerRefreshClick"/>
+                                            </ContextMenu>
+                                        </TreeView.ContextMenu>
+                                    </TreeView>
+                                </Border>
+                            </xcad:LayoutAnchorable>
+                        </xcad:LayoutAnchorablePane>
+
+                        <xcad:LayoutPanel Orientation="Vertical">
+                            <xcad:LayoutDocumentPane>
+                                <!-- Zentraler Editor (Abschnitt 10-12) -->
+                                <xcad:LayoutDocument Title="Editor" CanClose="False" CanFloat="False">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="29"/>
+                                            <RowDefinition Height="32"/>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+
+                                        <TabControl x:Name="DocumentTabs" Grid.Row="0" Background="Transparent" BorderThickness="0"
+                                                    SelectionChanged="OnDocumentTabSelectionChanged"/>
+
+                                        <!-- Klickbare Breadcrumb (Abschnitt 11): KEIN Language
+                                             Server, daher nur Module/Function - echte Treffer
+                                             per Regex-Scan des geoeffneten Dokuments (siehe
+                                             UpdateBreadcrumb()/OnBreadcrumbFunctionClick in
+                                             MainWindow.xaml.cs), kein Namespace/Klassen-Konzept
+                                             (gibt es in NovaLang nicht). -->
+                                        <Border Grid.Row="1" Background="{StaticResource PanelHeaderBackgroundBrush}"
+                                                BorderBrush="{StaticResource SeparatorBrush}" BorderThickness="0,0,0,1">
+                                            <StackPanel x:Name="BreadcrumbPanel" Orientation="Horizontal"
+                                                        VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                        </Border>
+
+                                        <Border Grid.Row="2" Background="{StaticResource EditorBackgroundGradientBrush}">
+                                            <avalonEdit:TextEditor x:Name="Editor"
+                                                                    FontFamily="{StaticResource NovaEditorFontFamily}"
+                                                                    FontSize="14"
+                                                                    Background="Transparent"
+                                                                    Foreground="{StaticResource SyntaxVariableBrush}"
+                                                                    ShowLineNumbers="True"
+                                                                    IsReadOnly="False"/>
+                                        </Border>
+                                    </Grid>
+                                </xcad:LayoutDocument>
+                            </xcad:LayoutDocumentPane>
+
+                            <!-- Unterer Ausgabebereich (Abschnitt 17) -->
+                            <xcad:LayoutAnchorablePane DockHeight="168">
+                                <xcad:LayoutAnchorable x:Name="FehlerlisteAnchorable" Title="Fehlerliste" CanClose="False">
+                                    <!-- Echtes 6-Spalten-Layout: Status/Code/Beschreibung/
+                                         Projekt/Datei/Zeile. "Code" und "Projekt" zeigen ehrlich
+                                         "-" bzw. "(kein Projektsystem)", da novac.exe keine
+                                         Fehlercodes ausgibt und Nova Studio noch kein .nsln/
+                                         .nproj-Projektsystem hat - keine erfundenen Werte. -->
+                                    <ListView x:Name="ErrorListView" Background="{StaticResource PanelBackgroundBrush}" BorderThickness="0"
+                                              AlternationCount="2"
+                                              Foreground="{StaticResource PrimaryTextBrush}"
+                                              MouseDoubleClick="OnErrorListDoubleClick">
+                                        <ListView.ItemContainerStyle>
+                                            <Style TargetType="ListViewItem">
+                                                <Setter Property="Background" Value="{StaticResource ErrorRowBrush}"/>
+                                                <Setter Property="BorderThickness" Value="0"/>
+                                                <Setter Property="Padding" Value="4,3"/>
+                                                <Style.Triggers>
+                                                    <Trigger Property="ItemsControl.AlternationIndex" Value="1">
+                                                        <Setter Property="Background" Value="{StaticResource ErrorRowAltBrush}"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsSelected" Value="True">
+                                                        <Setter Property="Background" Value="{StaticResource SelectionBackgroundBrush}"/>
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ListView.ItemContainerStyle>
+                                        <ListView.View>
+                                            <GridView>
+                                                <GridViewColumn Header="Status" Width="70" DisplayMemberBinding="{Binding Status}"/>
+                                                <GridViewColumn Header="Code" Width="60" DisplayMemberBinding="{Binding Code}"/>
+                                                <GridViewColumn Header="Beschreibung" Width="500" DisplayMemberBinding="{Binding Description}"/>
+                                                <GridViewColumn Header="Projekt" Width="160" DisplayMemberBinding="{Binding Project}"/>
+                                                <GridViewColumn Header="Datei" Width="160" DisplayMemberBinding="{Binding File}"/>
+                                                <GridViewColumn Header="Zeile" Width="60" DisplayMemberBinding="{Binding Line}"/>
+                                            </GridView>
+                                        </ListView.View>
+                                    </ListView>
+                                </xcad:LayoutAnchorable>
+                                <xcad:LayoutAnchorable x:Name="BuildAusgabeAnchorable" Title="Build-Ausgabe" CanClose="False">
+                                    <TextBox x:Name="BuildOutputText" Background="{StaticResource PanelBackgroundBrush}" IsReadOnly="True" TextWrapping="NoWrap"
+                                             AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
+                                             FontFamily="{StaticResource NovaEditorFontFamily}" FontSize="12"/>
+                                </xcad:LayoutAnchorable>
+                                <xcad:LayoutAnchorable x:Name="GitAnchorable" Title="Git" CanClose="False">
+                                    <!-- Echter Wrapper um den im System installierten git-Client
+                                         (ProcessStartInfo "git", siehe RunProcess in MainWindow.xaml.cs) -
+                                         keine eigene Git-Implementierung, kein simuliertes Ergebnis. -->
+                                    <TextBox x:Name="GitOutputText" Background="{StaticResource PanelBackgroundBrush}" IsReadOnly="True" TextWrapping="NoWrap"
+                                             AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
+                                             FontFamily="{StaticResource NovaEditorFontFamily}" FontSize="12"/>
+                                </xcad:LayoutAnchorable>
+                                <xcad:LayoutAnchorable x:Name="TerminalAnchorable" Title="Terminal" CanClose="False">
+                                    <TextBlock Text="Noch nicht implementiert." Background="{StaticResource PanelBackgroundBrush}" Foreground="{StaticResource MutedTextBrush}" Margin="8"/>
+                                </xcad:LayoutAnchorable>
+                                <xcad:LayoutAnchorable x:Name="DebuggerAnchorable" Title="Debugger" CanClose="False">
+                                    <TextBlock Text="Noch nicht implementiert - siehe DEBUGGER.md." Background="{StaticResource PanelBackgroundBrush}" Foreground="{StaticResource MutedTextBrush}" Margin="8"/>
+                                </xcad:LayoutAnchorable>
+                            </xcad:LayoutAnchorablePane>
+                        </xcad:LayoutPanel>
+
+                        <!-- Rechter Werkzeugbereich: Eigenschaften + Capabilities/Syscalls (Abschnitt 15/16) -->
+                        <xcad:LayoutAnchorablePane DockWidth="345">
+                            <xcad:LayoutAnchorable x:Name="PropertiesAnchorable" Title="Eigenschaften" CanClose="False">
+                                <Border Background="{StaticResource PanelBackgroundBrush}">
+                                    <!-- Echt editierbar, sobald ein .nproj offen ist (RefreshProjectPropertiesPanel
+                                         in MainWindow.xaml.cs); ohne offenes Projekt ehrlicher Hinweis statt
+                                         Dummy-Feldern. -->
+                                    <DockPanel>
+                                        <TextBlock x:Name="NoProjectText"
+                                                   Text="Kein Projekt geöffnet - siehe Registerkarte 'Projekt'."
+                                                   Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap" Margin="8"/>
+                                        <StackPanel x:Name="ProjectPropertiesPanel" Visibility="Collapsed" Margin="8">
+                                            <TextBlock Text="Name" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,0,0,2"/>
+                                            <TextBox x:Name="ProjectNameBox" Margin="0,0,0,8"/>
+                                            <TextBlock Text="Hauptdatei (relativ zum Projektordner)" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,0,0,2"/>
+                                            <TextBox x:Name="ProjectMainFileBox" Margin="0,0,0,8"/>
+                                            <Button Content="Speichern" Click="OnSaveProjectPropertiesClick" HorizontalAlignment="Left" Padding="10,4"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </xcad:LayoutAnchorable>
+                            <!-- Capabilities & Syscalls (neu): echte Werkzeuge, die
+                                 das Programmieren erleichtern - Drag auf den Editor
+                                 fuegt echten, verifizierten Code bzw. (bei
+                                 Capabilities) einen Eintrag im Projekt-Manifest
+                                 ein. KEIN Symbolbrowser (braeuchte einen Language
+                                 Server, den es nicht gibt). -->
+                            <xcad:LayoutAnchorable x:Name="CapabilitiesAnchorable" Title="Capabilities &amp; Syscalls" CanClose="False">
+                                <Border Background="{StaticResource PanelBackgroundBrush}">
+                                    <TabControl Background="Transparent" BorderThickness="0" Margin="4">
+                                        <TabItem Header="Capabilities">
+                                            <ListBox x:Name="CapabilitiesList" Background="Transparent" BorderThickness="0"
+                                                     PreviewMouseLeftButtonDown="OnCatalogItemPreviewMouseDown"
+                                                     PreviewMouseMove="OnCapabilityPreviewMouseMove">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Margin="2,3,2,3" Cursor="Hand">
+                                                            <TextBlock Text="{Binding Name}" FontFamily="{StaticResource NovaEditorFontFamily}" FontSize="12"/>
+                                                            <TextBlock Text="{Binding Description}" FontSize="11" TextWrapping="Wrap"
+                                                                       Foreground="{StaticResource SecondaryTextBrush}"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </TabItem>
+                                        <TabItem Header="Syscalls">
+                                            <ListBox x:Name="SyscallsList" Background="Transparent" BorderThickness="0"
+                                                     PreviewMouseLeftButtonDown="OnCatalogItemPreviewMouseDown"
+                                                     PreviewMouseMove="OnSyscallPreviewMouseMove">
+                                                <ListBox.GroupStyle>
+                                                    <GroupStyle>
+                                                        <GroupStyle.HeaderTemplate>
+                                                            <DataTemplate>
+                                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="12"
+                                                                           Foreground="{StaticResource PrimaryTextBrush}" Margin="2,6,0,2"/>
+                                                            </DataTemplate>
+                                                        </GroupStyle.HeaderTemplate>
+                                                    </GroupStyle>
+                                                </ListBox.GroupStyle>
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Margin="2,3,2,3" Cursor="Hand">
+                                                            <TextBlock FontFamily="{StaticResource NovaEditorFontFamily}" FontSize="12">
+                                                                <TextBlock.Text>
+                                                                    <MultiBinding StringFormat="{}{0}  (service={1}, op={2})">
+                                                                        <Binding Path="Name"/>
+                                                                        <Binding Path="Service"/>
+                                                                        <Binding Path="Operation"/>
+                                                                    </MultiBinding>
+                                                                </TextBlock.Text>
+                                                            </TextBlock>
+                                                            <TextBlock Text="{Binding Description}" FontSize="11" TextWrapping="Wrap"
+                                                                       Foreground="{StaticResource SecondaryTextBrush}"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </TabItem>
+                                    </TabControl>
+                                </Border>
+                            </xcad:LayoutAnchorable>
+                        </xcad:LayoutAnchorablePane>
+                    </xcad:LayoutPanel>
+                </xcad:LayoutRoot>
+            </xcad:DockingManager>
+
+            <!-- ================= Statusleiste (Abschnitt 18) ================= -->
+            <Border Grid.Row="5" Margin="10,0,10,4" Background="{StaticResource StatusBarGradientBrush}"
+                    BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1" CornerRadius="6">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StatusLeftText" Text="Bereit" FontSize="12"
+                               Foreground="{StaticResource SuccessBrush}" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                    <!-- Echte Zeile/Spalte aus Editor.TextArea.Caret, kein Platzhalter
+                         (siehe OnEditorCaretPositionChanged in MainWindow.xaml.cs). -->
+                    <TextBlock x:Name="StatusPositionText" Grid.Column="1" FontSize="12"
+                               Foreground="{StaticResource SecondaryTextBrush}" VerticalAlignment="Center" Margin="0,0,16,0"
+                               Text="Zeile 1, Spalte 1"/>
+                    <TextBlock x:Name="StatusRightText" Grid.Column="2" FontSize="12"
+                               Foreground="{StaticResource SecondaryTextBrush}" VerticalAlignment="Center" Margin="0,0,10,0"
+                               Text="NovaLang | NovaOS SDK | x86-32 (NovaOS) | -"/>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</Window>

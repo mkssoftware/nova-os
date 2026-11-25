@@ -1,0 +1,66 @@
+' hello_while.nova - NovaLang v0.6 Testprogramm: echte While-Schleife
+' (siehe NOVALANG_SPEC_v0.6.md) - zaehlt von 0 bis 4 und gibt bei jedem
+' Durchlauf eine Zeile aus, dann eine zweite Schleife zur Pruefung, dass
+' die Bedingung bereits beim ERSTEN Eintritt falsch sein kann (0 Durchlaeufe).
+'
+' v0.9-ERGAENZUNG (bewusst IM SELBEN Programm, nicht als eigene Datei):
+' beweist zusaetzlich mehrere Functions mit Parametern und echten
+' Rueckgabewerten (siehe NOVALANG_SPEC_v0.9.md). Grund fuer die
+' Zusammenlegung: NovaFS' B-Baum-Einfuegefunktion hat noch KEIN
+' Blatt-Splitting (siehe feedback_novafs_leaf_capacity.md) - mit 5
+' urspruenglichen NEF-Testdateien + 7 bereits bestehenden NovaLang-
+' Testdateien ist die Wurzel bereits nahe an der bekannten Grenze. Statt
+' eine 8. neue NovaLang-Datei anzulegen, haengt dieser Test deshalb an
+' das bereits bestehende hello_while.nef an.
+Module HelloWhile
+    Function Main() As Int32
+        Dim i As Integer = 0
+        Dim limit As Integer = 5
+
+        While i < limit
+            Console.WriteLine("loop iteration")
+            i = i + 1
+        End While
+
+        Console.WriteLine("loop finished")
+
+        Dim never As Integer = 100
+        While never < limit
+            Console.WriteLine("this must never print")
+        End While
+
+        Console.WriteLine("zero-iteration while correctly skipped")
+
+        Dim a As Integer = 5
+        Dim b As Integer = 7
+        Dim sum As Integer = 0
+        sum = Add(a, b)
+        If sum = 12 Then
+            Console.WriteLine("add ok")
+        Else
+            Console.WriteLine("add failed")
+        End If
+
+        Dim doubled As Integer = 0
+        doubled = DoubleSum(a, b)
+        If doubled = 24 Then
+            Console.WriteLine("nested call ok")
+        Else
+            Console.WriteLine("nested call failed")
+        End If
+
+        Return 0
+    End Function
+
+    Function Add(x As Integer, y As Integer) As Int32
+        Dim result As Integer = 0
+        result = x + y
+        Return result
+    End Function
+
+    Function DoubleSum(x As Integer, y As Integer) As Int32
+        Dim t As Integer = 0
+        t = Add(x, y)
+        Return t + t
+    End Function
+End Module

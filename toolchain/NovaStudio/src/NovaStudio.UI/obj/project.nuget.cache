@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "dgSpecHash": "eGXlm9JKw4wEi+fVoIs+ghFwSphfc4hV4vZKoWawiA33Roe6CUl+zUw+xFITRKv9oEwzny/G5EJX/RRRvJ2s5g==",
+  "success": true,
+  "projectFilePath": "C:\\recoverboot\\nova-os\\toolchain\\NovaStudio\\src\\NovaStudio.UI\\NovaStudio.UI.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Matze\\.nuget\\packages\\avalonedit\\6.3.1.120\\avalonedit.6.3.1.120.nupkg.sha512",
+    "C:\\Users\\Matze\\.nuget\\packages\\controlzex\\7.0.3\\controlzex.7.0.3.nupkg.sha512",
+    "C:\\Users\\Matze\\.nuget\\packages\\dirkster.avalondock\\5.0.2\\dirkster.avalondock.5.0.2.nupkg.sha512",
+    "C:\\Users\\Matze\\.nuget\\packages\\dirkster.avalondock.core\\5.0.2\\dirkster.avalondock.core.5.0.2.nupkg.sha512",
+    "C:\\Users\\Matze\\.nuget\\packages\\fluent.ribbon\\11.0.2\\fluent.ribbon.11.0.2.nupkg.sha512",
+    "C:\\Users\\Matze\\.nuget\\packages\\microsoft.xaml.behaviors.wpf\\1.1.135\\microsoft.xaml.behaviors.wpf.1.1.135.nupkg.sha512",
+    "C:\\Users\\Matze\\.nuget\\packages\\sharpvectors.wpf\\1.8.6\\sharpvectors.wpf.1.8.6.nupkg.sha512",
+    "C:\\Users\\Matze\\.nuget\\packages\\system.text.json\\8.0.5\\system.text.json.8.0.5.nupkg.sha512"
+  ],
+  "logs": []
+}

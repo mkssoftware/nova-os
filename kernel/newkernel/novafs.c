@@ -327,6 +327,16 @@ static uint32_t nfs_path_indices[NFS_MAX_HEIGHT] = {0};
 static uint32_t nfs_path_depth = 0;
 static const novafs_tree_t *nfs_cur_tree = 0;
 static uint32_t nfs_cur_index = 0;
+
+/* Scratch-Seiten fuer echtes B+-Baum-Leaf-/Inner-Splitting (siehe
+   novafs_tree_insert() unten) - lazy allokiert, wie nfs_sb_page/
+   nfs_level_pages auch, nie wieder freigegeben (Kernel-Lebensdauer).
+   nfs_split_scratch_page ist 2 Seiten (8192 Byte) GROSS statt 1, weil
+   das groesste (max_items+1)-Array (Objekt-Baum: 27*152=4104 Byte)
+   knapp ueber eine einzelne 4096-Byte-Seite hinausgeht. */
+static uint32_t nfs_split_scratch_page = 0;
+static uint32_t nfs_split_sibling_page = 0;
+static uint32_t nfs_split_newroot_page = 0;
 static uint32_t nfs_cur_height = 0;
 
 static int novafs_read_block(uint32_t block, uint8_t *buf) {
@@ -1038,6 +1048,212 @@ int novafs_tree_insert_simple(const novafs_tree_t *tree, const uint8_t *item) {
     return novafs_node_store(leaf);
 }
 
+/* ===================================================================== */
+/* B+-Baum-Leaf-/Inner-Splitting (2026-11-23, siehe                      */
+/* feedback_novafs_root_directory_full.md: novafs_tree_insert_simple()   */
+/* oben weigerte sich bewusst, in ein volles Blatt einzufuegen - "folgt  */
+/* erst mit einem spaeteren Batch". Das IST jetzt dieser Batch.          */
+/* ===================================================================== */
+
+/* Baut aus den `count` (==max_items, der Knoten ist VOLL) vorhandenen
+   Items in 'node' (Level 'level', item_size Byte pro Item) PLUS
+   'insert_item' (an sortierter Position 'ins_index') ein (max_items+1)-
+   Array, teilt es in eine linke und eine rechte Haelfte, schreibt die
+   linke Haelfte zurueck in 'node' (derselbe Block, jetzt mit weniger
+   Items) und die rechte Haelfte in einen NEU allozierten Geschwister-
+   block. Der neue Block und der Schluessel (erste 16 Byte) des ERSTEN
+   Items der rechten Haelfte (= der im Elternknoten einzufuegende
+   Separator) werden ueber out_new_block/out_sep_key zurueckgegeben.
+   NFS_N_PARENT des neuen Geschwisterknotens wird symbolisch vom
+   gesplitteten Knoten uebernommen - wie der Rest dieser Datei bereits
+   zeigt (siehe cursor_seek's einzige Pruefung), wird NFS_N_PARENT NUR
+   fuer den AKTUELLEN Wurzelknoten validiert, nie fuer einen anderen
+   Knoten gelesen; ein nach einem Wurzelwachstum (siehe
+   novafs_tree_grow_root()) "veralteter" Parent-Zeiger ist deshalb
+   folgenlos - ein Nachziehen wuerde nur zusaetzliche, nie gelesene
+   Schreibvorgaenge kosten. 0 = Erfolg. */
+static int novafs_split_node(const novafs_tree_t *tree, uint32_t level, uint8_t *node,
+                              uint32_t ins_index, const uint8_t *insert_item, uint32_t item_size,
+                              uint32_t *out_new_block, uint8_t *out_sep_key) {
+    uint32_t max_items = (level == 0u) ? tree->max_items : NOVAFS_INNER_MAX;
+    uint32_t count = *(const uint16_t *)(node + NFS_N_COUNT);
+    if (count != max_items) return -1;
+
+    if (nfs_split_scratch_page == 0) {
+        if (pmm_alloc_contiguous(2u, &nfs_split_scratch_page) != 0) return -1;
+    }
+    uint8_t *tmp = (uint8_t *)(uintptr_t)nfs_split_scratch_page;
+    const uint8_t *src = node + NOVAFS_NODE_HEADER;
+
+    for (uint32_t i = 0; i < ins_index; ++i) {
+        for (uint32_t b = 0; b < item_size; ++b) tmp[i * item_size + b] = src[i * item_size + b];
+    }
+    for (uint32_t b = 0; b < item_size; ++b) tmp[ins_index * item_size + b] = insert_item[b];
+    for (uint32_t i = ins_index; i < count; ++i) {
+        for (uint32_t b = 0; b < item_size; ++b) tmp[(i + 1u) * item_size + b] = src[i * item_size + b];
+    }
+
+    uint32_t total = count + 1u;
+    uint32_t left_count = total / 2u;
+    uint32_t right_count = total - left_count;
+
+    uint32_t old_block = *(const uint32_t *)(node + NFS_N_BLOCK);
+    uint32_t parent_block = *(const uint32_t *)(node + NFS_N_PARENT);
+
+    uint32_t new_block;
+    if (novafs_alloc_block(old_block, &new_block) != 0) return -1;
+
+    if (nfs_split_sibling_page == 0) {
+        uint32_t numa;
+        nfs_split_sibling_page = pmm_alloc_page(&numa);
+        if (nfs_split_sibling_page == 0) return -1;
+    }
+    uint8_t *sibling = (uint8_t *)(uintptr_t)nfs_split_sibling_page;
+    novafs_node_init(sibling, tree, new_block, level, parent_block);
+    for (uint32_t i = 0; i < right_count; ++i) {
+        novafs_node_insert_at(sibling, i, tmp + (left_count + i) * item_size, item_size);
+    }
+    if (novafs_node_store(sibling) != 0) return -1;
+
+    *(uint16_t *)(node + NFS_N_COUNT) = 0u;
+    for (uint32_t i = 0; i < left_count; ++i) {
+        novafs_node_insert_at(node, i, tmp + i * item_size, item_size);
+    }
+    if (novafs_node_store(node) != 0) return -1;
+
+    *out_new_block = new_block;
+    for (uint32_t b = 0; b < 16u; ++b) out_sep_key[b] = tmp[left_count * item_size + b];
+    return 0;
+}
+
+/* Baut einen NEUEN Wurzelknoten (Level 'new_level' = alte Wurzelebene+1)
+   mit genau 2 Kindern - 'left_block' (die alte, gerade gesplittete
+   Wurzel, jetzt nur noch die linke Haelfte) und 'right_block' (der neue
+   Geschwisterblock aus novafs_split_node(), Separator-Schluessel
+   'sep_key') - und haengt ihn per sb_root_offset als neue Baumwurzel
+   ein. Erhoeht die Baumhoehe um 1 - das ist der einzige Weg, wie dieser
+   B+-Baum waechst (NFS_MAX_HEIGHT=4 begrenzt die maximale Hoehe). 0 =
+   Erfolg. */
+static int novafs_tree_grow_root(const novafs_tree_t *tree, uint32_t new_level,
+                                  uint32_t left_block, const uint8_t *sep_key,
+                                  uint32_t right_block) {
+    if (new_level >= NFS_MAX_HEIGHT) return -1;
+
+    if (nfs_split_newroot_page == 0) {
+        uint32_t numa;
+        nfs_split_newroot_page = pmm_alloc_page(&numa);
+        if (nfs_split_newroot_page == 0) return -1;
+    }
+    uint32_t new_root_block;
+    if (novafs_alloc_block(left_block, &new_root_block) != 0) return -1;
+
+    uint8_t *new_root = (uint8_t *)(uintptr_t)nfs_split_newroot_page;
+    novafs_node_init(new_root, tree, new_root_block, new_level, 0u);
+
+    uint8_t entry0[24] = {0};
+    *(uint32_t *)(entry0 + 16) = left_block;
+    novafs_node_insert_at(new_root, 0u, entry0, NOVAFS_INNER_ITEM);
+
+    uint8_t entry1[24] = {0};
+    for (uint32_t b = 0; b < 16u; ++b) entry1[b] = sep_key[b];
+    *(uint32_t *)(entry1 + 16) = right_block;
+    novafs_node_insert_at(new_root, 1u, entry1, NOVAFS_INNER_ITEM);
+
+    if (novafs_node_store(new_root) != 0) return -1;
+
+    uint8_t *sb = (uint8_t *)(uintptr_t)nfs_sb_page;
+    *(uint32_t *)(sb + tree->sb_root_offset) = new_root_block;
+    *(uint32_t *)(sb + tree->sb_root_offset + 4) = 0u;
+    return novafs_superblock_write_primary();
+}
+
+/* Faehrt den per novafs_cursor_seek() aufgebauten Pfad (nfs_path_blocks/
+   nfs_path_indices, Blatt bei Tiefe nfs_path_depth) vom Blatt aus nach
+   OBEN ab und splittet jeden Knoten, der voll ist - genau der klassische
+   bottom-up B+-Baum-Insert-mit-Split. Jeder Split schiebt genau EINEN
+   neuen Separator (Schluessel + Kindblock) in den Elternknoten; ist
+   DIESER auch voll, wird in der naechsten Schleifenrunde ER gesplittet
+   (die Schleife behandelt dafuer einfach den Elternknoten als den naechsten
+   "voll, muss gesplittet werden"-Knoten, mit dem Separator-Eintrag als
+   einzufuegendem Item). Erreicht die Schleife die Wurzel (depth==0), wird
+   statt eines Elternknoten-Einfuegens ein neuer Wurzelknoten gebaut
+   (novafs_tree_grow_root()) - das beendet die Operation immer, die
+   Wurzel hat nie einen vollen "Elternknoten", in den weiter
+   hochgereicht werden muesste. 0 = Erfolg. */
+static int novafs_tree_split_and_insert(const novafs_tree_t *tree, const uint8_t *item) {
+    uint32_t depth = nfs_path_depth;
+    uint32_t level = 0u;
+    uint32_t item_size_cur = tree->item_size;
+    uint32_t ins_index = nfs_cur_index;
+    uint8_t insert_buf[NOVAFS_INNER_ITEM];
+    const uint8_t *insert_item = item;
+
+    for (;;) {
+        uint8_t *node = novafs_level_page(depth);
+        if (node == 0) return -1;
+        uint32_t old_block = *(const uint32_t *)(node + NFS_N_BLOCK);
+
+        uint32_t new_block;
+        uint8_t sep_key[16];
+        if (novafs_split_node(tree, level, node, ins_index, insert_item, item_size_cur,
+                               &new_block, sep_key) != 0) {
+            return -1;
+        }
+
+        if (depth == 0u) {
+            return novafs_tree_grow_root(tree, level + 1u, old_block, sep_key, new_block);
+        }
+
+        uint32_t parent_depth = depth - 1u;
+        uint8_t *parent = novafs_level_page(parent_depth);
+        if (parent == 0) return -1;
+        uint32_t pcount = *(const uint16_t *)(parent + NFS_N_COUNT);
+        uint32_t insert_at = nfs_path_indices[parent_depth] + 1u;
+
+        uint8_t sep_entry[NOVAFS_INNER_ITEM] = {0};
+        for (uint32_t b = 0; b < 16u; ++b) sep_entry[b] = sep_key[b];
+        *(uint32_t *)(sep_entry + 16) = new_block;
+
+        if (pcount < NOVAFS_INNER_MAX) {
+            novafs_node_insert_at(parent, insert_at, sep_entry, NOVAFS_INNER_ITEM);
+            return novafs_node_store(parent);
+        }
+
+        /* Elternknoten auch voll: eine Ebene hoeher weiter splitten -
+           der Separator-Eintrag selbst wird zum naechsten einzufuegenden
+           "Item" (jetzt mit Inner-Item-Groesse statt Blatt-Item-Groesse). */
+        depth = parent_depth;
+        level += 1u;
+        ins_index = insert_at;
+        item_size_cur = NOVAFS_INNER_ITEM;
+        for (uint32_t b = 0; b < NOVAFS_INNER_ITEM; ++b) insert_buf[b] = sep_entry[b];
+        insert_item = insert_buf;
+    }
+}
+
+/* Wie novafs_tree_insert_simple(), aber mit ECHTEM Split, wenn das
+   per novafs_cursor_seek() positionierte Blatt bereits voll ist - der
+   fuer produktiven Code (novafs_create()/novafs_rename()/Extent-
+   Wachstum) zu verwendende Einfuege-Einstiegspunkt.
+   novafs_tree_insert_simple() selbst bleibt UNVERAENDERT (weiterhin vom
+   eigenen Selbsttest genutzt, der explizit das Nicht-Split-Verhalten
+   bei einem vollen Blatt prueft) - dieser Baustein hier ist bewusst
+   eine SEPARATE Funktion statt einer Verhaltensaenderung der
+   bestehenden, damit diese Garantie erhalten bleibt. */
+int novafs_tree_insert(const novafs_tree_t *tree, const uint8_t *item) {
+    if (nfs_cur_tree != tree) return -1;
+    uint8_t *leaf = novafs_level_page(nfs_path_depth);
+    if (leaf == 0) return -1;
+
+    uint32_t count = *(const uint16_t *)(leaf + NFS_N_COUNT);
+    if (count < tree->max_items) {
+        novafs_node_insert_at(leaf, nfs_cur_index, item, tree->item_size);
+        return novafs_node_store(leaf);
+    }
+
+    return novafs_tree_split_and_insert(tree, item);
+}
+
 /* Entfernt das Item an der aktuellen Cursorposition (Port aus
    novafs_cursor_remove - OHNE Blatt-Zusammenlegen/§125-Merge: das ist im
    alten ASM bereits ausdruecklich "best-effort, Fehler werden ignoriert"
@@ -1343,7 +1559,7 @@ static int novafs_extent_insert_new(uint32_t object_id, uint32_t logical_block,
 
     novafs_key_set(object_id, logical_block << 12);
     if (novafs_cursor_seek(&novafs_tree_extent) != 0) return -1;
-    if (novafs_tree_insert_simple(&novafs_tree_extent, item) != 0) return -1;
+    if (novafs_tree_insert(&novafs_tree_extent, item) != 0) return -1;
 
     nfs_prev_logical = logical_block;
     nfs_prev_count = 1u;
@@ -1617,7 +1833,7 @@ int novafs_create(uint32_t parent_id, uint32_t type, const char *name, uint32_t 
 
     novafs_key_set(next_id, 0u);
     if (novafs_cursor_seek(&novafs_tree_object) != 0) return -1;
-    if (novafs_tree_insert_simple(&novafs_tree_object, item) != 0) return -1;
+    if (novafs_tree_insert(&novafs_tree_object, item) != 0) return -1;
 
     /* ObjectID erst NACH dem erfolgreichen Baum-Einfuegen fortschreiben -
        bei einem Fehlschlag (z.B. Blatt voll) bleibt NEXT_OBJECT unberuehrt,
@@ -1637,7 +1853,7 @@ int novafs_create(uint32_t parent_id, uint32_t type, const char *name, uint32_t 
 
     novafs_key_set(parent_id, hash);
     if (novafs_cursor_seek(&novafs_tree_directory) != 0) return -1;
-    if (novafs_tree_insert_simple(&novafs_tree_directory, dirent) != 0) return -1;
+    if (novafs_tree_insert(&novafs_tree_directory, dirent) != 0) return -1;
 
     *(uint32_t *)(sb + NFS_SB_OBJECT_COUNT) = *(const uint32_t *)(sb + NFS_SB_OBJECT_COUNT) + 1u;
 
@@ -1745,7 +1961,7 @@ int novafs_rename(uint32_t src_parent, const char *src_name, uint32_t src_len, u
 
     novafs_key_set(dst_parent, hash);
     if (novafs_cursor_seek(&novafs_tree_directory) != 0) return -1;
-    if (novafs_tree_insert_simple(&novafs_tree_directory, dirent) != 0) return -1;
+    if (novafs_tree_insert(&novafs_tree_directory, dirent) != 0) return -1;
 
     uint32_t check_id, check_type;
     if (novafs_lookup(src_parent, src_name, src_len, &check_id, &check_type) != 0) return -1;
@@ -1913,7 +2129,13 @@ int novafs_self_test(void) {
 /* von novafs_self_test() oben.                                          */
 /* ===================================================================== */
 
-#define NOVAFS_TREE_TEST_MAX_BLOCKS 8u
+/* 16 statt 8 (2026-11-23): das Szenario-4-Split-/Wurzelwachstums-Test
+   (siehe unten) alloziert per echtem novafs_alloc_block() zusaetzliche,
+   zur Setup-Zeit NICHT vorregistrierte Bloecke - novafs_tree_test_write()
+   muss solche Bloecke deshalb jetzt LAZY nachregistrieren (siehe dort),
+   wofuer mehr als die urspruenglich 6 fest vorregistrierten Slots nötig
+   sind. */
+#define NOVAFS_TREE_TEST_MAX_BLOCKS 16u
 
 static uint32_t nfs_tree_test_block_numbers[NOVAFS_TREE_TEST_MAX_BLOCKS];
 static uint8_t *nfs_tree_test_block_pages[NOVAFS_TREE_TEST_MAX_BLOCKS];
@@ -1952,21 +2174,25 @@ static int novafs_tree_test_read(void *record, uint32_t lba_lo, uint32_t lba_hi,
     return -1;
 }
 
+/* novafs_tree_test_write() registriert einen bisher UNBEKANNTEN Block
+   (2026-11-23, siehe NOVAFS_TREE_TEST_MAX_BLOCKS-Kommentar oben) jetzt
+   LAZY per novafs_tree_test_block() nach, statt den Schreibzugriff
+   abzulehnen - echte Datentraeger lehnen einen Schreibzugriff auf einen
+   gueltigen, aber bisher "leeren" Block ja auch nicht ab. Ohne das
+   wuerde jeder per echtem novafs_alloc_block() waehrend eines B+-Baum-
+   Splits neu allozierte Block (zur Setup-Zeit dieses Tests naturgemaess
+   nicht vorhersehbar) stillschweigend scheitern. */
 static int novafs_tree_test_write(void *record, uint32_t lba_lo, uint32_t lba_hi, uint32_t count,
                                    void *buffer) {
     (void)record;
     (void)lba_hi;
     (void)count;
     uint32_t block = lba_lo / NOVAFS_SECTORS_PER_BLOCK;
-    for (uint32_t i = 0; i < nfs_tree_test_block_count; ++i) {
-        if (nfs_tree_test_block_numbers[i] == block) {
-            uint8_t *dst = nfs_tree_test_block_pages[i];
-            const uint8_t *src = (const uint8_t *)buffer;
-            for (uint32_t j = 0; j < NOVAFS_BLOCK_SIZE; ++j) dst[j] = src[j];
-            return 0;
-        }
-    }
-    return -1;
+    uint8_t *dst = novafs_tree_test_block(block);
+    if (dst == 0) return -1;
+    const uint8_t *src = (const uint8_t *)buffer;
+    for (uint32_t j = 0; j < NOVAFS_BLOCK_SIZE; ++j) dst[j] = src[j];
+    return 0;
 }
 
 static int novafs_tree_self_test_impl(void) {
@@ -2098,6 +2324,45 @@ static int novafs_tree_self_test_impl(void) {
     if (novafs_cursor_seek(&novafs_tree_extent) != 0) return -1;
     p = novafs_cursor_item_ptr();
     if (!p || *(const uint32_t *)(p + 0) != 250u) return -1;
+
+    /* Szenario 4 (2026-11-23, siehe
+       feedback_novafs_root_directory_full.md): echtes B+-Baum-Splitting.
+       Der Objekt-Baum ist nach Szenario 2 bereits EXAKT voll (26/26,
+       max_items) - novafs_tree_insert() (NICHT _simple()) muss jetzt
+       trotzdem erfolgreich einfuegen, per echtem Leaf-Split +
+       Wurzelwachstum (Level 0 "Blatt-als-Wurzel" -> Level 1 "innerer
+       Knoten mit 2 Blatt-Kindern"). Nutzt denselben Schluessel (999),
+       den Szenario 2 bereits erfolglos versucht hatte - per
+       insert_simple abgelehnt, also NIE tatsaechlich eingefuegt. */
+    uint8_t item999[152] = {0};
+    *(uint32_t *)(item999 + 0) = 999u;
+    novafs_key_set(999u, 0u);
+    if (novafs_cursor_seek(&novafs_tree_object) != 0) return -1;
+    if (novafs_tree_insert(&novafs_tree_object, item999) != 0) return -1;
+
+    /* Alle 27 Items (1,5,10,100..122,999) muessen jetzt in sortierter
+       Reihenfolge per Cursor auffindbar sein - ueber den Split hinweg
+       (Blatt-Grenze UND die neu gewachsene Wurzel). */
+    uint32_t expected[32];
+    uint32_t n = 0;
+    expected[n++] = 1u;
+    expected[n++] = 5u;
+    expected[n++] = 10u;
+    for (uint32_t id = 100u; id < 100u + (novafs_tree_object.max_items - 3u); ++id) {
+        expected[n++] = id;
+    }
+    expected[n++] = 999u;
+
+    novafs_key_set(0u, 0u);
+    if (novafs_cursor_seek(&novafs_tree_object) != 0) return -1;
+    for (uint32_t i = 0; i < n; ++i) {
+        p = novafs_cursor_item_ptr();
+        if (!p || *(const uint32_t *)(p + 0) != expected[i]) return -1;
+        if (i + 1u < n) {
+            if (novafs_cursor_advance() != 0) return -1;
+        }
+    }
+    if (novafs_cursor_advance() == 0) return -1; /* Ende des Baums erreicht */
 
     return 0;
 }

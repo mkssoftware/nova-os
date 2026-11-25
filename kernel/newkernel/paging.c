@@ -314,6 +314,7 @@ int paging_self_test(void) {
        Kernel-Basis-Adressraum weiter, daher wird am Ende explizit dorthin
        zurueckgewechselt. */
     #define PAGING_SELFTEST_VADDR 0x00700000u /* bereits identity-gemappt, PDE 1 */
+    uint32_t frames_before_isolation_test = pmm_frame_count();
     uint32_t dir_a, dir_b;
     if (paging_create_address_space(&dir_a) != 0) return -1;
     if (paging_create_address_space(&dir_b) != 0) return -1;
@@ -353,6 +354,19 @@ int paging_self_test(void) {
     if (paging_query_page(PAGING_SELFTEST_VADDR, &query_phys, &query_flags) != 0) return -1;
     if (query_phys != PAGING_SELFTEST_VADDR) return -1; /* Kernel-Identity-Map unveraendert */
     #undef PAGING_SELFTEST_VADDR
+
+    /* KERNEL_GAP_ANALYSIS.md Abschnitt 2.3-Nachtrag: ein paging_destroy_
+       address_space()-Gegenstueck zu paging_create_address_space() wurde
+       am 2026-11-24 versucht und wieder VOLLSTAENDIG zurueckgenommen - es
+       hat sich im isolierten Boot-Test als Ursache einer spaeten, latenten
+       Speicherkorruption erwiesen (Page Fault Stunden/viele Selbsttests
+       spaeter, CR2 weit ausserhalb des konfigurierten RAM). dir_a/dir_b
+       (samt page_a/page_b und den dabei privatisierten Seitentabellen)
+       bleiben deshalb bewusst wie zuvor dauerhaft allokiert (kein Leak-
+       Risiko fuer die Boot-Stabilitaet, da dieser Selbsttest nur einmal
+       pro Boot laeuft) - (void) markiert das bewusst ungenutzte Ergebnis.
+       Siehe KERNEL_GAP_ANALYSIS.md fuer den Status dieses offenen Punkts. */
+    (void)frames_before_isolation_test;
 
     return 0;
 }

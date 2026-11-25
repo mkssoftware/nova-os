@@ -1,5 +1,8 @@
 #include "studio.h"
 #include <cmath>
+#include <cctype>
+#include <cstdlib>
+#include <cstdint>
 
 /* =========================================================================
  * Globals defined here
@@ -113,75 +116,13 @@ static void StatusResize(HWND hParent) {
     SendMessageW(g_hStatusBar, WM_SIZE, 0, MAKELPARAM(rc.right, rc.bottom));
 }
 
-/* =========================================================================
- * Menu
- * ====================================================================== */
-static HMENU CreateStudioMenu() {
-    HMENU hBar  = CreateMenu();
-
-    /* Datei */
-    HMENU hFile = CreatePopupMenu();
-    AppendMenuW(hFile, MF_STRING, IDM_FILE_NEW,         L"&Neu\tCtrl+N");
-    AppendMenuW(hFile, MF_STRING, IDM_FILE_NEW_PROJECT, L"Neues &Projekt...");
-    AppendMenuW(hFile, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hFile, MF_STRING, IDM_FILE_OPEN,        L"&Öffnen...\tCtrl+O");
-    AppendMenuW(hFile, MF_STRING, IDM_FILE_OPEN_PROJECT,L"Projekt öffnen...");
-    AppendMenuW(hFile, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hFile, MF_STRING, IDM_FILE_SAVE,        L"&Speichern\tCtrl+S");
-    AppendMenuW(hFile, MF_STRING, IDM_FILE_SAVEAS,      L"Speichern &unter...\tCtrl+Shift+S");
-    AppendMenuW(hFile, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hFile, MF_STRING, IDM_FILE_CLOSE_TAB,   L"Tab s&chließen\tCtrl+W");
-    AppendMenuW(hFile, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hFile, MF_STRING, IDM_FILE_EXIT,        L"&Beenden\tAlt+F4");
-    AppendMenuW(hBar, MF_POPUP, (UINT_PTR)hFile, L"&Datei");
-
-    /* Bearbeiten */
-    HMENU hEdit = CreatePopupMenu();
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_UNDO,      L"&Rückgängig\tCtrl+Z");
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_REDO,      L"&Wiederholen\tCtrl+Y");
-    AppendMenuW(hEdit, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_CUT,       L"&Ausschneiden\tCtrl+X");
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_COPY,      L"&Kopieren\tCtrl+C");
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_PASTE,     L"&Einfügen\tCtrl+V");
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_SELECTALL, L"&Alles markieren\tCtrl+A");
-    AppendMenuW(hEdit, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_FIND,      L"&Suchen...\tCtrl+F");
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_FINDNEXT,  L"Weitersuchen\tF3");
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_REPLACE,   L"&Ersetzen...\tCtrl+H");
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_GOTO,      L"&Gehe zu Zeile...\tCtrl+G");
-    AppendMenuW(hEdit, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_COMMENT,   L"&Kommentar umschalten\tCtrl+/");
-    AppendMenuW(hBar, MF_POPUP, (UINT_PTR)hEdit, L"&Bearbeiten");
-
-    /* Ansicht */
-    HMENU hView = CreatePopupMenu();
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_EXPLORER,  L"&Explorer ein/aus\tCtrl+E");
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_OUTPUT,    L"&Ausgabe ein/aus\tCtrl+Shift+O");
-    AppendMenuW(hView, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_DARKMODE,  L"Dark &Mode");
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_LIGHTMODE, L"&Light Mode");
-    AppendMenuW(hView, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_ZOOMIN,    L"Zoom &+\tCtrl+=");
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_ZOOMOUT,   L"Zoom &-\tCtrl+-");
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_ZOOMRESET, L"Zoom &zurücksetzen\tCtrl+0");
-    AppendMenuW(hBar, MF_POPUP, (UINT_PTR)hView, L"&Ansicht");
-
-    /* Kompilieren */
-    HMENU hBuild = CreatePopupMenu();
-    AppendMenuW(hBuild, MF_STRING, IDM_BUILD_BUILD,   L"&Erstellen\tF7");
-    AppendMenuW(hBuild, MF_STRING, IDM_BUILD_REBUILD, L"Neu &erstellen\tCtrl+Shift+B");
-    AppendMenuW(hBuild, MF_STRING, IDM_BUILD_CLEAN,   L"&Bereinigen");
-    AppendMenuW(hBuild, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hBuild, MF_STRING, IDM_BUILD_RUN,     L"&Ausführen\tF5");
-    AppendMenuW(hBar, MF_POPUP, (UINT_PTR)hBuild, L"&Kompilieren");
-
-    /* Hilfe */
-    HMENU hHelp = CreatePopupMenu();
-    AppendMenuW(hHelp, MF_STRING, IDM_HELP_ABOUT, L"&Über Nova Studio...");
-    AppendMenuW(hBar, MF_POPUP, (UINT_PTR)hHelp, L"&Hilfe");
-
-    return hBar;
-}
+/* Hinweis: eine klassische Win32-Menüleiste (CreateStudioMenu()) wurde
+   hier entfernt - vollstaendig durch die Ribbonbar (ribbon.cpp) ersetzt,
+   nie an das Hauptfenster angehaengt (toter Code, nie aufgerufen). Beim
+   Entfernen wurde geprueft, dass JEDER dort gelistete Befehl ueber Ribbon
+   und/oder Tastenkuerzel weiterhin erreichbar ist - "Projekt öffnen"
+   (IDM_FILE_OPEN_PROJECT) war das einzige Kommando ohne echten
+   UI-Zugang und wurde deshalb in ribbon.cpp ergaenzt (Strg+Umschalt+O). */
 
 /* =========================================================================
  * Custom Title Bar
@@ -432,7 +373,7 @@ void LayoutApply(HWND hw) {
 /* =========================================================================
  * Build system
  * ====================================================================== */
-static bool RunCommand(const wchar_t *cmdLine, wchar_t *outBuf, int outBufLen) {
+static bool RunCommand(const wchar_t *cmdLine, wchar_t *outBuf, int outBufLen, DWORD *outExitCode = nullptr) {
     SECURITY_ATTRIBUTES sa = {};
     sa.nLength              = sizeof(sa);
     sa.bInheritHandle       = TRUE;
@@ -464,7 +405,12 @@ static bool RunCommand(const wchar_t *cmdLine, wchar_t *outBuf, int outBufLen) {
         accum += buf;
     }
     CloseHandle(hReadPipe);
-    WaitForSingleObject(pi.hProcess, 5000);
+    WaitForSingleObject(pi.hProcess, 15000);
+    if (outExitCode) {
+        DWORD ec = 1;
+        GetExitCodeProcess(pi.hProcess, &ec);
+        *outExitCode = ec;
+    }
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
 
@@ -476,130 +422,473 @@ static bool RunCommand(const wchar_t *cmdLine, wchar_t *outBuf, int outBufLen) {
     return true;
 }
 
-void DoBuild(bool rebuild) {
-    EditorOutputClear();
-    EditorOutput(rebuild ? L"──── Neu erstellen ────" : L"──── Erstellen ────");
+/* -----------------------------------------------------------------------
+ * Echte Toolchain-Anbindung (NPSPEC-STUDIO-BUILD-0001)
+ *
+ * NovaStudio rief bisher ein "novalang.exe" auf, das NovaLang nach einer
+ * direkt unter Windows ausfuehrbaren .exe transpiliert (siehe
+ * toolchain/novalang/) - das ist NICHT die fuer NovaOS tatsaechlich
+ * verwendete, boot-verifizierte Toolchain. Die echte, aktiv gepflegte
+ * Toolchain ist novalang/compiler/novac.exe (direkter x86-32-Codegen,
+ * NOVALANG_SPEC v0.1-v0.16) + tools/nef/nef.exe (NEF-1.0-Linker), die
+ * reale NovaOS-NEF-Dateien erzeugen (siehe KERNEL_GAP_ANALYSIS.md /
+ * IMPLEMENTATION_STATUS.md). NovaStudio.exe liegt unter
+ * toolchain/NovaStudio/ - Repo-Wurzel ist zwei Ebenen darueber. */
+static std::wstring g_lastBuiltNef;
 
-    if (g_activeTab < 0 || g_activeTab >= (int)g_tabs.size()) {
-        EditorOutput(L"Fehler: Keine Datei geöffnet.");
-        return;
-    }
-
-    /* Locate novalang.exe next to nova-studio.exe */
+static std::wstring RepoRoot() {
     wchar_t exePath[MAX_PATH];
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    PathRemoveFileSpecW(exePath);
-    wchar_t nlExe[MAX_PATH];
-    PathCombineW(nlExe, exePath, L"novalang.exe");
+    PathRemoveFileSpecW(exePath);      /* .../toolchain/NovaStudio */
+    PathRemoveFileSpecW(exePath);      /* .../toolchain */
+    PathRemoveFileSpecW(exePath);      /* Repo-Wurzel */
+    return exePath;
+}
 
-    const wchar_t *srcFile = g_tabs[g_activeTab].filepath.c_str();
-    if (!*srcFile) {
-        EditorOutput(L"Fehler: Datei nicht gespeichert.");
+static std::wstring NovacPath() { return RepoRoot() + L"\\novalang\\compiler\\novac.exe"; }
+static std::wstring NefPath()   { return RepoRoot() + L"\\tools\\nef\\nef.exe"; }
+
+/* Zerlegt "novac: Syntaxfehler: Zeile <N>: <Text>" in Zeilennummer+Text.
+   Liefert false, wenn die Zeile nicht diesem Muster entspricht (dann wird
+   sie trotzdem roh als Diagnose ohne Zeilenbezug aufgenommen, siehe
+   DoBuild() - nichts wird unterschlagen). */
+static bool ParseNovacErrorLine(const std::wstring &line, int *outLine, std::wstring *outMsg) {
+    const wchar_t *marker = L"Zeile ";
+    size_t pos = line.find(marker);
+    if (pos == std::wstring::npos) return false;
+    pos += wcslen(marker);
+    size_t numEnd = pos;
+    while (numEnd < line.size() && iswdigit(line[numEnd])) numEnd++;
+    if (numEnd == pos) return false;
+    *outLine = _wtoi(line.substr(pos, numEnd - pos).c_str());
+    size_t colon = line.find(L':', numEnd);
+    *outMsg = (colon != std::wstring::npos) ? line.substr(colon + 2) : line;
+    return true;
+}
+
+void DoBuild(bool rebuild) {
+    EditorOutputClear();
+    ProblemsClear();
+    EditorOutput(rebuild ? L"──── Neu erstellen ────" : L"──── Erstellen ────");
+    g_lastBuiltNef.clear();
+
+    /* Bei offenem Projekt wird IMMER die Entry-Datei des Projekts gebaut
+       (projekt.xml, erstes <Sources><File>), NICHT einfach die zufaellig
+       aktive Registerkarte - sonst baut "Erstellen" je nachdem, welcher
+       Tab gerade fokussiert ist, eine andere Datei. Ohne offenes Projekt
+       bleibt das bisherige Verhalten (aktive Registerkarte, Einzeldatei-
+       Modus) erhalten. */
+    std::wstring srcFile;
+    if (g_project.open && !g_project.entryFile.empty()) {
+        srcFile = g_project.entryFile;
+    } else if (g_activeTab >= 0 && g_activeTab < (int)g_tabs.size()) {
+        srcFile = g_tabs[g_activeTab].filepath;
+    }
+
+    if (srcFile.empty()) {
+        EditorOutput(g_project.open
+            ? L"Fehler: Projekt hat keine Einstiegsdatei (project.xml <Sources>)."
+            : L"Fehler: Keine Datei geöffnet.");
         return;
     }
 
-    if (GetFileAttributesW(nlExe) != INVALID_FILE_ATTRIBUTES) {
-        /* Real compiler available */
-        wchar_t cmdLine[MAX_PATH * 2];
-        swprintf_s(cmdLine, L"\"%s\" \"%s\"", nlExe, srcFile);
-        if (rebuild)
-            wcscat_s(cmdLine, L" --rebuild");
-
-        wchar_t out[8192] = {};
-        EditorOutput(L"Aufruf: novalang.exe ...");
-        RunCommand(cmdLine, out, 8192);
-
-        /* Print output line by line */
-        wchar_t *line = out;
-        wchar_t *end;
-        while (*line) {
-            end = wcschr(line, L'\n');
-            if (end) *end = L'\0';
-            EditorOutput(line);
-            if (!end) break;
-            line = end + 1;
-        }
-        EditorOutput(L"──── Fertig ────");
-    } else {
-        /* Syntax check via tokenizer */
-        HANDLE hf = CreateFileW(srcFile, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hf == INVALID_HANDLE_VALUE) {
-            EditorOutput(L"Fehler: Datei konnte nicht gelesen werden.");
-            return;
-        }
-        DWORD sz = GetFileSize(hf, nullptr);
-        std::string raw(sz + 1, '\0');
-        DWORD rd;
-        ReadFile(hf, &raw[0], sz, &rd, nullptr);
-        CloseHandle(hf);
-
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)rd, nullptr, 0);
-        std::wstring wtext(wlen, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)rd, &wtext[0], wlen);
-
-        auto spans = HlTokenize(wtext.c_str(), wlen);
-        int errors = 0;
-        for (auto &s : spans)
-            if (s.type == TT_ERROR) errors++;
-
-        wchar_t fname[MAX_PATH];
-        wcscpy_s(fname, srcFile);
-        PathStripPathW(fname);
-
-        wchar_t buf[256];
-        swprintf_s(buf, L"%s: %d Token(s) – %d Fehler", fname,
-                   (int)spans.size(), errors);
-        EditorOutput(buf);
-        EditorOutput(errors == 0 ? L"Syntaxprüfung OK." : L"Syntaxfehler gefunden.");
-        EditorOutput(L"[novalang.exe nicht gefunden – nur Syntaxprüfung]");
-        EditorOutput(L"──── Fertig ────");
+    std::wstring novac = NovacPath();
+    std::wstring nef = NefPath();
+    if (GetFileAttributesW(novac.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        EditorOutput((L"Fehler: Compiler nicht gefunden: " + novac).c_str());
+        EditorOutput(L"(erwartet unter novalang\\compiler\\novac.exe relativ zur Repo-Wurzel)");
+        return;
+    }
+    if (GetFileAttributesW(nef.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        EditorOutput((L"Fehler: NEF-Werkzeug nicht gefunden: " + nef).c_str());
+        EditorOutput(L"(erwartet unter tools\\nef\\nef.exe relativ zur Repo-Wurzel)");
+        return;
     }
 
-    if (g_showOutput) {
+    /* Praefix = Quelldatei ohne Endung (novac-Konvention, siehe Aufruf
+       "novac <quelle.nova> -o <praefix>"). rebuild entfernt zuerst alte
+       Artefakte, damit keine veralteten .bin/.nef-Dateien stehen bleiben. */
+    wchar_t prefix[MAX_PATH];
+    wcscpy_s(prefix, srcFile.c_str());
+    PathRemoveExtensionW(prefix);
+    std::wstring nefOut = std::wstring(prefix) + L".nef";
+
+    if (rebuild) {
+        DeleteFileW((std::wstring(prefix) + L".code.bin").c_str());
+        DeleteFileW((std::wstring(prefix) + L".rodata.bin").c_str());
+        DeleteFileW((std::wstring(prefix) + L".data.bin").c_str());
+        DeleteFileW(nefOut.c_str());
+    }
+
+    /* Schritt 1: novac (Lexer/Parser/Codegen -> .code.bin/.rodata.bin/.data.bin). */
+    wchar_t cmdLine[MAX_PATH * 3];
+    swprintf_s(cmdLine, L"\"%s\" \"%s\" -o \"%s\"", novac.c_str(), srcFile.c_str(), prefix);
+    wchar_t outBuf[8192] = {};
+    DWORD exitCode = 1;
+    EditorOutput((L"> novac \"" + srcFile + L"\" -o \"" + prefix + L"\"").c_str());
+    RunCommand(cmdLine, outBuf, 8192, &exitCode);
+
+    bool hadError = (exitCode != 0);
+    std::wstring nefLinkCmd;
+    {
+        std::wstring all = outBuf;
+        size_t pos = 0;
+        while (pos < all.size()) {
+            size_t nl = all.find(L'\n', pos);
+            std::wstring line = (nl == std::wstring::npos) ? all.substr(pos) : all.substr(pos, nl - pos);
+            while (!line.empty() && (line.back() == L'\r')) line.pop_back();
+            if (!line.empty()) {
+                EditorOutput(line.c_str());
+                const wchar_t *nextStepMarker = L"novac: naechster Schritt: ";
+                size_t m = line.find(nextStepMarker);
+                if (m != std::wstring::npos) {
+                    nefLinkCmd = line.substr(m + wcslen(nextStepMarker));
+                } else if (line.find(L"Syntaxfehler") != std::wstring::npos ||
+                           line.find(L"Fehler") != std::wstring::npos) {
+                    hadError = true;
+                    int errLine = 0;
+                    std::wstring msg;
+                    if (ParseNovacErrorLine(line, &errLine, &msg))
+                        ProblemsAdd({ srcFile, errLine, msg });
+                    else
+                        ProblemsAdd({ srcFile, 0, line });
+                }
+            }
+            if (nl == std::wstring::npos) break;
+            pos = nl + 1;
+        }
+    }
+
+    if (hadError || nefLinkCmd.empty()) {
+        EditorOutput(L"──── Fehlgeschlagen (novac) ────");
         RECT rExp, rEd, rOut, rTab;
         LayoutCompute(g_hMain, &rExp, &rEd, &rOut, &rTab);
         EditorResize(rEd);
+        /* Bei Fehlern automatisch auf "Probleme" umschalten. */
+        TabCtrl_SetCurSel(g_hBottomTabs, 1);
+        BottomPanelShow(1);
+        return;
     }
+
+    /* Schritt 2: nef link - Kommandozeile stammt EXAKT von novac (keine
+       selbst erratenen Sektionslayouts), nur der Platzhalter "<ausgabe.nef>"
+       wird durch den echten Zielpfad ersetzt. */
+    const wchar_t *placeholder = L"<ausgabe.nef>";
+    size_t ph = nefLinkCmd.find(placeholder);
+    if (ph != std::wstring::npos) {
+        nefLinkCmd = nefLinkCmd.substr(0, ph) + L"\"" + nefOut + L"\"" +
+                     nefLinkCmd.substr(ph + wcslen(placeholder));
+    }
+    std::wstring nefCmdLine = L"\"" + nef + L"\" " + nefLinkCmd;
+    EditorOutput((L"> nef " + nefLinkCmd).c_str());
+
+    wchar_t nefOutBuf[8192] = {};
+    DWORD nefExit = 1;
+    RunCommand(nefCmdLine.c_str(), nefOutBuf, 8192, &nefExit);
+    {
+        std::wstring all = nefOutBuf;
+        size_t pos = 0;
+        while (pos < all.size()) {
+            size_t nl = all.find(L'\n', pos);
+            std::wstring line = (nl == std::wstring::npos) ? all.substr(pos) : all.substr(pos, nl - pos);
+            while (!line.empty() && line.back() == L'\r') line.pop_back();
+            if (!line.empty()) EditorOutput(line.c_str());
+            if (nl == std::wstring::npos) break;
+            pos = nl + 1;
+        }
+    }
+
+    if (nefExit != 0) {
+        EditorOutput(L"──── Fehlgeschlagen (nef link) ────");
+        ProblemsAdd({ srcFile, 0, L"nef link fehlgeschlagen - siehe Ausgabe" });
+        TabCtrl_SetCurSel(g_hBottomTabs, 1);
+        BottomPanelShow(1);
+        return;
+    }
+
+    /* Schritt 3: validieren (beweist eine echte, gueltige NEF-Datei statt
+       nur "Linker meldete Erfolg"). */
+    std::wstring validateCmd = L"\"" + nef + L"\" validate \"" + nefOut + L"\"";
+    wchar_t valBuf[512] = {};
+    DWORD valExit = 1;
+    RunCommand(validateCmd.c_str(), valBuf, 512, &valExit);
+    EditorOutput((L"> nef validate: " + std::wstring(valBuf)).c_str());
+
+    if (valExit == 0) {
+        g_lastBuiltNef = nefOut;
+        EditorOutput((L"NEF erzeugt: " + nefOut).c_str());
+        EditorOutput(L"──── Erfolgreich ────");
+    } else {
+        ProblemsAdd({ srcFile, 0, L"Erzeugte NEF-Datei ist nicht gueltig (nef validate)" });
+        EditorOutput(L"──── Fehlgeschlagen (nef validate) ────");
+        TabCtrl_SetCurSel(g_hBottomTabs, 1);
+        BottomPanelShow(1);
+    }
+
+    RECT rExp, rEd, rOut, rTab;
+    LayoutCompute(g_hMain, &rExp, &rEd, &rOut, &rTab);
+    EditorResize(rEd);
 }
 
 void DoRun() {
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    PathRemoveFileSpecW(exePath);
-
-    /* Look for built exe next to novalang.exe */
-    wchar_t runExe[MAX_PATH] = {};
-    if (g_activeTab >= 0 && !g_tabs[g_activeTab].filepath.empty()) {
-        wchar_t base[MAX_PATH];
-        wcscpy_s(base, g_tabs[g_activeTab].filepath.c_str());
-        PathRemoveExtensionW(base);
-        wcscat_s(base, L".exe");
-        if (GetFileAttributesW(base) != INVALID_FILE_ATTRIBUTES)
-            wcscpy_s(runExe, base);
-    }
-    if (!*runExe) {
-        EditorOutput(L"Ausführen: Kein kompiliertes Programm gefunden.");
+    if (g_lastBuiltNef.empty()) {
+        EditorOutput(L"Ausführen: Keine gebaute NEF-Datei vorhanden.");
         EditorOutput(L"Bitte zuerst 'Erstellen' ausführen.");
         return;
     }
-    ShellExecuteW(nullptr, L"open", runExe, nullptr, nullptr, SW_SHOW);
-    EditorOutput(L"Programm gestartet.");
+    /* Eine NEF-Datei ist KEIN unter Windows ausfuehrbares Programm - sie
+       muss unter NovaOS (QEMU) laufen. Die automatische Uebertragung in
+       ein NovaFS-Testimage und der QEMU-Start sind in dieser NovaStudio-
+       Version noch NICHT implementiert (siehe IMPLEMENTATION_STATUS.md,
+       Abschnitt QEMU-Integration) - hier wird das ehrlich gemeldet statt
+       etwas vorzutaeuschen. */
+    EditorOutput((L"NEF-Datei bereit: " + g_lastBuiltNef).c_str());
+    EditorOutput(L"[QEMU-Ausfuehrung ist in dieser NovaStudio-Version noch nicht implementiert]");
+    EditorOutput(L"Pruefen Sie die Datei z.B. per \"tools\\nef\\nef.exe inspect\" oder booten Sie sie manuell per NovaFS-Transfer+QEMU.");
 }
 
 void DoClean() {
     EditorOutputClear();
+    ProblemsClear();
     EditorOutput(L"──── Bereinigen ────");
+    g_lastBuiltNef.clear();
     if (g_activeTab >= 0 && !g_tabs[g_activeTab].filepath.empty()) {
         wchar_t base[MAX_PATH];
         wcscpy_s(base, g_tabs[g_activeTab].filepath.c_str());
         PathRemoveExtensionW(base);
-        wchar_t exePath[MAX_PATH];
-        swprintf_s(exePath, L"%s.exe", base);
-        if (DeleteFileW(exePath))
-            EditorOutput(L"Artefakte gelöscht.");
-        else
-            EditorOutput(L"Keine Artefakte gefunden.");
+        int removed = 0;
+        for (const wchar_t *ext : { L".code.bin", L".rodata.bin", L".data.bin", L".nef" }) {
+            std::wstring p = std::wstring(base) + ext;
+            if (DeleteFileW(p.c_str())) removed++;
+        }
+        EditorOutput(removed > 0 ? L"Artefakte gelöscht." : L"Keine Artefakte gefunden.");
+    }
+    EditorOutput(L"──── Fertig ────");
+}
+
+/* Syscall Browser (siehe SDK_SPECIFICATION.md): liest kernel/newkernel/
+   syscall.h EIN (keine erfundene Liste) und zeigt jede tatsaechlich
+   dort per #define deklarierte Syscall-/Operation-Konstante. Nur
+   gleichzeilige Kommentare werden uebernommen - die Datei enthaelt
+   auch mehrzeilige Kommentarbloecke VOR manchen #define-Zeilen, die
+   sich nicht zuverlaessig genau EINER Konstante zuordnen lassen (siehe
+   SDK_SPECIFICATION.md) und deshalb bewusst NICHT geraten werden. */
+static bool g_syscallsLoaded = false;
+
+static bool IsSyscallRelatedName(const char *name) {
+    static const char *prefixes[] = { "SYSCALL_", "GUI_OP_", "VFS_OP_", "INPUT_OP_" };
+    for (const char *p : prefixes) {
+        if (strncmp(name, p, strlen(p)) == 0) return true;
+    }
+    return false;
+}
+
+void SyscallBrowserLoad() {
+    if (g_syscallsLoaded) return; /* einmal pro Prozesslaufzeit genuegt - statische Header-Datei */
+    g_syscallsLoaded = true;
+
+    std::wstring headerPath = RepoRoot() + L"\\kernel\\newkernel\\syscall.h";
+    HANDLE hf = CreateFileW(headerPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hf == INVALID_HANDLE_VALUE) {
+        EditorOutput((L"Syscall Browser: Datei nicht gefunden: " + headerPath).c_str());
+        return;
+    }
+    DWORD sz = GetFileSize(hf, nullptr);
+    std::string buf(sz + 1, '\0');
+    DWORD rd = 0;
+    ReadFile(hf, &buf[0], sz, &rd, nullptr);
+    CloseHandle(hf);
+    buf.resize(rd);
+
+    if (g_hSyscalls) ListView_DeleteAllItems(g_hSyscalls);
+    int count = 0;
+
+    size_t pos = 0;
+    while (pos < buf.size()) {
+        size_t nl = buf.find('\n', pos);
+        std::string line = (nl == std::string::npos) ? buf.substr(pos) : buf.substr(pos, nl - pos);
+        pos = (nl == std::string::npos) ? buf.size() : nl + 1;
+
+        /* Erwartetes Muster: "#define NAME VALUE" gefolgt von optional
+           einem Block- oder Zeilenkommentar. */
+        size_t p = line.find("#define");
+        if (p == std::string::npos) continue;
+        p += 7;
+        while (p < line.size() && isspace((unsigned char)line[p])) p++;
+        size_t nameStart = p;
+        while (p < line.size() && (isalnum((unsigned char)line[p]) || line[p] == '_')) p++;
+        std::string name = line.substr(nameStart, p - nameStart);
+        if (name.empty() || !IsSyscallRelatedName(name.c_str())) continue;
+
+        while (p < line.size() && isspace((unsigned char)line[p])) p++;
+        size_t valStart = p;
+        while (p < line.size() && line[p] != ' ' && line[p] != '\t' && line[p] != '/') p++;
+        std::string value = line.substr(valStart, p - valStart);
+
+        std::string comment;
+        size_t cPos = line.find("/*", p);
+        if (cPos != std::string::npos) {
+            size_t cEnd = line.find("*/", cPos + 2);
+            comment = (cEnd != std::string::npos) ? line.substr(cPos + 2, cEnd - cPos - 2)
+                                                   : line.substr(cPos + 2);
+        } else {
+            cPos = line.find("//", p);
+            if (cPos != std::string::npos) comment = line.substr(cPos + 2);
+        }
+        /* fuehrende/folgende Leerzeichen des Kommentars trimmen */
+        size_t a = comment.find_first_not_of(" \t");
+        size_t b = comment.find_last_not_of(" \t");
+        comment = (a == std::string::npos) ? "" : comment.substr(a, b - a + 1);
+
+        if (!g_hSyscalls) continue;
+        auto toW = [](const std::string &s) {
+            int wl = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+            std::wstring w(wl, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], wl);
+            w.resize(wcslen(w.c_str()));
+            return w;
+        };
+        std::wstring wName = toW(name), wValue = toW(value), wComment = toW(comment);
+
+        LVITEMW it = {};
+        it.mask = LVIF_TEXT;
+        it.iItem = count;
+        it.iSubItem = 0;
+        it.pszText = (LPWSTR)wName.c_str();
+        ListView_InsertItem(g_hSyscalls, &it);
+        ListView_SetItemText(g_hSyscalls, count, 1, (LPWSTR)wValue.c_str());
+        ListView_SetItemText(g_hSyscalls, count, 2, (LPWSTR)wComment.c_str());
+        ++count;
+    }
+
+    EditorOutput((L"Syscall Browser: " + std::to_wstring(count) + L" Konstante(n) aus syscall.h geladen").c_str());
+}
+
+/* Capability Manager (siehe SDK_SPECIFICATION.md): liest kernel/
+   newkernel/security.h EIN und zeigt jede dort per #define deklarierte
+   SECURITY_CAP_*-Bitmaske mit Name, Hex-Wert und (falls es eine reine
+   Einzelbit-Maske ist) der Bitposition. Deckt bewusst NUR dieses eine
+   Capability-System ab (siehe security.h-Dateikopf: cap_core.c/
+   program.c/verify.c sind DREI WEITERE, separate Konzepte, hier nicht
+   erfasst - keine Vermischung vortaeuschen). */
+static bool g_capabilitiesLoaded = false;
+
+void CapabilityManagerLoad() {
+    if (g_capabilitiesLoaded) return;
+    g_capabilitiesLoaded = true;
+
+    std::wstring headerPath = RepoRoot() + L"\\kernel\\newkernel\\security.h";
+    HANDLE hf = CreateFileW(headerPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hf == INVALID_HANDLE_VALUE) {
+        EditorOutput((L"Capability Manager: Datei nicht gefunden: " + headerPath).c_str());
+        return;
+    }
+    DWORD sz = GetFileSize(hf, nullptr);
+    std::string buf(sz + 1, '\0');
+    DWORD rd = 0;
+    ReadFile(hf, &buf[0], sz, &rd, nullptr);
+    CloseHandle(hf);
+    buf.resize(rd);
+
+    if (g_hCapabilities) ListView_DeleteAllItems(g_hCapabilities);
+    int count = 0;
+
+    size_t pos = 0;
+    while (pos < buf.size()) {
+        size_t nl = buf.find('\n', pos);
+        std::string line = (nl == std::string::npos) ? buf.substr(pos) : buf.substr(pos, nl - pos);
+        pos = (nl == std::string::npos) ? buf.size() : nl + 1;
+
+        size_t p = line.find("#define");
+        if (p == std::string::npos) continue;
+        p += 7;
+        while (p < line.size() && isspace((unsigned char)line[p])) p++;
+        size_t nameStart = p;
+        while (p < line.size() && (isalnum((unsigned char)line[p]) || line[p] == '_')) p++;
+        std::string name = line.substr(nameStart, p - nameStart);
+        if (name.find("SECURITY_CAP_") != 0 && name != "SECURITY_KERNEL_CAPS") continue;
+
+        while (p < line.size() && isspace((unsigned char)line[p])) p++;
+        size_t valStart = p;
+        while (p < line.size() && line[p] != ' ' && line[p] != '\t' && line[p] != '/') p++;
+        std::string value = line.substr(valStart, p - valStart);
+
+        /* Bitposition nur anzeigen, wenn der Wert eine reine Einzelbit-
+           Maske ist (genau 1 gesetztes Bit) - bei SECURITY_KERNEL_CAPS
+           (eine kombinierte Maske aller Caps) bewusst leer lassen, um
+           keine falsche Einzelbit-Bedeutung vorzutaeuschen. */
+        unsigned long numeric = strtoul(value.c_str(), nullptr, 0);
+        std::wstring bitStr;
+        if (numeric != 0 && (numeric & (numeric - 1)) == 0) {
+            int bit = 0;
+            while ((numeric >> bit) != 1) bit++;
+            bitStr = std::to_wstring(bit);
+        }
+
+        auto toW = [](const std::string &s) {
+            int wl = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+            std::wstring w(wl, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], wl);
+            w.resize(wcslen(w.c_str()));
+            return w;
+        };
+        std::wstring wName = toW(name), wValue = toW(value);
+
+        if (!g_hCapabilities) continue;
+        LVITEMW it = {};
+        it.mask = LVIF_TEXT;
+        it.iItem = count;
+        it.iSubItem = 0;
+        it.pszText = (LPWSTR)wName.c_str();
+        ListView_InsertItem(g_hCapabilities, &it);
+        ListView_SetItemText(g_hCapabilities, count, 1, (LPWSTR)wValue.c_str());
+        ListView_SetItemText(g_hCapabilities, count, 2, (LPWSTR)bitStr.c_str());
+        ++count;
+    }
+
+    EditorOutput((L"Capability Manager: " + std::to_wstring(count) + L" Capability/-ies aus security.h geladen").c_str());
+}
+
+void DoInspectNef(const wchar_t *path) {
+    EditorOutputClear();
+    TabCtrl_SetCurSel(g_hBottomTabs, 0);
+    BottomPanelShow(0);
+    if (!g_showOutput) {
+        /* Ausgabe-Panel war ausgeblendet - fuer das Inspektionsergebnis
+           sichtbar machen, sonst sieht der Nutzer nichts. */
+        g_showOutput = true;
+        RECT rExp, rEd, rOut, rTab;
+        LayoutCompute(g_hMain, &rExp, &rEd, &rOut, &rTab);
+        EditorResize(rEd);
+    }
+
+    EditorOutput((L"──── NEF Inspector: " + std::wstring(path) + L" ────").c_str());
+
+    std::wstring nef = NefPath();
+    if (GetFileAttributesW(nef.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        EditorOutput((L"Fehler: NEF-Werkzeug nicht gefunden: " + nef).c_str());
+        return;
+    }
+
+    for (const wchar_t *sub : { L"validate", L"inspect" }) {
+        std::wstring cmd = L"\"" + nef + L"\" " + sub + L" \"" + path + L"\"";
+        wchar_t outBuf[8192] = {};
+        DWORD exitCode = 1;
+        RunCommand(cmd.c_str(), outBuf, 8192, &exitCode);
+
+        std::wstring all = outBuf;
+        size_t pos = 0;
+        while (pos < all.size()) {
+            size_t nl = all.find(L'\n', pos);
+            std::wstring line = (nl == std::wstring::npos) ? all.substr(pos) : all.substr(pos, nl - pos);
+            while (!line.empty() && line.back() == L'\r') line.pop_back();
+            if (!line.empty()) EditorOutput(line.c_str());
+            if (nl == std::wstring::npos) break;
+            pos = nl + 1;
+        }
+        EditorOutput(L"");
     }
     EditorOutput(L"──── Fertig ────");
 }
@@ -645,13 +934,265 @@ static void OpenProject(const wchar_t *folder) {
 
     g_project.rootPath = folder;
     g_project.open     = true;
+    g_project.sources.clear();
+    g_project.entryFile.clear();
+
+    /* <Sources><File path="..."/>...</Sources> einlesen - jeder Pfad ist
+       relativ zum Projektordner (Konvention aus DoNewProject()). Das
+       erste <File> ist die Datei, die "Erstellen" tatsaechlich uebersetzt
+       (siehe Project::entryFile-Kommentar in studio.h). */
+    if (hf != INVALID_HANDLE_VALUE) {
+        /* Datei wurde oben schon einmal gelesen und geschlossen - fuer
+           die Sources-Liste erneut (eigener, kleiner Lesevorgang, kein
+           vollwertiger XML-Parser notwendig fuer dieses einfache,
+           selbst kontrollierte Format). */
+        HANDLE hf2 = CreateFileW(xmlPath, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hf2 != INVALID_HANDLE_VALUE) {
+            char buf[8192] = {};
+            DWORD rd2;
+            ReadFile(hf2, buf, sizeof(buf) - 1, &rd2, nullptr);
+            CloseHandle(hf2);
+
+            const char *search = buf;
+            for (;;) {
+                const char *tag = strstr(search, "<File path=\"");
+                if (!tag) break;
+                tag += strlen("<File path=\"");
+                const char *end = strchr(tag, '"');
+                if (!end) break;
+                std::string rel(tag, end - tag);
+                int wl = MultiByteToWideChar(CP_UTF8, 0, rel.c_str(), -1, nullptr, 0);
+                std::wstring wrel(wl, L'\0');
+                MultiByteToWideChar(CP_UTF8, 0, rel.c_str(), -1, &wrel[0], wl);
+                wrel.resize(wcslen(wrel.c_str()));
+
+                wchar_t abs[MAX_PATH];
+                PathCombineW(abs, folder, wrel.c_str());
+                g_project.sources.push_back(abs);
+                search = end + 1;
+            }
+        }
+    }
+    if (!g_project.sources.empty()) {
+        g_project.entryFile = g_project.sources[0];
+    } else {
+        EditorOutput(L"Warnung: project.xml enthält keine <Sources> - 'Erstellen' baut die aktive Registerkarte.");
+    }
+
     ExplorerSetRoot(folder);
     EditorUpdateTitle();
     InvalidateTitleBar(g_hMain);
 
     wchar_t msg[MAX_PATH + 32];
-    swprintf_s(msg, L"Projekt '%s' geöffnet.", g_project.name.c_str());
+    swprintf_s(msg, L"Projekt '%s' geöffnet (%d Quelldatei(en)).",
+               g_project.name.c_str(), (int)g_project.sources.size());
     EditorOutput(msg);
+}
+
+/* Macht aus einem absoluten Pfad einen zu g_project.rootPath relativen
+   Pfad mit "/"-Trennzeichen (project.xml-Konvention, siehe DoNewProject()).
+   Liefert L"" wenn absolutePath NICHT unterhalb von rootPath liegt. */
+static std::wstring MakeRelativeToProject(const wchar_t *absolutePath) {
+    wchar_t rel[MAX_PATH] = {};
+    wchar_t rootAbs[MAX_PATH], pathAbs[MAX_PATH];
+    GetFullPathNameW(g_project.rootPath.c_str(), MAX_PATH, rootAbs, nullptr);
+    GetFullPathNameW(absolutePath, MAX_PATH, pathAbs, nullptr);
+    if (!PathRelativePathToW(rel, rootAbs, FILE_ATTRIBUTE_DIRECTORY, pathAbs, FILE_ATTRIBUTE_NORMAL)) {
+        return L"";
+    }
+    std::wstring r = rel;
+    /* PathRelativePathToW liefert oft ".\foo\bar" - fuehrendes ".\" entfernen. */
+    if (r.size() >= 2 && r[0] == L'.' && r[1] == L'\\') r = r.substr(2);
+    if (r.find(L"..") == 0) return L""; /* ausserhalb des Projektordners */
+    for (auto &c : r) if (c == L'\\') c = L'/';
+    return r;
+}
+
+/* Schreibt den <Sources>-Block von project.xml komplett aus
+   g_project.sources neu (einfache Textsubstitution, siehe Kommentar
+   bei OpenProject() - kein vollwertiger XML-Parser fuer dieses selbst
+   kontrollierte, einfache Format notwendig). Gemeinsam genutzt von
+   ProjectRegisterSource() (neue Datei) und ExplorerContextRename()
+   (Datei umbenannt). */
+static void RewriteProjectXmlSources() {
+    if (!g_project.open) return;
+
+    wchar_t xmlPath[MAX_PATH];
+    PathCombineW(xmlPath, g_project.rootPath.c_str(), L"project.xml");
+
+    HANDLE hf = CreateFileW(xmlPath, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hf == INVALID_HANDLE_VALUE) return;
+    char buf[8192] = {};
+    DWORD rd;
+    ReadFile(hf, buf, sizeof(buf) - 1, &rd, nullptr);
+    CloseHandle(hf);
+
+    std::string content(buf, rd);
+    size_t start = content.find("<Sources>");
+    size_t end = content.find("</Sources>");
+    if (start == std::string::npos || end == std::string::npos || end < start) return;
+    end += strlen("</Sources>");
+
+    std::string newBlock = "<Sources>\n";
+    for (const auto &s : g_project.sources) {
+        std::wstring r = MakeRelativeToProject(s.c_str());
+        if (r.empty()) continue;
+        int len = WideCharToMultiByte(CP_UTF8, 0, r.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string r8(len, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, r.c_str(), -1, &r8[0], len, nullptr, nullptr);
+        r8.resize(strlen(r8.c_str()));
+        newBlock += "    <File path=\"" + r8 + "\"/>\n";
+    }
+    newBlock += "  </Sources>";
+
+    content = content.substr(0, start) + newBlock + content.substr(end);
+
+    HANDLE hw = CreateFileW(xmlPath, GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hw != INVALID_HANDLE_VALUE) {
+        DWORD wr;
+        WriteFile(hw, content.c_str(), (DWORD)content.size(), &wr, nullptr);
+        CloseHandle(hw);
+    }
+}
+
+void RetargetPathReferences(const std::wstring &oldPath, const std::wstring &newPath) {
+    for (auto &tab : g_tabs) {
+        if (_wcsicmp(tab.filepath.c_str(), oldPath.c_str()) == 0) {
+            tab.filepath = newPath;
+            wchar_t name[MAX_PATH];
+            wcscpy_s(name, newPath.c_str());
+            PathStripPathW(name);
+            tab.title = name;
+        }
+    }
+    bool sourcesChanged = false;
+    for (auto &s : g_project.sources) {
+        if (_wcsicmp(s.c_str(), oldPath.c_str()) == 0) { s = newPath; sourcesChanged = true; }
+    }
+    if (_wcsicmp(g_project.entryFile.c_str(), oldPath.c_str()) == 0) g_project.entryFile = newPath;
+    if (sourcesChanged) RewriteProjectXmlSources();
+    EditorUpdateTitle();
+}
+
+void ProjectRegisterSource(const wchar_t *absolutePath) {
+    if (!g_project.open) return;
+
+    std::wstring rel = MakeRelativeToProject(absolutePath);
+    if (rel.empty()) return; /* liegt nicht im Projektordner */
+
+    for (const auto &s : g_project.sources) {
+        if (_wcsicmp(s.c_str(), absolutePath) == 0) return; /* schon bekannt */
+    }
+
+    g_project.sources.push_back(absolutePath);
+    if (g_project.entryFile.empty()) g_project.entryFile = absolutePath;
+
+    RewriteProjectXmlSources();
+
+    EditorOutput((L"Zum Projekt hinzugefügt: " + rel).c_str());
+}
+
+/* Projektweite Suche (nur Lesen, siehe studio.h-Kommentar zu
+   RunProjectSearch - KEIN projektweites Ersetzen, bewusst zurueckgestellt). */
+static bool HasRecognizedTextExtension(const wchar_t *path) {
+    const wchar_t *ext = PathFindExtensionW(path);
+    static const wchar_t *exts[] = { L".nova", L".nlf", L".nui", L".xml", L".md", L".txt" };
+    for (const wchar_t *e : exts) {
+        if (_wcsicmp(ext, e) == 0) return true;
+    }
+    return false;
+}
+
+#define PROJECT_SEARCH_MAX_RESULTS 500u
+
+static void SearchDirectoryRecursive(const std::wstring &dir, const std::wstring &queryLower,
+                                      uint32_t *resultCount) {
+    if (*resultCount >= PROJECT_SEARCH_MAX_RESULTS) return;
+
+    WIN32_FIND_DATAW fd;
+    std::wstring pattern = dir + L"\\*";
+    HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return;
+
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        std::wstring full = dir + L"\\" + fd.cFileName;
+
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            /* ".git"/versteckte Ordner ueberspringen - keine Build-/VCS-
+               Interna durchsuchen, die ohnehin kein Quelltext sind. */
+            if (fd.cFileName[0] == L'.') continue;
+            SearchDirectoryRecursive(full, queryLower, resultCount);
+            continue;
+        }
+
+        if (!HasRecognizedTextExtension(full.c_str())) continue;
+
+        HANDLE hf = CreateFileW(full.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hf == INVALID_HANDLE_VALUE) continue;
+        DWORD sz = GetFileSize(hf, nullptr);
+        if (sz == INVALID_FILE_SIZE || sz > 8 * 1024 * 1024) { CloseHandle(hf); continue; }
+        std::string raw(sz + 1, '\0');
+        DWORD rd = 0;
+        ReadFile(hf, &raw[0], sz, &rd, nullptr);
+        CloseHandle(hf);
+        raw.resize(rd);
+
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)rd, nullptr, 0);
+        std::wstring wtext(wlen, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)rd, &wtext[0], wlen);
+
+        int lineNo = 1;
+        size_t pos = 0;
+        while (pos < wtext.size() && *resultCount < PROJECT_SEARCH_MAX_RESULTS) {
+            size_t nl = wtext.find(L'\n', pos);
+            std::wstring line = (nl == std::wstring::npos) ? wtext.substr(pos) : wtext.substr(pos, nl - pos);
+            if (!line.empty() && line.back() == L'\r') line.pop_back();
+
+            std::wstring lineLower = line;
+            for (auto &c : lineLower) c = towlower(c);
+            if (lineLower.find(queryLower) != std::wstring::npos) {
+                SearchResultsAdd({ full, lineNo, line });
+                ++(*resultCount);
+            }
+
+            if (nl == std::wstring::npos) break;
+            pos = nl + 1;
+            ++lineNo;
+        }
+    } while (FindNextFileW(hFind, &fd) && *resultCount < PROJECT_SEARCH_MAX_RESULTS);
+    FindClose(hFind);
+}
+
+void RunProjectSearch(const wchar_t *query) {
+    SearchResultsClear();
+    EditorOutputClear();
+
+    if (!g_project.open) {
+        EditorOutput(L"Projektweite Suche: kein Projekt geöffnet.");
+        return;
+    }
+    if (!query || !*query) return;
+
+    std::wstring queryLower = query;
+    for (auto &c : queryLower) c = towlower(c);
+
+    uint32_t resultCount = 0;
+    SearchDirectoryRecursive(g_project.rootPath, queryLower, &resultCount);
+
+    TabCtrl_SetCurSel(g_hBottomTabs, 4);
+    BottomPanelShow(4);
+
+    wchar_t msg[160];
+    swprintf_s(msg, L"Projektweite Suche nach \"%s\": %u Treffer%s",
+               query, resultCount,
+               resultCount >= PROJECT_SEARCH_MAX_RESULTS ? L" (Obergrenze erreicht, es gibt evtl. mehr)" : L"");
+    EditorOutput(msg);
+    EditorOutput(L"(siehe Tab \"Suche\")");
 }
 
 /* =========================================================================
@@ -743,6 +1284,14 @@ static void OnCommand(HWND hw, WPARAM wp) {
         DoFind();
         break;
 
+    case IDM_EDIT_FIND_PROJECT:
+        if (!g_showOutput) {
+            g_showOutput = true;
+            LayoutApply(hw);
+        }
+        DoProjectSearch();
+        break;
+
     case IDM_EDIT_FINDNEXT:
         if (g_szFindBuf[0])
             EditorFindNext(g_szFindBuf, g_fr.Flags | FR_DOWN);
@@ -809,7 +1358,7 @@ static void OnCommand(HWND hw, WPARAM wp) {
         break;
 
     case IDM_FILE_SAVE_ALL:
-        EditorSaveFile();
+        EditorSaveAllFiles();
         break;
 
     /* ----- Kompilieren ----- */
@@ -872,6 +1421,44 @@ static void OnCommand(HWND hw, WPARAM wp) {
                     L"Git", MB_OK | MB_ICONINFORMATION);
         break;
 
+    /* ----- Explorer-Kontextmenü ----- */
+    case IDM_EXPL_NEWFILE:
+        ExplorerContextNewFile(hw);
+        break;
+
+    case IDM_EXPL_DELETE:
+        ExplorerContextDelete(hw);
+        break;
+
+    case IDM_EXPL_RENAME:
+        ExplorerContextRename(hw);
+        break;
+
+    case IDM_EXPL_REFRESH:
+        ExplorerRefresh();
+        break;
+
+    /* ----- Extras/Tools ----- */
+    case IDM_TOOLS_SYSCALLS:
+        if (!g_showOutput) {
+            g_showOutput = true;
+            LayoutApply(hw);
+        }
+        TabCtrl_SetCurSel(g_hBottomTabs, 2);
+        SyscallBrowserLoad();
+        BottomPanelShow(2);
+        break;
+
+    case IDM_TOOLS_CAPS:
+        if (!g_showOutput) {
+            g_showOutput = true;
+            LayoutApply(hw);
+        }
+        TabCtrl_SetCurSel(g_hBottomTabs, 3);
+        CapabilityManagerLoad();
+        BottomPanelShow(3);
+        break;
+
     /* ----- Hilfe ----- */
     case IDM_HELP_ABOUT:
         DoAbout();
@@ -886,6 +1473,7 @@ static HACCEL CreateAccelerators() {
     ACCEL acc[] = {
         { FVIRTKEY | FCONTROL,          'N',        IDM_FILE_NEW           },
         { FVIRTKEY | FCONTROL,          'O',        IDM_FILE_OPEN          },
+        { FVIRTKEY | FCONTROL | FSHIFT, 'O',        IDM_FILE_OPEN_PROJECT  },
         { FVIRTKEY | FCONTROL,          'S',        IDM_FILE_SAVE          },
         { FVIRTKEY | FCONTROL | FSHIFT, 'S',        IDM_FILE_SAVEAS        },
         { FVIRTKEY | FCONTROL,          'W',        IDM_FILE_CLOSE_TAB     },
@@ -896,6 +1484,7 @@ static HACCEL CreateAccelerators() {
         { FVIRTKEY | FCONTROL,          'V',        IDM_EDIT_PASTE         },
         { FVIRTKEY | FCONTROL,          'A',        IDM_EDIT_SELECTALL     },
         { FVIRTKEY | FCONTROL,          'F',        IDM_EDIT_FIND          },
+        { FVIRTKEY | FCONTROL | FSHIFT, 'F',        IDM_EDIT_FIND_PROJECT  },
         { FVIRTKEY,                     VK_F3,      IDM_EDIT_FINDNEXT      },
         { FVIRTKEY | FCONTROL,          'H',        IDM_EDIT_REPLACE       },
         { FVIRTKEY | FCONTROL,          'G',        IDM_EDIT_GOTO          },
@@ -1035,7 +1624,6 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
             wcOut.hbrBackground = nullptr;
             wcOut.lpszClassName = L"NovaDocOutlineContainer";
             wcOut.lpfnWndProc   = [](HWND hw2, UINT m, WPARAM w, LPARAM l) -> LRESULT {
-                static HWND s_search = nullptr, s_tree = nullptr;
                 enum { HDR_H = 28, SRH_H = 26 };
                 switch (m) {
                 case WM_CREATE:
@@ -1185,39 +1773,50 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
+        /* Explorer-Suchfeld: bisher rein dekorativ (kein Handler, siehe
+           IMPLEMENTATION_STATUS.md) - jetzt echte Live-Filterung. */
+        if (HIWORD(wp) == EN_CHANGE && (HWND)lp == g_hExplorerSearch) {
+            wchar_t buf[256];
+            GetWindowTextW(g_hExplorerSearch, buf, 256);
+            ExplorerFilter(buf);
+            break;
+        }
         OnCommand(hw, wp);
         break;
+
+    case WM_CONTEXTMENU: {
+        if ((HWND)wp == g_hExplorer) {
+            HMENU hMenu = CreatePopupMenu();
+            AppendMenuW(hMenu, MF_STRING, IDM_EXPL_NEWFILE, L"Neue Datei...");
+            AppendMenuW(hMenu, MF_STRING, IDM_EXPL_RENAME,  L"Umbenennen...");
+            AppendMenuW(hMenu, MF_STRING, IDM_EXPL_DELETE,  L"Löschen (Papierkorb)");
+            AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(hMenu, MF_STRING, IDM_EXPL_REFRESH, L"Aktualisieren");
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            if (x == -1 && y == -1) {
+                RECT rc; GetWindowRect(g_hExplorer, &rc);
+                x = rc.left; y = rc.top;
+            }
+            TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, x, y, 0, hw, nullptr);
+            DestroyMenu(hMenu);
+            return 0;
+        }
+        break;
+    }
 
     case WM_NOTIFY: {
         NMHDR *nm = (NMHDR*)lp;
         /* Tab selection changed */
         if (nm->idFrom == ID_TABBAR && nm->code == TCN_SELCHANGE) {
             int idx = TabCtrl_GetCurSel(g_hTabBar);
-            if (idx >= 0 && idx < (int)g_tabs.size()) {
+            if (idx >= 0 && idx < (int)g_tabs.size() && idx != g_activeTab) {
+                /* Behobener Datenverlust-Bug (siehe EditorTab::content in
+                   studio.h): die verlassene Registerkarte zuerst sichern,
+                   NICHT die Zieldatei von der Festplatte neu laden. */
+                EditorSyncActiveTabContent();
                 g_activeTab = idx;
-                auto &tab = g_tabs[idx];
-                if (!tab.filepath.empty()) {
-                    /* Reload from disk */
-                    HANDLE hf = CreateFileW(tab.filepath.c_str(), GENERIC_READ,
-                                FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                FILE_ATTRIBUTE_NORMAL, nullptr);
-                    if (hf != INVALID_HANDLE_VALUE) {
-                        DWORD sz = GetFileSize(hf, nullptr);
-                        if (sz != INVALID_FILE_SIZE && sz < 8*1024*1024) {
-                            std::string raw(sz + 1, '\0');
-                            DWORD rd;
-                            ReadFile(hf, &raw[0], sz, &rd, nullptr);
-                            CloseHandle(hf);
-                            int wl = MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)rd, nullptr, 0);
-                            std::wstring wt(wl, L'\0');
-                            MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)rd, &wt[0], wl);
-                            SetWindowTextW(g_hEditor, wt.c_str());
-                            EditorHighlight();
-                        } else {
-                            CloseHandle(hf);
-                        }
-                    }
-                }
+                SetWindowTextW(g_hEditor, g_tabs[idx].content.c_str());
+                EditorHighlight();
                 EditorUpdateTitle();
             }
         }
@@ -1228,6 +1827,34 @@ static LRESULT CALLBACK MainWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         /* TreeView double-click → open file */
         if (nm->idFrom == ID_EXPLORER && nm->code == NM_DBLCLK) {
             ExplorerOpenSelected();
+        }
+        /* Unteres Panel umgeschaltet: Ausgabe(0)/Probleme(1)/Syscalls(2)/
+           Capabilities(3)/Suche(4) sind echte Panels; Terminal(5)/Git(6)
+           sind NICHT implementiert (siehe IMPLEMENTATION_STATUS.md) -
+           zeigen bewusst nur einen Hinweistext statt etwas vorzutaeuschen. */
+        if (nm->idFrom == ID_BOTTOMTABS && nm->code == TCN_SELCHANGE) {
+            int idx = TabCtrl_GetCurSel(g_hBottomTabs);
+            if (idx >= 0 && idx <= 4) {
+                if (idx == 2) SyscallBrowserLoad();
+                if (idx == 3) CapabilityManagerLoad();
+                BottomPanelShow(idx);
+            } else if (idx == 5 || idx == 6) {
+                EditorOutputClear();
+                EditorOutput(idx == 5
+                    ? L"[Terminal ist in dieser NovaStudio-Version noch nicht implementiert]"
+                    : L"[Git-Integration ist in dieser NovaStudio-Version noch nicht implementiert]");
+                BottomPanelShow(0);
+            }
+        }
+        /* Probleme-Liste: Doppelklick navigiert zur Quellcodeposition */
+        if (nm->idFrom == ID_PROBLEMS && nm->code == NM_DBLCLK) {
+            int idx = ListView_GetNextItem(g_hProblems, -1, LVNI_SELECTED);
+            ProblemsNavigateTo(idx);
+        }
+        /* Suchergebnisse: Doppelklick navigiert zur Fundstelle */
+        if (nm->idFrom == ID_SEARCH && nm->code == NM_DBLCLK) {
+            int idx = ListView_GetNextItem(g_hSearch, -1, LVNI_SELECTED);
+            SearchResultNavigateTo(idx);
         }
         break;
     }

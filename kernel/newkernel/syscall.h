@@ -137,6 +137,30 @@
 #define SYSCALL_CORE_DEBUG_WRITE             17u
 #define SYSCALL_DEBUG_WRITE_MAX_LEN         1024u
 
+/* NovaShell-Vorarbeit (2026-11-22, novalang/project_novashell.md Phase-A-
+   Fund "Prozess-Spawn-Syscall fehlt komplett"): `nef_load_and_spawn()`
+   existierte bisher NUR als kernelinterne C-Funktion (von kmain.c fuer
+   alle NEF-Testprogramme aufgerufen, immer mit loader_pid=1/Kernel).
+   Dieser Syscall macht sie Ring-3-aufrufbar, fuer NovaShells `run`-
+   Befehl. EDX = Pointer auf syscall_spawn_args_t (Ring-3-Adresse, per
+   syscall_validate_user_range() geprueft wie bei den VFS-Syscalls).
+   loader_pid wird bewusst NICHT vom Aufrufer uebergeben, sondern IMMER
+   auf den AUFRUFENDEN Prozess selbst (caller_pid) gesetzt - dasselbe
+   Confinement-Prinzip wie bei NEF_FLAG_DYNAMIC_LIBRARY-Importen
+   (nef_loader.h-Kommentar zur CAPABILITIES-Section): ein Prozess kann
+   dem neu gestarteten Programm nie mehr Rechte verschaffen als er
+   selbst hat, UND braucht selbst SECURITY_CAP_FS_READ, um die Zieldatei
+   overhaupt oeffnen zu koennen (nef_load_and_spawn() prueft das intern
+   bereits per vfsapi.h) - deshalb KEINE zusaetzliche, eigene Capability-
+   Pruefung fuer SPAWN selbst noetig. */
+#define SYSCALL_CORE_SPAWN                   18u
+
+typedef struct {
+    uint32_t path_addr;
+    uint32_t path_len;
+    uint32_t result_pid; /* out */
+} syscall_spawn_args_t;
+
 /* NPSPEC-DISPLAY-ARCH-0003/0004 (Display-Protokoll/Client-Kommunikation),
    reduziert auf einen festen Satz Operationen ueber denselben int-0x80-
    Dispatch-Mechanismus wie SYSCALL_SERVICE_CORE (NICHT ueber die globale

@@ -31,42 +31,20 @@ int frame_alloc_contiguous(uint32_t count, uint32_t *out_base) {
     if (count == 0 || count > FRAMEALLOC_MAX_CONTIGUOUS) {
         return -1;
     }
-    uint32_t pages[FRAMEALLOC_MAX_CONTIGUOUS];
-    uint32_t got = 0;
-    for (; got < count; ++got) {
-        uint32_t numa;
-        uint32_t page = pmm_alloc_page(&numa);
-        if (page == 0) {
-            break;
-        }
-        pages[got] = page;
-    }
-    if (got != count) {
-        for (uint32_t i = 0; i < got; ++i) {
-            pmm_free_page(pages[i]);
-        }
-        return -1;
-    }
-
-    /* PMM liefert vom (unfragmentierten) Stack absteigende Adressen - pages[0]
-       ist damit die hoechste, pages[count-1] die niedrigste Seite. Pruefen,
-       ob sie tatsaechlich lueckenlos zusammenhaengen. */
-    int contiguous = 1;
-    for (uint32_t i = 1; i < count; ++i) {
-        if (pages[i - 1] - pages[i] != PMM_PAGE_SIZE) {
-            contiguous = 0;
-            break;
-        }
-    }
-    if (!contiguous) {
-        for (uint32_t i = 0; i < count; ++i) {
-            pmm_free_page(pages[i]);
-        }
-        return -1;
-    }
-
-    *out_base = pages[count - 1];
-    return 0;
+    /* War frueher ein eigener Loop, der `count`-mal pmm_alloc_page() (vom
+       LIFO-Freispeicher-Stack) aufrief und NUR bei Zufallstreffer pruefte,
+       ob die zurueckgegebenen Seiten zufaellig absteigend zusammenhingen -
+       das funktionierte ausschliesslich, solange seit dem letzten Boot
+       noch NICHTS in anderer Reihenfolge freigegeben wurde (jede
+       alloc/free-Sequenz, die nicht exakt spiegelbildlich zur Allokation
+       verlaeuft, zerlegt den Stack-Kopf in nicht mehr zusammenhaengende
+       Adressen - gefunden beim Boot-Test nach paging_destroy_address_
+       space(), siehe KERNEL_GAP_ANALYSIS.md). pmm.c hat mit
+       pmm_alloc_contiguous() bereits eine echte, Reihenfolge-unabhaengige
+       Suche nach einem zusammenhaengenden Lauf im gesamten Freispeicher
+       (inkl. dedizierter Fallback-Arena) - die wird jetzt tatsaechlich
+       genutzt, statt sie hier zu duplizieren. */
+    return pmm_alloc_contiguous(count, out_base);
 }
 
 int frame_ref(uint32_t page) {

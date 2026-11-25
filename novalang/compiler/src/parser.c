@@ -26,6 +26,24 @@ typedef struct NcParser {
     NcSymbol  symbols[NC_MAX_SYMBOLS];
     uint32_t  symbol_count;
     NcModule *mod; /* fuer Integer-Variablen-Tabelle, siehe find_int_var() */
+    /* v0.9 (siehe NOVALANG_SPEC_v0.9.md): current_func_name ist waehrend
+       des Parsens EINES Funktionskoerpers der (unmangled) Name dieser
+       Function, genutzt fuer das Parameter-Namensmangling (siehe
+       lookup_var()). in_main steuert, ob "Return" als Mains spezielle
+       YIELD-Endlosschleife (STMT_RETURN, nur Literal) oder als echter
+       Funktionsrueckgabewert (STMT_FUNC_RETURN, beliebiger IntExpr, real
+       per "ret") interpretiert wird - siehe parse_return(). */
+    const char *current_func_name;
+    int       in_main;
+    /* v0.9: Namen ALLER Functions im Modul, per Vorab-Scan (siehe
+       prescan_function_names() in nc_parse_module()) VOR dem eigentlichen
+       Parsen gesammelt - notwendig, damit Main() (textuell meist VOR
+       ihren Helfer-Functions) diese per Vorwaertsreferenz aufrufen kann
+       (find_function_any()). find_function() (ohne "_any") bleibt der
+       Check gegen BEREITS VOLLSTAENDIG geparste Functions (mod->functions),
+       fuer die "Function bereits definiert"-Duplikatpruefung. */
+    char     *all_func_names[16];
+    uint32_t  all_func_count;
 } NcParser;
 
 static NcSymbol *find_symbol(NcParser *p, const char *name, uint32_t len) {
@@ -43,6 +61,54 @@ static int find_int_var(NcParser *p, const char *name, uint32_t len) {
             strncmp(p->mod->int_var_names[i], name, len) == 0) {
             return (int)i;
         }
+    }
+    return -1;
+}
+
+/* v0.9: Parameter werden als Integer-Variablen mit gemangeltem Namen
+   ("<FuncName>.<ParamName>") registriert (siehe parse_function()), um
+   Namenskollisionen zwischen Functions zu vermeiden. lookup_var() ist
+   der EINZIGE Ort, an dem eine Variablenreferenz IM FUNKTIONSKOERPER
+   (Zuweisung, Bedingung, SysCall-/Call-Argument) aufgeloest wird: erst
+   gemangelt (innerhalb der aktuell geparsten Function) versuchen, dann
+   auf den Klarnamen zurueckfallen (Modul-globale "Dim"-Variablen, oder
+   v0.1-v0.8-Programme ohne Parameter). Dim-Deklarationen selbst (siehe
+   parse_dim()) bleiben bewusst UNGEMANGELT und nutzen weiterhin
+   find_int_var() direkt. */
+static int lookup_var(NcParser *p, const char *name, uint32_t len) {
+    if (p->current_func_name) {
+        char mangled[160];
+        int n = snprintf(mangled, sizeof(mangled), "%s.%.*s", p->current_func_name, (int)len, name);
+        if (n > 0 && (size_t)n < sizeof(mangled)) {
+            int idx = find_int_var(p, mangled, (uint32_t)n);
+            if (idx >= 0) return idx;
+        }
+    }
+    return find_int_var(p, name, len);
+}
+
+/* Mehrere Functions pro Module (v0.9, siehe NOVALANG_SPEC_v0.9.md).
+   find_function() sieht NUR bereits VOLLSTAENDIG geparste Functions
+   (mod->functions) - fuer die Duplikatpruefung in parse_function() (eine
+   function, die gerade geparst wird, darf sich dort noch nicht selbst
+   finden). find_function_any() sieht ALLE Functions des Moduls (per
+   Vorab-Scan, siehe prescan_function_names()) - fuer die Aufloesung
+   eines Aufrufziels ("x = Foo(...)"), da Main ihre Helfer-Functions fast
+   immer per Vorwaertsreferenz aufruft (Main steht textuell zuerst). Die
+   zurueckgegebenen Indizes sind in BEIDEN Faellen identisch zum
+   spaeteren mod->functions[]-Index, weil Parse- und Scan-Reihenfolge
+   gleich der Quelltextreihenfolge sind. */
+static int find_function(NcParser *p, const char *name, uint32_t len) {
+    for (uint32_t i = 0; i < p->mod->function_count; ++i) {
+        const char *fn_name = p->mod->functions[i]->name;
+        if (strlen(fn_name) == len && strncmp(fn_name, name, len) == 0) return (int)i;
+    }
+    return -1;
+}
+
+static int find_function_any(NcParser *p, const char *name, uint32_t len) {
+    for (uint32_t i = 0; i < p->all_func_count; ++i) {
+        if (strlen(p->all_func_names[i]) == len && strncmp(p->all_func_names[i], name, len) == 0) return (int)i;
     }
     return -1;
 }
@@ -159,13 +225,20 @@ static char *parse_string_expr(NcParser *p, uint32_t *out_len) {
 
 /* Erkennt "AddressOf(buf)" (loest sofort zu einem compile-time-
    konstanten Literal auf - Pufferadressen stehen fest, es gibt keine
-   Laufzeit-Zeigerarithmetik) oder "PeekInt(buf, byteOffset)" (liest 4
-   Byte aus einer compile-time-bekannten absoluten Adresse) - siehe
-   NOVALANG_SPEC_v0.5.md. Rueckgabe: 1 = erkannt+verarbeitet
-   (out_is_peek/out_peek_addr/out_literal gesetzt), 0 = keiner der
-   beiden Spezialfaelle (Aufrufer parst normal weiter), -1 = Fehler
-   INNERHALB eines erkannten Spezialfalls. */
-static int try_parse_special_term(NcParser *p, int *out_is_peek, uint32_t *out_peek_addr, int64_t *out_literal) {
+   Laufzeit-Zeigerarithmetik) oder "PeekInt(buf, byteOffset)"/
+   "PeekByte(buf, byteOffset)" (liest 4 bzw. 1 Byte, v0.5/v0.7) - siehe
+   NOVALANG_SPEC_v0.5.md/v0.7.md. Der Byteoffset ist seit v0.15 (siehe
+   NOVALANG_SPEC_v0.15.md, symmetrisch zu PokeInt/PokeByte aus v0.12)
+   ENTWEDER ein Ganzzahlliteral (unveraendert, inkl. Bereichspruefung,
+   out_peek_addr = fertige Adresse) ODER eine Integer-Variable (NEU -
+   keine Bereichspruefung moeglich, out_peek_addr = nur die Puffer-
+   BASISADRESSE, out_offset_is_var/out_offset_var_index gesetzt).
+   Rueckgabe: 1 = erkannt+verarbeitet, 0 = keiner der Spezialfaelle
+   (Aufrufer parst normal weiter), -1 = Fehler INNERHALB eines
+   erkannten Spezialfalls. */
+static int try_parse_special_term(NcParser *p, int *out_is_peek, uint32_t *out_peek_addr,
+                                   int *out_peek_width, int64_t *out_literal,
+                                   int *out_offset_is_var, uint32_t *out_offset_var_index) {
     if (is_ident(p, "AddressOf")) {
         advance(p);
         expect_kind(p, TOK_LPAREN, "'('");
@@ -180,24 +253,43 @@ static int try_parse_special_term(NcParser *p, int *out_is_peek, uint32_t *out_p
         *out_literal = (int64_t)buffer_addr(p, idx);
         return 1;
     }
-    if (is_ident(p, "PeekInt")) {
+    int width = 0;
+    if (is_ident(p, "PeekInt")) width = 4;
+    else if (is_ident(p, "PeekByte")) width = 1;
+    if (width != 0) {
         advance(p);
         expect_kind(p, TOK_LPAREN, "'('");
         if (p->failed) return -1;
-        if (p->cur.kind != TOK_IDENT) { fail(p, "Puffername erwartet (PeekInt)"); return -1; }
+        if (p->cur.kind != TOK_IDENT) { fail(p, "Puffername erwartet (Peek)"); return -1; }
         int idx = find_buffer(p, p->cur.text, p->cur.len);
         if (idx < 0) { fail(p, "unbekannter Puffer (nicht per 'Dim ... As Buffer' definiert)"); return -1; }
         advance(p);
         expect_kind(p, TOK_COMMA, "','");
         if (p->failed) return -1;
-        if (p->cur.kind != TOK_INT) { fail(p, "Ganzzahl-Byteoffset erwartet (PeekInt)"); return -1; }
-        int64_t offset = p->cur.int_val;
-        if (offset < 0 || offset + 4 > (int64_t)p->mod->buf_size[idx]) { fail(p, "PeekInt-Offset ausserhalb des Puffers"); return -1; }
-        advance(p);
+
+        *out_offset_is_var = 0;
+        *out_offset_var_index = 0;
+        if (p->cur.kind == TOK_INT) {
+            int64_t offset = p->cur.int_val;
+            if (offset < 0 || offset + width > (int64_t)p->mod->buf_size[idx]) { fail(p, "Peek-Offset ausserhalb des Puffers"); return -1; }
+            *out_peek_addr = buffer_addr(p, idx) + (uint32_t)offset;
+            advance(p);
+        } else if (p->cur.kind == TOK_IDENT) {
+            int vidx = lookup_var(p, p->cur.text, p->cur.len);
+            if (vidx < 0) { fail(p, "unbekannte Integer-Variable als Peek-Offset"); return -1; }
+            *out_offset_is_var = 1;
+            *out_offset_var_index = (uint32_t)vidx;
+            *out_peek_addr = buffer_addr(p, idx);
+            advance(p);
+        } else {
+            fail(p, "Ganzzahl-Byteoffset oder Integer-Variable erwartet (Peek)");
+            return -1;
+        }
+
         expect_kind(p, TOK_RPAREN, "')'");
         if (p->failed) return -1;
         *out_is_peek = 1;
-        *out_peek_addr = buffer_addr(p, idx) + (uint32_t)offset;
+        *out_peek_width = width;
         return 1;
     }
     return 0;
@@ -215,18 +307,37 @@ static NcIntTerm *parse_int_expr(NcParser *p) {
     for (;;) {
         NcIntTerm *term = (NcIntTerm *)calloc(1, sizeof(NcIntTerm));
         term->op = op;
-        int is_peek = 0; uint32_t peek_addr = 0; int64_t lit = 0;
-        int special = try_parse_special_term(p, &is_peek, &peek_addr, &lit);
+        int is_peek = 0; uint32_t peek_addr = 0; int peek_width = 0; int64_t lit = 0;
+        int offset_is_var = 0; uint32_t offset_var_index = 0;
+        int special = try_parse_special_term(p, &is_peek, &peek_addr, &peek_width, &lit,
+                                              &offset_is_var, &offset_var_index);
         if (special < 0) { free(term); return NULL; }
         if (special == 1) {
-            if (is_peek) { term->is_peek = 1; term->peek_addr = peek_addr; }
+            if (is_peek) {
+                /* v0.15-Grenze (siehe NOVALANG_SPEC_v0.15.md): ein
+                   Peek mit Laufzeit-Offset-Variable ist NUR als EINZIGER
+                   Term erlaubt (Codegen laedt dafuer den Offset nach
+                   ECX und das Ergebnis direkt nach EAX) - als
+                   NICHT-erster Term einer +/--Kette wuerde das mit dem
+                   ECX-Akkumulator-Scratch fuer PeekByte-Fortsetzungen
+                   kollidieren (siehe emit_int_expr()). Bewusst
+                   abgelehnt statt stillschweigend falschen Code zu
+                   erzeugen. */
+                if (offset_is_var && tail != NULL) {
+                    fail(p, "Peek mit Laufzeit-Offset-Variable nur als einziger Term erlaubt (nicht in einer +/--Kette)");
+                    free(term);
+                    return NULL;
+                }
+                term->is_peek = 1; term->peek_addr = peek_addr; term->peek_width = peek_width;
+                term->peek_offset_is_var = offset_is_var; term->peek_offset_var_index = offset_var_index;
+            }
             else { term->is_var = 0; term->literal = lit; }
         } else if (p->cur.kind == TOK_INT) {
             term->is_var = 0;
             term->literal = p->cur.int_val;
             advance(p);
         } else if (p->cur.kind == TOK_IDENT) {
-            int idx = find_int_var(p, p->cur.text, p->cur.len);
+            int idx = lookup_var(p, p->cur.text, p->cur.len);
             if (idx < 0) { fail(p, "unbekannte Integer-Variable"); free(term); return NULL; }
             term->is_var = 1;
             term->var_index = (uint32_t)idx;
@@ -263,13 +374,46 @@ static NcCmpOp token_to_cmp(NcTokenKind k) {
 }
 
 static NcStmt *parse_stmt_list(NcParser *p, int allow_else_stop);
+static int parse_sys_arg(NcParser *p, NcSysArg *out);
 
-/* ConsoleWriteLineStmt := "Console" "." "WriteLine" "(" StringExpr ")" NEWLINE */
+/* ConsoleStmt := "Console" "." ("WriteLine" "(" StringExpr ")" |
+                                  "WriteBuffer" "(" Ident "," SysArg ")") NEWLINE
+   WriteBuffer (v0.7, siehe NOVALANG_SPEC_v0.7.md): gibt `laenge` Byte
+   aus `puffer` 1:1 aus - KEIN automatisches "\r\n" (anders als
+   WriteLine) und die Laenge ist haeufig eine LAUFZEIT-Groesse (Variable),
+   nicht wie bei WriteLine aus einem Compile-Zeit-Literal abgeleitet. */
 static NcStmt *parse_writeline(NcParser *p) {
     advance(p); /* "Console" */
     expect_kind(p, TOK_DOT, "'.'");
     if (p->failed) return NULL;
-    if (!is_ident(p, "WriteLine")) { fail(p, "'WriteLine' erwartet"); return NULL; }
+
+    if (is_ident(p, "WriteBuffer")) {
+        advance(p);
+        expect_kind(p, TOK_LPAREN, "'('");
+        if (p->failed) return NULL;
+        if (p->cur.kind != TOK_IDENT) { fail(p, "Puffername erwartet (WriteBuffer)"); return NULL; }
+        int idx = find_buffer(p, p->cur.text, p->cur.len);
+        if (idx < 0) { fail(p, "unbekannter Puffer (nicht per 'Dim ... As Buffer' definiert)"); return NULL; }
+        uint32_t buf_addr = buffer_addr(p, idx);
+        advance(p);
+        expect_kind(p, TOK_COMMA, "','");
+        if (p->failed) return NULL;
+        NcSysArg len_arg;
+        memset(&len_arg, 0, sizeof(len_arg));
+        if (parse_sys_arg(p, &len_arg) != 0) return NULL;
+        expect_kind(p, TOK_RPAREN, "')'");
+        if (p->failed) return NULL;
+        expect_kind(p, TOK_NEWLINE, "Zeilenende");
+        if (p->failed) return NULL;
+
+        NcStmt *st = (NcStmt *)calloc(1, sizeof(NcStmt));
+        st->kind = STMT_WRITEBUFFER;
+        st->writebuf_addr = buf_addr;
+        st->writebuf_len = len_arg;
+        return st;
+    }
+
+    if (!is_ident(p, "WriteLine")) { fail(p, "'WriteLine' oder 'WriteBuffer' erwartet"); return NULL; }
     advance(p);
     expect_kind(p, TOK_LPAREN, "'('");
     if (p->failed) return NULL;
@@ -288,18 +432,35 @@ static NcStmt *parse_writeline(NcParser *p) {
     return st;
 }
 
-/* ReturnStmt := "Return" IntLiteral NEWLINE */
+/* ReturnStmt (v0.9, siehe NOVALANG_SPEC_v0.9.md): in Main unveraendert
+   "Return" IntLiteral NEWLINE (STMT_RETURN - geht in die dauerhafte
+   YIELD-Schleife, siehe codegen_x86.c, Rueckgabewert wird NICHT
+   kodiert). In jeder ANDEREN Function: "Return" IntExpr NEWLINE
+   (STMT_FUNC_RETURN - echter Funktionsrueckgabewert in EAX, echtes
+   "ret"). */
 static NcStmt *parse_return(NcParser *p) {
     advance(p); /* "Return" */
-    if (p->cur.kind != TOK_INT) { fail(p, "Ganzzahlliteral erwartet (Return kennt keine Ausdruecke)"); return NULL; }
-    int64_t val = p->cur.int_val;
-    advance(p);
+    if (p->in_main) {
+        if (p->cur.kind != TOK_INT) { fail(p, "Ganzzahlliteral erwartet (Return in Main kennt keine Ausdruecke)"); return NULL; }
+        int64_t val = p->cur.int_val;
+        advance(p);
+        expect_kind(p, TOK_NEWLINE, "Zeilenende");
+        if (p->failed) return NULL;
+
+        NcStmt *st = (NcStmt *)calloc(1, sizeof(NcStmt));
+        st->kind = STMT_RETURN;
+        st->int_arg = val;
+        return st;
+    }
+
+    NcIntTerm *expr = parse_int_expr(p);
+    if (p->failed || !expr) return NULL;
     expect_kind(p, TOK_NEWLINE, "Zeilenende");
     if (p->failed) return NULL;
 
     NcStmt *st = (NcStmt *)calloc(1, sizeof(NcStmt));
-    st->kind = STMT_RETURN;
-    st->int_arg = val;
+    st->kind = STMT_FUNC_RETURN;
+    st->return_expr = expr;
     return st;
 }
 
@@ -307,11 +468,16 @@ static NcStmt *parse_return(NcParser *p) {
    "AddressOf(...)"/"PeekInt(...)", bewusst KEIN verschachtelter
    Ausdruck (siehe NOVALANG_SPEC_v0.4.md Abschnitt 3). */
 static int parse_sys_arg(NcParser *p, NcSysArg *out) {
-    int is_peek = 0; uint32_t peek_addr = 0; int64_t lit = 0;
-    int special = try_parse_special_term(p, &is_peek, &peek_addr, &lit);
+    int is_peek = 0; uint32_t peek_addr = 0; int peek_width = 0; int64_t lit = 0;
+    int offset_is_var = 0; uint32_t offset_var_index = 0;
+    int special = try_parse_special_term(p, &is_peek, &peek_addr, &peek_width, &lit,
+                                          &offset_is_var, &offset_var_index);
     if (special < 0) return -1;
     if (special == 1) {
-        if (is_peek) { out->is_peek = 1; out->peek_addr = peek_addr; }
+        if (is_peek) {
+            out->is_peek = 1; out->peek_addr = peek_addr; out->peek_width = peek_width;
+            out->peek_offset_is_var = offset_is_var; out->peek_offset_var_index = offset_var_index;
+        }
         else { out->is_var = 0; out->literal = lit; }
         return 0;
     }
@@ -322,7 +488,7 @@ static int parse_sys_arg(NcParser *p, NcSysArg *out) {
         return 0;
     }
     if (p->cur.kind == TOK_IDENT) {
-        int idx = find_int_var(p, p->cur.text, p->cur.len);
+        int idx = lookup_var(p, p->cur.text, p->cur.len);
         if (idx < 0) { fail(p, "unbekannte Integer-Variable in SysCall-Argument"); return -1; }
         out->is_var = 1;
         out->var_index = (uint32_t)idx;
@@ -333,23 +499,48 @@ static int parse_sys_arg(NcParser *p, NcSysArg *out) {
     return -1;
 }
 
-/* PokeStmt := "PokeInt" "(" Ident "," IntLiteral "," SysArg ")" NEWLINE
-   - schreibt 4 Byte an eine compile-time-bekannte absolute Adresse
-   (Puffername + Byteoffset), siehe NOVALANG_SPEC_v0.5.md. */
-static NcStmt *parse_poke(NcParser *p) {
-    advance(p); /* "PokeInt" */
+/* PokeStmt := "PokeInt" "(" Ident "," (IntLiteral | Ident) "," SysArg ")"
+   NEWLINE - schreibt 4 Byte (PokeInt) bzw. 1 Byte (PokeByte, v0.7 - nur
+   das niedrigste Byte des Werts) in einen Puffer, siehe
+   NOVALANG_SPEC_v0.5.md/v0.7.md. width_name ist "PokeInt" oder
+   "PokeByte" (bereits per is_ident() erkannt, siehe Aufrufer).
+   Der Byteoffset ist seit v0.12 (siehe NOVALANG_SPEC_v0.12.md) ENTWEDER
+   ein Ganzzahlliteral (unveraendert - Adresse komplett zur Compile-Zeit
+   aufgeloest, inkl. Bereichspruefung) ODER eine bereits deklarierte
+   Integer-Variable (NEU - z.B. eine mitgefuehrte Laufzeit-Zeilenlaenge;
+   KEINE Bereichspruefung moeglich, der Offset ist erst zur Laufzeit
+   bekannt). */
+static NcStmt *parse_poke(NcParser *p, int width) {
+    advance(p); /* "PokeInt" oder "PokeByte" */
     expect_kind(p, TOK_LPAREN, "'('");
     if (p->failed) return NULL;
-    if (p->cur.kind != TOK_IDENT) { fail(p, "Puffername erwartet (PokeInt)"); return NULL; }
+    if (p->cur.kind != TOK_IDENT) { fail(p, "Puffername erwartet (Poke)"); return NULL; }
     int idx = find_buffer(p, p->cur.text, p->cur.len);
     if (idx < 0) { fail(p, "unbekannter Puffer (nicht per 'Dim ... As Buffer' definiert)"); return NULL; }
     advance(p);
     expect_kind(p, TOK_COMMA, "','");
     if (p->failed) return NULL;
-    if (p->cur.kind != TOK_INT) { fail(p, "Ganzzahl-Byteoffset erwartet (PokeInt)"); return NULL; }
-    int64_t offset = p->cur.int_val;
-    if (offset < 0 || offset + 4 > (int64_t)p->mod->buf_size[idx]) { fail(p, "PokeInt-Offset ausserhalb des Puffers"); return NULL; }
-    advance(p);
+
+    int offset_is_var = 0;
+    uint32_t offset_var_index = 0;
+    uint32_t resolved_addr = 0;
+    if (p->cur.kind == TOK_INT) {
+        int64_t offset = p->cur.int_val;
+        if (offset < 0 || offset + width > (int64_t)p->mod->buf_size[idx]) { fail(p, "Poke-Offset ausserhalb des Puffers"); return NULL; }
+        resolved_addr = buffer_addr(p, idx) + (uint32_t)offset;
+        advance(p);
+    } else if (p->cur.kind == TOK_IDENT) {
+        int vidx = lookup_var(p, p->cur.text, p->cur.len);
+        if (vidx < 0) { fail(p, "unbekannte Integer-Variable als Poke-Offset"); return NULL; }
+        offset_is_var = 1;
+        offset_var_index = (uint32_t)vidx;
+        resolved_addr = buffer_addr(p, idx); /* nur die Basisadresse, siehe ast.h */
+        advance(p);
+    } else {
+        fail(p, "Ganzzahl-Byteoffset oder Integer-Variable erwartet (Poke)");
+        return NULL;
+    }
+
     expect_kind(p, TOK_COMMA, "','");
     if (p->failed) return NULL;
     NcSysArg value;
@@ -362,7 +553,10 @@ static NcStmt *parse_poke(NcParser *p) {
 
     NcStmt *st = (NcStmt *)calloc(1, sizeof(NcStmt));
     st->kind = STMT_POKE;
-    st->poke_addr = buffer_addr(p, idx) + (uint32_t)offset;
+    st->poke_addr = resolved_addr;
+    st->poke_width = width;
+    st->poke_offset_is_var = offset_is_var;
+    st->poke_offset_var_index = offset_var_index;
     st->poke_value = value;
     return st;
 }
@@ -417,6 +611,7 @@ static NcStmt *parse_assign_syscall(NcParser *p, int target_idx) {
     expect_kind(p, TOK_LPAREN, "'('");
     if (p->failed) return NULL;
     NcSysArg args[4];
+    memset(args, 0, sizeof(args));
     for (int i = 0; i < 4; ++i) {
         if (parse_sys_arg(p, &args[i]) != 0) return NULL;
         if (i < 3) expect_kind(p, TOK_COMMA, "','");
@@ -434,15 +629,56 @@ static NcStmt *parse_assign_syscall(NcParser *p, int target_idx) {
     return st;
 }
 
-/* AssignStmt := Ident "=" (IntExpr | SysCallExpr) NEWLINE (Ident muss
-   bereits per "Dim ... As Integer" deklariert sein). */
+/* CallAssignStmt (v0.9, siehe NOVALANG_SPEC_v0.9.md): "x = FuncName(arg1,
+   ...)" - Aufruf einer anderen, bereits bekannten Function (echtes
+   "call rel32"/"ret", siehe codegen_x86.c). Arguments nutzen dieselbe
+   eingeschraenkte SysArg-Grammatik wie SysCall(...) (Literal/Variable/
+   AddressOf/Peek, kein verschachtelter Ausdruck). */
+static NcStmt *parse_call(NcParser *p, int target_idx) {
+    int func_idx = find_function_any(p, p->cur.text, p->cur.len);
+    advance(p); /* Funktionsname */
+    expect_kind(p, TOK_LPAREN, "'('");
+    if (p->failed) return NULL;
+
+    NcSysArg args[8];
+    memset(args, 0, sizeof(args));
+    uint32_t arg_count = 0;
+    if (p->cur.kind != TOK_RPAREN) {
+        for (;;) {
+            if (arg_count >= 8u) { fail(p, "zu viele Argumente (v0.9-Limit 8)"); return NULL; }
+            if (parse_sys_arg(p, &args[arg_count]) != 0) return NULL;
+            arg_count++;
+            if (p->cur.kind == TOK_COMMA) { advance(p); continue; }
+            break;
+        }
+    }
+    expect_kind(p, TOK_RPAREN, "')'");
+    if (p->failed) return NULL;
+    expect_kind(p, TOK_NEWLINE, "Zeilenende");
+    if (p->failed) return NULL;
+
+    NcStmt *st = (NcStmt *)calloc(1, sizeof(NcStmt));
+    st->kind = STMT_ASSIGN_CALL;
+    st->assign_var_index = (uint32_t)target_idx;
+    st->call_func_index = (uint32_t)func_idx;
+    for (uint32_t i = 0; i < arg_count; ++i) st->call_args[i] = args[i];
+    st->call_arg_count = arg_count;
+    return st;
+}
+
+/* AssignStmt := Ident "=" (IntExpr | SysCallExpr | CallExpr) NEWLINE
+   (Ident muss bereits per "Dim ... As Integer" deklariert sein, oder
+   ein per Namensmangling aufgeloester Parameter, siehe lookup_var()). */
 static NcStmt *parse_assign(NcParser *p) {
-    int idx = find_int_var(p, p->cur.text, p->cur.len);
+    int idx = lookup_var(p, p->cur.text, p->cur.len);
     advance(p); /* Ident */
     expect_kind(p, TOK_EQUALS, "'='");
     if (p->failed) return NULL;
 
     if (is_ident(p, "SysCall")) return parse_assign_syscall(p, idx);
+    if (p->cur.kind == TOK_IDENT && find_function_any(p, p->cur.text, p->cur.len) >= 0) {
+        return parse_call(p, idx);
+    }
 
     NcIntTerm *expr = parse_int_expr(p);
     if (p->failed || !expr) return NULL;
@@ -456,38 +692,48 @@ static NcStmt *parse_assign(NcParser *p) {
     return st;
 }
 
-/* IfStmt := "If" Ident CmpOp (IntLiteral | Ident) "Then" NEWLINE
-              Statement*
-            ("Else" NEWLINE Statement*)?
-            "End" "If" NEWLINE
-   Die linke Seite MUSS eine bereits deklarierte Integer-Variable sein
-   (kein beliebiger Ausdruck, siehe NOVALANG_SPEC_v0.3.md). */
-static NcStmt *parse_if(NcParser *p) {
-    advance(p); /* "If" */
-    if (p->cur.kind != TOK_IDENT) { fail(p, "Integer-Variable erwartet (If-Bedingung)"); return NULL; }
-    int lhs_idx = find_int_var(p, p->cur.text, p->cur.len);
-    if (lhs_idx < 0) { fail(p, "unbekannte Integer-Variable in If-Bedingung"); return NULL; }
+/* Cond := Ident CmpOp (IntLiteral | Ident) - gemeinsame Bedingungs-
+   Grammatik von If UND While (siehe NOVALANG_SPEC_v0.3.md/v0.6.md). Die
+   linke Seite MUSS eine bereits deklarierte Integer-Variable sein (kein
+   beliebiger Ausdruck). 0 = Erfolg, -1 = Fehler (p->failed gesetzt). */
+static int parse_cond(NcParser *p, uint32_t *lhs_idx, NcCmpOp *cmp,
+                       int *rhs_is_var, int64_t *rhs_lit, uint32_t *rhs_idx) {
+    if (p->cur.kind != TOK_IDENT) { fail(p, "Integer-Variable erwartet (Bedingung)"); return -1; }
+    int lidx = lookup_var(p, p->cur.text, p->cur.len);
+    if (lidx < 0) { fail(p, "unbekannte Integer-Variable in Bedingung"); return -1; }
+    *lhs_idx = (uint32_t)lidx;
     advance(p);
-    if (!is_cmp_token(p->cur.kind)) { fail(p, "Vergleichsoperator erwartet (=, <>, <, >, <=, >=)"); return NULL; }
-    NcCmpOp cmp = token_to_cmp(p->cur.kind);
+    if (!is_cmp_token(p->cur.kind)) { fail(p, "Vergleichsoperator erwartet (=, <>, <, >, <=, >=)"); return -1; }
+    *cmp = token_to_cmp(p->cur.kind);
     advance(p);
 
-    int rhs_is_var = 0;
-    int64_t rhs_lit = 0;
-    uint32_t rhs_idx = 0;
+    *rhs_is_var = 0;
+    *rhs_lit = 0;
+    *rhs_idx = 0;
     if (p->cur.kind == TOK_INT) {
-        rhs_lit = p->cur.int_val;
+        *rhs_lit = p->cur.int_val;
         advance(p);
     } else if (p->cur.kind == TOK_IDENT) {
-        int idx = find_int_var(p, p->cur.text, p->cur.len);
-        if (idx < 0) { fail(p, "unbekannte Integer-Variable in If-Bedingung"); return NULL; }
-        rhs_is_var = 1;
-        rhs_idx = (uint32_t)idx;
+        int idx = lookup_var(p, p->cur.text, p->cur.len);
+        if (idx < 0) { fail(p, "unbekannte Integer-Variable in Bedingung"); return -1; }
+        *rhs_is_var = 1;
+        *rhs_idx = (uint32_t)idx;
         advance(p);
     } else {
         fail(p, "Ganzzahlliteral oder Variable erwartet");
-        return NULL;
+        return -1;
     }
+    return 0;
+}
+
+/* IfStmt := "If" Cond "Then" NEWLINE
+              Statement*
+            ("Else" NEWLINE Statement*)?
+            "End" "If" NEWLINE */
+static NcStmt *parse_if(NcParser *p) {
+    advance(p); /* "If" */
+    uint32_t lhs_idx; NcCmpOp cmp; int rhs_is_var; int64_t rhs_lit; uint32_t rhs_idx;
+    if (parse_cond(p, &lhs_idx, &cmp, &rhs_is_var, &rhs_lit, &rhs_idx) != 0) return NULL;
 
     expect_kind(p, TOK_KW_THEN, "'Then'");
     expect_kind(p, TOK_NEWLINE, "Zeilenende");
@@ -514,13 +760,43 @@ static NcStmt *parse_if(NcParser *p) {
 
     NcStmt *st = (NcStmt *)calloc(1, sizeof(NcStmt));
     st->kind = STMT_IF;
-    st->if_lhs_var_index = (uint32_t)lhs_idx;
+    st->if_lhs_var_index = lhs_idx;
     st->if_cmp_op = cmp;
     st->if_rhs_is_var = rhs_is_var;
     st->if_rhs_literal = rhs_lit;
     st->if_rhs_var_index = rhs_idx;
     st->if_then_body = then_body;
     st->if_else_body = else_body;
+    return st;
+}
+
+/* WhileStmt := "While" Cond NEWLINE Statement* "End" "While" NEWLINE
+   (siehe NOVALANG_SPEC_v0.6.md) - kein "Exit While" in dieser Version. */
+static NcStmt *parse_while(NcParser *p) {
+    advance(p); /* "While" */
+    uint32_t lhs_idx; NcCmpOp cmp; int rhs_is_var; int64_t rhs_lit; uint32_t rhs_idx;
+    if (parse_cond(p, &lhs_idx, &cmp, &rhs_is_var, &rhs_lit, &rhs_idx) != 0) return NULL;
+
+    expect_kind(p, TOK_NEWLINE, "Zeilenende");
+    if (p->failed) return NULL;
+    skip_newlines(p);
+
+    NcStmt *body = parse_stmt_list(p, 0);
+    if (p->failed) return NULL;
+
+    expect_kind(p, TOK_KW_END, "'End'");
+    expect_kind(p, TOK_KW_WHILE, "'While'");
+    expect_kind(p, TOK_NEWLINE, "Zeilenende");
+    if (p->failed) return NULL;
+
+    NcStmt *st = (NcStmt *)calloc(1, sizeof(NcStmt));
+    st->kind = STMT_WHILE;
+    st->if_lhs_var_index = lhs_idx;
+    st->if_cmp_op = cmp;
+    st->if_rhs_is_var = rhs_is_var;
+    st->if_rhs_literal = rhs_lit;
+    st->if_rhs_var_index = rhs_idx;
+    st->if_then_body = body;
     return st;
 }
 
@@ -612,6 +888,12 @@ static NcStmt *parse_stmt_list(NcParser *p, int allow_else_stop) {
             skip_newlines(p);
             continue;
         }
+        if (is_ident(p, "PokeString")) {
+            parse_poke_string(p);
+            if (p->failed) return head;
+            skip_newlines(p);
+            continue;
+        }
         NcStmt *st;
         if (is_ident(p, "Console")) {
             st = parse_writeline(p);
@@ -619,12 +901,16 @@ static NcStmt *parse_stmt_list(NcParser *p, int allow_else_stop) {
             st = parse_return(p);
         } else if (p->cur.kind == TOK_KW_IF) {
             st = parse_if(p);
+        } else if (p->cur.kind == TOK_KW_WHILE) {
+            st = parse_while(p);
         } else if (is_ident(p, "PokeInt")) {
-            st = parse_poke(p);
-        } else if (p->cur.kind == TOK_IDENT && find_int_var(p, p->cur.text, p->cur.len) >= 0) {
+            st = parse_poke(p, 4);
+        } else if (is_ident(p, "PokeByte")) {
+            st = parse_poke(p, 1);
+        } else if (p->cur.kind == TOK_IDENT && lookup_var(p, p->cur.text, p->cur.len) >= 0) {
             st = parse_assign(p);
         } else {
-            fail(p, "Anweisung erwartet (Dim/Console.WriteLine/Return/If/Zuweisung/PokeInt)");
+            fail(p, "Anweisung erwartet (Dim/Console.WriteLine/Return/If/While/Zuweisung/PokeInt/PokeByte/PokeString)");
             return head;
         }
         if (p->failed) return head;
@@ -635,28 +921,70 @@ static NcStmt *parse_stmt_list(NcParser *p, int allow_else_stop) {
     return head;
 }
 
-static NcFunction *parse_function(NcParser *p) {
+/* FunctionDecl (v0.9, siehe NOVALANG_SPEC_v0.9.md): "Function" Ident
+   "(" (Ident "As" "Integer" ("," Ident "As" "Integer")*)? ")" "As"
+   "Int32" NEWLINE Statement* "End" "Function" NEWLINE.
+   is_first_in_module == 1 erzwingt, dass dies "Main" ist (Main MUSS die
+   erste Function im Module sein - haelt entry_offset=0 trivial, siehe
+   codegen_x86.c). Jeder Parameter wird wie eine "Dim ... As Integer"-
+   Variable registriert, nur mit gemangeltem Namen ("<FuncName>.<Param>",
+   siehe lookup_var()) - dadurch braucht die restliche Parser-/Codegen-
+   Maschinerie (Zuweisung, Bedingung, SysCall-/Call-Argument) KEINE
+   Sonderbehandlung fuer Parameter. */
+static NcFunction *parse_function(NcParser *p, int is_first_in_module) {
     advance(p); /* "Function" */
     if (p->cur.kind != TOK_IDENT) { fail(p, "Funktionsname erwartet"); return NULL; }
-    if (p->cur.len != 4 || strncmp(p->cur.text, "Main", 4) != 0) {
-        fail(p, "diese Version kennt nur 'Function Main()'");
-        return NULL;
-    }
+    int is_main = (p->cur.len == 4 && strncmp(p->cur.text, "Main", 4) == 0);
+    if (is_first_in_module && !is_main) { fail(p, "die erste Function im Module muss 'Main' heissen"); return NULL; }
+    if (!is_first_in_module && is_main) { fail(p, "'Main' darf nur einmal, als erste Function, deklariert werden"); return NULL; }
+    if (!is_first_in_module && find_function(p, p->cur.text, p->cur.len) >= 0) { fail(p, "Function bereits definiert"); return NULL; }
     char *name = dup_ident(p);
     advance(p);
     expect_kind(p, TOK_LPAREN, "'('");
-    expect_kind(p, TOK_RPAREN, "')'");
-    expect_kind(p, TOK_KW_AS, "'As'");
     if (p->failed) { free(name); return NULL; }
-    if (!is_ident(p, "Int32")) { fail(p, "'Int32' erwartet (kein anderer Rueckgabetyp unterstuetzt)"); free(name); return NULL; }
-    advance(p);
-    expect_kind(p, TOK_NEWLINE, "Zeilenende");
-    if (p->failed) { free(name); return NULL; }
-    skip_newlines(p);
 
     NcFunction *fn = (NcFunction *)calloc(1, sizeof(NcFunction));
     fn->name = name;
+    fn->is_main = is_main;
+    p->current_func_name = name;
+
+    if (p->cur.kind != TOK_RPAREN) {
+        for (;;) {
+            if (p->cur.kind != TOK_IDENT) { fail(p, "Parametername erwartet"); p->current_func_name = NULL; return fn; }
+            char pname[160];
+            int n = snprintf(pname, sizeof(pname), "%s.%.*s", name, (int)p->cur.len, p->cur.text);
+            advance(p);
+            expect_kind(p, TOK_KW_AS, "'As'");
+            if (p->failed) { p->current_func_name = NULL; return fn; }
+            if (!is_ident(p, "Integer")) { fail(p, "'Integer' erwartet (einzig unterstuetzter Parametertyp)"); p->current_func_name = NULL; return fn; }
+            advance(p);
+            if (n <= 0 || (size_t)n >= sizeof(pname)) { fail(p, "Parametername zu lang"); p->current_func_name = NULL; return fn; }
+            if (p->mod->int_var_count >= 64u) { fail(p, "zu viele Integer-Variablen (v0.3-Limit 64)"); p->current_func_name = NULL; return fn; }
+            if (fn->param_count >= 8u) { fail(p, "zu viele Parameter (v0.9-Limit 8)"); p->current_func_name = NULL; return fn; }
+            char *pname_dup = (char *)malloc((size_t)n + 1);
+            memcpy(pname_dup, pname, (size_t)n + 1);
+            uint32_t var_idx = p->mod->int_var_count;
+            p->mod->int_var_names[var_idx] = pname_dup;
+            p->mod->int_var_initial[var_idx] = 0;
+            p->mod->int_var_count++;
+            fn->param_var_index[fn->param_count] = var_idx;
+            fn->param_count++;
+            if (p->cur.kind == TOK_COMMA) { advance(p); continue; }
+            break;
+        }
+    }
+    expect_kind(p, TOK_RPAREN, "')'");
+    expect_kind(p, TOK_KW_AS, "'As'");
+    if (p->failed) { p->current_func_name = NULL; return fn; }
+    if (!is_ident(p, "Int32")) { fail(p, "'Int32' erwartet (kein anderer Rueckgabetyp unterstuetzt)"); p->current_func_name = NULL; return fn; }
+    advance(p);
+    expect_kind(p, TOK_NEWLINE, "Zeilenende");
+    if (p->failed) { p->current_func_name = NULL; return fn; }
+    skip_newlines(p);
+
+    p->in_main = is_main;
     fn->body = parse_stmt_list(p, 0);
+    p->current_func_name = NULL;
     if (p->failed) return fn;
 
     expect_kind(p, TOK_KW_END, "'End'");
@@ -686,11 +1014,38 @@ NcModule *nc_parse_module(NcLexer *lx, char *out_error, uint32_t out_error_cap) 
     mod->name = mod_name;
     p.mod = mod;
 
+    /* v0.9-Vorab-Scan (siehe NcParser::all_func_names-Kommentar oben):
+       sammelt die Namen ALLER "Function <Ident>(..." im Quelltext, BEVOR
+       irgendein Funktionskoerper geparst wird - auf einem EIGENEN,
+       unabhaengigen Lexer ueber denselben Quelltext (lx->src/lx->len),
+       der eigentliche Parser-Lexer `lx` bleibt davon unberuehrt. Ohne
+       das koennte Main() keine spaeter im Modul deklarierte Helfer-
+       Function per Vorwaertsreferenz aufrufen. */
+    {
+        NcLexer prelex;
+        nc_lexer_init(&prelex, lx->src, lx->len);
+        for (;;) {
+            NcToken t = nc_lexer_next(&prelex);
+            if (prelex.has_error || t.kind == TOK_EOF) break;
+            if (t.kind != TOK_KW_FUNCTION) continue;
+            NcToken name_tok = nc_lexer_next(&prelex);
+            if (prelex.has_error) break;
+            if (name_tok.kind == TOK_IDENT && p.all_func_count < 16u) {
+                char *nm = (char *)malloc((size_t)name_tok.len + 1u);
+                memcpy(nm, name_tok.text, name_tok.len);
+                nm[name_tok.len] = '\0';
+                p.all_func_names[p.all_func_count++] = nm;
+            }
+        }
+    }
+
     while (!p.failed && p.cur.kind == TOK_KW_FUNCTION) {
-        NcFunction *fn = parse_function(&p);
+        int is_first = (mod->function_count == 0);
+        NcFunction *fn = parse_function(&p, is_first);
         if (p.failed) goto error;
-        if (mod->main_func != NULL) { fail(&p, "diese Version kennt nur genau eine Function pro Module"); goto error; }
-        mod->main_func = fn;
+        if (mod->function_count >= 16u) { fail(&p, "zu viele Functions (v0.9-Limit 16)"); goto error; }
+        mod->functions[mod->function_count] = fn;
+        mod->function_count++;
         skip_newlines(&p);
     }
 
@@ -702,7 +1057,7 @@ NcModule *nc_parse_module(NcLexer *lx, char *out_error, uint32_t out_error_cap) 
     skip_newlines(&p);
     if (!p.failed && p.cur.kind != TOK_EOF) { fail(&p, "unerwarteter Inhalt nach 'End Module' (nur ein Module pro Datei)"); }
     if (p.failed) goto error;
-    if (mod->main_func == NULL) { fail(&p, "'Function Main' fehlt"); goto error; }
+    if (mod->function_count == 0) { fail(&p, "'Function Main' fehlt"); goto error; }
 
     return mod;
 

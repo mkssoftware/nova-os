@@ -3,10 +3,18 @@
 /* -----------------------------------------------------------------------
  * Globals defined here
  * -------------------------------------------------------------------- */
-HWND g_hEditor  = nullptr;
-HWND g_hTabBar  = nullptr;
-HWND g_hOutput  = nullptr;
+HWND g_hEditor   = nullptr;
+HWND g_hTabBar   = nullptr;
+HWND g_hOutput   = nullptr;
+HWND g_hProblems = nullptr;
+HWND g_hSyscalls = nullptr;
+HWND g_hCapabilities = nullptr;
+HWND g_hSearch = nullptr;
+
+static std::vector<SearchResult> g_searchResults;
 HFONT g_hCodeFont  = nullptr;
+
+static std::vector<BuildDiagnostic> g_problems;
 int  g_zoomPercent = 100;
 
 std::vector<EditorTab> g_tabs;
@@ -129,6 +137,18 @@ static void BottomContainerResize(HWND hCont, int w, int h) {
     if (g_hOutput)
         SetWindowPos(g_hOutput, nullptr, 0, BOTTOM_TAB_H, w, h - BOTTOM_TAB_H,
                      SWP_NOZORDER | SWP_NOACTIVATE);
+    if (g_hProblems)
+        SetWindowPos(g_hProblems, nullptr, 0, BOTTOM_TAB_H, w, h - BOTTOM_TAB_H,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    if (g_hSyscalls)
+        SetWindowPos(g_hSyscalls, nullptr, 0, BOTTOM_TAB_H, w, h - BOTTOM_TAB_H,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    if (g_hCapabilities)
+        SetWindowPos(g_hCapabilities, nullptr, 0, BOTTOM_TAB_H, w, h - BOTTOM_TAB_H,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    if (g_hSearch)
+        SetWindowPos(g_hSearch, nullptr, 0, BOTTOM_TAB_H, w, h - BOTTOM_TAB_H,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 /* -----------------------------------------------------------------------
@@ -196,7 +216,7 @@ void EditorCreate(HWND hParent, RECT rc) {
     g_hBottomTabCtrl = CreateWindowExW(0, WC_TABCONTROLW, nullptr,
         WS_CHILD | WS_VISIBLE | TCS_FLATBUTTONS | TCS_FOCUSNEVER,
         0, 0, W, BOTTOM_TAB_H,
-        g_hBottomCont, nullptr, GetModuleHandleW(nullptr), nullptr);
+        g_hBottomCont, (HMENU)ID_BOTTOMTABS, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(g_hBottomTabCtrl, WM_SETFONT,
                  (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
     /* Tabs einfügen */
@@ -204,9 +224,9 @@ void EditorCreate(HWND hParent, RECT rc) {
         TCITEMW ti = {};
         ti.mask = TCIF_TEXT;
         struct { LPCWSTR name; } tabs[] = {
-            {L"Ausgabe"}, {L"Probleme (0)"}, {L"Terminal"}, {L"Git"}
+            {L"Ausgabe"}, {L"Probleme (0)"}, {L"Syscalls"}, {L"Capabilities"}, {L"Suche"}, {L"Terminal"}, {L"Git"}
         };
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 7; i++) {
             ti.pszText = (LPWSTR)tabs[i].name;
             TabCtrl_InsertItem(g_hBottomTabCtrl, i, &ti);
         }
@@ -220,6 +240,80 @@ void EditorCreate(HWND hParent, RECT rc) {
         0, BOTTOM_TAB_H, W, outH - BOTTOM_TAB_H,
         g_hBottomCont, (HMENU)ID_OUTPUT, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(g_hOutput, WM_SETFONT, (WPARAM)g_hCodeFont, TRUE);
+
+    /* Probleme-ListView (NPSPEC-STUDIO-BUILD-0001): zeigt echte Build-
+       Diagnostik mit Dateibezug, anfangs ausgeblendet (Tab "Ausgabe" ist
+       aktiv) - siehe ProblemsShow()/DoBuild(). */
+    g_hProblems = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
+        WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        0, BOTTOM_TAB_H, W, outH - BOTTOM_TAB_H,
+        g_hBottomCont, (HMENU)ID_PROBLEMS, GetModuleHandleW(nullptr), nullptr);
+    ListView_SetExtendedListViewStyle(g_hProblems, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    SendMessageW(g_hProblems, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    {
+        LVCOLUMNW col = {};
+        col.mask = LVCF_TEXT | LVCF_WIDTH;
+        col.cx = 220; col.pszText = (LPWSTR)L"Datei";
+        ListView_InsertColumn(g_hProblems, 0, &col);
+        col.cx = 60;  col.pszText = (LPWSTR)L"Zeile";
+        ListView_InsertColumn(g_hProblems, 1, &col);
+        col.cx = 600; col.pszText = (LPWSTR)L"Meldung";
+        ListView_InsertColumn(g_hProblems, 2, &col);
+    }
+
+    /* Syscall-Browser-ListView (siehe SyscallBrowserLoad() in main.cpp). */
+    g_hSyscalls = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
+        WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        0, BOTTOM_TAB_H, W, outH - BOTTOM_TAB_H,
+        g_hBottomCont, (HMENU)ID_SYSCALLS, GetModuleHandleW(nullptr), nullptr);
+    ListView_SetExtendedListViewStyle(g_hSyscalls, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    SendMessageW(g_hSyscalls, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    {
+        LVCOLUMNW col = {};
+        col.mask = LVCF_TEXT | LVCF_WIDTH;
+        col.cx = 320; col.pszText = (LPWSTR)L"Name";
+        ListView_InsertColumn(g_hSyscalls, 0, &col);
+        col.cx = 80;  col.pszText = (LPWSTR)L"Wert";
+        ListView_InsertColumn(g_hSyscalls, 1, &col);
+        col.cx = 480; col.pszText = (LPWSTR)L"Kommentar (gleiche Zeile)";
+        ListView_InsertColumn(g_hSyscalls, 2, &col);
+    }
+
+    /* Capability-Manager-ListView (siehe CapabilityManagerLoad() in main.cpp). */
+    g_hCapabilities = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
+        WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        0, BOTTOM_TAB_H, W, outH - BOTTOM_TAB_H,
+        g_hBottomCont, (HMENU)ID_CAPABILITIES, GetModuleHandleW(nullptr), nullptr);
+    ListView_SetExtendedListViewStyle(g_hCapabilities, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    SendMessageW(g_hCapabilities, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    {
+        LVCOLUMNW col = {};
+        col.mask = LVCF_TEXT | LVCF_WIDTH;
+        col.cx = 320; col.pszText = (LPWSTR)L"Name";
+        ListView_InsertColumn(g_hCapabilities, 0, &col);
+        col.cx = 120; col.pszText = (LPWSTR)L"Wert (Hex)";
+        ListView_InsertColumn(g_hCapabilities, 1, &col);
+        col.cx = 80;  col.pszText = (LPWSTR)L"Bit";
+        ListView_InsertColumn(g_hCapabilities, 2, &col);
+    }
+
+    /* Projektweite-Suche-ListView (siehe RunProjectSearch() in main.cpp). */
+    g_hSearch = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
+        WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        0, BOTTOM_TAB_H, W, outH - BOTTOM_TAB_H,
+        g_hBottomCont, (HMENU)ID_SEARCH, GetModuleHandleW(nullptr), nullptr);
+    ListView_SetExtendedListViewStyle(g_hSearch, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    SendMessageW(g_hSearch, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    {
+        LVCOLUMNW col = {};
+        col.mask = LVCF_TEXT | LVCF_WIDTH;
+        col.cx = 220; col.pszText = (LPWSTR)L"Datei";
+        ListView_InsertColumn(g_hSearch, 0, &col);
+        col.cx = 60;  col.pszText = (LPWSTR)L"Zeile";
+        ListView_InsertColumn(g_hSearch, 1, &col);
+        col.cx = 600; col.pszText = (LPWSTR)L"Text";
+        ListView_InsertColumn(g_hSearch, 2, &col);
+    }
 
     /* g_hBottomContainer / g_hBottomTabs für externe Zugriffe */
     g_hBottomContainer = g_hBottomCont;
@@ -272,6 +366,15 @@ void EditorApplyTheme() {
     if (g_hOutput) {
         SendMessageW(g_hOutput, EM_SETBKGNDCOLOR, 0, (LPARAM)g_theme.bg_panel);
     }
+    /* Alle ListView-Werkzeug-Panels (Probleme/Syscalls/Capabilities/
+       Suche) - vorher nicht eingefaerbt, zeigten im Dunkel-Design einen
+       optisch inkonsistenten Standard-Weiss/Schwarz-Hintergrund. */
+    for (HWND h : { g_hProblems, g_hSyscalls, g_hCapabilities, g_hSearch }) {
+        if (!h) continue;
+        ListView_SetBkColor(h, g_theme.bg_panel);
+        ListView_SetTextColor(h, g_theme.fg_default);
+        ListView_SetTextBkColor(h, g_theme.bg_panel);
+    }
     EditorHighlight();
 }
 
@@ -317,10 +420,20 @@ void EditorOnSelChange() {
     }
 }
 
+void EditorSyncActiveTabContent() {
+    if (g_activeTab < 0 || g_activeTab >= (int)g_tabs.size() || !g_hEditor) return;
+    int len = GetWindowTextLengthW(g_hEditor);
+    std::wstring wt(len + 1, L'\0');
+    GetWindowTextW(g_hEditor, &wt[0], len + 1);
+    wt.resize(len);
+    g_tabs[g_activeTab].content = wt;
+}
+
 /* -----------------------------------------------------------------------
  * File operations
  * -------------------------------------------------------------------- */
 void EditorNewFile() {
+    EditorSyncActiveTabContent(); /* siehe EditorOpenFile() - gleicher Grund */
     EditorTab tab;
     tab.filepath = L"";
     tab.title    = L"Untitled.nova";
@@ -336,13 +449,30 @@ void EditorNewFile() {
 }
 
 bool EditorOpenFile(const wchar_t *path) {
-    /* Check if already open */
+    /* .nef-Dateien sind kein Text - im RichEdit-Editor wuerden sie nur
+       als Byte-Muell erscheinen (MultiByteToWideChar auf rohe
+       Maschinencode-/Daten-Bytes). Stattdessen echte NEF-Inspektion
+       (siehe DoInspectNef(), NEF Inspector). */
+    size_t plen = wcslen(path);
+    if (plen > 4 && _wcsicmp(path + plen - 4, L".nef") == 0) {
+        DoInspectNef(path);
+        return true;
+    }
+
+    /* Bereits offen? Dann NICHT neu von der Festplatte laden (das wuerde
+       ungespeicherte Aenderungen verwerfen) und KEINEN zweiten Tab fuer
+       dieselbe Datei anlegen (vorher: das "break" unten beendete nur die
+       Schleife, der Rest der Funktion lief trotzdem weiter und erzeugte
+       immer einen neuen Tab - echter, bereits vorbestehender Bug). */
     for (int i = 0; i < (int)g_tabs.size(); i++) {
         if (_wcsicmp(g_tabs[i].filepath.c_str(), path) == 0) {
+            if (i != g_activeTab) EditorSyncActiveTabContent();
             g_activeTab = i;
             TabCtrl_SetCurSel(g_hTabBar, i);
-            /* Reload content */
-            break;
+            SetWindowTextW(g_hEditor, g_tabs[i].content.c_str());
+            EditorHighlight();
+            EditorUpdateTitle();
+            return true;
         }
     }
 
@@ -362,6 +492,13 @@ bool EditorOpenFile(const wchar_t *path) {
     std::wstring wtext(wlen, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), (int)rd, &wtext[0], wlen);
 
+    /* Bisherige aktive Registerkarte sichern, BEVOR g_hEditor mit dem
+       Inhalt der neuen Registerkarte ueberschrieben wird - sonst gehen
+       ihre ungespeicherten Aenderungen verloren (derselbe Bug wie beim
+       Tab-Wechsel, hier beim Anlegen eines NEUEN Tabs fuer eine noch
+       nicht geoeffnete Datei). */
+    EditorSyncActiveTabContent();
+
     /* Create new tab */
     EditorTab tab;
     tab.filepath = path;
@@ -370,6 +507,7 @@ bool EditorOpenFile(const wchar_t *path) {
     PathStripPathW(name);
     tab.title    = name;
     tab.modified = false;
+    tab.content  = wtext;
     g_tabs.push_back(tab);
     g_activeTab = (int)g_tabs.size() - 1;
     TabAddItem(tab.title.c_str());
@@ -418,11 +556,43 @@ bool EditorSaveFile() {
     CloseHandle(hf);
 
     tab.modified = false;
+    tab.content  = wtext;
     TabSetTitle(g_activeTab, tab.title.c_str());
     EditorUpdateTitle();
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)L"  Gespeichert");
     SetTimer(g_hMain, TIMER_STATUS, 2000, nullptr);
     return true;
+}
+
+/* "Alle speichern" (vorher ein echter Bug: rief nur EditorSaveFile() auf
+   die aktuell aktive Registerkarte auf - alle anderen Tabs blieben
+   trotz des Knopfnamens ungespeichert). Sichert zuerst die aktive
+   Registerkarte (live aus g_hEditor), dann jede weitere modifizierte
+   Registerkarte ueber ihren jeweiligen Content-Spiegel (siehe
+   EditorTab::content), ohne die sichtbare aktive Registerkarte zu
+   aendern. */
+void EditorSaveAllFiles() {
+    if (g_activeTab < 0 || g_activeTab >= (int)g_tabs.size()) return;
+
+    /* Aktive Registerkarte zuerst: ihr Live-Text steht in g_hEditor,
+       nicht im Content-Spiegel (der wird erst beim Verlassen aktualisiert). */
+    if (g_tabs[g_activeTab].modified) EditorSaveFile();
+
+    const int activeBefore = g_activeTab;
+    for (int i = 0; i < (int)g_tabs.size(); i++) {
+        if (i == activeBefore || !g_tabs[i].modified) continue;
+
+        /* Temporaer in den Editor laden, speichern, dann zurueckwechseln -
+           EditorSaveFile() arbeitet immer auf g_activeTab/g_hEditor. */
+        g_activeTab = i;
+        SetWindowTextW(g_hEditor, g_tabs[i].content.c_str());
+        EditorSaveFile();
+    }
+
+    g_activeTab = activeBefore;
+    SetWindowTextW(g_hEditor, g_tabs[activeBefore].content.c_str());
+    EditorHighlight();
+    EditorUpdateTitle();
 }
 
 bool EditorSaveFileAs() {
@@ -443,7 +613,9 @@ bool EditorSaveFileAs() {
     wcscpy_s(name, path);
     PathStripPathW(name);
     g_tabs[g_activeTab].title = name;
-    return EditorSaveFile();
+    bool ok = EditorSaveFile();
+    if (ok) ProjectRegisterSource(path);
+    return ok;
 }
 
 void EditorCloseTab(int idx) {
@@ -504,6 +676,102 @@ void EditorOutput(const wchar_t *text, bool newline) {
 
 void EditorOutputClear() {
     if (g_hOutput) SetWindowTextW(g_hOutput, L"");
+}
+
+/* -----------------------------------------------------------------------
+ * Probleme-Panel (echte Build-Diagnostik, siehe DoBuild() in main.cpp)
+ * -------------------------------------------------------------------- */
+static void ProblemsUpdateTabLabel() {
+    if (!g_hBottomTabs) return;
+    wchar_t buf[32];
+    swprintf_s(buf, L"Probleme (%d)", (int)g_problems.size());
+    TCITEMW ti = {};
+    ti.mask = TCIF_TEXT;
+    ti.pszText = buf;
+    TabCtrl_SetItem(g_hBottomTabs, 1, &ti);
+}
+
+void ProblemsClear() {
+    g_problems.clear();
+    if (g_hProblems) ListView_DeleteAllItems(g_hProblems);
+    ProblemsUpdateTabLabel();
+}
+
+void ProblemsAdd(const BuildDiagnostic &diag) {
+    g_problems.push_back(diag);
+    if (g_hProblems) {
+        int idx = (int)g_problems.size() - 1;
+
+        /* Anzeige: nur der Dateiname (kurz, lesbar). diag.file selbst
+           bleibt der VOLLE Pfad - ProblemsNavigateTo() braucht ihn, um
+           die Datei ueberhaupt oeffnen zu koennen. */
+        wchar_t shortName[MAX_PATH];
+        wcscpy_s(shortName, diag.file.c_str());
+        PathStripPathW(shortName);
+
+        LVITEMW it = {};
+        it.mask = LVIF_TEXT;
+        it.iItem = idx;
+        it.iSubItem = 0;
+        it.pszText = shortName;
+        ListView_InsertItem(g_hProblems, &it);
+
+        wchar_t lineBuf[16];
+        if (diag.line > 0) swprintf_s(lineBuf, L"%d", diag.line);
+        else wcscpy_s(lineBuf, L"");
+        ListView_SetItemText(g_hProblems, idx, 1, lineBuf);
+        ListView_SetItemText(g_hProblems, idx, 2, (LPWSTR)diag.message.c_str());
+    }
+    ProblemsUpdateTabLabel();
+}
+
+void BottomPanelShow(int panel) {
+    if (g_hOutput)       ShowWindow(g_hOutput,       panel == 0 ? SW_SHOW : SW_HIDE);
+    if (g_hProblems)     ShowWindow(g_hProblems,     panel == 1 ? SW_SHOW : SW_HIDE);
+    if (g_hSyscalls)     ShowWindow(g_hSyscalls,     panel == 2 ? SW_SHOW : SW_HIDE);
+    if (g_hCapabilities) ShowWindow(g_hCapabilities, panel == 3 ? SW_SHOW : SW_HIDE);
+    if (g_hSearch)       ShowWindow(g_hSearch,       panel == 4 ? SW_SHOW : SW_HIDE);
+}
+
+void SearchResultNavigateTo(int index) {
+    if (index < 0 || index >= (int)g_searchResults.size()) return;
+    const SearchResult &r = g_searchResults[index];
+    if (!r.file.empty()) EditorOpenFile(r.file.c_str());
+    if (r.line > 0) EditorGoToLine(r.line);
+}
+
+void SearchResultsClear() {
+    g_searchResults.clear();
+    if (g_hSearch) ListView_DeleteAllItems(g_hSearch);
+}
+
+void SearchResultsAdd(const SearchResult &r) {
+    g_searchResults.push_back(r);
+    if (!g_hSearch) return;
+    int idx = (int)g_searchResults.size() - 1;
+
+    wchar_t shortName[MAX_PATH];
+    wcscpy_s(shortName, r.file.c_str());
+    PathStripPathW(shortName);
+
+    LVITEMW it = {};
+    it.mask = LVIF_TEXT;
+    it.iItem = idx;
+    it.iSubItem = 0;
+    it.pszText = shortName;
+    ListView_InsertItem(g_hSearch, &it);
+
+    wchar_t lineBuf[16];
+    swprintf_s(lineBuf, L"%d", r.line);
+    ListView_SetItemText(g_hSearch, idx, 1, lineBuf);
+    ListView_SetItemText(g_hSearch, idx, 2, (LPWSTR)r.text.c_str());
+}
+
+void ProblemsNavigateTo(int index) {
+    if (index < 0 || index >= (int)g_problems.size()) return;
+    const BuildDiagnostic &d = g_problems[index];
+    if (!d.file.empty()) EditorOpenFile(d.file.c_str());
+    if (d.line > 0) EditorGoToLine(d.line);
 }
 
 /* -----------------------------------------------------------------------

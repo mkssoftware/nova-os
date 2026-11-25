@@ -2,15 +2,23 @@
    HID, Mass Storage (Port aus usb32.inc, NPSPEC-USB-ARCHITECTURE-0001 und
    verwandte NPSPEC-USB-Spezifikationen).
 
-   WICHTIG: Schon im alten ASM war `usb_control_read_descriptor` (echte
-   EP0-Control-Transfers ueber xHCI Transfer-Rings) ein permanenter Stub,
-   der immer CF=1 zurueckgab ("bis der Transfer-Ring-Mechanismus verfuegbar
-   ist"). Dadurch schlaegt jede Geraete-Enumeration bereits beim ersten
-   Schritt fehl - HID/Mass-Storage-Klassentreiber und die Block-I/O-
-   Callbacks sind im alten UND im neuen Code strukturell vollstaendig,
-   aber praktisch unerreichbarer Code, bis ein echter Transfer-Ring-
-   Mechanismus existiert. Nur Controller-Reset/Start und Port-Scan (reale
-   MMIO-Zugriffe) werden tatsaechlich ausgefuehrt. */
+   STAND (2026-11-24, siehe KERNEL_GAP_ANALYSIS.md Abschnitt 2.8): echte
+   EP0-Control-Transfers sind jetzt implementiert (Enable Slot + Address-
+   Device-Kommando ueber den Command-Ring, Setup/Data/Status-Stage-TRBs
+   ueber einen echten Transfer-Ring pro Geraet, Event-Ring-Polling fuer
+   Command-Completion/Transfer-Events) - der vorherige permanente Stub
+   (immer Fehler) ist ersetzt. Geraete-Enumeration (GET_DESCRIPTOR/
+   SET_CONFIGURATION) und HID-Erkennung funktionieren dadurch echt.
+
+   WEITERHIN NICHT implementiert: echte BULK-Transfers (Mass-Storage BOT:
+   CBW/Daten/CSW ueber Bulk-Endpoint-Transfer-Ringe) - `usb_blk_read()`/
+   `usb_blk_write()` gaben vorher FAKE-ERFOLG zurueck, geben jetzt ehrlich
+   -1 zurueck, bis dieser Mechanismus existiert (analog zum neuen EP0-
+   Mechanismus aufzubauen). `usb_msc_init()` erkennt Mass-Storage-Geraete
+   daher zwar an der Klasse, registriert aber bewusst KEIN Block-Device
+   (bricht bei `usb_scsi_read_capacity()` ab). Ebenfalls fehlend: Interrupt-
+   Transfers fuer HID-Tastatur/Maus-Eingaben (Geraet wird erkannt, liefert
+   aber noch keine echten Events - input.c nutzt weiterhin PS/2). */
 #ifndef NOVA_USB_H
 #define NOVA_USB_H
 

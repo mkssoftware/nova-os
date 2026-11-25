@@ -383,7 +383,8 @@ int ushell_process_initialize(void) {
            Recht wieder entfallen. */
         if (security_grant(explorer_instance.pid,
                            SECURITY_CAP_FS_READ | SECURITY_CAP_FS_WRITE |
-                           SECURITY_CAP_FS_SYSTEM_WRITE) != 0) {
+                           SECURITY_CAP_FS_SYSTEM_WRITE |
+                           SECURITY_CAP_DISPLAY_SYSTEM_UI) != 0) {
             serial_puts("NOVA: USHELL Explorer-Dateisystemrechte fehlgeschlagen\r\n");
             return -1;
         }
@@ -395,6 +396,15 @@ int ushell_process_initialize(void) {
         if (ushell_spawn(&settings_instance, settings_buffer_bytes, SETTINGS_RO_SIZE) != 0) {
             serial_puts("NOVA: USHELL spawn Einstellungen fehlgeschlagen\r\n"); return -1;
         }
+        /* KERNEL_GAP_ANALYSIS.md Abschnitt 2.2: Einstellungen schaltet sich
+           selbst (TOGGLE_SETTINGS) und die Taskbar-Auto-Hide-Einstellung
+           (TOGGLE_AUTOHIDE) um - seit syscall.c diese Operationen jetzt
+           zentral per SECURITY_CAP_DISPLAY_SYSTEM_UI gated, braucht jeder
+           der fuenf echten System-UI-Prozesse dieses Recht explizit. */
+        if (security_grant(settings_instance.pid, SECURITY_CAP_DISPLAY_SYSTEM_UI) != 0) {
+            serial_puts("NOVA: USHELL Einstellungen-UI-Rechte fehlgeschlagen\r\n");
+            return -1;
+        }
     }
 
     uint32_t taskbar_buffer_bytes = width * TASKBAR_HEIGHT * 4u;
@@ -402,11 +412,21 @@ int ushell_process_initialize(void) {
     if (ushell_spawn(&taskbar_instance, taskbar_buffer_bytes, USHELL_RO_SIZE) != 0) {
         serial_puts("NOVA: USHELL spawn Taskbar fehlgeschlagen\r\n"); return -1;
     }
+    /* Taskbar schaltet Startmenue/Explorer/Einstellungen ueber ihre
+       jeweiligen Buttons um - ohne dieses Recht wuerde jeder Klick nach
+       der obigen Capability-Gate-Einfuehrung mit SYSCALL_STATUS_CAP
+       abgelehnt. */
+    if (security_grant(taskbar_instance.pid, SECURITY_CAP_DISPLAY_SYSTEM_UI) != 0) {
+        serial_puts("NOVA: USHELL Taskbar-UI-Rechte fehlgeschlagen\r\n"); return -1;
+    }
 
     uint32_t startmenu_buffer_bytes = STARTMENU_WIDTH * STARTMENU_HEIGHT * 4u;
     serial_puts("NOVA: USHELL spawn Startmenue, freie PMM-Seiten="); serial_put_hex32(pmm_frame_count()); serial_puts("\r\n");
     if (ushell_spawn(&startmenu_instance, startmenu_buffer_bytes, STARTMENU_RO_SIZE) != 0) {
         serial_puts("NOVA: USHELL spawn Startmenue fehlgeschlagen\r\n"); return -1;
+    }
+    if (security_grant(startmenu_instance.pid, SECURITY_CAP_DISPLAY_SYSTEM_UI) != 0) {
+        serial_puts("NOVA: USHELL Startmenue-UI-Rechte fehlgeschlagen\r\n"); return -1;
     }
 
     /* Nur der Startmenue-Prozess erhaelt die Shutdown-Capability. */
@@ -416,6 +436,10 @@ int ushell_process_initialize(void) {
     serial_puts("NOVA: USHELL spawn Desktop-Icons, freie PMM-Seiten="); serial_put_hex32(pmm_frame_count()); serial_puts("\r\n");
     if (ushell_spawn(&icons_instance, icons_buffer_bytes, ICONS_RO_SIZE) != 0) {
         serial_puts("NOVA: USHELL spawn Desktop-Icons fehlgeschlagen\r\n"); return -1;
+    }
+    /* Icons toggeln den Explorer per Doppelklick auf das Desktop-Icon. */
+    if (security_grant(icons_instance.pid, SECURITY_CAP_DISPLAY_SYSTEM_UI) != 0) {
+        serial_puts("NOVA: USHELL Icons-UI-Rechte fehlgeschlagen\r\n"); return -1;
     }
 
     return 0;

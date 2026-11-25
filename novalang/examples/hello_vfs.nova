@@ -1,0 +1,30 @@
+' hello_vfs.nova - NovaLang v0.5 Testprogramm: echter VFS-Syscall
+' (VFS_OP_LOOKUP) direkt aus NovaLang-Code, mit einer manuell per
+' PokeInt/PokeString befuellten Argument-Struct im validierten
+' Syscall-Pointer-Fenster (siehe NOVALANG_SPEC_v0.5.md). Sucht die
+' bereits bekannte Datei "/hello_nova.nef" (von einem frueheren
+' NovaLang-Testprogramm angelegt) und prueft das echte VFS-Ergebnis.
+Module HelloVfs
+    Function Main() As Int32
+        Dim pathbuf As Buffer(16)
+        Dim argsbuf As Buffer(20)
+        Dim result As Integer = 999
+
+        PokeString(pathbuf, 0, "/hello_nova.nef")
+
+        PokeInt(argsbuf, 0, 0)
+        PokeInt(argsbuf, 4, AddressOf(pathbuf))
+        PokeInt(argsbuf, 8, 15)
+        PokeInt(argsbuf, 12, 0)
+        PokeInt(argsbuf, 16, 0)
+
+        result = SysCall(3, 1, AddressOf(argsbuf), 0)
+
+        If result = 0 Then
+            Console.WriteLine("vfs lookup via syscall succeeded")
+        Else
+            Console.WriteLine("vfs lookup via syscall failed")
+        End If
+        Return 0
+    End Function
+End Module

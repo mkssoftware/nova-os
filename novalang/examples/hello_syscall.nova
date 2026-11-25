@@ -4,6 +4,50 @@
 ' auf statt ueber einen hartkodierten Compiler-Sonderfall wie bei
 ' Console.WriteLine - und prueft den tatsaechlichen Rueckgabewert
 ' (SYSCALL_STATUS_OK = 0).
+'
+' v0.10-ERGAENZUNG (bewusst IM SELBEN Programm, nicht als eigene Datei,
+' siehe feedback_novafs_leaf_capacity.md): beweist SYSCALL_SERVICE_INPUT/
+' INPUT_OP_POLL (siehe syscall.h syscall_input_poll_args_t) - der fuer
+' NovaShells REPL-Eingabezeile benoetigte Polling-Mechanismus. Braucht
+' KEINE neue Compiler-Grammatik (derselbe generische SysCall+Buffer+
+' AddressOf+PeekInt-Mechanismus wie beim v0.5-VFS-Test reicht). WICHTIG:
+' dieses QEMU-Testumgebung kann laut frueherem Befund keine echten
+' Tastendruecke per QMP injizieren (siehe project_keyboard_shortcuts.md)
+' - der Test beweist deshalb den Polling-SYSCALL-MECHANISMUS selbst
+' (wiederholter Aufruf in einer Schleife, korrekter OK-Status, korrektes
+' Auslesen von has_event).
+'
+' v0.11-ERGAENZUNG (ebenfalls im selben Programm): echte VKEY->ASCII-
+' Uebersetzung (`VkeyToAscii`, siehe NOVALANG_SPEC_v0.11.md). ps2.c
+' (ps2_set1_table) liefert fuer Buchstaben/Ziffern/Satzzeichen bereits
+' den ASCII-Code SELBST als vkey (z.B. vkey=='A'==65 fuer die A-Taste,
+' IMMER Grossbuchstabe, unabhaengig vom Shift-Status - siehe ps2.h/
+' ps2.c), nur Sondertasten liegen im Bereich 0x0100+ (VKEY_ESCAPE=256,
+' VKEY_BACKSPACE=257, VKEY_TAB=258, VKEY_ENTER=259, ...). Die
+' Uebersetzung ist deshalb trivial: der druckbare ASCII-Bereich
+' [32,126] wird 1:1 durchgereicht, die vier Steuertasten werden auf
+' ihre Standard-ASCII-Steuercodes abgebildet (Escape=27, Backspace=8,
+' Tab=9, Enter=13/CR), alles andere (Pfeiltasten, Shift/Ctrl/Alt,
+' Capslock, Entf, Pos1/Ende, Super, F4) liefert 0 ("nicht druckbar").
+' Da diese Testumgebung keine echten Tastendruecke injizieren kann
+' (siehe oben), wird die Funktion mit bekannten, LITERALEN vkey-Werten
+' getestet (deterministischer Unit-Test einer reinen Function - echte
+' Boot-Verifikation des Codes, nicht simuliertes Hardware-Verhalten).
+'
+' v0.12-ERGAENZUNG (ebenfalls im selben Programm, siehe
+' NOVALANG_SPEC_v0.12.md): die eigentliche REPL-Eingabezeilen-Logik -
+' Zeichen anhaengen, Backspace (Laenge dekrementieren, "lazy delete"
+' wie bei jedem Terminal-Zeilenpuffer - das alte Byte bleibt im Speicher
+' stehen, wird aber nie wieder gelesen/ausgegeben, da linelen kleiner
+' ist), Enter beendet die Zeile. Verarbeitet eine Folge SYNTHETISCHER
+' (per PokeInt buchstaeblich "getippter") vkey-Werte durch denselben
+' Code-Pfad, den ein echter Tastendruck durchlaufen wuerde (PeekInt ->
+' VkeyToAscii -> PokeByte) - aus demselben Grund wie beim v0.10/v0.11-
+' Test NUR mit bekannten Werten statt echter Hardware, siehe dort fuer
+' die Begruendung. Kein "Exit While"/"Break" in dieser Sprachversion -
+' das fruehe Verlassen bei Enter wird deshalb per Wächter-Flag ("done")
+' nachgebildet, derselbe Zero-Iteration-Guard-Stil wie in
+' hello_while.nova.
 Module HelloSyscall
     Function Main() As Int32
         Dim result As Integer = 999
@@ -12,6 +56,184 @@ Module HelloSyscall
             Console.WriteLine("generic syscall returned OK")
         Else
             Console.WriteLine("generic syscall returned unexpected status")
+        End If
+
+        Dim pollbuf As Buffer(40)
+        Dim i As Integer = 0
+        Dim limit As Integer = 3
+        Dim pollresult As Integer = 999
+        Dim anyFailed As Integer = 0
+
+        While i < limit
+            pollresult = SysCall(4, 1, AddressOf(pollbuf), 0)
+            If pollresult = 0 Then
+                Console.WriteLine("input poll ok")
+            Else
+                anyFailed = 1
+            End If
+            i = i + 1
+        End While
+
+        If anyFailed = 0 Then
+            Console.WriteLine("input poll loop finished")
+        Else
+            Console.WriteLine("input poll loop failed")
+        End If
+
+        Dim hasEvent As Integer = 0
+        hasEvent = PeekInt(pollbuf, 0)
+        If hasEvent = 0 Then
+            Console.WriteLine("input queue empty as expected (headless boot)")
+        Else
+            Console.WriteLine("input queue had a real event")
+        End If
+
+        Dim letterAscii As Integer = 0
+        letterAscii = VkeyToAscii(65)
+        If letterAscii = 65 Then
+            Console.WriteLine("vkey letter A translated ok")
+        Else
+            Console.WriteLine("vkey letter A translation failed")
+        End If
+
+        Dim digitAscii As Integer = 0
+        digitAscii = VkeyToAscii(53)
+        If digitAscii = 53 Then
+            Console.WriteLine("vkey digit 5 translated ok")
+        Else
+            Console.WriteLine("vkey digit 5 translation failed")
+        End If
+
+        Dim enterAscii As Integer = 0
+        enterAscii = VkeyToAscii(259)
+        If enterAscii = 13 Then
+            Console.WriteLine("vkey enter translated ok")
+        Else
+            Console.WriteLine("vkey enter translation failed")
+        End If
+
+        Dim backspaceAscii As Integer = 0
+        backspaceAscii = VkeyToAscii(257)
+        If backspaceAscii = 8 Then
+            Console.WriteLine("vkey backspace translated ok")
+        Else
+            Console.WriteLine("vkey backspace translation failed")
+        End If
+
+        Dim arrowAscii As Integer = 999
+        arrowAscii = VkeyToAscii(267)
+        If arrowAscii = 0 Then
+            Console.WriteLine("vkey arrow correctly non-printable")
+        Else
+            Console.WriteLine("vkey arrow incorrectly printable")
+        End If
+
+        Dim vkeys As Buffer(20)
+        PokeInt(vkeys, 0, 72)
+        PokeInt(vkeys, 4, 105)
+        PokeInt(vkeys, 8, 257)
+        PokeInt(vkeys, 12, 33)
+        PokeInt(vkeys, 16, 259)
+
+        Dim line As Buffer(32)
+        Dim lineLen As Integer = 0
+        Dim done As Integer = 0
+        Dim vk As Integer = 0
+        Dim ch As Integer = 0
+        Dim dummy As Integer = 0
+
+        vk = PeekInt(vkeys, 0)
+        dummy = ProcessOneVkey(vk)
+        vk = PeekInt(vkeys, 4)
+        dummy = ProcessOneVkey(vk)
+        vk = PeekInt(vkeys, 8)
+        dummy = ProcessOneVkey(vk)
+        vk = PeekInt(vkeys, 12)
+        dummy = ProcessOneVkey(vk)
+        vk = PeekInt(vkeys, 16)
+        dummy = ProcessOneVkey(vk)
+
+        Console.WriteLine("repl line loop finished")
+        If lineLen = 2 Then
+            Console.WriteLine("repl line length correct")
+        Else
+            Console.WriteLine("repl line length incorrect")
+        End If
+
+        Dim firstChar As Integer = 0
+        firstChar = PeekByte(line, 0)
+        If firstChar = 72 Then
+            Console.WriteLine("repl line first char correct")
+        Else
+            Console.WriteLine("repl line first char incorrect")
+        End If
+
+        Dim secondChar As Integer = 0
+        secondChar = PeekByte(line, 1)
+        If secondChar = 33 Then
+            Console.WriteLine("repl line second char correct after backspace+retype")
+        Else
+            Console.WriteLine("repl line second char incorrect")
+        End If
+
+        Console.WriteBuffer(line, lineLen)
+        Console.WriteLine("")
+        Console.WriteLine("repl line echoed above")
+
+        Return 0
+    End Function
+
+    ' ProcessOneVkey (v0.12, siehe NOVALANG_SPEC_v0.12.md): verarbeitet
+    ' EINEN vkey-Wert fuer die Eingabezeile - Enter setzt den Waechter
+    ' "done", Backspace dekrementiert lineLen (lazy delete), jede andere
+    ' druckbare Taste wird per VkeyToAscii uebersetzt und ans Ende der
+    ' Zeile angehaengt (PokeByte mit LAUFZEIT-Offset lineLen, siehe
+    ' Abschnitt 2 der Spec). "done"/"line"/"lineLen"/"ch" sind Mains
+    ' Dim-Variablen bzw. -Puffer - in dieser Sprachversion sind "Dim"
+    ' bewusst modulglobal (keine Function-lokalen Namensraeume, siehe
+    ' NOVALANG_SPEC_v0.9.md Abschnitt 6), weshalb diese Function direkt
+    ' darauf zugreifen kann.
+    Function ProcessOneVkey(vk As Integer) As Int32
+        If done = 0 Then
+            If vk = 259 Then
+                done = 1
+            Else
+                If vk = 257 Then
+                    If lineLen > 0 Then
+                        lineLen = lineLen - 1
+                    End If
+                Else
+                    ch = VkeyToAscii(vk)
+                    If ch <> 0 Then
+                        PokeByte(line, lineLen, ch)
+                        lineLen = lineLen + 1
+                    End If
+                End If
+            End If
+        End If
+        Return 0
+    End Function
+
+    ' VkeyToAscii (v0.11, siehe NOVALANG_SPEC_v0.11.md): druckbarer
+    ' ASCII-Bereich [32,126] 1:1 durchgereicht, die vier Steuertasten auf
+    ' ihre Standard-ASCII-Codes abgebildet, alles andere liefert 0.
+    Function VkeyToAscii(vkey As Integer) As Int32
+        If vkey >= 32 Then
+            If vkey <= 126 Then
+                Return vkey
+            End If
+        End If
+        If vkey = 256 Then
+            Return 27
+        End If
+        If vkey = 257 Then
+            Return 8
+        End If
+        If vkey = 258 Then
+            Return 9
+        End If
+        If vkey = 259 Then
+            Return 13
         End If
         Return 0
     End Function
